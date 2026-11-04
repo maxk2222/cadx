@@ -1148,6 +1148,68 @@ def test_mechanism_explosion_ignores_normal_and_degenerate_baselines() -> None:
     assert _mechanism_explosion(zero, 5.0) is None
 
 
+def test_mechanism_guard_stops_catastrophic_single_spike() -> None:
+    from cadx.cad.fem.topopt import _mechanism_guard
+
+    history = [{"compliance_mj": 500.0} for _ in range(10)] + [{"compliance_mj": 120_307.0}]
+    streak, base, stop = _mechanism_guard(history, 120_307.0, 10, 0)
+    assert streak == 1
+    assert base == pytest.approx(500.0)
+    assert stop == "catastrophic"
+
+
+def test_mechanism_guard_tolerates_recoverable_and_moderate_spikes() -> None:
+    from cadx.cad.fem.topopt import _mechanism_guard
+
+    history = [{"compliance_mj": 350.0} for _ in range(10)] + [{"compliance_mj": 900.0}]
+    streak, base, stop = _mechanism_guard(history, 900.0, 20, 0)
+    assert streak == 0
+    assert base is None
+    assert stop is None
+
+    history = [{"compliance_mj": 500.0} for _ in range(10)]
+    streak = 0
+    for objective in (13_000.0, 13_500.0, 13_200.0):
+        history.append({"compliance_mj": objective})
+        streak, _base, stop = _mechanism_guard(
+            history,
+            objective,
+            20 + streak,
+            streak,
+            allow_catastrophic_single=False,
+        )
+    assert stop == "persistent"
+
+
+def test_beso_guard_tolerates_two_spikes_before_recovery() -> None:
+    from cadx.cad.fem.topopt import _mechanism_guard
+
+    history = [{"compliance_mj": 10.0} for _ in range(10)]
+    streak = 0
+    for iteration, objective in ((10, 300_000.0), (11, 800_000.0)):
+        history.append({"compliance_mj": objective})
+        streak, _base, stop = _mechanism_guard(
+            history,
+            objective,
+            iteration,
+            streak,
+            allow_catastrophic_single=False,
+            patience=4,
+        )
+        assert stop is None
+    history.append({"compliance_mj": 11.0})
+    streak, _base, stop = _mechanism_guard(
+        history,
+        11.0,
+        12,
+        streak,
+        allow_catastrophic_single=False,
+        patience=4,
+    )
+    assert streak == 0
+    assert stop is None
+
+
 def test_mma_mechanism_stop_restores_best_design(monkeypatch: pytest.MonkeyPatch) -> None:
     """The MMA path shares the mechanism guard: a compliance explosion inside
     the nlopt eval loop must ForcedStop the optimizer, surface status

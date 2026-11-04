@@ -19,7 +19,7 @@ from scipy import ndimage
 import cadx.cad.fem.beso as beso_mod
 from cadx.cad.fem.beso import _bond_keep, beso
 from cadx.cad.fem.regions import region_node_mask, resolve_case
-from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask
+from cadx.cad.fem.topopt import RHO_MIN, TopOptParams, passive_solid_mask
 from cadx.cad.fem.voxelize import voxelize
 from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
@@ -82,6 +82,40 @@ def test_beso_reaches_target_volume_without_runaway_compliance() -> None:
     achieved = res.density[dom.solid.ravel()].sum() / dom.solid_count
     assert math.isclose(achieved, 0.45, abs_tol=0.05)
     assert res.history[-1]["compliance_mj"] < 1e4
+
+
+def test_beso_mechanism_guard_restores_best_solved_mask(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dom, fixed, F = _case()
+    passive = np.zeros(dom.cell_count, dtype=bool)
+    calls = 0
+
+    def persistent_guard(
+        history: list[dict[str, Any]], objective: float, iteration: int, streak: int, **_kw: Any
+    ) -> tuple[int, float | None, str | None]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return streak + 1, history[0]["compliance_mj"], "persistent"
+        return streak, None, None
+
+    monkeypatch.setattr(beso_mod, "_mechanism_guard", persistent_guard)
+    result = beso(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed, F)],
+        passive,
+        _params(max_iter=3, tol=0.05, beso_connectivity=False, prevent_sealed_voids=False),
+    )
+
+    assert result.status == "mechanism"
+    assert result.converged is False
+    assert result.iterations == 2
+    expected_density = np.where(dom.solid.ravel(), 1.0, RHO_MIN)
+    np.testing.assert_array_equal(result.density, expected_density)
+    assert any("restored the keep mask from the best iteration" in w for w in result.warnings)
 
 
 def test_beso_can_pin_detected_sealed_void_cells(monkeypatch: pytest.MonkeyPatch) -> None:

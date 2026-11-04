@@ -48,6 +48,7 @@ from cadx.cad.fem.solver import _fixed_dofs, _ke_unit, assemble, domain_edof
 from cadx.cad.fem.topopt import (
     _FLIP_FRAC,
     _FLOOR_PIN,
+    _MECH_PATIENCE,
     _MOVE_SAT_STREAK,
     _MOVE_SAT_WINDOW,
     _SYM_AXES,
@@ -59,6 +60,7 @@ from cadx.cad.fem.topopt import (
     TopOptResult,
     _build_filter_ops,
     _CaseCtx,
+    _mechanism_guard,
     _prepare_solve,
     _sealed_pocket_mask,
     _solve_u,
@@ -75,6 +77,7 @@ _ER_DEFAULT = 0.02
 # compliance is "plateaued" below this relative improvement over the
 # _MOVE_SAT_WINDOW window (same ~1% threshold simp's stall detection uses)
 _PLATEAU_IMP = 0.01
+_BESO_MECH_PATIENCE = _MECH_PATIENCE + 1
 
 
 def _bond_keep(
@@ -338,10 +341,13 @@ def beso(  # noqa: C901
     it = 0
     stall = 0  # iterations at target with the design settled below tol
     flip_streak = 0  # consecutive iterations with the mask still churning
+    mech_streak = 0
     at_target_iters = 0  # iterations since the volume ramp reached volfrac
     change = 1.0  # last iteration's flip fraction (drives the CG tolerance)
     stop: str | None = None  # None | cancelled | limit_cycle | degenerate | infeasible_target
     settled = False
+    best_objective = float("inf")
+    best_keep: np.ndarray | None = None
     t0 = time.monotonic()
 
     # per-phase wall-clock instrumentation — same vocabulary as simp()
@@ -434,6 +440,9 @@ def beso(  # noqa: C901
             break
 
         objective = float(np.dot(weights[: len(cases)], obj_cases)) if len(cases) else 0.0
+        if np.isfinite(objective) and objective < best_objective:
+            best_objective = objective
+            best_keep = keep.copy()
 
         # filter the numbers over the solid cells (cone: H w / Hs — the
         # plain neighbourhood average; helmholtz: L^-1 w), then stabilise
@@ -584,6 +593,26 @@ def beso(  # noqa: C901
                 progress_file.write_text(
                     json.dumps({"history": history}, indent=1), encoding="utf-8"
                 )
+        if stop is None and change <= max(params.tol, _FLIP_FRAC):
+            mech_streak, mech_base, mech_stop = _mechanism_guard(
+                history,
+                objective,
+                it,
+                mech_streak,
+                allow_catastrophic_single=False,
+                patience=_BESO_MECH_PATIENCE,
+            )
+            if mech_stop:
+                ratio = objective / max(mech_base or 1e-9, 1e-9)
+                warnings.append(
+                    f"compliance exploded {ratio:.0f}x over the recent window "
+                    f"({mech_stop} spike) at iteration {it} — restoring the best "
+                    "recorded keep mask"
+                )
+                stop = "mechanism"
+                break
+        else:
+            mech_streak = 0
         if stop == "infeasible_target":
             break
 
@@ -630,6 +659,13 @@ def beso(  # noqa: C901
                 )
                 settled = True
                 break
+
+    if stop == "mechanism" and best_keep is not None:
+        keep = best_keep.copy()
+        keep |= passive_solid
+        warnings.append(
+            f"restored the keep mask from the best iteration (compliance {best_objective:.1f} mJ)"
+        )
 
     # a keep set that stayed multi-component after the last guard pass
     # exports as floating islands — flag it on the result, not just the log

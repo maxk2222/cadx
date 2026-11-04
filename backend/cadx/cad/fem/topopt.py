@@ -710,6 +710,7 @@ _BETA_DWELL = 10  # max iterations spent on one Heaviside sharpness level —
 # stage transitions produce ~2x jumps; _MECH_FACTOR sits far above any
 # legitimate transition and below a real mechanism.
 _MECH_FACTOR = 25.0
+_MECH_HARD_FACTOR = 100.0
 _MECH_WINDOW = 10  # baseline = best compliance of the last N iterations
 _MECH_PATIENCE = 3  # consecutive exploding iters — a lone spike can be a
 # transient singular solve the optimizer repairs next step
@@ -734,6 +735,33 @@ def _mechanism_explosion(history: list[dict[str, Any]], objective: float) -> flo
     if base is not None and base > 1e-6 and objective > _MECH_FACTOR * base:
         return base
     return None
+
+
+def _mechanism_guard(
+    history: list[dict[str, Any]],
+    objective: float,
+    iteration: int,
+    streak: int,
+    *,
+    allow_catastrophic_single: bool = True,
+    patience: int = _MECH_PATIENCE,
+) -> tuple[int, float | None, str | None]:
+    """Advance the shared divergence guard.
+
+    The existing sustained-spike rule tolerates isolated transient solves. A
+    much larger single spike is treated as a broken load path immediately,
+    after the design has had enough iterations to form one.
+    """
+    base = _mechanism_explosion(history, objective)
+    streak = streak + 1 if base is not None else 0
+    catastrophic = base is not None and objective > _MECH_HARD_FACTOR * base
+    if iteration < _MECH_MIN_ITER:
+        return streak, base, None
+    if catastrophic and allow_catastrophic_single:
+        return streak, base, "catastrophic"
+    if streak >= patience:
+        return streak, base, "persistent"
+    return streak, base, None
 
 
 def _windowed_compliance_improvement(history: list[dict[str, Any]], window: int) -> float | None:
@@ -1648,13 +1676,13 @@ def simp(  # noqa: C901
         # stiffness solve went near-singular and the rest of the budget is
         # spent on a dead structure. Extract now so the caller's retry (or
         # the honest 'mechanism' status) still fits the time budget.
-        mech_base = _mechanism_explosion(history, objective)
-        mech_streak = mech_streak + 1 if mech_base is not None else 0
-        if it >= _MECH_MIN_ITER and mech_streak >= _MECH_PATIENCE:
+        mech_streak, mech_base, mech_stop = _mechanism_guard(history, objective, it, mech_streak)
+        if mech_stop:
+            ratio = objective / max(mech_base or 1e-9, 1e-9)
             warnings.append(
-                f"compliance exploded {objective / max(mech_base or 1e-9, 1e-9):.0f}x "
-                f"over the recent window at iteration {it} — the optimizer cut "
-                "the load path (near-singular solve); extracting the current "
+                f"compliance exploded {ratio:.0f}x over the recent window "
+                f"({mech_stop} spike) at iteration {it} — the optimizer cut the load "
+                "path (near-singular solve); restoring the best recorded "
                 "density. Retry with a higher target_volume_fraction or "
                 "loadpath_corridor_mm"
             )
@@ -2225,13 +2253,16 @@ def _run_mma(  # noqa: C901
         # optimizer cut the load path and the stiffness solve went
         # near-singular. nlopt has no per-evaluation status channel, so stop
         # through ForcedStop and let the driver restore the best-seen design
-        mech_base = _mechanism_explosion(history, obj_now)
-        mech_streak_box[0] = mech_streak_box[0] + 1 if mech_base is not None else 0
-        if it_box[0] >= _MECH_MIN_ITER and mech_streak_box[0] >= _MECH_PATIENCE:
+        mech_streak_box[0], mech_base, mech_should_stop = _mechanism_guard(
+            history, obj_now, it_box[0], mech_streak_box[0]
+        )
+        if mech_should_stop:
+            ratio = obj_now / max(mech_base or 1e-9, 1e-9)
             warnings.append(
-                f"compliance exploded {obj_now / max(mech_base or 1e-9, 1e-9):.0f}x "
-                f"over the recent window at evaluation {it_box[0]} — the optimizer "
-                "cut the load path (near-singular solve); extracting the best "
+                f"compliance exploded {ratio:.0f}x over the recent window "
+                f"({mech_should_stop} spike) at evaluation {it_box[0]} — "
+                "the optimizer cut "
+                "the load path (near-singular solve); restoring the best "
                 "recorded design. Retry with a higher target_volume_fraction "
                 "or loadpath_corridor_mm"
             )
