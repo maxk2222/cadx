@@ -245,7 +245,12 @@ def _signed_face_declared(f: Feature, text: str, signed: str) -> bool:
     if ax == signed:
         return True
     try:
-        return signed in (parse_position_hints(text)[1] or [])
+        if signed in (parse_position_hints(text)[1] or []):
+            return True
+        desc = str(getattr(f, "description", "") or "")
+        if desc and desc != text:
+            return signed in (parse_position_hints(desc)[1] or [])
+        return False
     except Exception:
         return False
 
