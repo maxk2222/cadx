@@ -41,6 +41,11 @@ class MeasuredHoleGroup(BaseModel):
     # that coordinate is not observable (notably the through-axis position of
     # a ray-detected tunnel). Never substitute the global bbox midpoint.
     centers_xyz: list[list[float | None]] = Field(default_factory=list)
+    # per-member depth verdicts parallel to centers_xyz — the group-level
+    # `depth_class` collapses to "unknown" on disagreement; the per-center
+    # list preserves WHICH member reads through/blind so feedback can name
+    # the offending bore instead of the whole group
+    depth_classes: list[str] = Field(default_factory=list)
     blocked: int = 0  # bores in this group sealed by a membrane (tunnel-verified)
     elongated: bool = False  # slot-like void (aspect ratio > threshold), not a round hole
     # through_axis is the tunnel/pierce direction — same value as `axis`,
@@ -834,6 +839,7 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
                     depth_class="through",
                     centers=[[round(float(center[0]), 2), round(float(center[1]), 2)]],
                     centers_xyz=[center_xyz],
+                    depth_classes=["through"],
                     elongated=is_slot,
                     through_axis=f"+{'xyz'[axis]}",
                     elong_axis=elong_axis,
@@ -1498,6 +1504,7 @@ def extract_features(  # noqa: C901 — sequential measurement passes
                 g.diameter = round((g.diameter * (g.count - 1) + dia) / g.count, 3)
                 g.centers.append(cxy)
                 g.centers_xyz.append(center_xyz)
+                g.depth_classes.append(depth)
                 if g.depth_class != depth:
                     g.depth_class = "unknown"
                 if depth == "blind":
@@ -1512,6 +1519,7 @@ def extract_features(  # noqa: C901 — sequential measurement passes
                     depth_class=depth,
                     centers=[cxy],
                     centers_xyz=[center_xyz],
+                    depth_classes=[depth],
                     blocked=1 if depth == "blind" else 0,
                     through_axis=dom,
                 )
@@ -1855,6 +1863,35 @@ def _check_hole_feature(
                 ),
             )
         )
+    elif wants_blind and group.blocked < group.count:
+        # a blind-declared bore that exits its host reads through — name the
+        # offending member(s) so the fix targets the right hole, not the group
+        bad = (
+            [
+                c
+                for c, d in zip(group.centers_xyz, group.depth_classes, strict=False)
+                if d != "blind"
+            ]
+            if group.depth_classes
+            else []
+        )
+        at = f" at {bad[0]}" if len(bad) == 1 else ""
+        findings.append(
+            FeatureFinding(
+                feature=name,
+                expected="blind hole(s) (depth-limited)",
+                actual=(
+                    f"{group.count - group.blocked}/{group.count} bore(s){at} "
+                    "go through instead of stopping at depth"
+                ),
+                severity="major",
+                fix_hint=(
+                    "the cutter exits the far side — bound its depth to the "
+                    "host plate (e.g. depth=host_span) or drill from the "
+                    "declared entry face"
+                ),
+            )
+        )
     return findings, csk_needed, cbore_needed
 
 
@@ -2138,6 +2175,7 @@ def mesh_features_to_measured(mesh_feats: dict[str, Any]) -> MeasuredFeatures:
                 depth_class="through",
                 centers=[[x, y]],
                 centers_xyz=[center_xyz],
+                depth_classes=["through"],
                 through_axis=f"+{ax}",
             )
         )

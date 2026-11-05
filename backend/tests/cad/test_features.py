@@ -688,3 +688,69 @@ def test_extract_features_cancelled_returns_early(tmp_path):
     m = extract_features(part, cancelled=lambda: True)
     assert m.total_holes == 0
     assert m.hole_groups == []
+
+
+def test_compare_blind_expected_but_one_goes_through():
+    """A blind-declared bore group where one member pierces through must
+    produce an actionable finding naming the offending center — before,
+    only the silent "unknown" depth_class reached the gates."""
+    m = MeasuredFeatures(
+        hole_groups=[
+            MeasuredHoleGroup(
+                diameter=6.8,
+                count=3,
+                axis="+z",
+                depth_class="unknown",
+                centers_xyz=[
+                    [0.0, -22.0, None],
+                    [-46.0, 22.0, None],
+                    [46.0, 22.0, None],
+                ],
+                depth_classes=["through", "blind", "blind"],
+                blocked=2,
+            )
+        ],
+        total_holes=3,
+    )
+    spec = [
+        Feature(
+            name="M8 tap pilots",
+            type="hole",
+            count=3,
+            dims={"diameter": 6.8, "depth": 10.0},
+            axis="z",
+            position="blind from bottom",
+        )
+    ]
+    findings = compare_features(spec, m)
+    assert any(
+        f.severity == "major" and "blind" in f.expected and "through" in f.actual for f in findings
+    )
+    assert any("[0.0, -22.0" in f.actual for f in findings)
+
+
+def test_compare_blind_expected_all_blind_no_finding():
+    m = MeasuredFeatures(
+        hole_groups=[
+            MeasuredHoleGroup(
+                diameter=6.8,
+                count=3,
+                axis="+z",
+                depth_class="blind",
+                centers_xyz=[[0.0, -22.0, None], [-46.0, 22.0, None], [46.0, 22.0, None]],
+                depth_classes=["blind", "blind", "blind"],
+                blocked=3,
+            )
+        ],
+        total_holes=3,
+    )
+    spec = [
+        Feature(
+            name="M8 tap pilots",
+            type="hole",
+            count=3,
+            dims={"diameter": 6.8, "depth": 10.0},
+            axis="z",
+        )
+    ]
+    assert not any("blind" in f.expected for f in compare_features(spec, m))
