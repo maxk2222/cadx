@@ -347,3 +347,29 @@ async def test_schema_reask_uses_stream(monkeypatch):
     r = await c.chat("code", [{"role": "user", "content": "hi"}], json_schema=Out)
     assert r.parsed and r.parsed.value == 3
     assert calls == [True, True]
+
+
+async def test_stream_hang_aborts_on_idle_deadline(monkeypatch):
+    """A connection that stops emitting mid-line starves every in-loop
+    watchdog — the per-line wait_for read deadline must abort it."""
+    import asyncio
+
+    from cadx.llm.client import LLMError
+
+    class StallStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices": [{"delta": {"content": "Hel'
+            await asyncio.sleep(3600)
+            yield b"data: [DONE]"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, stream=StallStream(), headers={"content-type": "text/event-stream"}
+        )
+
+    _patch_transport(monkeypatch, handler)
+    c = _mk()
+    c.idle_timeout_s = 0.05
+    c.total_timeout_s = 30
+    with pytest.raises(LLMError, match="no data"):
+        await c.chat("code", [{"role": "user", "content": "hi"}], temperature=0.0)

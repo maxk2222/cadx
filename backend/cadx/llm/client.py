@@ -464,7 +464,18 @@ class LLMClient:
         prod = [0]
         last_prod = 0
         last_meaningful = t0
-        async for line in resp.aiter_lines():
+        # per-line hard read deadline: the in-loop watchdogs only run when a
+        # line actually yields, so a connection that stops emitting bytes
+        # entirely (or drips partial-line fragments forever) would starve
+        # them — wait_for bounds every single read instead
+        line_iter = resp.aiter_lines().__aiter__()
+        while True:
+            try:
+                line = await asyncio.wait_for(line_iter.__anext__(), timeout=self.idle_timeout_s)
+            except StopAsyncIteration:
+                break
+            except TimeoutError:
+                raise LLMError(f"stream stalled: no data for {self.idle_timeout_s:.0f}s") from None
             chunks += 1
             content_size = sum(map(len, text_parts)) + reasoning_parts + tool_acc.size
             if content_size != last_content_size:
