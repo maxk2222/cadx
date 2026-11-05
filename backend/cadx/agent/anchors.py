@@ -351,6 +351,15 @@ def _declared_bore_axis(f: Feature, text: str) -> str:
         for face in faces:
             if face[-1:] == letter:
                 return face  # signed — e.g. "z" + "-z face" -> "-z"
+        # the entry face can live in `description` while `position` carries
+        # only coords/direction ("opens only on the -z face") — parse it for
+        # face tokens on the declared letter only, never for coordinates
+        desc = str(getattr(f, "description", "") or "")
+        if desc and desc != text:
+            _c2, desc_faces, _e2, _n2 = parse_position_hints(desc)
+            for face in desc_faces:
+                if face[-1:] == letter:
+                    return face
         return "+" + letter
     if len(faces) == 1:
         return faces[0]  # already signed ("-z", "+y", ...)
@@ -830,8 +839,18 @@ def _spec_anchors(spec: PartSpec) -> list[Anchor]:  # noqa: C901
                     # "+z" must not fabricate a mouth at the part's top.
                     sgn = -1.0 if signed == "-z" else 1.0
                     if rng is not None:
-                        entry = rng[0] if sgn < 0 else rng[1]
-                        z_mid = entry - sgn * declared_depth / 2.0
+                        if _signed_face_declared(f, text, signed):
+                            entry = rng[0] if sgn < 0 else rng[1]
+                            z_mid = entry - sgn * declared_depth / 2.0
+                        else:
+                            fc = _face_coordinate(text, "z", bounds, declared_depth)
+                            if fc is not None:
+                                entry, sgn = fc
+                                signed_pt = "-z" if sgn < 0 else "+z"
+                                z_mid = entry - sgn * declared_depth / 2.0
+                            else:
+                                entry = rng[0] if sgn < 0 else rng[1]
+                                z_mid = entry - sgn * declared_depth / 2.0
                     elif _signed_face_declared(f, text, signed):
                         entry = bounds["z"][0] if sgn < 0 else bounds["z"][1]
                         z_mid = entry - sgn * declared_depth / 2.0

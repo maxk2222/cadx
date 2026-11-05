@@ -123,3 +123,43 @@ def test_anchor_keep_prism_through_keeps_full_extent() -> None:
     assert prism is not None
     # through anchor without depth: still restores the pierced wall span
     assert prism["span"][1] - prism["span"][0] >= 55.0
+
+
+def test_auto_keep_margin_scales_with_bolt_bearing_surface() -> None:
+    """The keep ring protects the fastener's bearing surface (washer/head
+    ~2·nominal), not just the bore wall: an M8 anchor (nominal 8) on a 6.8
+    pilot needs margin 8-3.4=4.6, not the flat 3.0 — a smaller ring leaves
+    the bolt seat designable and the optimizer carves it."""
+    anchors = [
+        {
+            "index": 1,
+            "kind": "tap",
+            "axis": "-z",
+            "pos": [10.0, 20.0, 0.0],
+            "dia": 6.8,
+            "bolt_size": "M8x1",
+        },
+        {"index": 2, "kind": "hole", "axis": "+y", "pos": [20.0, None, 30.0], "dia": 15.0},
+    ]
+    keeps, _ = interface_regions(anchors, margin_mm=3.0)
+    by_idx = {k.hole_index: k.margin_mm for k in keeps if k.hole_index is not None}
+    assert by_idx[1] == 4.6
+    assert by_idx[2] == 3.0  # no bolt_size -> flat default
+
+
+def test_auto_keep_margin_never_shrinks_below_default() -> None:
+    """A small fastener must not reduce the configured margin — the floor
+    protects against discretization loss on tiny bores."""
+    anchors = [
+        {
+            "index": 1,
+            "kind": "tap",
+            "axis": "+z",
+            "pos": [10.0, 20.0, 28.0],
+            "dia": 2.4,
+            "bolt_size": "M3",
+        }
+    ]
+    keeps, _ = interface_regions(anchors, margin_mm=5.0)
+    keep = next(k for k in keeps if k.kind == "hole")
+    assert keep.margin_mm == 5.0

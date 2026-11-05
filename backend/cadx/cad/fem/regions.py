@@ -2244,15 +2244,23 @@ def interface_regions(
             ).strip()
             or kind
         )
+        dia = float(a.get("dia") or 0.0)
+        # the keep ring must cover the fastener's BEARING surface, not just
+        # the bore wall: a washer/head seat reaches ~1 nominal diameter out
+        # (ISO washer ~2d) — a flat margin that stops short leaves the bolt
+        # seat designable and the optimizer carves exactly that material
+        eff_margin = margin_mm
+        m = re.search(r"[Mm]\s*(\d+(?:\.\d+)?)", str(a.get("bolt_size") or ""))
+        if m and dia > 0:
+            eff_margin = max(eff_margin, min(float(m.group(1)) - dia / 2.0, 25.0))
         keeps.append(
             RegionSpec(
                 kind="hole",
                 hole_index=idx,
-                margin_mm=margin_mm,
+                margin_mm=eff_margin,
                 description=f"auto-keep {label} #{idx}",
             )
         )
-        dia = float(a.get("dia") or 0.0)
         if dia <= 0:
             continue
         axis = str(a.get("axis") or "+z")

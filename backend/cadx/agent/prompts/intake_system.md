@@ -96,7 +96,13 @@ Rules:
   simple parts.
 - Units are millimetres. Convert inches (multiply by 25.4) and cm.
 - DIRECTIONAL FEATURES (slopes, tapers, ramps, holes, slots): set `feature.axis`
-  to the axis the property varies along (holes: the drill direction). User words
+  to the axis the property varies along. For holes/bores the SIGNED axis names
+  the ENTRY face the hole opens on — a blind tap drilled upward from the bottom
+  face is `axis="-z"` (mouth on -z, drill travel +z); an unsigned letter ("z")
+  declares the axis only. Put the mouth's entry face in `position` too
+  ("drilled from -z face", "opens on the bottom face") — a travel-direction
+  token alone ("upward (+z)") is ambiguous and must never be the only cue.
+  User words
   like "front/back end", "thin end", "from heel to toe" describe the ends of the
   LONGEST dimension unless the text says otherwise — e.g. a wedge "80 mm long
   that rises from 5 mm at the front to 22 mm at the back" slopes along X
