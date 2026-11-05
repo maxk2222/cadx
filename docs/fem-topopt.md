@@ -484,7 +484,50 @@ extremum within `r_mm` of each anchor so results read as
 The agent optimize session offers `list_anchors` (the measured anchor table),
 `check_load` (region resolution + resultant/moment split + per-load
 applied report, without a solve),
-`preview_regions`, `analyze_fem`, `topopt_run`, `infill_run` and `done`.
+`preview_regions`, `analyze_fem`, `topopt_run`, `infill_run`,
+`drop_spec_feature` and `done`.
+
+`drop_spec_feature(feature_index, reason)` withdraws ONE declared spec
+feature the agent genuinely cannot construct — zero-based index into
+`spec.features`, reason 12–500 chars. The feature is **not deleted**: a
+server-side `FeatureDrop` record (original snapshot + reason + iteration +
+session + UTC timestamp) persists on `spec.feature_drops` (hidden from the
+model-facing JSON schema, survives internal roundtrips), flows into
+`Version.issues`, the `verify_spec` report's `dropped_features` list, and
+the Evalkit `spec_features_dropped` gate/metric. Active-feature views
+(anchors, re-cut, feature comparison, verify_spec checks, cadlib/reference
+selection, standard-part coverage) exclude it while the audit record stays
+intact — a drop is never an unqualified pass and independent geometry
+gates still apply. The same tool exists in codegen/repair sessions;
+entries a model writes directly are stripped at intake.
+
+**Solver-divergence guards.** The optimizers watch compliance for
+mechanism-scale explosions (`_mechanism_explosion`: window-baseline min,
+25× factor, 3-streak patience, min-iteration 10). OC/MMA additionally
+hard-stop on a single catastrophic spike (observed live: 272× and
+26,000× collapses that never recovered) and restore the best solved
+field before returning `status="mechanism"`. BESO deliberately keeps the
+persistence path — its connectivity opt-outs produce real ~300,000×
+spikes that recover within two iterations, so it only stops on a
+sustained blowout plus mask stagnation, salvaging the best binary mask
+(`keep.copy()` taken BEFORE the keep-mutation). Either way the reported
+verdict and the exported field stay consistent: no garbage field is
+extracted after a mechanism verdict.
+
+**Cooperative cancellation.** Job-cancel is authoritative and discards
+results; checkpoints poll the job cancel flag between expensive phases —
+solver iterations, extraction, each export-realization solve
+(nominal/eroded/dilated), retry passes and renders — not just at pipeline
+entry. In-flight OCC/SciPy calls cannot be hard-killed mid-call; a
+cancelled run returns only real artifact relpaths.
+
+**Queue budgets.** An optimize task's runtime budget starts when the
+worker observes `JobStatus.in_progress` (dequeue), not at enqueue; queue
+waiting itself is hard-capped at 1.5× the run budget. `queued_s` rides in
+the optimize result, run digests and Evalkit metrics. The Evalkit stage
+deadline flows API → spawn payload → worker and acts as an additional
+min-cap on the agent's optimize budget so worker queue time is not
+silently burned.
 
 `analyze_fem` (and the persisted `v.fem` payload) reports
 `recommended_mode` + `recommended_reasons` — a routing hint computed from

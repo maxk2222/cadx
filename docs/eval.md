@@ -120,7 +120,10 @@ Per-stage declarative checks in the suite JSON, evaluated in
   `max_frac`), `envelope_within`, `sits_on_xy` (the frame contract —
   `bbox_min.z ≈ 0`, catches parts built below the XY plane that pure
   bbox-dim gates cannot see), `asset_image`, `execs_min`, `max_wall_s`,
-  `max_prompt_tokens`.
+  `max_prompt_tokens`, `spec_features_dropped` (`max` — counts audited
+  `drop_spec_feature` withdrawals on the stage spec; drop records ride in
+  `measured.drops` so a withdrawal is always a visible event, never an
+  unqualified pass).
   `fem_loadcases` is the **semantic BC gate** — it re-checks the *resolved*
   load cases (not the request): `min_cases`, `source` (asserts
   `extras.load_cases_source`), and per-case `checks` on
@@ -151,10 +154,19 @@ decides.
 Every run writes `<root>/<case>/<ts>_<label>/` (`evals/results` for http,
 `evals/scratch` for local):
 
-- `result.json` — schema_version 2: case, driver, variant, stage results
-  (status, metrics, gate verdicts), run meta.
+- `result.json` — schema_version 3: case, driver, variant, stage results
+  (status, metrics, gate verdicts), run meta. `status` is the runner
+  lifecycle (`running` → `finished`|`failed`) — distinct from `passed`,
+  the gate verdict: a normally completed run is `finished` even when its
+  gates fail. `finished_at` marks terminal completion only; `updated_at`
+  tracks every intermediate persist (the file is written before driver
+  setup and refreshed after each stage). Stage entries list
+  `status="skipped"` for stages fail-fast never executed. All writes are
+  atomic (temp + fsync + rename) — a crash mid-write cannot truncate
+  results. `from_dict` migrates schema≤2 (no lifecycle recorded:
+  `passed` set → `finished`, error → `failed`, else `running`).
 - `meta.json` — git sha/dirty flag, applied runtime overrides.
-- `summary.md` — per-stage table with failed gates.
+- `summary.md` — per-stage table with failed gates and the run status.
 - `stages/<id>.json` — persisted after every stage (crash-safe).
 - `trace.<vid>.jsonl` — AgentTrace records (http: `GET /jobs/{id}/trace`,
   local: scratch DB rows).

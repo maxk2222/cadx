@@ -287,6 +287,7 @@ _METRIC_KEYS = (
     "worse_than_uniform",
     "uniform_baseline_compliance_mj",
     "n_bodies_export",
+    "queued_s",
     "regions_lost",
     "passive_cells_lost",
     "thin_fraction",
