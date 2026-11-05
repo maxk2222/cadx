@@ -1005,6 +1005,43 @@ def test_spec_anchors_unsigned_axis_inherits_signed_face_hint():
     assert a.depth_mm == 10.0
 
 
+def test_spec_anchors_direction_token_is_not_entry_face():
+    """`drilled from z=0 upward (+z)` — the parenthetical direction is the
+    bore's TRAVEL, not its mouth. Read as a face hint it pins entry to the
+    part's +z top (pos z = hi - depth/2 = 85 on a 90 mm block); masked as a
+    direction the declared mouth coordinate z=0 resolves to "-z"."""
+    spec = PartSpec(
+        name="block",
+        summary="",
+        units="mm",
+        length_x=Dim(value=120, unit="mm", source="stated"),
+        width_y=Dim(value=70, unit="mm", source="stated"),
+        height_z=Dim(value=90, unit="mm", source="stated"),
+        features=[
+            Feature(
+                name="mounting hole 1 (M8 tap pilot)",
+                type="hole",
+                description=(
+                    "Blind tapped M8x1.25 mounting hole modeled as tap-drill "
+                    "pilot dia 6.8, drilled from bottom face z=0 to depth 10 mm; "
+                    "opens only on the -z face and ends inside the block"
+                ),
+                dims={"diameter": 6.8, "depth": 10.0},
+                axis="z",
+                position="x=-46, y=+22, drilled from z=0 upward (+z)",
+            ),
+        ],
+        image_roles=[],
+    )
+    anchors = _spec_anchors(spec)
+    assert len(anchors) == 1
+    a = anchors[0]
+    assert a.axis == "-z"
+    assert a.pos == [-46.0, 22.0, 5.0]
+    assert a.blind is True
+    assert a.depth_mm == 10.0
+
+
 def test_spec_anchors_signed_axis_field_wins_over_face_hint():
     """An explicit signed field stays authoritative — a stray face token on
     the same axis must not flip it."""

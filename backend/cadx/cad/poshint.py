@@ -112,9 +112,11 @@ _POS_FACE_TOKEN_RE = re.compile(r"(?<![\w])([+-][xyz])(?![\w])")
 # a direction phrase cannot masquerade as an entry-face hint ("the +z face"
 # and "+z side" remain face hints)
 _POS_DIRECTION_TOKEN_RE = re.compile(
-    r"(?:\b(?:along|entlang|towards?|extends?|runs?)\s+(?:the\s+|der\s+|den\s+)?"
+    r"(?:\b(?:along|entlang|towards?|extends?|runs?|"
+    r"up(?:ward)?s?|down(?:ward)?s?|nach\s+oben|nach\s+unten)"
+    r"\s+(?:the\s+|der\s+|den\s+)?"
     r"|\b(?:in\s+)?(?:positive\s+|negative\s+)?(?:direction|richtung)\s+)"
-    r"[+-][xyz](?![\w])"
+    r"\(?\s*[+-][xyz]\s*\)?(?![\w])"
     r"|[+-][xyz][\s-]*(?:direction|richtung)\b",
     re.I,
 )
