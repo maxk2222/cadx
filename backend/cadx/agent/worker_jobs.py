@@ -1389,6 +1389,46 @@ def _latest_parent_density(parent: Version) -> str | None:
     return None
 
 
+def _lift_chosen_run_metrics(topopt: dict[str, Any], agent_runs: list[dict[str, Any]]) -> None:
+    """Fill a sparse flat topopt block from the chosen agent run record.
+
+    When the agent commits a `refine_features` product, `result.topopt` only
+    carries the finishing report — the structural metrics live in the run's
+    summary record instead. Without this the shipped version shows
+    sf_verified/volfrac/load_path_ok as absent: eval gates then honestly fail
+    on "missing metrics" although a verified design was committed. Only fills
+    keys the flat block does not already carry; never overwrites a verdict
+    the chosen result produced itself.
+    """
+    chosen = next((r for r in agent_runs if isinstance(r, dict) and r.get("chosen")), None)
+    if not chosen:
+        return
+    ver = chosen.get("verification") or {}
+    if topopt.get("sf_verified") is None:
+        topopt["sf_verified"] = ver.get("sf_verified")
+        if topopt["sf_verified"] is None:
+            topopt["sf_verified"] = chosen.get("worst_sf")
+    for src, dst in (
+        ("sf_export", "sf_export"),
+        ("sf_mask", "sf_mask"),
+        ("achieved", "volfrac_achieved"),
+        ("volfrac", "volfrac_target"),
+        ("volfrac_requested", "volfrac_requested"),
+        ("iterations", "iterations"),
+        ("queued_s", "queued_s"),
+        ("min_member_mm", "min_member_mm"),
+        ("thin_fraction", "thin_fraction"),
+        ("n_components", "n_components"),
+        ("n_bodies_export", "n_bodies_export"),
+        ("load_path_ok", "load_path_ok"),
+        ("extract", "extract"),
+    ):
+        if topopt.get(dst) is None and chosen.get(src) is not None:
+            topopt[dst] = chosen[src]
+    if ver and not isinstance(topopt.get("verification"), dict):
+        topopt["verification"] = ver
+
+
 def _injob_refine_committed(version: Version) -> bool:
     """True when feature finishing already succeeded in the optimize job.
 
@@ -1732,7 +1772,15 @@ async def run_optimize_job(  # noqa: C901
                 artifacts[f"fem:{src.stem}"] = storage.relpath(dst)
                 fem_art += 1
 
-        topopt = result.get("topopt") or {}
+        # flat metrics: result-level topopt wins, the chosen run's mesh
+        # topopt (e.g. a refine product shipping its parent's block) is the
+        # fallback; the agent_runs record backfills whatever both miss
+        topopt = {
+            **((result.get("mesh") or {}).get("topopt") or {}),
+            **(result.get("topopt") or {}),
+        }
+        if agent_runs:
+            _lift_chosen_run_metrics(topopt, agent_runs)
         fem = result.get("fem") or {}
         # recount bodies on the shipped artifact — float32 STL export can
         # break a sliver bridge the in-memory candidate still counted as

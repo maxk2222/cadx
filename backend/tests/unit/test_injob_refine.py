@@ -832,3 +832,65 @@ def test_run_refine_synthesizes_auto_keep_regions(monkeypatch, tmp_path):
     )
     assert res.ok
     assert captured["keep_regions"] == [{"kind": "all"}]
+
+
+def test_lift_chosen_run_metrics_backfills_refine_choice():
+    """A committed `refine_features` run ships a sparse flat topopt block —
+    the verified metrics live in its agent_runs record. The lift must copy
+    them up so eval gates and the UI see the committed design's verdict."""
+    from cadx.agent.worker_jobs import _lift_chosen_run_metrics
+
+    runs = [
+        {
+            "index": 0,
+            "worst_sf": 10.62,
+            "sf_export": 12.47,
+            "achieved": 0.25,
+            "load_path_ok": True,
+            "verification": {"sf_verified": 10.62, "n_sealed_cavities": 0},
+            "chosen": False,
+        },
+        {
+            "index": 3,
+            "worst_sf": 13.66,
+            "sf_export": None,
+            "achieved": None,
+            "verification": {"sf_verified": 13.66, "n_sealed_cavities": 0},
+            "chosen": True,
+            "reasoning": "refined run 2",
+        },
+    ]
+    topopt: dict = {"n_bodies_export": 1}
+    _lift_chosen_run_metrics(topopt, runs)
+    assert topopt["sf_verified"] == 13.66
+    assert topopt["verification"]["n_sealed_cavities"] == 0
+    assert topopt["n_bodies_export"] == 1  # never overwritten
+
+
+def test_lift_chosen_run_metrics_respects_existing_verdicts():
+    """Fields the chosen result reported itself stay authoritative — the
+    lift only fills gaps, and a solved sf_verified of 0.0 is a verdict."""
+    from cadx.agent.worker_jobs import _lift_chosen_run_metrics
+
+    runs = [
+        {
+            "worst_sf": 99.0,
+            "achieved": 0.5,
+            "verification": {"sf_verified": 99.0},
+            "chosen": True,
+        }
+    ]
+    topopt = {"sf_verified": 0.0, "volfrac_achieved": 0.25}
+    _lift_chosen_run_metrics(topopt, runs)
+    assert topopt["sf_verified"] == 0.0
+    assert topopt["volfrac_achieved"] == 0.25
+    # missing keys still filled from the record
+    assert topopt["verification"]["sf_verified"] == 99.0
+
+
+def test_lift_chosen_run_metrics_no_chosen_noop():
+    from cadx.agent.worker_jobs import _lift_chosen_run_metrics
+
+    topopt: dict = {}
+    _lift_chosen_run_metrics(topopt, [{"worst_sf": 5.0, "chosen": False}])
+    assert topopt == {}
