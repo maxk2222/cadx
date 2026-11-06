@@ -257,7 +257,7 @@ export default function ProjectPage() {
 
   if (project.isLoading)
     return (
-      <div className="mx-auto grid max-w-6xl grid-cols-1 gap-5 p-6 lg:grid-cols-3">
+      <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-5 p-6 lg:grid-cols-3 2xl:max-w-[92vw]">
         <div className="flex flex-col gap-5 lg:col-span-2">
           <Skeleton className="h-4 w-40" />
           <Skeleton className="h-8 w-64" />

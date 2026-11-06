@@ -221,7 +221,7 @@ export default function VersionPage() {
 
   if (version.isLoading)
     return (
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-5 p-6 xl:grid-cols-5">
+      <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-5 p-6 xl:grid-cols-5 2xl:max-w-[92vw]">
         <div className="space-y-4 xl:col-span-3">
           <Skeleton className="h-4 w-56" />
           <Skeleton className="h-8 w-80" />
@@ -268,7 +268,7 @@ export default function VersionPage() {
     otherVersion.data?.artifacts.find((a) => a.kind === "glb")?.url ?? null;
 
   return (
-    <div className="anim-fade-in mx-auto grid max-w-7xl grid-cols-1 gap-5 p-6 lg:p-8 xl:grid-cols-5">
+    <div className="anim-fade-in mx-auto grid w-full max-w-7xl grid-cols-1 gap-5 p-6 lg:p-8 xl:grid-cols-5 2xl:max-w-[92vw]">
       {/* main column */}
       <div className="min-w-0 xl:col-span-3">
         <VersionHeader
