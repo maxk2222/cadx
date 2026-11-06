@@ -705,6 +705,7 @@ def _solve_cases(  # noqa: C901
                 spsolve_dofs=spsolve_dofs,
                 aniso=aniso,
                 solver_backend=solver_backend,
+                active=active,
             )
             _ph["reduce_s"] += time.monotonic() - _t_r
         preps[i] = (sig, F)

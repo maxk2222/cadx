@@ -17,7 +17,7 @@ from functools import lru_cache
 from typing import Any
 
 import numpy as np
-from scipy import sparse
+from scipy import ndimage, sparse
 from scipy.sparse import linalg as spla
 
 from cadx.cad import native as _native
@@ -618,7 +618,9 @@ class CaseSolve:
     `factor` the direct-solve callable (None above the spsolve_dofs cutoff),
     `M` the CG preconditioner. Multi-case verifies with per-case fixtures
     (or SIMP cases sharing one fixture) reuse one CaseSolve per distinct
-    `free` set instead of re-factorizing per case.
+    `free` set instead of re-factorizing per case. `deficient_dofs` are the
+    used DOFs on components lacking full rigid-mode restraint — a load
+    reaching them makes K_ff singular; see `_rigid_gaps`.
     """
 
     free: np.ndarray
@@ -626,6 +628,82 @@ class CaseSolve:
     factor: Callable[[np.ndarray], np.ndarray] | None
     M: Any
     warnings: list[str] = field(default_factory=list)
+    deficient_dofs: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
+    rigid_gap: str = ""
+
+
+def _rigid_gaps(
+    domain: VoxelDomain,
+    used_dofs: np.ndarray,
+    fixed_dofs: np.ndarray,
+    active: np.ndarray | None = None,
+) -> tuple[np.ndarray, str]:
+    """Used-DOF ids on components without full rigid-mode restraint.
+
+    K is block-diagonal across the active mask's 26-connected components
+    (cells sharing even a corner node couple through it), and each
+    component's own constrained DOFs must pin all 6 rigid modes — the rank
+    of its constraint matrix decides. A shortfall leaves a zero-energy
+    mode in K_ff: a load reaching it sends CG into a maxiter burn on a
+    singular system (~minutes), which previously surfaced only as
+    `converged=False` after the fact. `active` is the assembled element
+    set; without it, cells touching used nodes approximate it (a void
+    cell sandwiched between bodies can then over-bridge the graph).
+    """
+    en = domain.element_nodes()
+    used_nodes = np.unique(used_dofs // 3)
+    if active is not None:
+        act = np.zeros(domain.cell_count, dtype=bool)
+        act[np.asarray(active, dtype=np.int64)] = True
+    else:
+        act = np.isin(en, used_nodes).any(axis=1)
+    lab, ncomp = ndimage.label(act.reshape(domain.dims), structure=np.ones((3, 3, 3)))
+    if ncomp == 0:
+        return np.empty(0, dtype=np.int64), ""
+    node_comp = np.full(domain.node_count, -1, dtype=np.int64)
+    cell_ids = np.flatnonzero(act.ravel())
+    node_comp[en[cell_ids].ravel()] = np.repeat(lab.ravel()[cell_ids], 8)
+    sizes = np.bincount(lab.ravel(), minlength=ncomp + 1)
+    constr = used_dofs[np.isin(used_dofs, fixed_dofs)]
+    coords = domain.node_coords()
+    deficient: list[int] = []
+    detail: list[str] = []
+    for c in np.unique(node_comp[used_nodes]):
+        if c < 0:
+            continue
+        cdofs = constr[node_comp[constr // 3] == c]
+        ncell = int(sizes[int(c)])
+        if not cdofs.size:
+            deficient.append(int(c))
+            detail.append(f"{ncell}-cell component: no constraints (0/6 modes)")
+            continue
+        nodes = cdofs // 3
+        dirs = cdofs % 3
+        r = coords[nodes] - coords[nodes].mean(axis=0)
+        scale = float(np.abs(r).max(initial=0.0)) or 1.0
+        r = r / scale
+        B = np.zeros((6, cdofs.size))
+        B[dirs, np.arange(cdofs.size)] = 1.0
+        # rotation rows: b-th component of e_a x r at each constrained dof
+        rots = np.stack(
+            [
+                np.stack([np.zeros(cdofs.size), -r[:, 2], r[:, 1]]),
+                np.stack([r[:, 2], np.zeros(cdofs.size), -r[:, 0]]),
+                np.stack([-r[:, 1], r[:, 0], np.zeros(cdofs.size)]),
+            ]
+        )
+        B[3:6, :] = rots[:, dirs, np.arange(cdofs.size)]
+        # unit-norm rows keep the SVD rank tolerance meaningful at any n
+        norms = np.linalg.norm(B, axis=1)
+        B[norms > 0] /= norms[norms > 0, None]
+        miss = 6 - int(np.linalg.matrix_rank(B))
+        if miss:
+            deficient.append(int(c))
+            detail.append(f"{ncell}-cell component: {6 - miss}/6 rigid modes pinned")
+    if not deficient:
+        return np.empty(0, dtype=np.int64), ""
+    dd = used_dofs[np.isin(node_comp[used_dofs // 3], np.asarray(deficient))]
+    return dd, "; ".join(detail)
 
 
 def reduce_case(
@@ -637,6 +715,7 @@ def reduce_case(
     spsolve_dofs: int = 120_000,
     aniso: tuple[float, float] | None = None,
     solver_backend: str = "auto",
+    active: np.ndarray | None = None,
 ) -> CaseSolve:
     """Extract the reduced system Kf = K[free][:, free] for one constraint
     mask and prepare its solver (CHOLMOD/symmetric SuperLU under the cutoff,
@@ -664,16 +743,27 @@ def reduce_case(
         Kf = sparse.csr_matrix((0, 0))
         return CaseSolve(free=free, Kf=Kf, factor=None, M=None, warnings=warnings)
 
+    deficient_dofs, gap_detail = _rigid_gaps(domain, used_dofs, fixed_dofs, active)
+    if gap_detail:
+        warnings.append(f"rigid-mode check: {gap_detail}")
     Kf = K[free][:, free]
     factor: Callable[[np.ndarray], np.ndarray] | None = None
     M: Any = None
-    if free.size <= spsolve_dofs:
+    if not deficient_dofs.size and free.size <= spsolve_dofs:
         factor = factor_symmetric(Kf, backend=solver_backend)
         if factor is None:
             warnings.append("direct factorization failed; falling back to CG")
-    if factor is None:
+    if factor is None and not deficient_dofs.size:
         M = _elastic_preconditioner(Kf.tocsr(), domain, free, backend=solver_backend)
-    return CaseSolve(free=free, Kf=Kf, factor=factor, M=M, warnings=warnings)
+    return CaseSolve(
+        free=free,
+        Kf=Kf,
+        factor=factor,
+        M=M,
+        warnings=warnings,
+        deficient_dofs=deficient_dofs,
+        rigid_gap=gap_detail,
+    )
 
 
 def recover_elem_stress(
@@ -783,6 +873,27 @@ def solve_reduced(
     u = np.zeros(3 * domain.node_count)
     solver_name = "spsolve"
     converged = True
+    if ctx.deficient_dofs.size:
+        fmax = float(np.abs(F).max(initial=0.0))
+        if fmax > 0.0 and float(np.abs(F[ctx.deficient_dofs]).max(initial=0.0)) > 1e-9 * fmax:
+            # the load reaches an under-constrained component — K_ff is
+            # singular and CG would burn maxiter on it; verdict first
+            return FemSolution(
+                u=u,
+                elem_vm=np.zeros(domain.cell_count),
+                node_disp=np.zeros((domain.node_count, 3)),
+                max_vm_mpa=0.0,
+                max_disp_mm=0.0,
+                compliance_j=0.0,
+                dofs=int(free.size),
+                converged=False,
+                solver="skipped",
+                warnings=[
+                    *warnings,
+                    f"unconstrained rigid-body mode ({ctx.rigid_gap}) — "
+                    "case unsolvable, solve skipped",
+                ],
+            )
     if ctx.factor is not None:
         try:
             u[free] = np.asarray(ctx.factor(Ff), dtype=float)
@@ -881,7 +992,9 @@ def solve(
     K, edof, active = assemble(
         domain, elem_E, nu, mask, aniso=aniso, elem_class=elem_class, class_D=class_D
     )
-    ctx = reduce_case(domain, K, edof, fixed_nodes, spsolve_dofs=spsolve_dofs, aniso=aniso)
+    ctx = reduce_case(
+        domain, K, edof, fixed_nodes, spsolve_dofs=spsolve_dofs, aniso=aniso, active=active
+    )
     return solve_reduced(
         domain,
         ctx,
