@@ -1,0 +1,111 @@
+{
+  "name": "pressure_tank_autonomous",
+  "project": "eval:pressure-tank-auto",
+  "difficulty": 3,
+  "description": "Fully autonomous pressure-vessel FEM — closed domed tank with mounting feet; the prompt states the service context (6 bar internal air/water pressure, bolted at the feet) and the agent must derive the whole load model: the sealed INNER skin as the pressure surface (cavity region + pressure_mpa), the feet as fixed supports, declared in spec.load_cases; foot bolt holes in spec.features. fem declares NOTHING (use_parent_fallbacks).",
+  "settings": {
+    "gen_mode": "cad",
+    "min_wall_mm": 0.1
+  },
+  "stages": [
+    {
+      "id": "codegen",
+      "type": "generate",
+      "mode": "cad",
+      "timeout_s": 5400,
+      "options": {
+        "process": "fdm"
+      },
+      "prompt": "Closed pressure vessel / compressed-air receiver tank (steel, S235), parametric.\n\nFrame: tank axis along Z, bottom face on the XY plane (z = 0), centred in X and Y. mm.\n- Vertical cylinder body: outer dia 80 (r = 40), straight shell from z = 8 to z = 100.\n- Domed caps: bottom cap a shallow dome bulging z = 0..8 (outer surface), top cap a shallow dome z = 100..120 — total outer height exactly 120 (z = 0..120). Ellipsoidal or torispherical domes are both fine; keep the silhouette smooth.\n- Wall thickness ~3 mm EVERYWHERE (shell + domes) — the interior is a sealed cavity of roughly Ø74 inner shell and ~110 inner height.\n- 3 mounting feet welded at the bottom: vertical lugs ~18 wide × 6 thick × ~20 tall, spaced 120 deg around the base circle (r ~ 34), each with ONE dia-6.5 through-hole along Z centred in the lug (bolt holes, open top to bottom).\n- Optional blind nozzle boss on the top cap: solid cylindrical boss dia 24 × 6 tall centred on Z — NO bore, NO opening (the interior must stay completely sealed — a welded receiver; do not cut any hole into the shell or domes).\n- The result must be a single watertight VALID solid centred on the origin. The interior cavity is fully enclosed by the wall — check that no bore/cut bridges it.\n\nSERVICE CONTEXT — derive the structural model yourself: this is a welded-sealed compressed-air receiver holding ~6 bar INTERNAL pressure against the sealed inner skin (shell + both domes + everything facing the cavity). It is restrained by bolting through the three foot holes. YOU decide the load case(s), the fixed supports (the foot bolt holes), the pressure mechanism and region, and the magnitude — declare them in spec.load_cases. Also declare the foot bolt holes in spec.features (position, axis, diameter) so the interface is re-cuttable.",
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "spec_features_dropped",
+          "max": 0
+        },
+        {
+          "type": "bbox",
+          "dims": [
+            80,
+            80,
+            120
+          ],
+          "match": "match",
+          "tol_mm": 5
+        },
+        {
+          "type": "bodies",
+          "max": 1
+        },
+        {
+          "type": "volume",
+          "min_mm3": 60000,
+          "max_mm3": 300000
+        },
+        {
+          "type": "watertight",
+          "expect": true
+        },
+        {
+          "type": "verify_spec",
+          "expect": "PASS",
+          "ignore": [
+            "dfm",
+            "envelope_x",
+            "envelope_y"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fem",
+      "type": "fem",
+      "timeout_s": 1800,
+      "material": "steel",
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "fem_loadcases",
+          "min_cases": 1,
+          "source": "parent_spec",
+          "checks": [
+            {
+              "case": 0,
+              "mechanisms": [
+                "pressure_mpa"
+              ],
+              "fixed_at_axis": "-z",
+              "tol_mm": 12,
+              "warnings_absent": [
+                "no fixed region",
+                "resolved to zero",
+                "unsolvable",
+                "matched no cells",
+                "no exposed surface"
+              ],
+              "sf_min": 0.5,
+              "sf_max": 500
+            }
+          ]
+        },
+        {
+          "type": "fem",
+          "field": "sf",
+          "min": 0.5
+        }
+      ]
+    }
+  ]
+}
