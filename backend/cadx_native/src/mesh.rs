@@ -61,9 +61,18 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
-/// Möller–Trumbore: hit distance t>EPS_T, or None.
+/// Möller–Trumbore: hit distance t>t_min, or None. t_min mirrors the
+/// caller's convention (contains/scanline use strict EPS_T; ray_locs uses
+/// trimesh's `distance > -1e-6` forward test).
 #[inline]
-fn tri_hit(o: [f64; 3], d: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> Option<f64> {
+fn tri_hit(
+    o: [f64; 3],
+    d: [f64; 3],
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    t_min: f64,
+) -> Option<f64> {
     let e1 = sub(b, a);
     let e2 = sub(c, a);
     let p = cross(d, e2);
@@ -83,7 +92,7 @@ fn tri_hit(o: [f64; 3], d: [f64; 3], a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> O
         return None;
     }
     let t = dot(e2, q) * inv;
-    if t > EPS_T {
+    if t > t_min {
         Some(t)
     } else {
         None
@@ -211,7 +220,7 @@ impl Bvh {
     }
 
     /// All triangle hits along the ray as (t, tri) sorted by t.
-    fn ray_ts(&self, o: [f64; 3], d: [f64; 3]) -> Vec<(f64, u32)> {
+    fn ray_ts(&self, o: [f64; 3], d: [f64; 3], t_min: f64) -> Vec<(f64, u32)> {
         let mut out: Vec<(f64, u32)> = Vec::new();
         if self.nodes.is_empty() {
             return out;
@@ -235,7 +244,7 @@ impl Bvh {
                         self.verts[f[1] as usize],
                         self.verts[f[2] as usize],
                     );
-                    if let Some(tt) = tri_hit(o, d, a, b, c) {
+                    if let Some(tt) = tri_hit(o, d, a, b, c, t_min) {
                         out.push((tt, t));
                     }
                 }
@@ -281,6 +290,7 @@ impl Bvh {
                         self.verts[f[0] as usize],
                         self.verts[f[1] as usize],
                         self.verts[f[2] as usize],
+                        EPS_T,
                     )
                     .is_some()
                     {
@@ -313,8 +323,8 @@ impl Bvh {
         }
         let mut d = DIR_MAIN;
         for _ in 0..2 {
-            let hf = self.ray_ts(p, d).len();
-            let hb = self.ray_ts(p, [-d[0], -d[1], -d[2]]).len();
+            let hf = self.ray_ts(p, d, EPS_T).len();
+            let hb = self.ray_ts(p, [-d[0], -d[1], -d[2]], EPS_T).len();
             let (pf, pb) = (hf % 2 == 1, hb % 2 == 1);
             if pf == pb {
                 return pf;
@@ -422,9 +432,11 @@ impl MeshIndex {
         Ok(PyArray1::from_vec(py, out))
     }
 
-    /// trimesh.ray.intersects_location(multiple_hits=True): all hits,
-    /// returned as (locs (h,3), ray_idx (h,), tri_idx (h,)) sorted by
-    /// (ray_idx, t).
+    /// trimesh.ray.intersects_location(multiple_hits=True): hits UNIQUE
+    /// per location (intersects_id groups (locations, index_ray) via
+    /// unique_rows — shared-edge hits at identical positions collapse to
+    /// their first triangle). Returned as (locs (h,3), ray_idx (h,),
+    /// tri_idx (h,)) sorted by (ray_idx, t).
     #[pyo3(signature = (origins, dirs, threads=None))]
     fn ray_locs<'py>(
         &self,
@@ -450,7 +462,11 @@ impl MeshIndex {
             per_ray.resize_with(o2.len(), Vec::new);
             par_chunks(&mut per_ray, t, |chunk, off| {
                 for (i, v) in chunk.iter_mut().enumerate() {
-                    *v = bvh.ray_ts(o2[off + i], d2[off + i]);
+                    // trimesh forward test: distance = t*|d|^2 > -1e-6
+                    let dd = d2[off + i];
+                    let d2l = dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2];
+                    let t_min = -1e-6 / d2l.max(1e-30);
+                    *v = bvh.ray_ts(o2[off + i], dd, t_min);
                 }
             });
             per_ray
@@ -460,7 +476,19 @@ impl MeshIndex {
         let mut rids = Vec::with_capacity(total);
         let mut tids = Vec::with_capacity(total);
         for (r, hits) in per_ray.iter().enumerate() {
+            // collapse hits at coincident locations — the unique_rows
+            // convention merges on ~8 significant digits, so scale the
+            // cluster eps to the hit range (adjacent-triangle duplicates
+            // share t up to fp jitter)
+            let t_max = hits.last().map(|(t, _)| t.abs()).unwrap_or(0.0);
+            let eps_t = 1e-9 * t_max.max(1.0);
+            let mut prev = f64::NEG_INFINITY;
             for &(tt, tri) in hits {
+                if tt - prev < eps_t {
+                    prev = tt;
+                    continue;
+                }
+                prev = tt;
                 let p = [
                     o[r][0] + tt * d[r][0],
                     o[r][1] + tt * d[r][1],
@@ -471,7 +499,7 @@ impl MeshIndex {
                 tids.push(tri as i64);
             }
         }
-        let h = total;
+        let h = locs.len() / 3; // post-dedup count (total is the pre-dedup capacity hint)
         let locs_arr =
             PyArray2::from_owned_array(py, ndarray::Array2::from_shape_vec((h, 3), locs).unwrap());
         Ok((
@@ -557,7 +585,7 @@ fn scanline(
             // x[i]-x[i-1] < eps (previous ELEMENT, not last kept — a whole
             // cluster chain collapses onto its first hit, matching the
             // np.diff<eps convention in _scanline_contains)
-            let ts = bvh.ray_ts(o, d);
+            let ts = bvh.ray_ts(o, d, EPS_T);
             let mut hits: Vec<f64> = Vec::with_capacity(ts.len());
             let mut prev = f64::NEG_INFINITY;
             for (t, _) in ts {
