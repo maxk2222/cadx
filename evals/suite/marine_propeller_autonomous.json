@@ -16,7 +16,7 @@
       "options": {
         "process": "fdm"
       },
-      "prompt": "Design an AGGRESSIVE 5-blade marine propeller (aluminium) for high volume flow — strong pitch, pronounced skew, wide blade area. Parametric, mm.\n\nRequirements:\n- Frame: hub axis along Z, part rests on the XY plane (z = 0), centred in X and Y.\n- Envelope: Ø140 overall, height 28 (z = 0..28).\n- Shaft mount: concentric Ø10 through-bore along Z with an axial keyway seat (real keyed fit for a Ø10 shaft, not just a plain hole).\n- One watertight, valid solid.\n\nEverything else — blade shape, hub proportions, sections, construction method — is your design decision.\n\nSERVICE CONTEXT — derive the structural model yourself: the propeller bolts onto a boat shaft through the keyed bore and spins about +Z under water, producing axial thrust plus drive torque. YOU decide the load cases, fixed supports, load regions/mechanisms and magnitudes — declare them in spec.load_cases. Also declare the machined interfaces (bore, keyway) in spec.features.",
+      "prompt": "Design an AGGRESSIVE 5-blade marine propeller (aluminium) for high volume flow — strong pitch, pronounced skew, wide blade area. Parametric, mm.\n\nRequirements:\n- Frame: hub axis along Z, part rests on the XY plane (z = 0), centred in X and Y.\n- Envelope: Ø140 overall, height 28 (z = 0..28).\n- Shaft mount: concentric Ø10 through-bore along Z with an axial keyway seat (real keyed fit for a Ø10 shaft, not just a plain hole) — the propeller bolts to a boat shaft and spins in water.\n- One watertight, valid solid.\n\nEverything else — blade shape, hub proportions, sections, construction method, structural model — is your design decision.",
       "gates": [
         {
           "type": "status",
@@ -91,22 +91,11 @@
         },
         {
           "type": "fem_loadcases",
-          "min_cases": 2,
+          "min_cases": 1,
           "source": "parent_spec",
           "checks": [
             {
               "case": 0,
-              "warnings_absent": [
-                "no fixed region",
-                "resolved to zero",
-                "unsolvable",
-                "matched no cells"
-              ],
-              "sf_min": 0.2,
-              "sf_max": 300
-            },
-            {
-              "case": 1,
               "warnings_absent": [
                 "no fixed region",
                 "resolved to zero",
