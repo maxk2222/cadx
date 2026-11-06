@@ -168,7 +168,6 @@ export default function PartCard({
           <span className="shrink-0 text-[11px] text-faint/70">
             {synthetic ? versions.length : part.version_count}
           </span>
-          <span className="flex-1" />
           <SafeImg
             src={part.thumbnail_url}
             alt=""

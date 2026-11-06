@@ -257,14 +257,14 @@ export default function ProjectPage() {
 
   if (project.isLoading)
     return (
-      <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-5 p-6 lg:grid-cols-3 2xl:max-w-[92vw]">
-        <div className="flex flex-col gap-5 lg:col-span-2">
+      <div className="mx-auto grid w-full max-w-7xl grid-cols-1 gap-5 p-6 lg:p-8 xl:grid-cols-5 2xl:max-w-[92vw]">
+        <div className="flex flex-col gap-5 xl:col-span-3">
           <Skeleton className="h-4 w-40" />
           <Skeleton className="h-8 w-64" />
           <Skeleton className="h-72" />
           <Skeleton className="h-40" />
         </div>
-        <Skeleton className="h-72" />
+        <Skeleton className="h-72 xl:col-span-2" />
       </div>
     );
   if (!project.data)
@@ -279,6 +279,8 @@ export default function ProjectPage() {
     <PageShell
       title={p.name}
       subtitle={p.description}
+      maxW="wide"
+      className="2xl:max-w-[92vw]"
       crumbs={
         <Crumbs
           items={[
@@ -310,8 +312,8 @@ export default function ProjectPage() {
         </>
       }
     >
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
-      <div className="flex flex-col gap-5 lg:col-span-2">
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-5">
+      <div className="flex min-w-0 flex-col gap-5 xl:col-span-3">
 
         <ProjectShowcase
           versions={versions.data ?? []}
@@ -458,11 +460,13 @@ export default function ProjectPage() {
         </Card>
       </div>
 
-      <PartsSection
-        projectId={id}
-        versions={versions.data ?? []}
-        parts={parts.data ?? []}
-      />
+      <div className="min-w-0 xl:col-span-2">
+        <PartsSection
+          projectId={id}
+          versions={versions.data ?? []}
+          parts={parts.data ?? []}
+        />
+      </div>
 
       {editOpen && <ProjectFormModal project={p} onClose={() => setEditOpen(false)} />}
       <ConfirmModal
