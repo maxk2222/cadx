@@ -108,6 +108,8 @@ export default function ProjectsPage() {
     <PageShell
       title={t("title")}
       subtitle={t("count_sub", { count: projects.data?.length ?? 0 })}
+      maxW="wide"
+      className="2xl:max-w-[92vw]"
       actions={
         <>
           <div className="relative">
@@ -126,7 +128,7 @@ export default function ProjectsPage() {
       }
     >
       {projects.isLoading ? (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i} className="overflow-hidden rounded-lg border border-edge">
               <Skeleton className="h-32 rounded-none" />
@@ -146,7 +148,7 @@ export default function ProjectsPage() {
           hint={q ? undefined : t("empty_hint")}
         />
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           {filtered.map((p) => (
             <div
               key={p.id}
