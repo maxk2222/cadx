@@ -1476,3 +1476,23 @@ def test_covered_intrinsic_thread_still_skipped():
     report = verify_spec(spec, res, feature_findings=[])
     checks = _by_name(report)
     assert not any(n.startswith("feat_0_") for n in checks)
+
+
+def test_position_face_hint_uses_measured_midplane():
+    """robot-arm trap: 'opens on -z face' on a part spanning z=0..40 — the
+    mid-plane is the measured bbox centre (z=20), not the origin. A mouth
+    measured at z=10 sits on the -z half and must not FAIL the hint."""
+    spec = _spec(features=[_feat(name="mount", type="hole", position="opens on -z face")])
+    res = _res(features={"hole_groups": [_hole_group(id="h1", centers_xyz=[[-42.0, -32.0, 10.0]])]})
+    res["analysis"]["bbox_min"] = [-50.0, -40.0, 0.0]
+    res["analysis"]["bbox_max"] = [50.0, 40.0, 40.0]
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["feat_0_position"]["status"] == "PASS"
+    # a mouth measured at the opposite end still contradicts the claim
+    res_bad = _res(
+        features={"hole_groups": [_hole_group(id="h1", centers_xyz=[[-42.0, -32.0, 35.0]])]}
+    )
+    res_bad["analysis"]["bbox_min"] = [-50.0, -40.0, 0.0]
+    res_bad["analysis"]["bbox_max"] = [50.0, 40.0, 40.0]
+    report_bad = verify_spec(spec, res_bad, feature_findings=[])
+    assert _by_name(report_bad)["feat_0_position"]["status"] == "FAIL"

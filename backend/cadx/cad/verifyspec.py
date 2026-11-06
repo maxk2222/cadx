@@ -934,11 +934,16 @@ def _near_band_check(
 
 
 def _face_side_check(
-    faces: list[tuple[str, str]], centers: list[dict[str, float]]
+    faces: list[tuple[str, str]],
+    centers: list[dict[str, float]],
+    bounds: dict[str, tuple[float, float]],
 ) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
     """'+x face'/'front' side hints: the outermost measured centre must sit
-    on the declared side of the mid-plane. A mid-plane centre is ambiguous
-    (not wrong); missing coordinate axes stay UNVERIFIED."""
+    on the declared side of the mid-plane — where the mid-plane is the
+    measured bbox centre, not the origin (parts rest on z>=0). A centre at
+    the declared outer face also verifies (the mouth-on-face reading). A
+    mid-plane centre is ambiguous (not wrong); missing coordinate axes
+    stay UNVERIFIED."""
     violations: list[dict[str, Any]] = []
     verified = 0
     unverified: list[dict[str, Any]] = []
@@ -947,10 +952,20 @@ def _face_side_check(
         if not vals:
             unverified.append({"face": face, "axis": face[1]})
             continue
-        best = max(vals) if face[0] == "+" else min(vals)
-        if (face[0] == "+" and best > _POS_SIDE_EPS) or (face[0] == "-" and best < -_POS_SIDE_EPS):
+        plus = face[0] == "+"
+        best = max(vals) if plus else min(vals)
+        bnd = bounds.get(face[1])
+        if bnd is not None:
+            target = bnd[1] if plus else bnd[0]
+            if abs(best - target) <= _POS_TOL_MM:
+                verified += 1
+                continue
+            mid = (bnd[0] + bnd[1]) / 2
+        else:
+            mid = 0.0
+        if (plus and best > mid + _POS_SIDE_EPS) or (not plus and best < mid - _POS_SIDE_EPS):
             verified += 1
-        elif abs(best) <= _POS_SIDE_EPS:
+        elif abs(best - mid) <= _POS_SIDE_EPS:
             continue  # mid-plane centre — ambiguous, not wrong
         else:
             violations.append({"face": face, "measured_mm": round(best, 3)})
@@ -1064,7 +1079,7 @@ def _void_position_check(  # noqa: C901
     violations += w_viol
     verified += w_ver
     unverified += w_unverified
-    f_viol, f_ver, f_unverified = _face_side_check(faces, centers)
+    f_viol, f_ver, f_unverified = _face_side_check(faces, centers, bounds)
     violations += f_viol
     verified += f_ver
     unverified += f_unverified
