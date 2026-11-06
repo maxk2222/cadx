@@ -117,6 +117,10 @@ services:
       DATA_DIR: /data
       # bootstrap seed only — see api service; change it in the Settings UI
       MESH_BASE_URL: ${MESH_BASE_URL:-http://host.docker.internal:8765}
+      # agent jobs are mostly I/O-bound (LLM streaming, executor polls) —
+      # external providers must not be serialized by a low job cap; local
+      # sidecar backends stay capped via per-service io_slots in the clients.
+      CADX_AGENT_MAX_JOBS: ${CADX_AGENT_MAX_JOBS:-8}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

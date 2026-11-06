@@ -384,7 +384,12 @@ class AgentWorkerSettings:
     on_shutdown = worker_shutdown
     redis_settings = _redis()
     queue_name = "agent"
-    max_jobs = 4
+    # agent jobs are mostly I/O-bound (LLM streaming + executor polls), so a
+    # job slot waiting on an EXTERNAL provider costs no local resource —
+    # don't serialize those waits. Local sidecar backends stay protected by
+    # per-service io_slots inside the clients (agent/service_slots.py), not
+    # by a low job cap. Override via CADX_AGENT_MAX_JOBS.
+    max_jobs = int(os.environ.get("CADX_AGENT_MAX_JOBS") or 8)
     job_timeout = get_settings().agent_job_timeout_s
     max_tries = 1
 

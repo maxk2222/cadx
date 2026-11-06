@@ -178,12 +178,14 @@ class HttpMeshClient(MeshPort):
         stall_timeout_s: float = 300,
         min_free_mb: float = 0,
         hf_token: str = "",
+        io_slot: asyncio.Semaphore | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.stall_timeout_s = stall_timeout_s
         self.min_free_mb = min_free_mb
         self.hf_token = hf_token
+        self._io_slot = io_slot
 
     def _headers(self) -> dict[str, str]:
         """Per-request credentials for the sidecar — its middleware applies
@@ -226,6 +228,17 @@ class HttpMeshClient(MeshPort):
             )
 
     async def generate(
+        self,
+        req: MeshGenRequest,
+        on_progress: ProgressFn | None,
+        should_abort: Callable[[], Awaitable[bool]] | None = None,
+    ) -> MeshGenResult:
+        if self._io_slot is not None:
+            async with self._io_slot:
+                return await self._generate(req, on_progress, should_abort)
+        return await self._generate(req, on_progress, should_abort)
+
+    async def _generate(
         self,
         req: MeshGenRequest,
         on_progress: ProgressFn | None,
@@ -364,6 +377,18 @@ class HttpMeshClient(MeshPort):
         the model loads once instead of once per candidate."""
         if not variants:
             return []
+        if self._io_slot is not None:
+            async with self._io_slot:
+                return await self._generate_batch(req, variants, on_progress, should_abort)
+        return await self._generate_batch(req, variants, on_progress, should_abort)
+
+    async def _generate_batch(
+        self,
+        req: MeshGenRequest,
+        variants: list[MeshGenVariant],
+        on_progress: ProgressFn | None = None,
+        should_abort: Callable[[], Awaitable[bool]] | None = None,
+    ) -> list[MeshGenResult | None]:
         await self._check_memory_gate()
         params: dict[str, Any] = {
             "model": req.model,
@@ -551,10 +576,13 @@ def make_mesh_client(
     url = (base_url if base_url is not None else settings.mesh_base_url).strip()
     if not url:
         return None
+    from cadx.agent.service_slots import local_mesh_slot
+
     return HttpMeshClient(
         url,
         timeout_s=timeout_s or settings.mesh_timeout_s,
         stall_timeout_s=settings.mesh_stall_timeout_s,
         min_free_mb=float(getattr(settings, "mesh_min_free_mb", 0) or 0),
         hf_token=settings.hf_token.get_secret_value(),
+        io_slot=local_mesh_slot(),
     )

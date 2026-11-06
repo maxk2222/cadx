@@ -246,9 +246,11 @@ class LLMClient:
         extra_headers: dict[str, str] | None = None,
         caps: dict[str, ModelCaps] | None = None,
         caps_cb: Callable[[str, ModelCaps], Any] | None = None,
+        io_slot: asyncio.Semaphore | None = None,
     ) -> None:
         settings = runtime_settings or RuntimeSettings()
         self.runtime_settings = settings
+        self._io_slot = io_slot
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
         self.api_key = api_key if api_key is not None else settings.llm_api_key.get_secret_value()
         self.extra_headers = extra_headers or {}
@@ -639,6 +641,47 @@ class LLMClient:
         on_delta: Callable[[str], None] | None = None,
         extra_body: dict[str, Any] | None = None,
     ) -> LLMResponse:
+        # local-backend slot: serializes concurrent calls into the shared
+        # sidecar GPU. External providers get io_slot=None — their calls are
+        # remote I/O and must never queue behind a local cap.
+        if self._io_slot is None:
+            return await self._chat(
+                role,
+                messages,
+                json_schema=json_schema,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                tool_choice=tool_choice,
+                on_delta=on_delta,
+                extra_body=extra_body,
+            )
+        async with self._io_slot:
+            return await self._chat(
+                role,
+                messages,
+                json_schema=json_schema,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                tool_choice=tool_choice,
+                on_delta=on_delta,
+                extra_body=extra_body,
+            )
+
+    async def _chat(
+        self,
+        role: Role,
+        messages: list[dict[str, Any]],
+        *,
+        json_schema: type[BaseModel] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+        on_delta: Callable[[str], None] | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ) -> LLMResponse:
         model = self.models[role]
         await self._ensure_caps(role)
         eff_max = self._eff_max_tokens(role, model, messages, max_tokens)
@@ -842,6 +885,8 @@ def make_llm(
     """
     mode = backend or runtime.llm_backend
     if mode == "sidecar":
+        from cadx.agent.service_slots import local_llm_slot
+
         base = runtime.mesh_base_url.strip().rstrip("/")
         if not base:
             raise ValueError("local sidecar not configured")
@@ -864,5 +909,6 @@ def make_llm(
             extra_headers=headers,
             caps=caps,
             caps_cb=caps_cb,
+            io_slot=local_llm_slot(),
         )
     return LLMClient(runtime_settings=runtime, caps=caps, caps_cb=caps_cb)

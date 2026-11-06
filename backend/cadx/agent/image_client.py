@@ -89,10 +89,18 @@ class ImagePort:
 
 
 class HttpImageClient(ImagePort):
-    def __init__(self, base_url: str, *, timeout_s: float = 300, hf_token: str = "") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_s: float = 300,
+        hf_token: str = "",
+        io_slot: asyncio.Semaphore | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.hf_token = hf_token
+        self._io_slot = io_slot
 
     def _headers(self) -> dict[str, str]:
         """Per-request credentials for the sidecar — its middleware applies
@@ -123,6 +131,17 @@ class HttpImageClient(ImagePort):
             return []
 
     async def generate(
+        self,
+        req: ImageGenRequest,
+        on_progress: ProgressFn | None,
+        should_abort: Callable[[], Awaitable[bool]] | None = None,
+    ) -> ImageGenResult:
+        if self._io_slot is not None:
+            async with self._io_slot:
+                return await self._generate(req, on_progress, should_abort)
+        return await self._generate(req, on_progress, should_abort)
+
+    async def _generate(
         self,
         req: ImageGenRequest,
         on_progress: ProgressFn | None,
@@ -512,8 +531,11 @@ def make_image_client(
     url = (base_url if base_url is not None else settings.mesh_base_url).strip()
     if not url:
         return None
+    from cadx.agent.service_slots import local_image_slot
+
     return HttpImageClient(
         url,
         timeout_s=timeout_s or settings.image_timeout_s,
         hf_token=settings.hf_token.get_secret_value(),
+        io_slot=local_image_slot(),
     )
