@@ -152,6 +152,8 @@ class TopOptResult:
     #   "limit_cycle"        density field oscillated (move-cap streak, no
     #                        compliance progress) — not a converged design
     #   "degenerate"         solver divergence/exception mid-run
+    #   "plateau_regression" compliance settled far above the stage-local
+    #                        best — restored the best-seen design
     #   "budget_exhausted"   iteration budget spent without settling
     status: str = "converged"
     blueprint: np.ndarray | None = (
@@ -764,6 +766,38 @@ def _mechanism_guard(
     return streak, base, None
 
 
+# plateau-regression detection: a run that climbed to a compliance level
+# far above its own best and settled there is degenerating on a plateau —
+# the freeze-then-jump failure the spike guard misses because no single
+# iteration explodes (observed: froze at 1.4x best for a dozen iters, then
+# jumped to 2.1x and froze again until max_iter — a valid structure sat in
+# the history but the returned field was the degraded one). Minimization
+# should never sustain a level far above its recorded best; a stage-local
+# best (reset on volfrac/beta continuation) keeps the legitimate
+# ~2x stage-transition climb out of the comparison.
+_REG_STALL = 12  # iterations since the stage-local best before judging
+_REG_TAIL = 8  # window the sustained level is measured over
+_REG_FACTOR = 1.5  # every tail record above this multiple of the best
+
+
+def _regression_guard(
+    history: list[dict[str, Any]],
+    iteration: int,
+    reg_best: float | None,
+    reg_best_it: int,
+) -> bool:
+    """True when the run settled onto a compliance plateau far above its
+    stage-local best — sustained, not a transient: every record in the
+    trailing _REG_TAIL window sits above _REG_FACTOR * reg_best AND the
+    best itself is at least _REG_STALL iterations old."""
+    if reg_best is None or reg_best <= 0.0 or iteration - reg_best_it < _REG_STALL:
+        return False
+    tail = [r.get("compliance_mj") for r in history[-_REG_TAIL:]]
+    if len(tail) < _REG_TAIL or any(v is None for v in tail):
+        return False
+    return min(float(v) for v in tail) > _REG_FACTOR * reg_best
+
+
 def _windowed_compliance_improvement(history: list[dict[str, Any]], window: int) -> float | None:
     """Relative compliance improvement, (c_old - c_now)/c_old, over the last
     `window` history records AT THE CURRENT beta. A Heaviside continuation
@@ -1205,7 +1239,7 @@ def simp(  # noqa: C901
     it = 0
     stall = 0
     stop: str | None = (
-        None  # how the loop ended: None | cancelled | limit_cycle | degenerate | mechanism
+        None  # None | cancelled | limit_cycle | degenerate | mechanism | plateau_regression
     )
     move_streak = 0  # consecutive iterations with change saturated at the move cap
     move_sat_streak = 0  # O2 early detection: streak at >= _MOVE_SAT_FRAC of move
@@ -1213,6 +1247,11 @@ def simp(  # noqa: C901
     mech_streak = 0  # consecutive iterations of exploded (near-singular) compliance
     best_obj = float("inf")  # min objective seen — baseline for the best field
     x_best: np.ndarray | None = None  # blueprint at best_obj (mechanism salvage)
+    # stage-local best for the plateau-regression guard — reset on volfrac
+    # stage advance so the legitimate transition climb isn't a regression
+    reg_best: float | None = None
+    reg_best_it = 0
+    reg_x: np.ndarray | None = None
     beta_age = 0  # iterations spent on the current Heaviside sharpness level
     prev_objective: float | None = None
     prev_mask: np.ndarray | None = None  # thresholded design set, for flip count
@@ -1531,6 +1570,10 @@ def simp(  # noqa: C901
         if objective < best_obj:
             best_obj = objective
             x_best = x.copy()
+        if reg_best is None or objective < reg_best:
+            reg_best = objective
+            reg_best_it = it
+            reg_x = x.copy()
 
         # sensitivity w.r.t. physical density, then chain-rule back through
         # the filters to the blueprint variable x
@@ -1688,6 +1731,20 @@ def simp(  # noqa: C901
             )
             stop = "mechanism"
             break
+        # plateau regression: the field settled onto a compliance level far
+        # above its stage-local best — a degraded layout the returned
+        # blueprint would ship. Stop and restore the stage-local best.
+        if _regression_guard(history, it, reg_best, reg_best_it) and reg_x is not None:
+            warnings.append(
+                f"compliance plateaued {_REG_FACTOR:g}x above the stage best "
+                f"({min(r['compliance_mj'] for r in history[-_REG_TAIL:]):.1f} vs "
+                f"{reg_best:.1f} mJ) for {it - reg_best_it} iterations — the run "
+                "settled on a degraded layout, not a transient; restoring the "
+                "best recorded density. Retry with a different filter/threshold "
+                "or solver='mma'"
+            )
+            stop = "plateau_regression"
+            break
         # limit-cycle detection: change saturating the OC move cap for many
         # consecutive iterations means the density field bounces between
         # competing layouts rather than converging — surface it once so the
@@ -1829,6 +1886,7 @@ def simp(  # noqa: C901
                 volfrac_stage_age = 0
                 stall = 0
                 prev_objective = None
+                reg_best = None  # the new stage's climb isn't a regression
                 warnings.append(
                     f"volfrac continuation -> {_vol_now():g} at iteration {it}"
                     + (" (stage dwell elapsed without plateau)" if forced else " (stage plateau)")
@@ -1890,6 +1948,14 @@ def simp(  # noqa: C901
             x = x_best
             warnings_out.append(
                 f"restored the density field from the best iteration (compliance {best_obj:.1f} mJ)"
+            )
+        elif stop == "plateau_regression" and reg_x is not None:
+            # the degraded plateau is what the loop last produced — ship the
+            # stage-local best instead: a valid structure beats a worse one
+            x = reg_x
+            warnings_out.append(
+                f"restored the density field from the stage best iteration "
+                f"(compliance {reg_best:.1f} mJ)"
             )
     elif not converged:
         status = "budget_exhausted"
@@ -2141,6 +2207,11 @@ def _run_mma(  # noqa: C901
     mech_streak_box = [0]
     best_obj = [float("inf")]
     best_v: list[np.ndarray | None] = [None]
+    # plateau-regression guard — stage-local best (reset on beta restarts)
+    reg_stop = [False]
+    reg_best: list[float | None] = [None]
+    reg_best_it = [0]
+    reg_v: list[np.ndarray | None] = [None]
 
     def _unpack(v: np.ndarray) -> np.ndarray:
         xb = np.full(ncells, RHO_MIN)
@@ -2152,6 +2223,42 @@ def _run_mma(  # noqa: C901
             # evaluated design is symmetric before the filter sees it
             xb = symmetrize_fn(xb)
         return xb
+
+    def _eval_guards(obj_now: float) -> None:
+        """Divergence guards at eval end — raise ForcedStop when one fires;
+        nlopt has no per-evaluation status channel."""
+        mech_streak_box[0], mech_base, mech_should_stop = _mechanism_guard(
+            history, obj_now, it_box[0], mech_streak_box[0]
+        )
+        if mech_should_stop:
+            # mechanism detection — same signature as the OC loop: compliance
+            # exploding _MECH_FACTOR times over the recent window means the
+            # optimizer cut the load path and the stiffness solve went
+            # near-singular
+            ratio = obj_now / max(mech_base or 1e-9, 1e-9)
+            warnings.append(
+                f"compliance exploded {ratio:.0f}x over the recent window "
+                f"({mech_should_stop} spike) at evaluation {it_box[0]} — "
+                "the optimizer cut "
+                "the load path (near-singular solve); restoring the best "
+                "recorded design. Retry with a higher target_volume_fraction "
+                "or loadpath_corridor_mm"
+            )
+            mech_stop[0] = True
+            raise nlopt.ForcedStop()
+        # plateau regression — the run settled far above its stage-local
+        # best without any single-iteration spike for the mechanism guard
+        if _regression_guard(history, it_box[0], reg_best[0], reg_best_it[0]):
+            warnings.append(
+                f"compliance plateaued {_REG_FACTOR:g}x above the stage best "
+                f"({min(r['compliance_mj'] for r in history[-_REG_TAIL:]):.1f} vs "
+                f"{reg_best[0]:.1f} mJ) for {it_box[0] - reg_best_it[0]} evaluations "
+                "— the run settled on a degraded layout; restoring the best "
+                "recorded design. Retry with a different filter/threshold or "
+                "solver='oc'"
+            )
+            reg_stop[0] = True
+            raise nlopt.ForcedStop()
 
     def _ev(v: np.ndarray):
         """Evaluate the blueprint under every eta realization.
@@ -2172,6 +2279,10 @@ def _run_mma(  # noqa: C901
         if obj_now < best_obj[0]:
             best_obj[0] = obj_now
             best_v[0] = np.asarray(v, dtype=float).copy()
+        if reg_best[0] is None or obj_now < reg_best[0]:
+            reg_best[0] = obj_now
+            reg_best_it[0] = it_box[0]
+            reg_v[0] = np.asarray(v, dtype=float).copy()
         # the enforced volume is the dilated realization's — computed via the
         # projection chain (no extra FEM solve needed)
         p_vol = project_fn(xb, eta_vol)[1]
@@ -2248,26 +2359,7 @@ def _run_mma(  # noqa: C901
         cache.update(v=np.asarray(v, dtype=float).copy(), evs=evs, xb=xb)
         if cancelled and cancelled():
             raise nlopt.ForcedStop()
-        # mechanism detection — same signature as the OC loop: compliance
-        # exploding _MECH_FACTOR times over the recent window means the
-        # optimizer cut the load path and the stiffness solve went
-        # near-singular. nlopt has no per-evaluation status channel, so stop
-        # through ForcedStop and let the driver restore the best-seen design
-        mech_streak_box[0], mech_base, mech_should_stop = _mechanism_guard(
-            history, obj_now, it_box[0], mech_streak_box[0]
-        )
-        if mech_should_stop:
-            ratio = obj_now / max(mech_base or 1e-9, 1e-9)
-            warnings.append(
-                f"compliance exploded {ratio:.0f}x over the recent window "
-                f"({mech_should_stop} spike) at evaluation {it_box[0]} — "
-                "the optimizer cut "
-                "the load path (near-singular solve); restoring the best "
-                "recorded design. Retry with a higher target_volume_fraction "
-                "or loadpath_corridor_mm"
-            )
-            mech_stop[0] = True
-            raise nlopt.ForcedStop()
+        _eval_guards(obj_now)
         return evs, xb
 
     # ---- objective ------------------------------------------------------
@@ -2437,6 +2529,14 @@ def _run_mma(  # noqa: C901
                 if best_v[0] is not None:
                     v = best_v[0]
                 mma_status = "mechanism"
+            elif reg_stop[0]:
+                warnings.append(
+                    f"plateau-regression stop after {it_box[0]} MMA evaluations — "
+                    f"restoring the design at {reg_best[0]:.1f} mJ"
+                )
+                if reg_v[0] is not None:
+                    v = reg_v[0]
+                mma_status = "plateau_regression"
             else:
                 warnings.append(f"cancelled after {it_box[0]} MMA evaluations")
             break
@@ -2473,6 +2573,7 @@ def _run_mma(  # noqa: C901
         if heaviside and beta_cur < params.beta_max:
             beta_cur = min(beta_cur * 2.0, params.beta_max)
             set_beta(beta_cur)
+            reg_best[0] = None  # the sharper beta's climb isn't a regression
             warnings.append(f"beta continuation -> {beta_cur:g} (mma restart {restart + 1})")
             restart += 1
             if restart > 4:

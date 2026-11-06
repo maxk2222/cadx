@@ -3347,6 +3347,13 @@ class ToolSession:
                 "loadpath_corridor_mm, or tighter keep regions around the "
                 "load path"
             )
+        if status == "plateau_regression":
+            recovery.append(
+                "plateau_regression — the run settled far above its own "
+                "best compliance (best design was restored); retry with a "
+                "different filter/threshold or the other solver "
+                "(oc <-> mma)"
+            )
         if status == "infeasible_target":
             recovery.append(
                 "infeasible_target — the passive floor already exceeds "

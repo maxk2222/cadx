@@ -1378,3 +1378,38 @@ async def test_topopt_run_tool_surfaces_mechanism_hint() -> None:
     out = await session.execute("topopt_run", {"load_cases": [{"name": "c"}]})
     hints = out.get("recovery_hints") or []
     assert any("mechanism" in h for h in hints)
+
+
+def _hist(compliances: list[float]) -> list[dict]:
+    return [
+        {"iteration": i + 1, "compliance_mj": c, "volfrac": 0.25, "change": 0.001}
+        for i, c in enumerate(compliances)
+    ]
+
+
+def test_regression_guard_fires_on_degraded_plateau():
+    """The r3 failure shape: best at 1435, freeze at 2076 (within 1.5x —
+    silent), then a jump to 3078 sustained — the guard fires and the
+    caller restores the stage-best design."""
+    from cadx.cad.fem.topopt import _regression_guard
+
+    hist = _hist([2000.0, 1700.0, 1435.0] + [2076.0] * 10)
+    # best_it=2 (iter 3), now at iter 13 — stall 10 < _REG_STALL → silent
+    assert _regression_guard(hist, 13, 1435.0, 3) is False
+    # the 2076 plateau is within 1.5x of the best — not a regression
+    hist += _hist([2076.0] * 10)
+    assert _regression_guard(hist, 23, 1435.0, 3) is False
+    # jump to 3078 (> 2152.5) sustained 8 iters → fires
+    hist += _hist([3078.0] * 8)
+    assert _regression_guard(hist, 31, 1435.0, 3) is True
+
+
+def test_regression_guard_ignores_healthy_run():
+    """Compliance near/under the best never trips it — minimization
+    jitter around the optimum is not a regression."""
+    from cadx.cad.fem.topopt import _regression_guard
+
+    hist = _hist([1000.0, 800.0, 640.0] + [645.0, 642.0, 641.0] * 4)
+    assert _regression_guard(hist, 15, 640.0, 3) is False
+    # and with no best recorded it cannot fire at all
+    assert _regression_guard(hist, 15, None, 0) is False
