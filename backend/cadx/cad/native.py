@@ -163,13 +163,16 @@ _ASM_CACHE: dict[int, Any] = {}
 def assembler_for(iK: Any, jK: Any, ndofs: int) -> Any | None:
     """Assembler for a COO (iK,jK) pattern — cached keyed on the array
     identity, matching the `ij=` cache contract in solver.assemble (the
-    same ndarray objects are reused across iterations)."""
+    same ndarray objects are reused across iterations). The cache holds a
+    reference to the key arrays so their ids cannot be recycled by a later
+    allocation — id-keyed maps without that pin can silently alias a
+    DIFFERENT pattern."""
     if _nx is None:
         return None
     key = (id(iK), id(jK), int(ndofs))
-    asm = _ASM_CACHE.get(key)
-    if asm is not None:
-        return asm
+    entry = _ASM_CACHE.get(key)
+    if entry is not None and entry[0] is iK and entry[1] is jK:
+        return entry[2]
     try:
         import numpy as np
 
@@ -181,7 +184,7 @@ def assembler_for(iK: Any, jK: Any, ndofs: int) -> Any | None:
         # bound the cache — patterns live as long as their ij arrays
         if len(_ASM_CACHE) > 32:
             _ASM_CACHE.clear()
-        _ASM_CACHE[key] = asm
+        _ASM_CACHE[key] = (iK, jK, asm)
         return asm
     except Exception:
         return None
