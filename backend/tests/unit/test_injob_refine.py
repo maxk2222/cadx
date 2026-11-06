@@ -888,6 +888,45 @@ def test_lift_chosen_run_metrics_respects_existing_verdicts():
     assert topopt["verification"]["sf_verified"] == 99.0
 
 
+def test_lift_chosen_run_metrics_falls_back_to_refine_parent():
+    """A chosen refine run reports only its finishing SF — volfrac and
+    load-path evidence live on the run it refined (same topology). The
+    lift must chain `params.refine_of` so the flat block inherits them."""
+    from cadx.agent.worker_jobs import _lift_chosen_run_metrics
+
+    runs = [
+        {
+            "index": 0,
+            "worst_sf": 10.62,
+            "achieved": 0.25,
+            "load_path_ok": True,
+            "chosen": False,
+        },
+        {
+            "index": 1,
+            "worst_sf": 10.25,
+            "achieved": 0.2494,
+            "load_path_ok": True,
+            "iterations": 24,
+            "chosen": False,
+        },
+        {
+            "index": 2,
+            "worst_sf": 12.25,
+            "achieved": None,
+            "load_path_ok": None,
+            "params": {"refine_of": 1},
+            "chosen": True,
+        },
+    ]
+    topopt: dict = {}
+    _lift_chosen_run_metrics(topopt, runs)
+    assert topopt["sf_verified"] == 12.25  # chosen's own finishing SF wins
+    assert topopt["volfrac_achieved"] == 0.2494  # inherited from refine_of parent
+    assert topopt["load_path_ok"] is True
+    assert topopt["iterations"] == 24
+
+
 def test_lift_chosen_run_metrics_no_chosen_noop():
     from cadx.agent.worker_jobs import _lift_chosen_run_metrics
 

@@ -1403,11 +1403,27 @@ def _lift_chosen_run_metrics(topopt: dict[str, Any], agent_runs: list[dict[str, 
     chosen = next((r for r in agent_runs if isinstance(r, dict) and r.get("chosen")), None)
     if not chosen:
         return
+    # a committed `refine_of` run records only its finishing report — the
+    # structural metrics (volfrac_achieved, load_path_ok, extract) live on
+    # the run it refined, whose topology it shares; chain it as fallback so
+    # the flat block inherits that evidence
+    sources = [chosen]
+    ref = (chosen.get("params") or {}).get("refine_of")
+    if isinstance(ref, int):
+        sources += [r for r in agent_runs if isinstance(r, dict) and r.get("index") == ref]
+
+    def _first(key: str) -> Any:
+        for s in sources:
+            v = s.get(key)
+            if v is not None:
+                return v
+        return None
+
     ver = chosen.get("verification") or {}
     if topopt.get("sf_verified") is None:
         topopt["sf_verified"] = ver.get("sf_verified")
         if topopt["sf_verified"] is None:
-            topopt["sf_verified"] = chosen.get("worst_sf")
+            topopt["sf_verified"] = _first("worst_sf")
     for src, dst in (
         ("sf_export", "sf_export"),
         ("sf_mask", "sf_mask"),
@@ -1423,8 +1439,8 @@ def _lift_chosen_run_metrics(topopt: dict[str, Any], agent_runs: list[dict[str, 
         ("load_path_ok", "load_path_ok"),
         ("extract", "extract"),
     ):
-        if topopt.get(dst) is None and chosen.get(src) is not None:
-            topopt[dst] = chosen[src]
+        if topopt.get(dst) is None and _first(src) is not None:
+            topopt[dst] = _first(src)
     if ver and not isinstance(topopt.get("verification"), dict):
         topopt["verification"] = ver
 
@@ -2222,9 +2238,17 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         version.resolved_mode = parent.resolved_mode
         version.spec = parent.spec
         version.fem = fem or None
+        # carry the parent's topopt block into the refined child — the
+        # refine task's own mesh has no structural metrics, so without the
+        # merge the shipped artifact loses sf_verified/volfrac evidence
+        result_mesh = result.get("mesh") or {}
+        parent_top = (parent.mesh or {}).get("topopt") or {}
+        result_top = result_mesh.get("topopt") or {}
+        if parent_top or result_top:
+            result_mesh = {**result_mesh, "topopt": {**parent_top, **result_top}}
         version.mesh = _json_safe(
             {
-                **(result.get("mesh") or {}),
+                **result_mesh,
                 "refine": refine_report,
                 "refined_from": str(parent.id),
             }
