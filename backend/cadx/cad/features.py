@@ -29,6 +29,7 @@ from OCP.gp import gp_Pnt, gp_Pnt2d, gp_Vec
 from OCP.TopAbs import TopAbs_Orientation, TopAbs_State
 from pydantic import BaseModel, Field
 
+from cadx.cad import native as _native
 from cadx.cad.analysis import _FACET_FACE_CAP
 from cadx.logging import get_logger
 
@@ -465,6 +466,24 @@ def _unit(v: list[float]) -> list[float]:
     return [c / n for c in v]
 
 
+def _mesh_contains(mesh: Any, pts: Any) -> Any:
+    """Native-first point containment — the Rust BVH answers the same
+    bidirectional-parity query trimesh does (~50 µs/pt → ~1 µs/pt); the
+    adapter returns None when the module/kind is off or input is bad."""
+    out = _native.contains(mesh, pts)
+    return mesh.contains(pts) if out is None else out
+
+
+def _mesh_ray_any(mesh: Any, origins: Any, dirs: Any) -> Any:
+    out = _native.ray_any(mesh, origins, dirs)
+    return mesh.ray.intersects_any(origins, dirs) if out is None else out
+
+
+def _mesh_ray_locs(mesh: Any, origins: Any, dirs: Any) -> Any:
+    out = _native.ray_locs(mesh, origins, dirs)
+    return mesh.ray.intersects_location(origins, dirs) if out is None else out
+
+
 def _mesh_contains_fn(mesh: Any):
     """Vectorised point-containment over the analysis tessellation.
 
@@ -477,7 +496,7 @@ def _mesh_contains_fn(mesh: Any):
     def contains(pts: list[list[float]]):
         try:
             arr = np.asarray(pts)
-            return np.asarray(_qt("contains", len(arr), mesh.contains, arr), dtype=bool)
+            return np.asarray(_qt("contains", len(arr), _mesh_contains, mesh, arr), dtype=bool)
         except Exception:
             return None
 
@@ -663,7 +682,7 @@ def _ray_tunnel(mesh, center: list[float], axis: int, r: float) -> bool:
         origins[k, axis] = mn[axis] - 1.0
     dirs = np.zeros((len(offs), 3))
     dirs[:, axis] = 1.0
-    hits = _qt("ray_any", len(origins), mesh.ray.intersects_any, origins, dirs)
+    hits = _qt("ray_any", len(origins), _mesh_ray_any, mesh, origins, dirs)
     return int((~np.asarray(hits)).sum()) >= 3
 
 
@@ -698,7 +717,7 @@ def _bore_open_local(mesh, center: list[float], axis: int, r: float, vspan: floa
             pts[:, k + 1, a1] += o1
             pts[:, k + 1, a2] += o2
         inside = np.asarray(
-            _qt("contains", pts.size // 3, mesh.contains, pts.reshape(-1, 3))
+            _qt("contains", pts.size // 3, _mesh_contains, mesh, pts.reshape(-1, 3))
         ).reshape(len(ts), 5)
         for row in inside:
             ring_in = bool(row[1:].any())
@@ -750,7 +769,8 @@ def _bore_fit_diameter(
         locs, ray_ids, _ = _qt(
             "ray_locs",
             len(origins),
-            mesh.ray.intersects_location,
+            _mesh_ray_locs,
+            mesh,
             origins,
             np.tile(d, (len(origins), 1)),
         )
@@ -846,7 +866,7 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
         direction = np.zeros(3)
         direction[axis] = 1.0
         directions = np.tile(direction, (len(origins), 1))
-        hits_any = _qt("ray_any", len(origins), mesh.ray.intersects_any, origins, directions)
+        hits_any = _qt("ray_any", len(origins), _mesh_ray_any, mesh, origins, directions)
         hits = hits_any.reshape(uu.shape)
         # a tunnel is a zero-hit ray INSIDE the part's projected footprint:
         # rays that miss the silhouette entirely are not holes. The footprint
@@ -926,7 +946,7 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
             down = np.zeros(3)
             down[axis] = -1.0
             locs, ray_ids, _ = _qt(
-                "ray_locs", 8, mesh.ray.intersects_location, ring, np.tile(down, (8, 1))
+                "ray_locs", 8, _mesh_ray_locs, mesh, ring, np.tile(down, (8, 1))
             )
             # first surface each downward ray meets = its highest hit
             first_hit = np.array([locs[ray_ids == r][:, axis].max() for r in np.unique(ray_ids)])

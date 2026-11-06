@@ -18,6 +18,7 @@ import numpy as np
 import trimesh
 from scipy import ndimage
 
+from cadx.cad import native as _native
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -217,6 +218,28 @@ def snapped_pitch(
     return float(p_snap), None
 
 
+def _contains_any(mesh: trimesh.Trimesh, pts: np.ndarray) -> np.ndarray:
+    """Native-first batched containment; identical trimesh fallback."""
+    out = _native.contains(mesh, pts)
+    return np.asarray(mesh.contains(pts)) if out is None else out
+
+
+def _scanline_any(
+    mesh: trimesh.Trimesh,
+    origin: np.ndarray,
+    n_pts: tuple[int, int, int],
+    pitch: float,
+    offset: float,
+) -> np.ndarray | None:
+    """Native scanline fill first (one kernel pass over the lattice);
+    falls back to the trimesh-based parity implementation on miss."""
+    out = _native.scanline_fill(mesh, origin, n_pts, pitch, offset)
+    if out is not None:
+        _vpath("native")
+        return np.asarray(out, dtype=bool)
+    return _scanline_contains(mesh, origin, n_pts, pitch, offset=offset)
+
+
 def _scanline_contains(
     mesh: trimesh.Trimesh,
     origin: np.ndarray,
@@ -330,7 +353,7 @@ def _fill_grid(
             m = m.copy()
             m.merge_vertices(merge_norm=True)  # split STL vertices -> watertight
         if m.is_watertight:
-            scan = _vt("scanline", _scanline_contains, m, origin, dims, pitch, offset=0.5)
+            scan = _vt("scanline", _scanline_any, m, origin, dims, pitch, 0.5)
             if scan is not None and scan.any():
                 _vpath("scanline")
                 return scan.reshape(dims)
@@ -350,7 +373,7 @@ def _fill_grid(
             out = np.zeros(len(centers), dtype=bool)
             _t_c = time.monotonic()
             for s in range(0, len(centers), chunk):
-                out[s : s + chunk] = np.asarray(m.contains(centers[s : s + chunk]))
+                out[s : s + chunk] = np.asarray(_contains_any(m, centers[s : s + chunk]))
             p: dict | None = getattr(_VPROF, "cur", None)
             if p is not None:
                 p["contains"] = p.get("contains", 0.0) + (time.monotonic() - _t_c)
@@ -428,7 +451,7 @@ def _coverage_field(
             out = np.zeros(len(query), dtype=bool)
             _t_c = time.monotonic()
             for s0 in range(0, len(query), chunk):
-                out[s0 : s0 + chunk] = np.asarray(m.contains(query[s0 : s0 + chunk]))
+                out[s0 : s0 + chunk] = np.asarray(_contains_any(m, query[s0 : s0 + chunk]))
             p: dict | None = getattr(_VPROF, "cur", None)
             if p is not None:
                 p["contains"] = p.get("contains", 0.0) + (time.monotonic() - _t_c)
@@ -438,7 +461,7 @@ def _coverage_field(
         # one ray per line instead of one per node (contains() fallback for
         # meshes the scanline can't classify)
         node_scan = _vt(
-            "scanline", _scanline_contains, m, origin, (nx1, ny1, nz1), pitch, offset=0.0
+            "scanline", _scanline_any, m, origin, (nx1, ny1, nz1), pitch, 0.0
         )
         node_in = (
             node_scan.reshape(nx1, ny1, nz1)
