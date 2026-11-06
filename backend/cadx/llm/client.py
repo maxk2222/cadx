@@ -753,8 +753,10 @@ class LLMClient:
         if json_schema is not None and text and not tool_calls:
             try:
                 parsed = parse_model(text, json_schema)
-            except LLMFormatError:
-                # one re-ask with the validation error
+            except LLMFormatError as fmt_err:
+                # one re-ask with the validation error — naming the concrete
+                # parse failure lets the model target the fix instead of
+                # regenerating (and often re-breaking) the same long string
                 retry_messages = [
                     *messages,
                     {"role": "assistant", "content": text},
@@ -762,7 +764,9 @@ class LLMClient:
                         "role": "user",
                         "content": (
                             "Your reply could not be parsed as the required JSON schema. "
-                            "Return ONLY the corrected JSON object, no markdown, no text."
+                            f"Parse error: {fmt_err}. "
+                            "Fix ONLY the malformed part and return the corrected "
+                            "JSON object — no markdown, no text."
                         ),
                     },
                 ]

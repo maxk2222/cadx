@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -29,11 +30,21 @@ def extract_json(text: str) -> dict:
     end = cleaned.rfind("}")
     if start == -1 or end == -1 or end <= start:
         raise LLMFormatError(f"no JSON object found in response ({len(text)} chars)")
+    raw = cleaned[start : end + 1]
     try:
-        data: dict = json.loads(cleaned[start : end + 1])
+        data: dict = json.loads(raw)
         return data
-    except json.JSONDecodeError as e:
-        raise LLMFormatError(f"invalid JSON: {e}") from e
+    except json.JSONDecodeError:
+        # lenient pass: trailing commas before }/] and stray control chars are
+        # the two most common LLM JSON glitches — both repairs are applied only
+        # after the strict parse failed, never to valid input
+        repaired = re.sub(r",(\s*[}\]])", r"\1", raw)
+        repaired = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", repaired)
+        try:
+            data2: dict = json.loads(repaired)
+            return data2
+        except json.JSONDecodeError as e:
+            raise LLMFormatError(f"invalid JSON: {e}") from e
 
 
 def parse_model(text: str, model: type[T]) -> T:
