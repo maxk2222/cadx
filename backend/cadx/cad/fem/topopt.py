@@ -23,12 +23,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
-from scipy import ndimage, sparse
+from scipy import sparse
 from scipy.sparse import linalg as spla
 from scipy.spatial import cKDTree
 
 from cadx.cad.fem.solver import _ke_unit, assemble, element_dofs
-from cadx.cad.fem.voxelize import VoxelDomain
+from cadx.cad.fem.voxelize import VoxelDomain, _sealed_pocket_mask
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -184,13 +184,6 @@ def _heaviside(x: np.ndarray, beta: float, eta: float = _ETA) -> np.ndarray:
 def _heaviside_d(x: np.ndarray, beta: float, eta: float = _ETA) -> np.ndarray:
     den = math.tanh(beta * eta) + math.tanh(beta * (1.0 - eta))
     return beta * (1.0 - np.tanh(beta * (x - eta)) ** 2) / den
-
-
-def _sealed_pocket_mask(material: np.ndarray) -> np.ndarray:
-    """Cells inside 6-connected empty components that do not reach the domain edge."""
-    mask = np.asarray(material, dtype=bool)
-    filled = ndimage.binary_fill_holes(mask, structure=ndimage.generate_binary_structure(3, 1))
-    return filled & ~mask
 
 
 def _detect_new_void_pins(

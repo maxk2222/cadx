@@ -44,11 +44,16 @@ Rules:
   selects a solid column and misses the ring. NEVER use `points` — it needs
   painted coordinates from the GUI and resolves to nothing in a text
   prompt. A tip load SPREAD over the last section is `area` with `x_range`
-  (e.g. `[45, 60]`).
+  (e.g. `[45, 60]`). INTERNAL PRESSURE (tanks, vessels, pipes): use
+  `{"kind": "cavity"}` + `pressure_mpa` — the region resolves the sealed
+  interior skin and the load acts as blow-out on every exposed face; it
+  resolves to NOTHING when the cavity reaches outside (open neck = open
+  vessel = no pressure — that is correct physics, not a bug). Walls need
+  ≥2× the voxel pitch to hold the seal.
 - Load fields: `force_n` [N] vector; `normal_force_n` [N] for a force
   acting ORTHOGONAL to the region's surface (direction follows the surface
   normal — cleaner than guessing a force_n vector on tilted/curved faces);
-  `pressure_mpa` on face regions;
+  `pressure_mpa` on face/`cavity` regions;
   `bearing_n` + `bearing_dir` for shaft/bolt loads on a bore WALL;
   `preload_n` for bolt pretension (along the bore axis); `moment_nm` [N·m]
   pure couple — RIGHT-HAND RULE: the vector is the rotation axis, +mz twists

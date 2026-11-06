@@ -62,11 +62,10 @@ from cadx.cad.fem.topopt import (
     _CaseCtx,
     _mechanism_guard,
     _prepare_solve,
-    _sealed_pocket_mask,
     _solve_u,
     _windowed_compliance_improvement,
 )
-from cadx.cad.fem.voxelize import VoxelDomain
+from cadx.cad.fem.voxelize import VoxelDomain, _sealed_pocket_mask
 from cadx.logging import get_logger
 
 log = get_logger(__name__)

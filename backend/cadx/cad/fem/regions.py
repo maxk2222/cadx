@@ -44,7 +44,7 @@ import numpy as np
 from scipy import ndimage
 
 from cadx.cad.fem.anchors3d import is_fastener_anchor
-from cadx.cad.fem.voxelize import FACE_CORNERS, VoxelDomain, shift_mask
+from cadx.cad.fem.voxelize import FACE_CORNERS, VoxelDomain, _sealed_pocket_mask, shift_mask
 from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
 from cadx.logging import get_logger
 
@@ -914,6 +914,18 @@ def region_cell_mask(  # noqa: C901
             radius,
             z_range=region.z_range or None,
         )
+    if kind == "cavity":
+        # pressure-vessel inner skin: solid cells 6-adjacent to a SEALED
+        # interior void. An open neck/outlet floods the flood-fill so the
+        # mask is empty — honest zero-cell + warning downstream, matching
+        # the physics (you cannot pressurize an open vessel).
+        sealed = _sealed_pocket_mask(domain.solid)
+        if not sealed.any():
+            return np.zeros(domain.solid.shape, dtype=bool)
+        wall = ndimage.binary_dilation(
+            sealed, structure=ndimage.generate_binary_structure(3, 1)
+        ) & domain.solid
+        return _z_clip(domain, region, wall)
     if kind == "box":
         edge = region.diameter_mm or 4 * region.margin_mm
         return _box_cells(domain, region.center, edge)
@@ -1894,6 +1906,16 @@ def resolve_case_dofs(  # noqa: C901
             elif r.kind == "all":
                 # pressure on the whole part = hydrostatic squeeze: every
                 # exposed face gets -p along its own outward normal
+                for ax in ("+x", "-x", "+y", "-y", "+z", "-z"):
+                    ai, sgn = _axis_parts(ax)
+                    v = np.zeros(3)
+                    v[ai] = float(sgn)
+                    dirs.append((ax, v))
+            elif r.kind == "cavity":
+                # internal pressure on the sealed-void skin: every face the
+                # selected wall cells expose to the cavity gets -p along
+                # ITS outward normal — the same per-face sweep as `all`,
+                # restricted to the inner skin (blow-out into the wall).
                 for ax in ("+x", "-x", "+y", "-y", "+z", "-z"):
                     ai, sgn = _axis_parts(ax)
                     v = np.zeros(3)

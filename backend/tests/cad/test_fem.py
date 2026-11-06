@@ -1112,3 +1112,62 @@ def test_anchor_entry_warnings_flags_empty_entry() -> None:
 
     # non-fastener + unsigned axes are skipped
     assert anchor_entry_warnings(dom, [{"kind": "dimple", "axis": "-z", "pos": [10, 0, 85], "dia": 4}]) == []
+
+
+def _sealed_tank_mesh() -> trimesh.Trimesh:
+    outer = trimesh.creation.box(extents=[20.0, 20.0, 20.0])
+    inner = trimesh.creation.box(extents=[14.0, 14.0, 14.0])
+    m = outer.difference(inner)
+    m.apply_translation([0.0, 0.0, 10.0])
+    return m
+
+
+def test_cavity_region_selects_only_inner_skin() -> None:
+    from cadx.cad.fem.regions import anchor_entry_warnings  # noqa: F401
+
+    dom = voxelize(_sealed_tank_mesh(), 1.0, 300_000)
+    cells = region_cell_mask(dom, RegionSpec(kind="cavity"))
+    assert 0 < int(cells.sum()) < int(dom.solid.sum())
+    # every selected cell must touch a sealed void on at least one face —
+    # no purely exterior skin may leak into the mask
+    sealed = (dom.solid == 0)
+    from scipy import ndimage as ndi
+    pocket = ndi.binary_fill_holes(dom.solid, structure=ndi.generate_binary_structure(3, 1)) & sealed
+    near = ndi.binary_dilation(pocket, structure=ndi.generate_binary_structure(3, 1))
+    assert not (cells & ~near).any()
+    # an open vessel floods the fill — zero cells, honest warning
+    open_m = trimesh.creation.box(extents=[20, 20, 20]).difference(
+        trimesh.creation.box(extents=[14, 14, 30])
+    )
+    dom_open = voxelize(open_m, 1.0, 300_000)
+    assert not region_cell_mask(dom_open, RegionSpec(kind="cavity")).any()
+    w = empty_region_warnings(dom_open, [RegionSpec(kind="cavity")])
+    assert w and "no cells" in w[0]
+
+
+def test_cavity_pressure_self_equilibrates() -> None:
+    """Internal pressure on the sealed skin = blow-out on every exposed
+    face: the resultant over a closed vessel nets ≈0 while still loading
+    the wall (force magnitude well above zero)."""
+    dom = voxelize(_sealed_tank_mesh(), 1.0, 300_000)
+    case = LoadCase(
+        name="internal_pressure",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="cavity"),
+                pressure_mpa=0.5,
+            )
+        ],
+    )
+    from cadx.cad.fem.regions import resolve_case_dofs
+
+    applied: list[dict] = []
+    _fixed, F, w = resolve_case_dofs(dom, case, applied_out=applied)
+    assert not any("resolved to zero" in x for x in w)
+    # self-equilibrated: the vector sum over all loaded nodes cancels
+    F3 = F.reshape(-1, 3)
+    assert np.linalg.norm(F3.sum(axis=0)) < 0.05 * np.abs(F3).sum()
+    # but the wall is actually loaded — pressure field is nonzero
+    assert np.abs(F3).sum() > 100.0
+    assert any("pressure_mpa" in (a.get("mechanisms") or []) for a in applied)

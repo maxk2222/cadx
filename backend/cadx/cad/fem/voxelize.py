@@ -597,3 +597,10 @@ def estimate_fem_memory_mb(
     else:
         solve_mb = csr_mb * 0.5 + nodes * 3 * 8 * 8 / 1e6
     return coo_mb + csr_mb + vec_mb + solve_mb
+
+
+def _sealed_pocket_mask(material: np.ndarray) -> np.ndarray:
+    """Cells inside 6-connected empty components that do not reach the domain edge."""
+    mask = np.asarray(material, dtype=bool)
+    filled = ndimage.binary_fill_holes(mask, structure=ndimage.generate_binary_structure(3, 1))
+    return filled & ~mask

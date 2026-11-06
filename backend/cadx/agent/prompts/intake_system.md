@@ -136,7 +136,8 @@ Rules:
   carefully, an out-of-range index resolves to nothing and kills the case)
   (bore = the bore WALL — for bolt loads), `cylinder` = around an axis line
   (`diameter_mm` + `center` hint), `box` = cube at `center`, `all` = whole part.
-  Load fields: `force_n` [N], `pressure_mpa` (face regions), `bearing_n` +
+  Load fields: `force_n` [N], `pressure_mpa` (face regions, or the
+  `cavity` region kind for internal pressure on a sealed inner skin), `bearing_n` +
   `bearing_dir` (shaft load on a bore wall), `preload_n` (bolt pretension),
   `moment_nm` (pure couple in N·m — right-hand rule about the vector;
   shaft torque goes on the `bore`/`hole` wall aligned with its axis),

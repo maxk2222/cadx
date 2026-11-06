@@ -224,6 +224,13 @@ class RegionSpec(BaseModel):
                 bands). Nodes resolve to the locus itself — fixture planes,
                 symmetry cuts, knife-edge supports; cells resolve to the
                 incident layer (loads/preview/coverage counts only)
+    - cavity:   solid cells facing a SEALED interior void (6-connected
+                empty components that never reach the domain edge — open
+                necks/cutouts flood out and match nothing). This is the
+                pressure-vessel inner skin: `pressure_mpa` there is
+                internal blow-out pressure on every exposed face.
+                Walls must be ≥2 voxels thick — on 1-cell walls the same
+                cell's outer face is exposed too and the pressure leaks.
     - all:      the whole solid
 
     `fix_mode` applies when the region is used in `LoadCase.fixed`:
@@ -250,6 +257,7 @@ class RegionSpec(BaseModel):
         "bore",
         "points",
         "plane",
+        "cavity",
         "all",
     ] = "face"
     axis: Annotated[str, Field(max_length=8)] = (
