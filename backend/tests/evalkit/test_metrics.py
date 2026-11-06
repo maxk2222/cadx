@@ -222,3 +222,41 @@ def test_inconclusive_verdict_aggregation_and_report():
     assert "INCONCLUSIVE" in md
     assert "| codegen | generate | succeeded | INCONCLUSIVE |" in md
     assert "| - | holes |" in md
+
+
+def test_harvest_refine_summary():
+    """Stage metrics expose whether helical threads + probes ran — the
+    applied list itself lives under mesh.refine but its counts belong in
+    the compact block."""
+    o = _out(
+        mesh={
+            "refine": {
+                "applied": [
+                    {"name": "a", "kind": "tap", "helical": True},
+                    {"name": "b", "kind": "hole"},
+                    {"name": "c", "kind": "tap", "helical": True},
+                ],
+                "skipped": [{"name": "x"}],
+                "restored_regions": 2,
+                "probes": [
+                    {"verified": True},
+                    {"verified": True},
+                    {"verified": False},
+                ],
+                "verify_misses": [{"entry": {}}],
+                "warnings": ["w1"],
+            }
+        }
+    )
+    m = harvest(o)
+    r = m["refine"]
+    assert r["applied"] == 3
+    assert r["helical"] == 2
+    assert r["skipped"] == 1
+    assert r["restored_regions"] == 2
+    assert r["probes"] == 3
+    assert r["probes_verified"] == 2
+    assert r["verify_misses"] == 1
+    assert r["warnings"] == ["w1"]
+    # non-refine stages: no block at all
+    assert harvest(_out(mesh={"topopt": {}}))["refine"] is None

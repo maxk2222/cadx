@@ -90,6 +90,27 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
                 "void_frac_of_solid": ver.get("void_frac_of_solid"),
                 "export_grid": ver.get("export_grid"),
             }
+    # refine-stage summary — whether helical threads/probes actually ran is
+    # invisible without it (applied entries live one level deeper)
+    refine = (outcome.mesh or {}).get("refine") if isinstance(outcome.mesh, dict) else None
+    refine_block: dict[str, Any] | None = None
+    if isinstance(refine, dict):
+        applied = refine.get("applied") or []
+        probes = refine.get("probes") or []
+        refine_block = {
+            "applied": len(applied),
+            "helical": sum(
+                1 for a in applied if isinstance(a, dict) and a.get("helical")
+            ),
+            "skipped": len(refine.get("skipped") or []),
+            "restored_regions": refine.get("restored_regions"),
+            "probes": len(probes),
+            "probes_verified": sum(
+                1 for p in probes if isinstance(p, dict) and p.get("verified")
+            ),
+            "verify_misses": len(refine.get("verify_misses") or []),
+            "warnings": refine.get("warnings") or [],
+        }
     bbox = analysis.get("bbox_size")
     watertight = analysis.get("watertight_after_repair")
     if watertight is None:
@@ -151,6 +172,7 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
             ],
         },
         "topopt": topopt_block,
+        "refine": refine_block,
         "issues": [
             f"{i.get('what', '')} {i.get('fix_hint', '')}".strip()
             for i in outcome.issues or []
