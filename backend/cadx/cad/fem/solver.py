@@ -159,15 +159,12 @@ class _CgDiverged(Exception):
         super().__init__(f"iter {it}, ||r||/||b|| {ratio:g}")
 
 
-def _cg_watchdog(
-    Kf: sparse.csr_matrix,
-    Ff: np.ndarray,
-    x0: np.ndarray | None,
-    M: Any,
-    *,
-    maxiter: int,
-) -> tuple[np.ndarray | None, int | None, _CgDiverged | None]:
-    """spla.cg with a divergence watchdog.
+def _cg_div_callback(A: Any, Ff: np.ndarray) -> tuple[Any, dict[str, Any]]:
+    """CG divergence watchdog shared by `_cg_watchdog` and the topopt/beso
+    `_solve_u` — returns (callback, state); the callback raises
+    `_CgDiverged` and counts iterations in `state["it"]` (scipy calls it
+    once per iteration). `state["xk"]` keeps the last iterate so the
+    caller can recover the exploded u on a raise.
 
     An unconstrained/under-constrained K (region_fallback patch that fails
     to kill rigid-body modes, load components in the nullspace) makes CG
@@ -180,14 +177,11 @@ def _cg_watchdog(
     samples (400 iters — plateaus in a converging run still trend down).
     """
     bnorm = float(np.linalg.norm(Ff)) or 1.0
-    state = {"it": 0, "best": np.inf, "bad": 0, "flat": 0}
-    # parallel native matvec for the CG iterations + watchdog residual;
-    # LinearOperator is matvec-compatible wherever Kf was used
-    A = _native.spmv_op(Kf)
-    A = Kf if A is None else A
+    state = {"it": 0, "best": np.inf, "bad": 0, "flat": 0, "xk": None}
 
     def callback(xk: np.ndarray) -> None:
         state["it"] += 1
+        state["xk"] = xk
         if state["it"] % 40:
             return
         xnorm = float(np.max(np.abs(xk)))
@@ -205,9 +199,35 @@ def _cg_watchdog(
         if state["bad"] >= 3 or (state["flat"] >= 10 and ratio > 1.0):
             raise _CgDiverged(state["it"], ratio)
 
+    return callback, state
+
+
+def _cg_watchdog(
+    Kf: sparse.csr_matrix,
+    Ff: np.ndarray,
+    x0: np.ndarray | None,
+    M: Any,
+    *,
+    maxiter: int,
+    rtol: float = 1e-6,
+) -> tuple[np.ndarray | None, int | None, _CgDiverged | None]:
+    """CG under the `_cg_div_callback` divergence watchdog — native kernel
+    when available (identical abort classes and iteration semantics), the
+    scipy path otherwise."""
+    res = _native.cg(Kf, Ff, x0, M, rtol=rtol, maxiter=maxiter)
+    if res is not None:
+        x, iters, status, ratio = res
+        if status == "diverged":
+            return None, None, _CgDiverged(iters, ratio)
+        return x, iters if status == "maxiter" else 0, None
+    # parallel native matvec for the CG iterations + watchdog residual;
+    # LinearOperator is matvec-compatible wherever Kf was used
+    A = _native.spmv_op(Kf)
+    A = Kf if A is None else A
+    callback, _ = _cg_div_callback(A, Ff)
     try:
         x, info = spla.cg(
-            A, Ff, x0=x0, rtol=1e-6, atol=0.0, maxiter=maxiter, M=M, callback=callback
+            A, Ff, x0=x0, rtol=rtol, atol=0.0, maxiter=maxiter, M=M, callback=callback
         )
     except _CgDiverged as e:
         return None, None, e

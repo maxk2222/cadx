@@ -48,9 +48,13 @@ from cadx.cad.fem.solver import _fixed_dofs, _ke_unit, assemble, domain_edof
 from cadx.cad.fem.topopt import (
     _FLIP_FRAC,
     _FLOOR_PIN,
+    _M_AGE_CAP,
+    _M_MIN_AGE,
+    _M_STALE_MULT,
     _MECH_PATIENCE,
     _MOVE_SAT_STREAK,
     _MOVE_SAT_WINDOW,
+    _RIGID_REG_REL,
     _SYM_AXES,
     E_MIN_FRAC,
     RHO_MIN,
@@ -60,8 +64,11 @@ from cadx.cad.fem.topopt import (
     TopOptResult,
     _build_filter_ops,
     _CaseCtx,
+    _m_reuse,
     _mechanism_guard,
     _prepare_solve,
+    _refresh_ctx,
+    _rtol_band,
     _solve_u,
     _windowed_compliance_improvement,
 )
@@ -309,8 +316,10 @@ def beso(  # noqa: C901
     # free DOFs are PER CASE — see simp() for why they must never be unioned
     used_dofs = np.unique(edof.ravel())
     case_free: list[np.ndarray] = []
+    case_fd: list[np.ndarray] = []
     for f, _ in cases:
         fd = np.unique(_fixed_dofs(f, domain.node_count))
+        case_fd.append(fd)
         case_free.append(used_dofs[~np.isin(used_dofs, fd, assume_unique=True)])
 
     def _density() -> np.ndarray:
@@ -352,6 +361,10 @@ def beso(  # noqa: C901
     # per-phase wall-clock instrumentation — same vocabulary as simp()
     phase_t: dict[str, float] = {"assemble_s": 0.0, "factorize_s": 0.0, "solve_s": 0.0}
     filter_mark = [fops.stats.get("filter_s", 0.0)]
+    # solver contexts persist across iterations — same reuse/staleness
+    # policy as simp() (pattern constant, only values change)
+    persist_ctx: dict[bytes, _CaseCtx] = {}
+    all_idx = np.arange(domain.cell_count)
 
     def _phase_timings() -> dict[str, float]:
         out = {k: round(v, 3) for k, v in phase_t.items()}
@@ -385,15 +398,42 @@ def beso(  # noqa: C901
             cg_rtol = 1e-3 if change > 0.1 else (1e-4 if change > 10 * params.tol else 1e-6)
             w_num = np.zeros(ncells)
             obj_cases: list[float] = []
-            ctx_cache: dict[bytes, _CaseCtx] = {}
             t_solve = time.monotonic()
+            from cadx.cad.fem import solver as _solver_mod
+
+            band = _rtol_band(cg_rtol)
             for ci, (_, F) in enumerate(cases):
                 free_i = case_free[ci]
-                ctx = ctx_cache.get(free_i.tobytes())
+                sig = free_i.tobytes()
+                ctx = persist_ctx.get(sig)
+                t_fac = time.monotonic()
                 if ctx is None:
-                    t_fac = time.monotonic()
+                    reg_i = None
+                    gap = ""
                     if free_i.size:
                         Kf_i = K[free_i][:, free_i].tocsr()
+                        # rigid-mode gap probe once per signature — same
+                        # spring-regularisation as simp() (see there)
+                        dd, gap = _solver_mod._rigid_gaps(
+                            domain, used_dofs, case_fd[ci], active=all_idx
+                        )
+                        loc = np.isin(free_i, dd)
+                        if dd.size and np.any(F[dd]) and loc.any():
+                            scale = float(np.median(np.abs(Kf_i.diagonal()))) or 1.0
+                            rows = np.flatnonzero(loc)
+                            reg_i = sparse.csr_matrix(
+                                (
+                                    np.full(rows.size, _RIGID_REG_REL * scale),
+                                    (rows, rows),
+                                ),
+                                shape=Kf_i.shape,
+                            )
+                            Kf_i = (Kf_i + reg_i).tocsr()
+                            warnings.append(
+                                f"load case {ci}: {gap} — load reaches an "
+                                "under-constrained component; "
+                                "spring-regularised the deficient rigid modes"
+                            )
                         factor_i, M_i = _prepare_solve(
                             Kf_i,
                             spsolve_dofs,
@@ -404,10 +444,33 @@ def beso(  # noqa: C901
                     else:
                         Kf_i = sparse.csr_matrix((0, 0))
                         factor_i = M_i = None
-                    phase_t["factorize_s"] += time.monotonic() - t_fac
-                    ctx = _CaseCtx(free=free_i, Kf=Kf_i, factor=factor_i, M=M_i)
-                    ctx_cache[free_i.tobytes()] = ctx
-                u, _solver = _solve_u(
+                    ctx = _CaseCtx(
+                        free=free_i,
+                        Kf=Kf_i,
+                        factor=factor_i,
+                        M=M_i,
+                        reg=reg_i,
+                        rigid_gap=gap,
+                    )
+                    persist_ctx[sig] = ctx
+                elif not free_i.size:
+                    pass
+                elif _m_reuse():
+                    _refresh_ctx(ctx, K[free_i][:, free_i], backend=params.solver_backend)
+                else:
+                    Kf_i = K[free_i][:, free_i].tocsr()
+                    if ctx.reg is not None:
+                        Kf_i = (Kf_i + ctx.reg).tocsr()
+                    ctx.Kf = Kf_i
+                    ctx.factor, ctx.M = _prepare_solve(
+                        Kf_i,
+                        spsolve_dofs,
+                        params.solver_backend,
+                        domain=domain,
+                        free=free_i,
+                    )
+                phase_t["factorize_s"] += time.monotonic() - t_fac
+                u, solver_name, iters = _solve_u(
                     domain,
                     ctx.Kf,
                     F,
@@ -417,7 +480,28 @@ def beso(  # noqa: C901
                     M=ctx.M,
                     cg_rtol=cg_rtol,
                 )
-                u_prev[ci] = u
+                u_prev[ci] = None if solver_name == "cg_diverged" else u
+                if solver_name == "cg":
+                    phase_t["cg_iters"] = phase_t.get("cg_iters", 0.0) + iters
+                    if ctx.M is not None and _m_reuse():
+                        ctx.m_age += 1
+                        base = ctx.m_rate.get(band)
+                        stale = base is not None and iters > _M_STALE_MULT * base
+                        if (stale and ctx.m_age >= _M_MIN_AGE) or ctx.m_age >= _M_AGE_CAP:
+                            t_rb = time.monotonic()
+                            _, ctx.M = _prepare_solve(
+                                ctx.Kf,
+                                0,
+                                params.solver_backend,
+                                domain=domain,
+                                free=ctx.free,
+                            )
+                            ctx.m_age = 0
+                            ctx.m_rebuilds += 1
+                            phase_t["m_rebuilds"] = phase_t.get("m_rebuilds", 0.0) + 1
+                            phase_t["factorize_s"] += time.monotonic() - t_rb
+                        elif base is None or stale or iters < base:
+                            ctx.m_rate[band] = iters
                 ue = u[edof]
                 # BESO sensitivity number: strain energy the element carries
                 # (or WOULD carry, for removed cells) at full modulus — the
@@ -439,7 +523,11 @@ def beso(  # noqa: C901
             break
 
         objective = float(np.dot(weights[: len(cases)], obj_cases)) if len(cases) else 0.0
-        if np.isfinite(objective) and objective < best_objective:
+        # solver-noise improvements (~1e-15 u perturbations between the
+        # refactorised and a fresh factorisation) must not steal the
+        # best-mask record — the mechanism-restore target stays stable
+        margin = 1e-6 * abs(best_objective) if np.isfinite(best_objective) else 0.0
+        if np.isfinite(objective) and objective < best_objective - margin:
             best_objective = objective
             best_keep = keep.copy()
 

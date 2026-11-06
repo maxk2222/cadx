@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import threading
 import time
 from typing import Any
 
@@ -285,35 +286,141 @@ def _warm_quiddity() -> None:
         pass
 
 
-def _recognition_child(brep_path: str, out_path: str) -> None:
-    """Spawned worker: rebuilds the solid from its BREP file, runs quiddity,
-    writes the evidence dict as JSON.
+def _worker_loop(req_q: Any, res_q: Any) -> None:
+    """Persistent spawned recognition worker.
 
     Spawn (fresh interpreter) is mandatory — a forked child inherits OCC /
     allocator locks held by dead threads and deadlocks before quiddity even
-    starts (observed: ~0 CPU for the full budget on a trivial part). A spawned
-    child re-imports cleanly and can be hard-killed on timeout; a crash inside
-    it only costs the advisory evidence, never the pipeline."""
-    import json
-    from pathlib import Path
+    starts (observed: ~0 CPU for the full budget on a trivial part). The
+    worker keeps quiddity imported for its whole lifetime — the ~1-3s
+    interpreter + OCC + quiddity boot the one-shot spawn paid per call is
+    amortised across calls. Reads BREP paths off req_q, answers evidence
+    dicts on res_q; a malformed job answers {} so the parent never waits on
+    a silent child. Poison-pill (None) or a closed queue ends the loop —
+    and the daemon flag ends it with the parent."""
+    from build123d import Box, import_brep
 
-    from build123d import import_brep
-
-    try:
-        shape = import_brep(brep_path)
-        rec = _evidence_dict(quiddity.build_recognition_result(shape))
-    except Exception:
-        rec = {}
+    # warm quiddity's lazy first-call init once, outside any budget
     with contextlib.suppress(Exception):
-        Path(out_path).write_text(json.dumps(rec))
+        quiddity.build_recognition_result(Box(1, 1, 1))
+    while True:
+        try:
+            job = req_q.get()
+        except Exception:
+            return
+        if job is None:
+            return
+        try:
+            shape = import_brep(job)
+            rec = _evidence_dict(quiddity.build_recognition_result(shape))
+        except Exception:
+            rec = {}
+        try:
+            res_q.put(rec)
+        except Exception:
+            return
+
+
+class _RecognitionWorker:
+    """Process-side handle for the persistent recognition worker.
+
+    One worker per process (`_WORKERS` is keyed by pid): the executor
+    forks task children, and multiprocessing queues inherited across a
+    fork are broken, so a stale pid entry is never touched. Requests
+    serialise on `_lock` — the worker is single-slot and the cad-light
+    pool extracts features on threads. Timeout cancels hard-kill it and
+    the next call respawns: identical kill semantics to the old one-shot
+    spawn."""
+
+    def __init__(self, ctx: Any) -> None:
+        self._ctx = ctx
+        self._proc: Any = None
+        self._req: Any = None
+        self._res: Any = None
+        self._lock = threading.Lock()
+
+    def _spawn(self) -> bool:
+        try:
+            self._req = self._ctx.Queue()
+            self._res = self._ctx.Queue()
+            self._proc = self._ctx.Process(
+                target=_worker_loop, args=(self._req, self._res), daemon=True
+            )
+            self._proc.start()
+            return True
+        except Exception:
+            self._proc = self._req = self._res = None
+            return False
+
+    def _kill(self) -> None:
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            with contextlib.suppress(Exception):
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join(2.0)
+                    if proc.is_alive():
+                        proc.kill()
+                        proc.join(1.0)
+        for q in (self._req, self._res):
+            with contextlib.suppress(Exception):
+                q.close()
+        self._req = self._res = None
+
+    def run(
+        self, brep_path: str, budget_s: float, faces: int, cancelled: Any
+    ) -> dict[str, Any] | None:
+        """Send one BREP to the worker; wait for its evidence dict.
+
+        Returns the dict, ``{}`` on timeout/cancel/child failure, or
+        ``None`` when spawning is unavailable (caller falls in-process)."""
+        import queue as _queue
+
+        with self._lock:
+            if self._proc is None or not self._proc.is_alive():
+                self._kill()
+                if not self._spawn():
+                    return None
+            try:
+                self._req.put(brep_path)
+            except Exception:
+                self._kill()
+                return None
+            deadline = time.monotonic() + budget_s
+            while True:
+                if cancelled is not None and cancelled():
+                    self._kill()
+                    return {}
+                try:
+                    rec = self._res.get(timeout=min(1.0, max(0.05, deadline - time.monotonic())))
+                except _queue.Empty:
+                    if self._proc is not None and not self._proc.is_alive():
+                        # crashed child — waiting the full budget changes
+                        # nothing, and the next call respawns anyway
+                        self._kill()
+                        return {}
+                    if time.monotonic() >= deadline:
+                        self._kill()
+                        log.warning("recognition.budget_exceeded", budget_s=budget_s, faces=faces)
+                        return {}
+                    continue
+                except Exception:
+                    self._kill()
+                    return {}
+                return rec if isinstance(rec, dict) else {}
+
+
+_WORKERS: dict[int, _RecognitionWorker] = {}
 
 
 def _run_budgeted(shape: Shape, budget_s: float, cancelled: Any = None) -> dict[str, Any] | None:
-    """Run recognition in a spawned child with a hard wall-clock budget.
+    """Run recognition on the persistent spawned worker with a hard
+    wall-clock budget.
 
-    Returns the evidence dict, ``{}`` on child failure/timeout, or ``None``
-    when the spawn path is unavailable (caller may then run in-process)."""
-    import json
+    Returns the evidence dict, ``{}`` on failure/timeout, or ``None`` when
+    the spawn path is unavailable (caller may then run in-process). BREP
+    export stays per-call (it is the transport); only the interpreter +
+    import + quiddity-init cost is amortised by the worker."""
     import multiprocessing as mp
     import tempfile
     from pathlib import Path
@@ -327,32 +434,17 @@ def _run_budgeted(shape: Shape, budget_s: float, cancelled: Any = None) -> dict[
     try:
         with tempfile.TemporaryDirectory(prefix="cadx-recognition-") as td:
             brep = Path(td) / "shape.brep"
-            out = Path(td) / "rec.json"
             export_brep(shape, str(brep))
-            proc = ctx.Process(target=_recognition_child, args=(str(brep), str(out)), daemon=True)
-            try:
-                proc.start()
-            except Exception:
-                return None  # spawn unavailable — caller falls back in-process
-            deadline = time.monotonic() + budget_s
-            while proc.is_alive() and time.monotonic() < deadline:
-                proc.join(min(1.0, max(0.05, deadline - time.monotonic())))
-                if cancelled is not None and cancelled():
-                    break
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(5.0)
-                log.warning(
-                    "recognition.budget_exceeded",
-                    budget_s=budget_s,
-                    faces=len(shape.faces()) if hasattr(shape, "faces") else -1,
-                )
-                return {}
-            try:
-                rec = json.loads(out.read_text())
-            except Exception:
-                rec = {}
-            return rec if isinstance(rec, dict) else {}
+            worker = _WORKERS.get(os.getpid())
+            if worker is None:
+                worker = _RecognitionWorker(ctx)
+                _WORKERS[os.getpid()] = worker
+            return worker.run(
+                str(brep),
+                budget_s,
+                len(shape.faces()) if hasattr(shape, "faces") else -1,
+                cancelled,
+            )
     except Exception:
         return {}
 

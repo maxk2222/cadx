@@ -183,6 +183,7 @@ class MeasuredFillet(BaseModel):
     radius: float = 0.0
     at: list[float] = Field(default_factory=list)
     side: str = ""  # convex | concave
+    source: str = ""  # "quiddity" | "mesh_edge" — provenance of the evidence
 
 
 class MeasuredPocket(BaseModel):
@@ -1721,6 +1722,20 @@ def extract_features(  # noqa: C901 — sequential measurement passes
             _merge_recognition(out, rec)
         except Exception:
             pass
+    # mesh-side edge evidence (native kernel): fillet-band estimates on the
+    # tessellation — rescues the `fillets` list only when neither the B-Rep
+    # face scan nor quiddity produced one (never a double count). Rows are
+    # tagged source="mesh_edge" and mark the measurement approximate.
+    if not out.fillets and mesh is not None:
+        try:
+            from cadx.cad import native as _native
+
+            rows = _native.feature_edges(mesh)
+            if rows:
+                out.fillets = [m for m in (MeasuredFillet.model_validate(r) for r in rows)]
+                out.approximate = True
+        except Exception:
+            pass
     # stable selector ids — must run last so every detector's entries get one
     assign_feature_ids(out)
     _emit_profile()
@@ -1753,6 +1768,9 @@ def _merge_recognition(out: MeasuredFeatures, rec: dict[str, Any]) -> None:
                 parsed.append(model.model_validate(row))
             except Exception:
                 continue
+        if key == "fillets":
+            for m in parsed:
+                m.source = "quiddity"
         setattr(out, key, parsed)
     out.countersinks = max(out.countersinks, int(rec.get("countersink_count") or 0))
     out.counterbores = max(out.counterbores, int(rec.get("counterbore_count") or 0))

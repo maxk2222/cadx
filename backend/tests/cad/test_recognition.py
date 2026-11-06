@@ -216,6 +216,11 @@ def _fork_ctx_patcher(monkeypatch):
 
     real_get_context = mp.get_context
     monkeypatch.setattr(mp, "get_context", lambda method=None: real_get_context("fork"))
+    # the persistent worker caches its spawn context at creation — a fork
+    # worker created here must not leak into later tests (fork children of
+    # a threaded process deadlock on inherited OCC locks), and a spawn
+    # worker from an earlier test would bypass the patched quiddity
+    monkeypatch.setattr(recognition, "_WORKERS", {})
 
 
 def test_budget_hard_kills_slow_recognition(monkeypatch):

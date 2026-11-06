@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -534,8 +535,14 @@ def _build_filter_ops(
     big = domain.cell_count > 200_000
     t_fac = time.monotonic()
     factor = None
+    # L is SPD — factor_symmetric picks CHOLMOD over SuperLU when the
+    # optional scikit-sparse dep is present (observed ~60s SuperLU
+    # factorisation on a 344k-cell domain); the internal splu->factorized
+    # cascade is the fallback and spsolve remains the last resort below
+    from cadx.cad.fem.solver import factor_symmetric
+
     with contextlib.suppress(Exception):  # spsolve fallback below
-        factor = spla.factorized(L.tocsc())
+        factor = factor_symmetric(L)
     log.debug(
         "topopt.helmholtz_operator",
         nsolid=int(solid_idx.size),
@@ -666,6 +673,31 @@ def _prepare_solve(
         diag[diag == 0] = 1.0
         M = spla.diags(1.0 / diag)
     return None, M
+
+
+# persistent solver contexts across SIMP iterations: the ij pattern and
+# each case's `free` are run-constant — only matrix VALUES change with the
+# density — so CHOLMOD refactorises in place and the AMG hierarchy stays
+# until measured staleness. A fresh hierarchy on a 20M+ nnz system costs
+# 10-20s; building it every iteration was the dominant per-iter cost.
+_M_AGE_CAP = 10  # solves per AMG build before a forced refresh
+_M_STALE_MULT = 1.6  # same-rtol-band CG-iter regression flagging M stale
+_M_MIN_AGE = 2  # solves a build gets before the staleness trigger arms
+_RIGID_REG_REL = 1e-4  # spring stiffness on rigid-gap DOFs, x median |diag|
+
+
+def _m_reuse() -> bool:
+    """Runtime kill-switch for AMG hierarchy / factor reuse across SIMP
+    iterations (CADX_TOPOPT_M_REUSE=0 restores the build-every-iteration
+    behaviour for A/B comparison or bisecting a solver regression)."""
+    return os.environ.get("CADX_TOPOPT_M_REUSE", "1") != "0"
+
+
+def _rtol_band(rtol: float) -> int:
+    """cg_rtol schedule band (1e-3/1e-4/1e-6 -> 3/4/6). AMG staleness is
+    judged inside a band only: a tighter tolerance legitimately needs more
+    iterations even on a fresh hierarchy."""
+    return max(0, round(-math.log10(max(rtol, 1e-12))))
 
 
 # a free design cell counts as "pinned at the floor" when its blueprint
@@ -856,14 +888,59 @@ def _span_compliance_improvement(history: list[dict[str, Any]], span: int) -> fl
 
 @dataclass
 class _CaseCtx:
-    """Per-load-case reduced system for one `_eval` — the case's own free
-    DOFs (fixed DOFs are per-case, never unioned across cases), its reduced
-    stiffness Kf and the solver handles for the primal and adjoint solves."""
+    """Per-load-case reduced system — persistent across `_eval` calls for
+    the whole run (the `persist_ctx` dict): the ij pattern and `free` are
+    constant, only Kf values refresh per density iteration. `factor`/`M`
+    carry the reused solver state — CHOLMOD refactorises in place, the AMG
+    hierarchy rebuilds only on the staleness policy. `reg` is the
+    spring-regularisation diagonal folded into Kf when the case's load
+    reaches a rigid-mode-deficient component. The thin snapshots `_eval`
+    returns for adjoint solves share `free`/`Kf`/`M` but drop a mutable
+    `factor` (see below)."""
 
     free: np.ndarray
     Kf: sparse.csr_matrix
     factor: Any
     M: Any
+    reg: sparse.csr_matrix | None = None
+    rigid_gap: str = ""
+    m_age: int = 0  # CG solves on the current M
+    m_rate: dict[int, int] = field(default_factory=dict)  # best iters per rtol band
+    m_rebuilds: int = 0
+
+
+def _refresh_ctx(ctx: _CaseCtx, Kf: sparse.csr_matrix, *, backend: str) -> None:
+    """Refresh ctx.Kf for a new density iteration — identical sparsity
+    pattern, new values. CHOLMOD refactorises the existing symbolic
+    factorisation; splu has no numeric refresh so it rebuilds (status
+    quo); the AMG hierarchy is kept and judged by the staleness policy in
+    the caller."""
+    from cadx.cad.fem.solver import CholmodFactor, factor_symmetric
+
+    if ctx.reg is not None:
+        Kf = Kf + ctx.reg
+    ctx.Kf = Kf.tocsr()
+    if isinstance(ctx.factor, CholmodFactor):
+        if not ctx.factor.refactorize(ctx.Kf):
+            ctx.factor = factor_symmetric(ctx.Kf, backend=backend)
+    elif ctx.factor is not None:
+        ctx.factor = factor_symmetric(ctx.Kf, backend=backend)
+
+
+def _ctx_snapshot(ctx: _CaseCtx) -> _CaseCtx:
+    """Thin per-eval snapshot for the adjoint solves: shares `free`, the
+    eval's own Kf array and the (immutable) AMG preconditioner — but NOT a
+    mutable CholmodFactor, which a later `_eval` refactorises onto a
+    different density's values and would make the adjoint solve the wrong
+    system. The adjoint falls back to the M-CG path there."""
+    from cadx.cad.fem.solver import CholmodFactor
+
+    return _CaseCtx(
+        free=ctx.free,
+        Kf=ctx.Kf,
+        factor=None if isinstance(ctx.factor, CholmodFactor) else ctx.factor,
+        M=ctx.M,
+    )
 
 
 def _solve_u(
@@ -876,14 +953,20 @@ def _solve_u(
     M: Any = None,
     cg_rtol: float = 1e-5,
     solver_backend: str = "auto",
-) -> tuple[np.ndarray, str]:
-    """Light solve: return full u vector."""
+) -> tuple[np.ndarray, str, int]:
+    """Light solve: return (full u vector, solver name, CG iterations).
+
+    Runs under the same divergence watchdog as `solver._cg_watchdog` — a
+    singular/under-constrained system aborts on the shared criteria
+    instead of burning all 4000 iterations; the exploded iterate is kept
+    and returned with solver "cg_diverged" so the compliance it produces
+    stays honestly large rather than looking like a cheap design."""
     u = np.zeros(3 * domain.node_count)
     if free.size == 0:
-        return u, "none"
+        return u, "none", 0
     if factor is not None:
         u[free] = factor(F[free])
-        return u, "spsolve"
+        return u, "spsolve", 0
     if M is None:
         _, M = _prepare_solve(
             Kf,
@@ -892,20 +975,47 @@ def _solve_u(
             domain=domain,
             free=free,
         )
-    A = _native.spmv_op(Kf)
-    x, info = spla.cg(
-        Kf if A is None else A,
+    res = _native.cg(
+        Kf,
         F[free],
-        x0=u0[free] if u0 is not None else None,
+        u0[free] if u0 is not None else None,
+        M,
         rtol=cg_rtol,
-        atol=0.0,
         maxiter=4000,
-        M=M,
     )
+    if res is not None:
+        x, iters, status, _ratio = res
+        u[free] = x
+        if status == "diverged":
+            log.warning("topopt.cg_diverged", it=iters)
+            return u, "cg_diverged", iters
+        if status == "maxiter":
+            log.warning("topopt.cg_no_converge", info=iters)
+        return u, "cg", iters
+    from cadx.cad.fem.solver import _cg_div_callback, _CgDiverged
+
+    A = _native.spmv_op(Kf)
+    A = Kf if A is None else A
+    callback, state = _cg_div_callback(A, F[free])
+    try:
+        x, info = spla.cg(
+            A,
+            F[free],
+            x0=u0[free] if u0 is not None else None,
+            rtol=cg_rtol,
+            atol=0.0,
+            maxiter=4000,
+            M=M,
+            callback=callback,
+        )
+    except _CgDiverged as e:
+        u[free] = state["xk"] if state["xk"] is not None else 0.0
+        log.warning("topopt.cg_diverged", it=e.it, ratio=round(e.ratio, 3))
+        return u, "cg_diverged", int(e.it)
     u[free] = x
     if info > 0:
         log.warning("topopt.cg_no_converge", info=info)
-    return u, "cg"
+    return u, "cg", int(state["it"])
 
 
 def uniform_compliance(
@@ -957,7 +1067,7 @@ def uniform_compliance(
             factor_i, M_i = _prepare_solve(
                 Kf, spsolve_dofs, params.solver_backend, domain=domain, free=free
             )
-            u, _ = _solve_u(
+            u, _, _ = _solve_u(
                 domain,
                 Kf,
                 F,
@@ -1189,8 +1299,10 @@ def simp(  # noqa: C901
     # Single-fixture runs reduce to the same `free` as the union, unchanged.
     used_dofs = np.unique(edof.ravel())
     case_free: list[np.ndarray] = []
+    case_fd: list[np.ndarray] = []
     for f, _ in cases:
         fd = np.unique(_fixed_dofs(f, domain.node_count))
+        case_fd.append(fd)
         case_free.append(used_dofs[~np.isin(used_dofs, fd, assume_unique=True)])
     if all(fi.size == 0 for fi in case_free):
         return TopOptResult(
@@ -1262,6 +1374,13 @@ def simp(  # noqa: C901
     # the `phase_timings`/`phase_t` args to _run_mma)
     phase_t: dict[str, float] = {"assemble_s": 0.0, "factorize_s": 0.0, "solve_s": 0.0}
     filter_mark = [fops.stats.get("filter_s", 0.0)]
+    # solver contexts persist across iterations — the ij pattern and each
+    # case's `free` are run-constant so only Kf values refresh; AMG builds
+    # and CHOLMOD symbolic factorisations are the expensive parts and get
+    # reused/refactorised per the policy in _eval
+    persist_ctx: dict[bytes, _CaseCtx] = {}
+    all_idx = np.arange(ncells)  # every cell assembles at Emin — the
+    # rigid-gap component probe sees the whole domain as assembled
 
     def _phase_timings() -> dict[str, float]:
         out = {k: round(v, 3) for k, v in phase_t.items()}
@@ -1320,19 +1439,53 @@ def simp(  # noqa: C901
         # K is identical across cases (E_e depends on the density, not the
         # BCs) — assemble once; only the per-case `free` differs. Cases with
         # an identical fixed-DOF signature (direction-cone variants share a
-        # fixture) reuse one Kf extraction + factorization.
-        ctx_cache: dict[bytes, _CaseCtx] = {}
+        # fixture) reuse one Kf extraction + factorization. `persist_ctx`
+        # lives in simp() scope: the pattern is iteration-constant, so
+        # factors refactorise and the AMG hierarchy survives until the
+        # staleness policy below rebuilds it. `ctxs` gets thin snapshots —
+        # the mutable ctx objects must not leak into adjoint solves (see
+        # _ctx_snapshot).
+        from cadx.cad.fem import solver as _solver_mod
+
+        band = _rtol_band(cg_rtol)
         t_solve = time.monotonic()
         for ci, (_, F) in enumerate(cases):
             free_i = case_free[ci]
-            ctx = ctx_cache.get(free_i.tobytes())
+            sig = free_i.tobytes()
+            ctx = persist_ctx.get(sig)
+            t_fac = time.monotonic()
+            fallbacks_before = _solver_mod.solver_fallback_count()
             if ctx is None:
-                from cadx.cad.fem import solver as _solver_mod
-
-                t_fac = time.monotonic()
-                fallbacks_before = _solver_mod.solver_fallback_count()
+                reg_i = None
+                gap = ""
                 if free_i.size:
                     Kf_i = K[free_i][:, free_i].tocsr()
+                    # once per signature: rigid-mode gap probe — a load
+                    # reaching an under-constrained component otherwise
+                    # burns the CG budget on a singular system; weak
+                    # springs on the deficient DOFs keep the solve finite
+                    # and the compliance honestly large (the textbook
+                    # ground-structure fix, not a hidden zero)
+                    dd, gap = _solver_mod._rigid_gaps(
+                        domain, used_dofs, case_fd[ci], active=all_idx
+                    )
+                    loc = np.isin(free_i, dd)
+                    if dd.size and np.any(F[dd]) and loc.any():
+                        scale = float(np.median(np.abs(Kf_i.diagonal()))) or 1.0
+                        rows = np.flatnonzero(loc)
+                        reg_i = sparse.csr_matrix(
+                            (
+                                np.full(rows.size, _RIGID_REG_REL * scale),
+                                (rows, rows),
+                            ),
+                            shape=Kf_i.shape,
+                        )
+                        Kf_i = (Kf_i + reg_i).tocsr()
+                        warnings.append(
+                            f"load case {ci}: {gap} — load reaches an "
+                            "under-constrained component; spring-regularised "
+                            "the deficient rigid modes"
+                        )
                     factor_i, M_i = _prepare_solve(
                         Kf_i,
                         spsolve_dofs,
@@ -1343,18 +1496,42 @@ def simp(  # noqa: C901
                 else:
                     Kf_i = sparse.csr_matrix((0, 0))
                     factor_i = M_i = None
-                phase_t["factorize_s"] += time.monotonic() - t_fac
-                # cholmod->splu fallbacks land in the iteration record so
-                # evals see non-PD realizations instead of silent slowness
-                phase_t["solver_fallbacks"] = (
-                    phase_t.get("solver_fallbacks", 0.0)
-                    + _solver_mod.solver_fallback_count()
-                    - fallbacks_before
+                ctx = _CaseCtx(
+                    free=free_i,
+                    Kf=Kf_i,
+                    factor=factor_i,
+                    M=M_i,
+                    reg=reg_i,
+                    rigid_gap=gap,
                 )
-                ctx = _CaseCtx(free=free_i, Kf=Kf_i, factor=factor_i, M=M_i)
-                ctx_cache[free_i.tobytes()] = ctx
-            ctxs.append(ctx)
-            u, _solver = _solve_u(
+                persist_ctx[sig] = ctx
+            elif not free_i.size:
+                pass
+            elif _m_reuse():
+                _refresh_ctx(ctx, K[free_i][:, free_i], backend=params.solver_backend)
+            else:
+                # kill-switch path: rebuild solver state every iteration
+                Kf_i = K[free_i][:, free_i].tocsr()
+                if ctx.reg is not None:
+                    Kf_i = (Kf_i + ctx.reg).tocsr()
+                ctx.Kf = Kf_i
+                ctx.factor, ctx.M = _prepare_solve(
+                    Kf_i,
+                    spsolve_dofs,
+                    params.solver_backend,
+                    domain=domain,
+                    free=free_i,
+                )
+            phase_t["factorize_s"] += time.monotonic() - t_fac
+            # cholmod->splu fallbacks land in the iteration record so
+            # evals see non-PD realizations instead of silent slowness
+            phase_t["solver_fallbacks"] = (
+                phase_t.get("solver_fallbacks", 0.0)
+                + _solver_mod.solver_fallback_count()
+                - fallbacks_before
+            )
+            ctxs.append(_ctx_snapshot(ctx))
+            u, solver_name, iters = _solve_u(
                 domain,
                 ctx.Kf,
                 F,
@@ -1365,7 +1542,33 @@ def simp(  # noqa: C901
                 cg_rtol=cg_rtol,
                 solver_backend=params.solver_backend,
             )
-            u_prev[ci] = u
+            # an exploded iterate is a bad warm start for the next density
+            # — drop it so the next solve starts cold
+            u_prev[ci] = None if solver_name == "cg_diverged" else u
+            if solver_name == "cg":
+                phase_t["cg_iters"] = phase_t.get("cg_iters", 0.0) + iters
+                if ctx.M is not None and _m_reuse():
+                    ctx.m_age += 1
+                    base = ctx.m_rate.get(band)
+                    stale = base is not None and iters > _M_STALE_MULT * base
+                    if (stale and ctx.m_age >= _M_MIN_AGE) or ctx.m_age >= _M_AGE_CAP:
+                        t_rb = time.monotonic()
+                        _, ctx.M = _prepare_solve(
+                            ctx.Kf,
+                            0,
+                            params.solver_backend,
+                            domain=domain,
+                            free=ctx.free,
+                        )
+                        ctx.m_age = 0
+                        ctx.m_rebuilds += 1
+                        phase_t["m_rebuilds"] = phase_t.get("m_rebuilds", 0.0) + 1
+                        phase_t["factorize_s"] += time.monotonic() - t_rb
+                    elif base is None or stale or iters < base:
+                        # learn the band baseline: a fresh M (age < 2) that
+                        # still exceeds it means the band got harder — accept
+                        # the new rate instead of rebuild-looping
+                        ctx.m_rate[band] = iters
             us.append(u)
             ue = u[edof]
             ce_cases.append(np.einsum("ni,ij,nj->n", ue, ke, ue))
@@ -1562,7 +1765,10 @@ def simp(  # noqa: C901
         # few iterations PAST the load-path cut, so the current x is already
         # the broken field; the min-compliance blueprint still carries the
         # last working structure
-        if objective < best_obj:
+        # noise-level improvements must not steal the salvage target —
+        # keeps x_best stable under ~1e-15 solve perturbations
+        margin = 1e-6 * abs(best_obj) if np.isfinite(best_obj) else 0.0
+        if np.isfinite(objective) and objective < best_obj - margin:
             best_obj = objective
             x_best = x.copy()
         if reg_best is None or objective < reg_best:
@@ -2001,10 +2207,19 @@ def _adjoint_solve(
     M: Any,
     n_nodes: int,
 ) -> np.ndarray:
-    """Solve Kᵀ λ = rhs (K symmetric → same factor/preconditioner)."""
+    """Solve Kᵀ λ = rhs (K symmetric → same factor/preconditioner).
+
+    Snapshot contexts carry factor=None (a later eval may refactorise the
+    shared CholmodFactor onto a different density — reusing it would solve
+    the wrong system); for direct-tier systems a fresh factor on the
+    snapshot's own Kf is still cheaper than unpreconditioned CG."""
     lam = np.zeros(3 * n_nodes)
     if free.size == 0:
         return lam
+    if factor is None and M is None:
+        from cadx.cad.fem.solver import factor_symmetric
+
+        factor = factor_symmetric(Kf)
     if factor is not None:
         lam[free] = factor(rhs[free])
         return lam

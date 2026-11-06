@@ -236,3 +236,82 @@ def spmv_op(Kf: Any) -> Any | None:
         return spla.LinearOperator((n, n), matvec=lambda x: mv.matvec(x, _threads()))
     except Exception:
         return None
+
+
+def cg(
+    Kf: Any,
+    b: Any,
+    x0: Any,
+    M: Any,
+    *,
+    rtol: float,
+    maxiter: int,
+) -> tuple[Any, int, str, float] | None:
+    """Native PCG with watchdog parity to `solver._cg_div_callback`.
+
+    Returns (x, iters, status, ratio) with status in
+    {"converged", "maxiter", "diverged"}; "diverged" maps to the
+    _CgDiverged abort classes (callers treat it identically — the
+    watchdog's raise is a control-flow detail, not different semantics).
+    `M` is any matvec-capable object (pyamg LinearOperator, sparse diag,
+    callable) invoked once per iteration — the GIL is released around the
+    compute segment so parallel realisation solves still overlap.
+    None when unavailable/disabled so callers keep the scipy path."""
+    if _nx is None or not native_enabled("fem"):
+        return None
+    try:
+        import numpy as np
+
+        K = Kf.tocsr() if hasattr(Kf, "tocsr") else Kf
+        if M is None:
+            mv = None
+        elif hasattr(M, "matvec"):
+            mv = M.matvec
+        else:
+            mv = lambda v: np.asarray(M @ v, dtype=float)  # noqa: E731
+        res = _nx.cg_solve(
+            np.ascontiguousarray(np.asarray(K.indptr, dtype=np.int64)),
+            np.ascontiguousarray(np.asarray(K.indices, dtype=np.int32)),
+            np.ascontiguousarray(np.asarray(K.data, dtype=np.float64)),
+            np.ascontiguousarray(np.asarray(b, dtype=np.float64)),
+            None if x0 is None else np.ascontiguousarray(np.asarray(x0, dtype=np.float64)),
+            float(rtol),
+            int(maxiter),
+            mv,
+            _threads(),
+        )
+        x, iters, status, ratio, _kind = res
+        return x, int(iters), str(status), float(ratio)
+    except Exception:
+        return None
+
+
+def feature_edges(mesh: Any) -> list[dict[str, Any]] | None:
+    """Mesh-side fillet/round-edge estimates on the tessellation.
+
+    Returns MeasuredFillet-shaped dicts tagged ``source="mesh_edge"`` —
+    estimate-grade evidence for meshes where the OCC recogniser is skipped
+    or timed out, never a claim of OCC-recogniser provenance. None when
+    the kernel is unavailable/disabled."""
+    if _nx is None or not native_enabled("geom"):
+        return None
+    try:
+        import numpy as np
+
+        verts = np.ascontiguousarray(np.asarray(mesh.vertices, dtype=np.float64))
+        faces = np.ascontiguousarray(np.asarray(mesh.faces, dtype=np.int64))
+        rows = _nx.feature_edges(verts, faces)
+        return [
+            {
+                "radius": float(r),
+                "at": [float(x), float(y), float(z)],
+                "axis": str(ax),
+                "side": str(side),
+                "source": "mesh_edge",
+                "edge_count": int(n),
+                "angle_deg": float(deg),
+            }
+            for (r, x, y, z, ax, side, n, deg) in rows
+        ]
+    except Exception:
+        return None

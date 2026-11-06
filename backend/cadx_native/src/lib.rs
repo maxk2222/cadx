@@ -1,6 +1,8 @@
 use pyo3::prelude::*;
 
+mod cg;
 mod csr;
+mod edges;
 mod mesh;
 mod spmv;
 mod util;
@@ -13,6 +15,8 @@ fn cadx_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<mesh::MeshIndex>()?;
     m.add_class::<csr::Assembler>()?;
     m.add_class::<spmv::SpMv>()?;
+    m.add_function(wrap_pyfunction!(cg::cg_solve, m)?)?;
+    m.add_function(wrap_pyfunction!(edges::feature_edges, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
