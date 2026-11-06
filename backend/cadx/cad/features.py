@@ -911,6 +911,43 @@ def _normal_at_uv(face: Any, u: float, v: float) -> list[float] | None:
         return None
 
 
+def _cylinder_axis(face: Any) -> list[float] | None:
+    """Unit direction of a cylindrical face's axis (None when not a cylinder)."""
+    try:
+        if face.geom_type != GeomType.CYLINDER:
+            return None
+        a = _vec3(BRepAdaptor_Surface(face.wrapped).Cylinder().Axis().Direction())
+        n = _norm(a)
+        return [c / n for c in a] if n > 1e-9 else None
+    except Exception:
+        return None
+
+
+def _face_is_void_cylinder(face: Any) -> bool:
+    """True for a concave (void-side) cylindrical face — a bore wall — whose
+    outward normal points toward the axis. Boss walls point away."""
+    try:
+        axis = _cylinder_axis(face)
+        if axis is None:
+            return False
+        loc = _vec3(BRepAdaptor_Surface(face.wrapped).Cylinder().Axis().Location())
+        u1, u2, v1, v2 = BRepTools.UVBounds_s(face.wrapped)
+        u, v = (u1 + u2) / 2, (v1 + v2) / 2
+        n = _normal_at_uv(face, u, v)
+        if n is None:
+            return False
+        pnt, d1u, d1v = gp_Pnt(), gp_Vec(), gp_Vec()
+        BRepAdaptor_Surface(face.wrapped).D1(u, v, pnt, d1u, d1v)
+        p = _vec3(pnt)
+        par = sum((p[i] - loc[i]) * axis[i] for i in range(3))
+        to_axis = _sub([loc[i] + par * axis[i] for i in range(3)], p)
+        if _norm(to_axis) < 1e-9:
+            return False
+        return sum(to_axis[i] * n[i] for i in range(3)) > 0
+    except Exception:
+        return False
+
+
 def _point_on_face(face: Any, u: float, v: float) -> bool:
     try:
         cls = BRepClass_FaceClassifier(face.wrapped, gp_Pnt2d(u, v), 1e-6)
@@ -1221,15 +1258,15 @@ def _detect_structural_features(  # noqa: C901 — graph pattern matching
         if not bedges:
             continue
         walls: list[int] = []
-        ambiguous = False
+        extra: list[int] = []
         for _, j, data in bedges:
             if data["conv"] != "concave":
                 continue
             if is_planar(j) and abs(d(nodes[j]["normal"], nb)) < _AAG_PERP_DOT:
                 walls.append(j)
             else:
-                ambiguous = True  # concave join to non-planar/non-⊥ face
-        if ambiguous or not walls:
+                extra.append(j)  # concave join to non-planar/non-⊥ face
+        if not walls:
             continue
         channel: list[float] | None = None
         pair: tuple[int, int] | None = None
@@ -1260,11 +1297,31 @@ def _detect_structural_features(  # noqa: C901 — graph pattern matching
             continue
         if kind == "groove" and channel is None:
             channel = _unit(_cross_v(nodes[pair[0]]["normal"], nb))
+        # leftover concave neighbours are only acceptable as rounded channel
+        # end caps — a stadium/keyway cap is a cylinder whose axis is ⊥ the
+        # channel and whose centre sits past the floor's end along it. Any
+        # other concave neighbour keeps the recess ambiguous and rejects it.
+        end_caps: set[int] = set()
+        if kind == "groove" and extra:
+            side = _cross_v(nb, channel)
+            for j in extra:
+                nj = nodes[j]
+                if nj["geom"] != "GeomType.CYLINDER":
+                    continue
+                cyl_ax = _cylinder_axis(nj["face"])
+                if cyl_ax is None or abs(d(cyl_ax, channel)) >= _AAG_PERP_DOT:
+                    continue
+                off = _sub(nj["center"], nodes[b]["center"])
+                if abs(d(off, side)) >= abs(d(off, channel)):
+                    continue
+                end_caps.add(j)
+        if len(extra) != len(end_caps):
+            continue
         wallset = set(walls)
         end_signs: set[int] = set()
         ok = True
         for _, j, data in bedges:
-            if j in wallset:
+            if j in wallset or j in end_caps:
                 continue
             if data["conv"] not in ("convex", "tangent"):
                 ok = False  # recess edge that is not a wall — not a clean cut
@@ -1311,6 +1368,21 @@ def _detect_structural_features(  # noqa: C901 — graph pattern matching
         openings = [
             v for w in c["walls"] if (v := _opening_coord(graph, c["key"], w, nb)) is not None
         ]
+        if not openings:
+            # bore-side channel (keyway seat, broached slot): walls ending on
+            # a concave void surface — a bore — instead of an outer plane
+            # still form an open channel; the recess extent along nb stands
+            # in for the missing opening plane.
+            nax = "xyz".index(_dominant_axis(nb)[-1])
+            nba = nb[nax]
+            if any(
+                o not in c["key"]
+                and graph.edges[w, o]["conv"] == "convex"
+                and _face_is_void_cylinder(nodes[o]["face"])
+                for w in c["walls"]
+                for o in graph.neighbors(w)
+            ):
+                openings.append(max(nba * lo[nax], nba * hi[nax]))
         if not openings:
             continue  # walls reach no outer face ∥ the bottom — not an open channel
         depth = max(openings) - d(nodes[b]["center"], nb)

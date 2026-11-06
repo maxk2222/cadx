@@ -810,3 +810,38 @@ def test_compare_anchor_positions_reports_measured_center():
     assert "off by 5.1 mm" in f.actual
     assert "(15.0, 1.0)" in f.actual  # measured centre is reported
     assert "(10.0, 0.0)" in f.expected  # declared position stays in expected
+
+
+def test_keyway_seat_in_bore_is_a_groove():
+    """A keyway seat cut from inside a bore is a channel whose walls open
+    onto the bore void, not an outer planar face — the stadium end cap is a
+    rounded channel end, not an ambiguous neighbour. Regression for the
+    marine-propeller miss: verify_spec reported 0 slots on a real keyway."""
+    from cadx.cad.cadlib.cutouts import oblong_slot
+    from cadx.cad.features import _detect_structural_features
+
+    with BuildPart() as p:
+        Cylinder(radius=15, height=28)
+        p.part -= Cylinder(radius=5.04, height=40)
+        with Locations(Pos(4.74, 0, 14)):
+            oblong_slot(4.0, 30.0, direction="+z", normal="+x", depth=2.8)
+    grooves = _detect_structural_features(p.part)[1]
+    assert len(grooves) == 1
+    g = grooves[0]
+    assert g.axis == "+z"  # channel runs the bore depth
+    assert g.opening == "-x"  # opens into the bore
+    assert g.width == pytest.approx(4.0, abs=0.2)
+
+
+def test_groove_opening_to_boss_not_counted():
+    """Walls ending on a *material-side* cylinder (boss/fillet) are not a
+    void opening — the fallback must stay bore-specific."""
+    from cadx.cad.features import _detect_structural_features
+
+    # recess between two ribs ending at a boss wall — walls' convex
+    # neighbour is the boss cylinder, not a bore void
+    with BuildPart() as p:
+        Box(30, 30, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
+        p.part -= Pos(0, 0, 10) * Cylinder(radius=6, height=4)
+    grooves = _detect_structural_features(p.part)[1]
+    assert grooves == []
