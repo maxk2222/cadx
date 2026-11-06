@@ -260,6 +260,7 @@ Infrastructure-only bootstrap settings; everything else lives in the DB.
 | `CADX_SETTINGS_KEY` | — | Fernet key encrypting stored secrets; default: auto-generated `{DATA_DIR}/.settings.key` (0600) |
 | `U2NET_HOME` | `~/.u2net` (`/data/rembg` on compose) | rembg model cache |
 | `CADX_MCP_TOKEN` | — | optional bearer token gating the `/mcp` HTTP endpoint |
+| `CADX_NATIVE` | `1` | `0` disables the optional `cadx_native` Rust kernels entirely (import blocked); `CADX_NATIVE_GEOM` / `CADX_NATIVE_FEM` bisect the mesh-query and FEM halves independently |
 
 ### mesh-server (`mesh_server/meshserver/config.py`)
 

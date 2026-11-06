@@ -18,6 +18,10 @@ python3 -m venv .venv && .venv/bin/python -m pip install uv
 make sync                      # backend venv + locked deps
 make sync-fem                  # optional: CHOLMOD/AMG FEM solver tier
                                # (needs SuiteSparse headers, see fem-topopt.md)
+cd backend/cadx_native && uvx maturin develop --release
+                               # optional: Rust kernel (needs a Rust toolchain);
+                               # re-run after every `make sync` — uv removes
+                               # non-locked packages
 cd frontend && npm install
 ```
 

@@ -324,7 +324,13 @@ extremum within `r_mm` of each anchor so results read as
   objective (weighted via `LoadCase.weight`). Per-cell Young's modulus
   supports material zones; `x0` warm-starts from a prior density field.
   Element-assembly index arrays (`iK`/`jK`) are cached across iterations
-  since the sparsity pattern is constant for a fixed domain.
+  since the sparsity pattern is constant for a fixed domain. When the
+  optional `cadx_native` module is present (built into the executor image;
+  `CADX_NATIVE_FEM=0` disables), CSR value fills and the CG matvec run in
+  Rust — assembly canonicalises the cached pattern once and scatters
+  values per solve, the SpMV is a parallel `LinearOperator` so the SciPy
+  CG driver, AMG/Jacobi preconditioners and the divergence watchdog are
+  untouched. Parity is pinned in `tests/native/` (rtol 1e-9 vs SciPy).
 - `optimize.solver`: `oc` (default, volume-only bisection), `mma`
   (nlopt LD_MMA) which enables real constraints — `case_objective: "minmax"`
   minimizes a smooth P-norm worst-case over all load cases instead of the
@@ -629,7 +635,11 @@ nominal-solve failure propagates to the mask fallback):
   `meets_safety_factor`,
   worker status and the agent's run comparison. `sf_export` stays the
   nominal-mesh value for compatibility. `optimize.verify_robust` is the
-  per-run override.
+  per-run override. The eroded and dilated solves overlap in a two-worker
+  thread pool when `cadx_native` is active AND two solve estimates fit
+  the memory budget (the kernels release the GIL; inner case pools stay
+  serial since forking from a thread is unsafe) — the serial order,
+  per-realization detail and cancel checks are unchanged either way.
 - **Mesh-shift probe** (`fem_verify_mesh_shift`, default off): the export
   mesh is translated half a pitch and re-voxelized/solved; a >20 % SF
   drift flags `sf_mesh_sensitive` + a warning — the verdict is then an

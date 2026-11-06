@@ -13,12 +13,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
-    && /root/.cargo/bin/cargo install --locked maturin
+    && pip install --no-cache-dir maturin
 WORKDIR /native
 COPY cadx_native/Cargo.toml cadx_native/Cargo.lock* ./
 COPY cadx_native/pyproject.toml ./
 COPY cadx_native/src ./src
-RUN /root/.cargo/bin/maturin build --release -i python3.12 -o dist
+RUN PATH=/root/.cargo/bin:$PATH maturin build --release -i python3.12 -o dist
 
 FROM python:3.12-slim-trixie AS base
 
