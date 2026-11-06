@@ -1086,3 +1086,29 @@ def test_run_fem_pool_matches_serial(tmp_path: Path) -> None:
         assert c_par.max_vm_mpa == pytest.approx(c_ser.max_vm_mpa)
         assert c_par.max_disp_mm == pytest.approx(c_ser.max_disp_mm)
         assert c_par.converged == c_ser.converged
+
+
+def test_anchor_entry_warnings_flags_empty_entry() -> None:
+    """A misresolved fastener anchor (the z=85 face-leak shape) warns;
+    a valid entry on real material is silent."""
+    from cadx.cad.fem.regions import anchor_entry_warnings
+
+    dom = voxelize(_box_mesh(), 2.0, 150_000)  # z in [0,12], all solid
+    good = {"kind": "tap", "name": "m8", "axis": "-z", "pos": [10.0, 0.0, None], "dia": 6.8, "depth_mm": 8.0}
+    assert anchor_entry_warnings(dom, [good]) == []
+
+    # entry inside bounds but the span behind the face is empty — carve a
+    # void pocket above z=8 so the -z entry at z=8 probes air
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    dom2 = VoxelDomain(dom.origin, dom.pitch, dom.dims, dom.solid & ~(centers[..., 2] > 8.0))
+    bad = {"kind": "tap", "name": "bad", "axis": "-z", "pos": [10.0, 0.0, 8.0], "dia": 6.8, "depth_mm": 8.0}
+    w = anchor_entry_warnings(dom2, [bad])
+    assert w and "empty space" in w[0] and "bad" in w[0]
+
+    # entry completely outside the domain slab — the z=85 signature
+    far = {"kind": "tap", "name": "far", "axis": "-z", "pos": [10.0, 0.0, 85.0], "dia": 6.8, "depth_mm": 8.0}
+    w = anchor_entry_warnings(dom, [far])
+    assert w and "outside the part bounds" in w[0]
+
+    # non-fastener + unsigned axes are skipped
+    assert anchor_entry_warnings(dom, [{"kind": "dimple", "axis": "-z", "pos": [10, 0, 85], "dia": 4}]) == []

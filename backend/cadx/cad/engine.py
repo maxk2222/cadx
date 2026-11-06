@@ -2677,6 +2677,7 @@ def run_topopt_pipeline(  # noqa: C901
     from cadx.cad.fem.loadpath import loadpath_field
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
+        anchor_entry_warnings,
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
@@ -3039,6 +3040,7 @@ def run_topopt_pipeline(  # noqa: C901
     res.topopt.setdefault("warnings", []).extend(
         empty_region_warnings(part_domain, list(opt.void_regions), anchors)
     )
+    res.topopt.setdefault("warnings", []).extend(anchor_entry_warnings(part_domain, anchors))
     keep_cells = keep_element_mask(part_domain, keep_list, anchors)
     # anchor keep rings around every bore a case's load/fix region resolves
     # on — a `bore`/`hole` load region must keep its material ring even when
@@ -4333,6 +4335,7 @@ def run_infill_pipeline(  # noqa: C901
     from cadx.cad.fem.materials import resolve_material
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
+        anchor_entry_warnings,
         empty_region_warnings,
         keep_element_mask,
         material_cell_factors,
@@ -4540,6 +4543,7 @@ def run_infill_pipeline(  # noqa: C901
     res.topopt.setdefault("warnings", []).extend(
         empty_region_warnings(domain, list(opt.void_regions), anchors)
     )
+    res.topopt.setdefault("warnings", []).extend(anchor_entry_warnings(domain, anchors))
     keep_cells = keep_element_mask(domain, keep_list, anchors)
     void_cells = keep_element_mask(domain, list(opt.void_regions) + iface_voids, anchors)
     passive = passive_solid_mask(domain, [keep_cells], fixed_node_masks, load_node_masks)

@@ -2323,3 +2323,73 @@ def empty_region_warnings(
             idx = f"#{r.hole_index}" if r.hole_index else ""
             out.append(f"region {r.kind} {r.axis or ''}{idx} matched no cells — ignored")
     return out
+
+
+def anchor_entry_warnings(
+    domain: VoxelDomain, anchors: list[dict] | None
+) -> list[str]:
+    """Fastener anchors whose declared entry resolves into empty space.
+
+    A misresolved anchor (a direction-token face leak resolving a "-z" tap
+    onto a z=85 entry) leaves the FEM attach probing air — downstream the
+    failure reads as an unrelated 'no cells' error or silently binds a far
+    wall. Probe the wall ring around the bore line (outer edge ≈ bore
+    radius + 1.5 pitches) just inside the declared entry point over the
+    declared depth; no solid cells there means the entry sits in open
+    space. The bore CHANNEL is intentionally excluded — a real bore is
+    void by construction; only its walls count."""
+    out: list[str] = []
+    if not anchors:
+        return out
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    lo = domain.origin
+    hi = domain.origin + domain.pitch * np.asarray(domain.dims)
+    for i, a in enumerate(anchors, start=1):
+        if not is_fastener_anchor(a):
+            continue
+        axis = str(a.get("axis") or "").lower()
+        if axis not in _AXIS3 or not axis.startswith(("+", "-")):
+            continue
+        idx = _AXIS3[axis]
+        sgn = -1.0 if axis.startswith("-") else 1.0
+        others = [j for j in range(3) if j != idx]
+        c = _anchor_center3d(a)
+        pos = a.get("pos")
+        entry_ax = (
+            float(pos[idx])
+            if isinstance(pos, (list, tuple)) and len(pos) == 3 and pos[idx] is not None
+            else (float(hi[idx]) if sgn > 0 else float(lo[idx]))
+        )
+        dia = float(a.get("dia") or 0.0)
+        name = a.get("name") or f"#{i}"
+        if not (float(lo[idx]) - domain.pitch <= entry_ax <= float(hi[idx]) + domain.pitch):
+            out.append(
+                f"anchor {name} (axis {axis}) at "
+                f"({c[others[0]]:.1f}, {c[others[1]]:.1f}): declared entry {axis}="
+                f"{entry_ax:.1f} lies outside the part bounds "
+                f"[{float(lo[idx]):.1f}, {float(hi[idx]):.1f}] — misresolved anchor"
+            )
+            continue
+        depth = float(a.get("depth_mm") or 0.0) or max(4.0 * domain.pitch, 0.5 * dia)
+        depth = min(depth, float(hi[idx] - lo[idx]))
+        du = centers[..., others[0]] - c[others[0]]
+        dv = centers[..., others[1]] - c[others[1]]
+        r2 = du * du + dv * dv
+        r_in = max(0.5 * dia - 0.5 * domain.pitch, 0.0)
+        r_out = 0.5 * dia + 1.5 * domain.pitch
+        behind = (entry_ax - centers[..., idx]) * sgn
+        probe = (
+            (r2 >= r_in * r_in)
+            & (r2 <= r_out * r_out)
+            & (behind >= 0.0)  # strictly inside the bore span — the cell
+            # slice below the mouth is outside the feature's wall run
+            & (behind <= depth)
+        )
+        if probe.any() and not domain.solid[probe].any():
+            out.append(
+                f"anchor {name} (axis {axis}) at "
+                f"({c[others[0]]:.1f}, {c[others[1]]:.1f}), entry {axis}≈{entry_ax:.1f}: "
+                f"no solid material within {depth:.1f} mm of the declared entry — "
+                "the anchor resolved into empty space"
+            )
+    return out
