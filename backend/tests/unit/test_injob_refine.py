@@ -1020,3 +1020,49 @@ def test_lift_chosen_run_metrics_no_chosen_noop():
     topopt: dict = {}
     _lift_chosen_run_metrics(topopt, [{"worst_sf": 5.0, "chosen": False}])
     assert topopt == {}
+
+
+def test_refine_topopt_block_child_verify_spec_wins():
+    """The executor's canonical report describes the refined artifact —
+    it must override the parent's verify_spec, not sit beside it."""
+    from cadx.agent.worker_jobs import _refine_topopt_block
+
+    parent_top = {
+        "sf_verified": 9.49,
+        "volfrac_achieved": 0.25,
+        "verify_spec": {"status": "PASS", "summary": "old"},
+    }
+    result = {
+        "mesh": {"topopt": {"worst_sf": 11.2}},
+        "verify_spec": {"status": "UNVERIFIED", "summary": "refined"},
+    }
+    out = _refine_topopt_block(parent_top, result)
+    assert out["verify_spec"]["status"] == "UNVERIFIED"  # refined part's report
+    assert out["sf_verified"] == 9.49  # parent fallback preserved
+    assert out["worst_sf"] == 11.2  # child's own metric wins
+
+
+def test_refine_topopt_block_parent_verify_spec_fallback():
+    """No child report → the parent's verify_spec stays (better than null)."""
+    from cadx.agent.worker_jobs import _refine_topopt_block
+
+    out = _refine_topopt_block(
+        {"verify_spec": {"status": "PASS"}, "sf_verified": 5.0},
+        {"mesh": {"topopt": {}}, "verify_spec": None},
+    )
+    assert out["verify_spec"]["status"] == "PASS"
+    assert out["sf_verified"] == 5.0
+
+
+def test_verify_spec_issue_only_on_fail_or_unverified():
+    from cadx.agent.worker_jobs import _verify_spec_issue
+
+    assert _verify_spec_issue(None) == []
+    assert _verify_spec_issue({"status": "PASS"}) == []
+    iss = _verify_spec_issue({"status": "FAIL", "summary": "verify_spec FAIL"})
+    assert len(iss) == 1
+    assert iss[0]["source"] == "verify_spec"
+    assert iss[0]["severity"] == "major"
+    assert iss[0]["report"]["status"] == "FAIL"
+    iss = _verify_spec_issue({"status": "UNVERIFIED", "summary": "u"})
+    assert iss[0]["severity"] == "minor"

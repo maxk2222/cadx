@@ -2093,6 +2093,33 @@ def _refine_features_block(result: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in (result.get("features") or {}).items() if k != "refine"}
 
 
+def _refine_topopt_block(parent_top: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """Parent topopt block overlaid by the refine result's own — the
+    executor's canonical conformance report describes the REFINED artifact
+    and wins over the parent's; parent fields stay the fallback for metrics
+    the refine stage does not re-issue."""
+    result_top = dict((result.get("mesh") or {}).get("topopt") or {})
+    vs_report = result.get("verify_spec")
+    if isinstance(vs_report, dict) and vs_report.get("status"):
+        result_top["verify_spec"] = vs_report
+    return {**parent_top, **result_top}
+
+
+def _verify_spec_issue(vs_report: Any) -> list[dict[str, Any]]:
+    """Surfaced issue for a FAIL/UNVERIFIED conformance report — PASS is
+    silently persisted under mesh.topopt.verify_spec only."""
+    if not isinstance(vs_report, dict) or vs_report.get("status") not in ("FAIL", "UNVERIFIED"):
+        return []
+    return [
+        {
+            "source": "verify_spec",
+            "severity": "major" if vs_report["status"] == "FAIL" else "minor",
+            "what": str(vs_report.get("summary") or ""),
+            "report": _json_safe(vs_report),
+        }
+    ]
+
+
 @_guarded
 async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Post-TopOpt feature finishing (LLM-free): re-cut exact bores/threads/
@@ -2253,10 +2280,9 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         # tunnel scan cannot see) — minus the "refine" sub-block, which
         # already ships under mesh["refine"] below
         result_mesh["features"] = _refine_features_block(result)
-        parent_top = (parent.mesh or {}).get("topopt") or {}
-        result_top = result_mesh.get("topopt") or {}
-        if parent_top or result_top:
-            result_mesh = {**result_mesh, "topopt": {**parent_top, **result_top}}
+        result_mesh["topopt"] = _refine_topopt_block(
+            (parent.mesh or {}).get("topopt") or {}, result
+        )
         version.mesh = _json_safe(
             {
                 **result_mesh,
@@ -2305,6 +2331,7 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
             }
             for m in misses
         ]
+        issues += _verify_spec_issue(result.get("verify_spec"))
         if issues:
             version.issues = (version.issues or []) + issues
 
