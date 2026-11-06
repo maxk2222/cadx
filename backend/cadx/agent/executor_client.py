@@ -25,6 +25,13 @@ from cadx.runtime_config import RuntimeSettings
 log = get_logger(__name__)
 
 CAD_QUEUE = "cad"
+CAD_LIGHT_QUEUE = "cad-light"
+# codegen-loop latency lane — these funcs are short rlimit-bounded tasks and
+# must not queue behind a long heavy solve (optimize/topopt/fem) on the
+# serial 'cad' lane. Keep in sync with CadLightWorkerSettings.functions.
+_LIGHT_FUNCS = frozenset(
+    {"execute_version", "audit_params", "edit_feature", "export_all"}
+)
 
 
 def exec_error(res: dict[str, Any], default: str = "executor failed") -> str:
@@ -294,9 +301,10 @@ class QueueExecutor:
         # kill THIS task only, never the whole cadx job (a job-level flag
         # silently cancelled every later execute for an hour)
         payload["_task_id"] = job_id
+        queue = CAD_LIGHT_QUEUE if func in _LIGHT_FUNCS else CAD_QUEUE
         enqueued_at = time.monotonic()
         try:
-            await pool.enqueue_job(func, payload, _queue_name=CAD_QUEUE, _job_id=job_id)
+            await pool.enqueue_job(func, payload, _queue_name=queue, _job_id=job_id)
         except Exception as e:
             # submit never reached the queue — no task exists, a retry is
             # safe and must be told so explicitly (see poll-failure case)

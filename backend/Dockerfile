@@ -57,7 +57,7 @@ USER cad
 ENV PYTHONFAULTHANDLER=1
 # diag wrapper: logs incoming signals and arq's exit code so silent
 # clean-exit restarts reveal whether docker or the process ended it
-CMD ["sh", "-c", "trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; kill -TERM $C' TERM; trap 'echo \"[diag] got SIGINT, forwarding\" >&2; kill -INT $C' INT; arq cadx.queue.CadWorkerSettings & C=$!; rc=0; while kill -0 $C 2>/dev/null; do wait $C; rc=$?; done; echo \"[diag] arq exited rc=$rc\" >&2; exit $rc"]
+CMD ["sh", "-c", "trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; kill -TERM $C1 $C2 2>/dev/null' TERM; trap 'echo \"[diag] got SIGINT, forwarding\" >&2; kill -INT $C1 $C2 2>/dev/null' INT; arq cadx.queue.CadWorkerSettings & C1=$!; arq cadx.queue.CadLightWorkerSettings & C2=$!; rc=0; while kill -0 $C1 2>/dev/null && kill -0 $C2 2>/dev/null; do sleep 2; done; D=$C1; kill -0 $C1 2>/dev/null && D=$C2; echo \"[diag] worker pid=$D exited — restarting both\" >&2; kill -TERM $C1 $C2 2>/dev/null; wait $C1 $C2; exit 1"]
 
 # test variant of the executor image: same env + dev deps, for
 # `docker build --target executor-test` then run pytest tests/cad inside it.

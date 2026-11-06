@@ -398,10 +398,6 @@ class CadWorkerSettings:
     """Run with: uv run arq cadx.queue.CadWorkerSettings"""
 
     functions = [  # noqa: RUF012
-        execute_version,
-        audit_params,
-        edit_feature,
-        export_all,
         process_mesh,
         parametrize_mesh,
         fem_analyze,
@@ -427,4 +423,32 @@ class CadWorkerSettings:
     # a fresh worker — often killing it again and confusing callers that already
     # timed out. Callers (QueueExecutor) own the real timeout and resubmit
     # deliberately.
+    max_tries = 1
+
+
+class CadLightWorkerSettings:
+    """Run with: uv run arq cadx.queue.CadLightWorkerSettings
+
+    The low-latency lane: short codegen-loop tasks (candidate exec, param
+    audits, feature edits, exports) must not queue behind a 45-min optimize
+    on the serial `cad` lane. They share the same executor container and its
+    cgroup — per-task rlimits (exec_mem_limit_mb) bound them, and the whole
+    lane is capped well below the container's headroom. The serial `cad`
+    lane keeps its OOM contract: never two heavy solves at once.
+    """
+
+    functions = [  # noqa: RUF012
+        execute_version,
+        audit_params,
+        edit_feature,
+        export_all,
+    ]
+    on_startup = cad_startup
+    on_shutdown = worker_shutdown
+    redis_settings = _redis()
+    queue_name = "cad-light"
+    # small parallel lane — these tasks are rlimit-bounded, not GPU/CPU-bound
+    # like a SIMP solve; 2 keeps the executor responsive without starving it.
+    max_jobs = int(os.environ.get("CADX_CADLIGHT_MAX_JOBS") or 2)
+    job_timeout = 7200
     max_tries = 1
