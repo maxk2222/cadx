@@ -17,6 +17,7 @@ import type { Asset } from "../lib/types";
 import GenerateImageModal from "./GenerateImageModal";
 import ImageEditorModal from "./ImageEditorModal";
 import { Btn, EmptyState, IconBtn, Lightbox, Spinner, inputCls } from "./ui";
+import SafeImg from "./SafeImg";
 
 const KIND_ICON: Record<string, React.ReactNode> = {
   image: <ImageIcon className="h-5 w-5" />,
@@ -172,7 +173,12 @@ export default function AssetManager({
                   title={`${a.filename}${a.caption ? ` — ${a.caption}` : ""}`}
                 >
                   {isImage(a.kind) ? (
-                    <img src={a.url} className="h-20 w-full object-cover" alt={a.filename} />
+                    <SafeImg
+                      src={a.url}
+                      className="h-20 w-full object-cover"
+                      alt={a.filename}
+                      fallback={<div className="h-20 w-full bg-panel2" />}
+                    />
                   ) : (
                     <div className="flex h-20 flex-col items-center justify-center gap-1 text-faint">
                       {KIND_ICON[a.kind] ?? <FileBox className="h-5 w-5" />}

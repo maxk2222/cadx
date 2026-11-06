@@ -54,6 +54,7 @@ import ModelCanvas, { type PickInfo } from "./editor/ModelCanvas";
 import RegionFill, { type RegionFillEntry } from "./editor/RegionFill";
 import { MATERIAL_OPTIONS } from "./OptionsPanel";
 import { Btn, Chip, Field, IconBtn, inputCls, NumInput, OpacitySlider, useToast } from "./ui";
+import SafeImg from "./SafeImg";
 
 /* ------------------------------------------------------------------ */
 /* model                                                               */
@@ -3062,7 +3063,13 @@ export default function StructuralEditor({
                 {!!preview.pngs?.length && (
                   <div className="mt-2 grid grid-cols-2 gap-1.5">
                     {preview.pngs.map((u) => (
-                      <img key={u} src={u} className="rounded border border-edge" alt="" />
+                      <SafeImg
+                        key={u}
+                        src={u}
+                        className="rounded border border-edge"
+                        alt=""
+                        fallback={<div className="aspect-video w-full rounded border border-edge bg-panel2" />}
+                      />
                     ))}
                   </div>
                 )}

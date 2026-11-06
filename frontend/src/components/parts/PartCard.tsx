@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, errMsg } from "../../lib/api";
 import type { PartGroup } from "../../lib/parts";
+import SafeImg from "../SafeImg";
 import VersionTree from "../VersionTree";
 import {
   Card,
@@ -152,7 +153,7 @@ export default function PartCard({
               className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
               title={part.name || t("part_untitled")}
             >
-              <span className="truncate text-sm font-medium text-fg">
+              <span className="min-w-0 break-words text-sm font-medium text-fg">
                 {part.name || (
                   <span className="italic text-faint">{t("part_untitled")}</span>
                 )}
@@ -168,13 +169,12 @@ export default function PartCard({
             {synthetic ? versions.length : part.version_count}
           </span>
           <span className="flex-1" />
-          {part.thumbnail_url && (
-            <img
-              src={part.thumbnail_url}
-              alt=""
-              className="h-7 w-7 shrink-0 rounded border border-edge object-contain"
-            />
-          )}
+          <SafeImg
+            src={part.thumbnail_url}
+            alt=""
+            className="h-7 w-7 shrink-0 rounded border border-edge object-contain"
+            fallback={null}
+          />
           {active && (
             <CircleDot className="h-3.5 w-3.5 shrink-0 animate-pulse text-brand-400" />
           )}

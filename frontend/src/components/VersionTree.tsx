@@ -81,7 +81,7 @@ export default function VersionTree({
             fallback={<div className="h-8 w-8 rounded bg-edge2" />}
           />
           <div className="min-w-0 flex-1">
-            <div className="truncate">
+            <div className="min-w-0 break-words">
               <span className="font-medium">v{v.number}</span>
               {v.accepted_at && (
                 <span title={t("tree_accepted")}>

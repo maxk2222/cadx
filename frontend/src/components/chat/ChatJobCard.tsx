@@ -15,6 +15,7 @@ import type { JobLive, SpawnedRef } from "../../lib/types";
 import { useJobEvents } from "../../lib/useJobEvents";
 import { LogRow } from "../JobLog";
 import LivePreview from "../LivePreview";
+import SafeImg from "../SafeImg";
 import StatusBadge from "../StatusBadge";
 import {
   PipelineStepper,
@@ -214,10 +215,11 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
           {active ? (
             <LivePreview versionId={vid} active={active} />
           ) : version.data ? (
-            <img
+            <SafeImg
               src={api.previewUrl(vid, "iso")}
               alt={t("alt_preview")}
               className="h-full w-full object-contain"
+              fallback={<div className="h-full w-full bg-bg" />}
             />
           ) : (
             <div className="h-full w-full" />

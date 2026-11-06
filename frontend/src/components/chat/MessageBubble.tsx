@@ -8,6 +8,7 @@ import type { ToolEvent } from "../../lib/useChatEvents";
 import type { Asset, ChatMessage, SpawnedRef } from "../../lib/types";
 import { useNow } from "../ui";
 import ChatJobCard from "./ChatJobCard";
+import SafeImg from "../SafeImg";
 
 /** Minimal markdown-ish renderer — fenced code blocks, inline code, bold,
  *  lists. Keeps assistant output readable without a markdown dependency. */
@@ -155,10 +156,11 @@ function ToolChip({
         <div className="flex gap-2 px-2 pb-2">
           {imgs.map((a) => (
             <a key={a.id} href={a.url} target="_blank" rel="noreferrer">
-              <img
+              <SafeImg
                 src={a.url}
                 alt={a.filename}
                 className="h-24 rounded border border-edge2 object-cover"
+                fallback={<div className="h-24 w-24 rounded border border-edge2 bg-panel2" />}
               />
             </a>
           ))}
@@ -209,10 +211,11 @@ const MessageBubble = memo(function MessageBubble({
             <div className="mb-2 flex flex-wrap gap-2">
               {att.map((a) => (
                 <a key={a.id} href={a.url} target="_blank" rel="noreferrer">
-                  <img
+                  <SafeImg
                     src={a.url}
                     alt={a.filename}
                     className="h-20 rounded border border-brand-800 object-cover"
+                    fallback={<div className="h-20 w-20 rounded border border-brand-800 bg-panel2" />}
                   />
                 </a>
               ))}
