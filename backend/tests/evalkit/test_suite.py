@@ -33,12 +33,14 @@ def test_shipped_suite_loads_and_validates():
         "aircraft_wing",
         "bearing_bracket_topopt",
         "marine_propeller",
+        "marine_propeller_autonomous",
+        "pressure_tank_autonomous",
         "robot_arm_infill_escalate",
         "robot_arm_infill_guided",
         "robot_arm_mount",
         "robot_arm_mount_autonomous",
     ]
-    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3]
+    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3]
     for c in cases:
         assert c.project.startswith("eval:")
         assert c.stages[0].type in ("generate", "meshgen")
@@ -135,6 +137,8 @@ def test_suite_files_present():
         "m8_hex_screw_threadlen.json",
         "m8_tapped_plate.json",
         "marine_propeller.json",
+        "marine_propeller_autonomous.json",
+        "pressure_tank_autonomous.json",
         "robot_arm_infill_escalate.json",
         "robot_arm_infill_guided.json",
         "robot_arm_mount.json",
