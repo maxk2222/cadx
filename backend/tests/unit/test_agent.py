@@ -323,3 +323,21 @@ async def test_edit_mode_includes_parent_code():
     assert outcome.status == "succeeded"
     codegen_msgs = [c for c in llm.calls if c["role"] == "code"]
     assert any("parent code" in json.dumps(m["messages"]) for m in codegen_msgs)
+
+
+def test_issue_source_rollup_counts_actionable_sources():
+    from cadx.agent.orchestrator import _issue_source_rollup
+
+    issues = [
+        {"source": "critique", "what": "a"},
+        {"source": "verify_spec", "what": "b"},
+        {"source": "verify_spec", "what": "c"},
+        {"source": "dims", "what": "d"},
+        {"source": "infra", "what": "executor down"},       # excluded
+        {"artifact": True, "source": "feature", "what": "stale"},  # excluded
+        {"what": "no source field"},                        # -> critique
+    ]
+    assert _issue_source_rollup(issues) == "critique:2, dims:1, verify_spec:2"
+    assert _issue_source_rollup(issues, exclude={"critique"}) == "dims:1, verify_spec:2"
+    assert _issue_source_rollup([]) == ""
+    assert _issue_source_rollup([{"source": "infra", "what": "x"}]) == ""

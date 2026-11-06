@@ -559,6 +559,26 @@ def _verify_spec_issue(
     }
 
 
+def _issue_source_rollup(
+    issues: list[dict[str, Any]], *, exclude: set[str] | None = None
+) -> str:
+    """`{source}:{count}` rollup over the actionable issue list — the same
+    filter the improve step applies (no measurement-artifact / infra
+    entries). `exclude` drops sources already covered elsewhere (the
+    critique emit's own major/minor count covers critique +
+    verify_question discrepancies)."""
+    ex = exclude or set()
+    counts: dict[str, int] = {}
+    for i in issues or []:
+        if i.get("artifact") or i.get("source") == "infra":
+            continue
+        src = str(i.get("source") or "critique")
+        if src in ex:
+            continue
+        counts[src] = counts.get(src, 0) + 1
+    return ", ".join(f"{s}:{n}" for s, n in sorted(counts.items()))
+
+
 def _multi_solid(exec_result: dict[str, Any] | None) -> bool:
     """Deterministic hard gate: specs describe one joined part."""
     return int(((exec_result or {}).get("analysis") or {}).get("solid_count") or 1) > 1
@@ -3407,8 +3427,12 @@ async def _run_cad(  # noqa: C901
         # session and the fresh-codegen stall escape both need it
         features = (best.exec_result.get("features") or None) if best else None
         if use_improve:
+            rollup = _issue_source_rollup(issues)
             await ctx.emit(
-                "improve", it, f"fixing {len(actionable)} issue(s) on the best candidate"
+                "improve",
+                it,
+                f"fixing {len(actionable)} issue(s) on the best candidate"
+                + (f" ({rollup})" if rollup else ""),
             )
             patch_errors: list[str] | None = pending_patch_errors
             pending_patch_errors = None
@@ -4148,11 +4172,22 @@ async def _run_cad(  # noqa: C901
             )
 
         major = [d for d in critique.discrepancies if d.severity == "major"]
+        # the major/minor count covers critique + verify_question sourced
+        # issues — other sources (verify_spec, dims, fem, …) are rolled up
+        # separately so "0 issues" here never collides with "fixing N" there
+        extra = _issue_source_rollup(issues, exclude={"critique", "verify_question"})
+        n_extra = sum(
+            1
+            for i in issues
+            if not i.get("artifact")
+            and str(i.get("source") or "critique") not in {"critique", "verify_question", "infra"}
+        )
         await ctx.emit(
             "critique",
             it,
             f"score {critique.score}/100 — {len(major)} major, "
-            f"{len(critique.discrepancies) - len(major)} minor issues",
+            f"{len(critique.discrepancies) - len(major)} minor discrepancies"
+            + (f" (+{n_extra} issues: {extra})" if extra else ""),
             score=critique.score,
         )
 
