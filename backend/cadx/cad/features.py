@@ -1839,11 +1839,14 @@ def _check_hole_feature(
     # through unless they are explicitly blind (insert pockets, depth-limited).
     dims = f.dims or {}
     desc = f"{std_desc} {f.name or ''}".lower()
+    # a `depth` dim only implies blind when the feature doesn't call itself
+    # through — the spec habitually fills depth = host thickness on through
+    # holes ("depth 10" on a 10 mm plate), which is not a blind-bore intent
     wants_blind = (
         f.type == "insert"
         or "blind" in desc
         or "sackloch" in desc
-        or any(k in dims for k in ("depth", "tiefe"))
+        or (any(k in dims for k in ("depth", "tiefe")) and "through" not in desc)
     )
     if (group.depth_class == "blind" or group.blocked > 0) and not wants_blind:
         findings.append(

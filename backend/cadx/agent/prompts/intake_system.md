@@ -68,7 +68,10 @@ Rules:
   codegen does not see the images, only your spec text.
 - List EVERY geometric feature visible in the images or mentioned in the text
   in `features` — one entry each: through/blind/counterbored/countersunk holes
-  (diameter, depth, counterbore/countersink dims, position along the part),
+  (diameter, depth, counterbore/countersink dims, position along the part).
+  Declare `depth` ONLY for holes that must stop before exiting (blind bores,
+  taps, inserts) — a through hole carries no depth dim; "depth = host
+  thickness" means through, not blind.
   slots, pockets, grooves, bosses, ribs, edge fillets/chamfers, steps, cutouts,
   engraved text, patterned repeats. Give `type`, numeric `dims` in mm where
   known, `position` and `count`. Position hints drive downstream FEM anchors

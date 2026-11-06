@@ -244,6 +244,42 @@ def test_compare_blind_spec_hole_not_flagged():
     assert not any("through" in f.expected for f in findings)
 
 
+def test_compare_depth_dim_on_through_named_bore_not_blind():
+    """Spec habitually fills `depth` = host thickness on through bores
+    ("M12 tapped through-bore", depth=15) — the dim alone must not flip the
+    expectation to blind, or every through bore fails its own spec."""
+    m = MeasuredFeatures(
+        hole_groups=[
+            MeasuredHoleGroup(diameter=10.2, count=1, axis="+z", depth_class="through")
+        ],
+        total_holes=1,
+    )
+    spec = [
+        Feature(
+            name="M12 tapped through-bore",
+            type="thread",
+            count=1,
+            dims={"diameter": 10.2, "depth": 15.0},
+        )
+    ]
+    findings = compare_features(spec, m)
+    assert not any("stopping at depth" in f.actual for f in findings)
+
+
+def test_compare_depth_dim_still_flags_unnamed_blind():
+    """A depth dim on a feature that does NOT call itself through still
+    expects blind — real blind-bore misses stay caught."""
+    m = MeasuredFeatures(
+        hole_groups=[MeasuredHoleGroup(diameter=5.0, count=2, axis="+z", depth_class="through")],
+        total_holes=2,
+    )
+    spec = [
+        Feature(name="dowel seat", type="hole", count=2, dims={"diameter": 5.0, "depth": 8.0})
+    ]
+    findings = compare_features(spec, m)
+    assert any("stopping at depth" in f.actual for f in findings)
+
+
 def test_compare_fine_grained_hole_types_checked():
     """Intake emits fine-grained types (through_hole etc.) — they must reach
     the same deterministic checks as the coarse 'hole' type."""
