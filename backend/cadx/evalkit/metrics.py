@@ -99,15 +99,11 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
         probes = refine.get("probes") or []
         refine_block = {
             "applied": len(applied),
-            "helical": sum(
-                1 for a in applied if isinstance(a, dict) and a.get("helical")
-            ),
+            "helical": sum(1 for a in applied if isinstance(a, dict) and a.get("helical")),
             "skipped": len(refine.get("skipped") or []),
             "restored_regions": refine.get("restored_regions"),
             "probes": len(probes),
-            "probes_verified": sum(
-                1 for p in probes if isinstance(p, dict) and p.get("verified")
-            ),
+            "probes_verified": sum(1 for p in probes if isinstance(p, dict) and p.get("verified")),
             "verify_misses": len(refine.get("verify_misses") or []),
             "warnings": refine.get("warnings") or [],
         }

@@ -1094,24 +1094,48 @@ def test_anchor_entry_warnings_flags_empty_entry() -> None:
     from cadx.cad.fem.regions import anchor_entry_warnings
 
     dom = voxelize(_box_mesh(), 2.0, 150_000)  # z in [0,12], all solid
-    good = {"kind": "tap", "name": "m8", "axis": "-z", "pos": [10.0, 0.0, None], "dia": 6.8, "depth_mm": 8.0}
+    good = {
+        "kind": "tap",
+        "name": "m8",
+        "axis": "-z",
+        "pos": [10.0, 0.0, None],
+        "dia": 6.8,
+        "depth_mm": 8.0,
+    }
     assert anchor_entry_warnings(dom, [good]) == []
 
     # entry inside bounds but the span behind the face is empty — carve a
     # void pocket above z=8 so the -z entry at z=8 probes air
     centers = dom.element_centers().reshape((*dom.dims, 3))
     dom2 = VoxelDomain(dom.origin, dom.pitch, dom.dims, dom.solid & ~(centers[..., 2] > 8.0))
-    bad = {"kind": "tap", "name": "bad", "axis": "-z", "pos": [10.0, 0.0, 8.0], "dia": 6.8, "depth_mm": 8.0}
+    bad = {
+        "kind": "tap",
+        "name": "bad",
+        "axis": "-z",
+        "pos": [10.0, 0.0, 8.0],
+        "dia": 6.8,
+        "depth_mm": 8.0,
+    }
     w = anchor_entry_warnings(dom2, [bad])
     assert w and "empty space" in w[0] and "bad" in w[0]
 
     # entry completely outside the domain slab — the z=85 signature
-    far = {"kind": "tap", "name": "far", "axis": "-z", "pos": [10.0, 0.0, 85.0], "dia": 6.8, "depth_mm": 8.0}
+    far = {
+        "kind": "tap",
+        "name": "far",
+        "axis": "-z",
+        "pos": [10.0, 0.0, 85.0],
+        "dia": 6.8,
+        "depth_mm": 8.0,
+    }
     w = anchor_entry_warnings(dom, [far])
     assert w and "outside the part bounds" in w[0]
 
     # non-fastener + unsigned axes are skipped
-    assert anchor_entry_warnings(dom, [{"kind": "dimple", "axis": "-z", "pos": [10, 0, 85], "dia": 4}]) == []
+    assert (
+        anchor_entry_warnings(dom, [{"kind": "dimple", "axis": "-z", "pos": [10, 0, 85], "dia": 4}])
+        == []
+    )
 
 
 def _sealed_tank_mesh() -> trimesh.Trimesh:
@@ -1130,9 +1154,12 @@ def test_cavity_region_selects_only_inner_skin() -> None:
     assert 0 < int(cells.sum()) < int(dom.solid.sum())
     # every selected cell must touch a sealed void on at least one face —
     # no purely exterior skin may leak into the mask
-    sealed = (dom.solid == 0)
+    sealed = dom.solid == 0
     from scipy import ndimage as ndi
-    pocket = ndi.binary_fill_holes(dom.solid, structure=ndi.generate_binary_structure(3, 1)) & sealed
+
+    pocket = (
+        ndi.binary_fill_holes(dom.solid, structure=ndi.generate_binary_structure(3, 1)) & sealed
+    )
     near = ndi.binary_dilation(pocket, structure=ndi.generate_binary_structure(3, 1))
     assert not (cells & ~near).any()
     # an open vessel floods the fill — zero cells, honest warning

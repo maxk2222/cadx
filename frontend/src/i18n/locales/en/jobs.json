@@ -64,7 +64,8 @@
     "audit": "audit",
     "measure": "measure",
     "parametrize": "parametrize",
-    "refine": "refine"
+    "refine": "refine",
+    "exec": "executor"
   },
   "log_elapsed": "elapsed",
   "log_score": "score",
@@ -93,5 +94,6 @@
   "log_needs_answers": "The agent needs answers:",
   "log_default_ph": "default: {{v}}",
   "log_submit": "Submit answers",
-  "log_use_defaults": "use defaults"
+  "log_use_defaults": "use defaults",
+  "queued_pos": "queued · pos {{n}}/{{m}}"
 }

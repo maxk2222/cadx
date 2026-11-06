@@ -64,7 +64,8 @@
     "audit": "audit",
     "measure": "mesure",
     "parametrize": "paramétrage",
-    "refine": "raffinage"
+    "refine": "raffinage",
+    "exec": "exécuteur"
   },
   "log_elapsed": "écoulé",
   "log_score": "score",
@@ -93,5 +94,6 @@
   "log_needs_answers": "L'agent attend des réponses :",
   "log_default_ph": "défaut : {{v}}",
   "log_submit": "Envoyer les réponses",
-  "log_use_defaults": "utiliser les défauts"
+  "log_use_defaults": "utiliser les défauts",
+  "queued_pos": "en file · pos {{n}}/{{m}}"
 }

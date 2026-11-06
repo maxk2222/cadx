@@ -6,6 +6,7 @@ import { timeAgo } from "../lib/format";
 import { stepLabel } from "../lib/steps";
 import type { VersionSummary } from "../lib/types";
 import { buildVersionRows } from "../lib/versionTree";
+import SafeImg from "./SafeImg";
 import StatusBadge from "./StatusBadge";
 
 export default function VersionTree({
@@ -73,11 +74,12 @@ export default function VersionTree({
           ) : (
             <span className="-ml-1 w-4 shrink-0" aria-hidden="true" />
           )}
-          {v.thumbnail_url ? (
-            <img src={v.thumbnail_url} className="h-8 w-8 rounded object-cover" alt="" />
-          ) : (
-            <div className="h-8 w-8 rounded bg-edge2" />
-          )}
+          <SafeImg
+            src={v.thumbnail_url}
+            className="h-8 w-8 rounded object-cover"
+            alt=""
+            fallback={<div className="h-8 w-8 rounded bg-edge2" />}
+          />
           <div className="min-w-0 flex-1">
             <div className="truncate">
               <span className="font-medium">v{v.number}</span>

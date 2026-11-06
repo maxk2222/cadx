@@ -526,7 +526,7 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             caps_cb=record_caps_session,
         )
         emit = make_emit(job_id, tokens_fn=lambda: dict(getattr(llm, "total_usage", {}) or {}))
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime, emit_cb=emit)
         trace = DbTrace(job_id)
         mesh = _make_mesh(job_runtime, backend=merged.mesh_backend)
         image = _make_image(job_runtime, backend=merged.image_backend)
@@ -667,7 +667,9 @@ async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         emit = make_emit(job_id)
 
         runtime_settings = await load_runtime_settings(db)
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
         project = await db.get(Project, version.project_id)
         settings = _fill_settings(
             _merge_settings(
@@ -920,7 +922,9 @@ async def run_code_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
         emit = make_emit(job_id)
 
         runtime_settings = await load_runtime_settings(db)
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
         project = await db.get(Project, version.project_id)
         settings = _fill_settings(
             _merge_settings((project.settings or {}) if project else {}, version.options or {}),
@@ -1050,7 +1054,7 @@ async def run_meshgen_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         mesh_client = _make_mesh(job_runtime, backend=merged.mesh_backend)
         if not await _mesh_available(mesh_client):
             return await _fail("mesh server not configured or unreachable")
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime)
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime, emit_cb=emit)
         settings = _fill_settings(merged, job_runtime)
 
         opts = version.options or {}
@@ -1703,7 +1707,9 @@ async def run_optimize_job(  # noqa: C901
                 if rel:
                     optimize["warm_density_relpath"] = rel
 
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
         result_it = 1
         agent_runs: list[dict[str, Any]] = []
 
@@ -1967,7 +1973,9 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
         optimize.setdefault("keep_regions", keep_regions)
 
         runtime_settings = await load_runtime_settings(db)
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
         await emit(
             "optimize",
             1,
@@ -2193,7 +2201,9 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         ]
 
         runtime_settings = await load_runtime_settings(db)
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
         n_feat = len(payload.get("features") or []) or len(spec_features)
         await emit(
             "refine", 1, f"feature finishing — {n_feat} feature(s), {len(anchors or [])} anchor(s)"
@@ -2414,7 +2424,9 @@ async def run_organic_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
             ProjectSettings(**(project.settings or {})) if project else ProjectSettings(),
             runtime_settings,
         )
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
 
         await emit(
             "organic",
@@ -2570,7 +2582,9 @@ async def run_mesh_edit_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dic
         post.ops_version = MESH_OPS_VERSION
 
         runtime_settings = await load_runtime_settings(db)
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
         project = await db.get(Project, version.project_id)
         settings = _fill_settings(
             _merge_settings(
@@ -2698,7 +2712,9 @@ async def run_fem_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
             return {"ok": False, "error": version.error}
 
         runtime_settings = await load_runtime_settings(db)
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
         await emit("fem", 1, f"FEM check on {mesh_rel} ({len(load_cases)} load case(s))")
         result = await executor.fem_analyze(
             {
@@ -2771,6 +2787,7 @@ async def run_fem_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
 async def run_reexport_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Re-export formats from the best iteration BREP."""
     job_id = _u(payload["job_id"])
+    emit = make_emit(job_id)
     async with session_scope() as db:
         job = await db.get(Job, job_id)
         version = await db.get(Version, _u(payload["version_id"]))
@@ -2781,7 +2798,9 @@ async def run_reexport_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
         job.status = JobStatus.running
         await db.commit()
         runtime_settings = await load_runtime_settings(db)
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
         result = await executor.export_all(
             {
                 "job_id": str(job_id),
@@ -3160,7 +3179,9 @@ async def run_edit_feature_job(ctx: dict[str, Any], payload: dict[str, Any]) -> 
 
         emit = make_emit(job_id)
         runtime_settings = await load_runtime_settings(db)
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=runtime_settings)
+        executor = QueueExecutor(
+            ctx.get("arq_redis"), runtime_settings=runtime_settings, emit_cb=emit
+        )
         project = await db.get(Project, version.project_id)
         settings = _fill_settings(
             _merge_settings(

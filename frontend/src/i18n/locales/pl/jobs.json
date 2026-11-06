@@ -70,7 +70,8 @@
     "audit": "audyt",
     "measure": "pomiar",
     "parametrize": "parametryzacja",
-    "refine": "ulepszanie"
+    "refine": "ulepszanie",
+    "exec": "executor"
   },
   "log_elapsed": "czas",
   "log_score": "ocena",
@@ -99,5 +100,6 @@
   "log_needs_answers": "Agent potrzebuje odpowiedzi:",
   "log_default_ph": "domyślnie: {{v}}",
   "log_submit": "Wyślij odpowiedzi",
-  "log_use_defaults": "użyj wartości domyślnych"
+  "log_use_defaults": "użyj wartości domyślnych",
+  "queued_pos": "w kolejce · poz {{n}}/{{m}}"
 }

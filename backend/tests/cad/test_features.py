@@ -760,9 +760,7 @@ def test_compare_anchor_positions_reports_measured_center():
     """Deviation findings name the measured centre, not just the delta —
     resolved-vs-declared must be auditable."""
     anchors = {
-        "holes": [
-            {"index": 1, "x": 10.0, "y": 0.0, "dia": 5.0, "axis": "+z", "source": "image"}
-        ]
+        "holes": [{"index": 1, "x": 10.0, "y": 0.0, "dia": 5.0, "axis": "+z", "source": "image"}]
     }
     measured = MeasuredFeatures(
         hole_groups=[

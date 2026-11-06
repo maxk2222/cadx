@@ -559,9 +559,7 @@ def _verify_spec_issue(
     }
 
 
-def _issue_source_rollup(
-    issues: list[dict[str, Any]], *, exclude: set[str] | None = None
-) -> str:
+def _issue_source_rollup(issues: list[dict[str, Any]], *, exclude: set[str] | None = None) -> str:
     """`{source}:{count}` rollup over the actionable issue list — the same
     filter the improve step applies (no measurement-artifact / infra
     entries). `exclude` drops sources already covered elsewhere (the

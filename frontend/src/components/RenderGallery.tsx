@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { femViewCaption, sortViews, viewLabel } from "../lib/liveViews";
 import type { Artifact } from "../lib/types";
 import { Collapsible, Lightbox } from "./ui";
+import SafeImg from "./SafeImg";
 
 const IMG_RE = /\.(png|jpe?g|webp)$/i;
 const isImg = (a: Artifact) => IMG_RE.test(a.path);
@@ -22,7 +23,13 @@ function Thumb({
       title={a.path.split("/").pop()}
       className="group relative overflow-hidden rounded-md border border-edge transition-colors hover:border-edge2"
     >
-      <img src={a.url} alt={caption} loading="lazy" className="w-full" />
+      <SafeImg
+        src={a.url}
+        alt={caption}
+        loading="lazy"
+        className="w-full"
+        fallback={<div className="aspect-video w-full bg-panel2" />}
+      />
       <span className="absolute bottom-1 left-1 max-w-[calc(100%-0.5rem)] truncate rounded bg-black/60 px-1 text-[10px]">
         {caption}
       </span>

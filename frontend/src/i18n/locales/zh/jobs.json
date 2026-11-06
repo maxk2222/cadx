@@ -61,7 +61,8 @@
     "audit": "审计",
     "measure": "测量",
     "parametrize": "参数化",
-    "refine": "细化"
+    "refine": "细化",
+    "exec": "执行器"
   },
   "log_elapsed": "已用时间",
   "log_score": "分数",
@@ -90,5 +91,6 @@
   "log_needs_answers": "智能体需要回答：",
   "log_default_ph": "默认：{{v}}",
   "log_submit": "提交回答",
-  "log_use_defaults": "使用默认值"
+  "log_use_defaults": "使用默认值",
+  "queued_pos": "排队中 · 第 {{n}}/{{m}} 位"
 }

@@ -333,9 +333,9 @@ def test_issue_source_rollup_counts_actionable_sources():
         {"source": "verify_spec", "what": "b"},
         {"source": "verify_spec", "what": "c"},
         {"source": "dims", "what": "d"},
-        {"source": "infra", "what": "executor down"},       # excluded
+        {"source": "infra", "what": "executor down"},  # excluded
         {"artifact": True, "source": "feature", "what": "stale"},  # excluded
-        {"what": "no source field"},                        # -> critique
+        {"what": "no source field"},  # -> critique
     ]
     assert _issue_source_rollup(issues) == "critique:2, dims:1, verify_spec:2"
     assert _issue_source_rollup(issues, exclude={"critique"}) == "dims:1, verify_spec:2"

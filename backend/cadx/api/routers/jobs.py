@@ -45,6 +45,23 @@ def _out(j: Job) -> JobOut:
     )
 
 
+async def _queue_positions(jobs: list[Job]) -> dict[uuid.UUID, tuple[int, int]]:
+    """arq sorted-set rank for queued jobs — `arq:queue:agent` holds the
+    deterministic job ids (deps.enqueue keys arq jobs by payload.job_id)."""
+    ids = [j.id for j in jobs if j.status == JobStatus.queued]
+    if not ids:
+        return {}
+    try:
+        pool = await get_pool()
+        async with pool.pipeline(transaction=False) as pipe:
+            pipe.zcard("arq:queue:agent")
+            ranks = [pipe.zrank("arq:queue:agent", str(i)) for i in ids]
+            depth, *ranks = await pipe.execute()
+        return {i: (r, depth) for i, r in zip(ids, ranks, strict=True) if r is not None}
+    except Exception:
+        return {}
+
+
 @router.get("/jobs/events")
 async def jobs_events(db: AsyncSession = Depends(get_session)):
     """Global job-lifecycle SSE — snapshot of active jobs, then one `jobs`
@@ -64,7 +81,10 @@ async def get_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     j = await db.get(Job, job_id)
     if not j:
         raise HTTPException(404, "job not found")
-    return _out(j)
+    out = _out(j)
+    if (pos := (await _queue_positions([j])).get(j.id)) is not None:
+        out.queue_position, out.queue_depth = pos
+    return out
 
 
 @router.get("/jobs/{job_id}/trace")
@@ -129,9 +149,13 @@ async def job_list_items(
             col(Job.status).in_([JobStatus.queued, JobStatus.running, JobStatus.waiting_for_input])
         )
     rows = await db.execute(q)
+    all_rows = rows.all()
+    positions = await _queue_positions([r[0] for r in all_rows])
     out: list[JobListItem] = []
-    for j, v, p, part in rows.all():
+    for j, v, p, part in all_rows:
         d = _out(j).model_dump()
+        if (pos := positions.get(j.id)) is not None:
+            d["queue_position"], d["queue_depth"] = pos
         d["log"] = (d.get("log") or "")[-500:]  # tail only — full logs are heavy
         out.append(
             JobListItem(

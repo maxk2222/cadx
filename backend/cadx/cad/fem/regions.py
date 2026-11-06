@@ -922,9 +922,10 @@ def region_cell_mask(  # noqa: C901
         sealed = _sealed_pocket_mask(domain.solid)
         if not sealed.any():
             return np.zeros(domain.solid.shape, dtype=bool)
-        wall = ndimage.binary_dilation(
-            sealed, structure=ndimage.generate_binary_structure(3, 1)
-        ) & domain.solid
+        wall = (
+            ndimage.binary_dilation(sealed, structure=ndimage.generate_binary_structure(3, 1))
+            & domain.solid
+        )
         return _z_clip(domain, region, wall)
     if kind == "box":
         edge = region.diameter_mm or 4 * region.margin_mm
@@ -2347,9 +2348,7 @@ def empty_region_warnings(
     return out
 
 
-def anchor_entry_warnings(
-    domain: VoxelDomain, anchors: list[dict] | None
-) -> list[str]:
+def anchor_entry_warnings(domain: VoxelDomain, anchors: list[dict] | None) -> list[str]:
     """Fastener anchors whose declared entry resolves into empty space.
 
     A misresolved anchor (a direction-token face leak resolving a "-z" tap

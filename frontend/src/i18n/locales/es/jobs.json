@@ -64,7 +64,8 @@
     "audit": "auditoría",
     "measure": "medición",
     "parametrize": "parametrización",
-    "refine": "refinamiento"
+    "refine": "refinamiento",
+    "exec": "ejecutor"
   },
   "log_elapsed": "transcurrido",
   "log_score": "puntuación",
@@ -93,5 +94,6 @@
   "log_needs_answers": "El agente necesita respuestas:",
   "log_default_ph": "por defecto: {{v}}",
   "log_submit": "Enviar respuestas",
-  "log_use_defaults": "usar defaults"
+  "log_use_defaults": "usar defaults",
+  "queued_pos": "en cola · pos {{n}}/{{m}}"
 }

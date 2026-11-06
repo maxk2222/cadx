@@ -126,7 +126,12 @@ const JobRow = memo(function JobRow({
           <div className="mb-1 flex items-center gap-2 text-[11px] text-muted">
             <span className="text-brand-300">
               {job.status === "queued"
-                ? t("queued")
+                ? job.queue_position != null
+                  ? t("queued_pos", {
+                      n: job.queue_position + 1,
+                      m: job.queue_depth ?? "?",
+                    })
+                  : t("queued")
                 : job.status === "waiting_for_input"
                   ? t("needs_answers")
                   : stepLabel(job.step) || t("starting")}

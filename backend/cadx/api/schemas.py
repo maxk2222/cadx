@@ -556,6 +556,10 @@ class JobOut(BaseModel):
     questions: list[dict[str, Any]] | None
     cancel_requested: bool
     finish_requested: bool
+    # queue placement for status=queued — position (0-based) + lane depth on
+    # the 'agent' arq queue; None once running/terminal (or unreadable)
+    queue_position: int | None = None
+    queue_depth: int | None = None
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime

@@ -6,6 +6,7 @@ import ComparePanel from "../ComparePanel";
 import ExportPanel from "../ExportPanel";
 import LivePreview from "../LivePreview";
 import RenderGallery from "../RenderGallery";
+import SafeImg from "../SafeImg";
 import Viewer3D from "../Viewer3D";
 import { Card, Chip, Spinner } from "../ui";
 import type {
@@ -70,12 +71,17 @@ export default function OverviewTab({
             return as.kind === "image" ||
               as.kind === "generated_image" ||
               as.mime.startsWith("image/") ? (
-              <img
+              <SafeImg
                 key={aid}
                 src={as.url}
                 alt={as.filename}
-                title={as.filename}
                 className="h-10 w-10 rounded border border-edge2 object-cover"
+                fallback={
+                  <div
+                    title={as.filename}
+                    className="h-10 w-10 rounded border border-edge2 bg-panel2"
+                  />
+                }
               />
             ) : (
               <span

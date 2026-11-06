@@ -859,6 +859,8 @@ export interface Job {
   questions: { question: string; why_it_matters: string; default_assumption: string; blocking: boolean }[] | null;
   cancel_requested: boolean;
   finish_requested: boolean;
+  queue_position?: number | null;
+  queue_depth?: number | null;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;

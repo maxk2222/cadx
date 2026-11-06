@@ -6,6 +6,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
+import SafeImg from "../SafeImg";
 import { useTranslation } from "react-i18next";
 import { errMsg, api } from "../../lib/api";
 import type {
@@ -149,7 +150,12 @@ function EditWithPrompt({
               }`}
               title={as.filename}
             >
-              <img src={as.url} className="h-full w-full object-cover" alt="" />
+              <SafeImg
+                src={as.url}
+                className="h-full w-full object-cover"
+                alt=""
+                fallback={<div className="h-full w-full bg-panel2" />}
+              />
             </button>
           ))}
         <button

@@ -61,7 +61,8 @@
     "audit": "監査",
     "measure": "計測",
     "parametrize": "パラメータ化",
-    "refine": "改良"
+    "refine": "改良",
+    "exec": "エグゼキュータ"
   },
   "log_elapsed": "経過時間",
   "log_score": "スコア",
@@ -90,5 +91,6 @@
   "log_needs_answers": "エージェントが回答を必要としています：",
   "log_default_ph": "デフォルト: {{v}}",
   "log_submit": "回答を送信",
-  "log_use_defaults": "デフォルトを使用"
+  "log_use_defaults": "デフォルトを使用",
+  "queued_pos": "キュー待ち · {{n}}/{{m}}"
 }

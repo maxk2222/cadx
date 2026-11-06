@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import arq
@@ -29,9 +31,7 @@ CAD_LIGHT_QUEUE = "cad-light"
 # codegen-loop latency lane — these funcs are short rlimit-bounded tasks and
 # must not queue behind a long heavy solve (optimize/topopt/fem) on the
 # serial 'cad' lane. Keep in sync with CadLightWorkerSettings.functions.
-_LIGHT_FUNCS = frozenset(
-    {"execute_version", "audit_params", "edit_feature", "export_all"}
-)
+_LIGHT_FUNCS = frozenset({"execute_version", "audit_params", "edit_feature", "export_all"})
 
 
 def exec_error(res: dict[str, Any], default: str = "executor failed") -> str:
@@ -277,13 +277,21 @@ async def _cancel_task_and_wait(
 
 
 class QueueExecutor:
-    """Enqueues work on the 'cad' arq queue and polls the job until complete."""
+    """Enqueues work on the 'cad'/'cad-light' arq queues and polls the job
+    until complete. ``emit_cb`` (the job's ``emit``) gets a one-shot
+    "queued for executor" + "executor running" event per task so the UI can
+    distinguish a poll-wait from an actual build — never fatal on failure."""
 
     def __init__(
-        self, pool: ArqRedis | None = None, *, runtime_settings: RuntimeSettings | None = None
+        self,
+        pool: ArqRedis | None = None,
+        *,
+        runtime_settings: RuntimeSettings | None = None,
+        emit_cb: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self._pool = pool
         self.runtime_settings = runtime_settings or RuntimeSettings()
+        self._emit = emit_cb
 
     async def _get_pool(self) -> ArqRedis:
         if self._pool is None:
@@ -314,6 +322,11 @@ class QueueExecutor:
             }
         job = Job(job_id, pool)
         started_at: float | None = None
+        if self._emit is not None:
+            with contextlib.suppress(Exception):
+                pos = await pool.zcard(f"arq:queue:{queue}")
+                label = f"queued for executor (pos {pos})"
+                await self._emit("exec", 0, label, sub_label=label)
         queue_cap_s = timeout_s * _QUEUE_HARD_FACTOR
 
         # capped exponential backoff: fast tasks answer on the first short
@@ -359,6 +372,11 @@ class QueueExecutor:
                 return _with_queue_meta(await _fetch_job_result(job), enqueued_at, started_at)
             if status == JobStatus.in_progress and started_at is None:
                 started_at = time.monotonic()
+                if self._emit is not None:
+                    with contextlib.suppress(Exception):
+                        await self._emit(
+                            "exec", 0, "executor running", sub_label="executor running"
+                        )
             await asyncio.sleep(
                 min(
                     delay,

@@ -64,7 +64,8 @@
     "audit": "Audit",
     "measure": "Messung",
     "parametrize": "Parametrisierung",
-    "refine": "Verfeinerung"
+    "refine": "Verfeinerung",
+    "exec": "Executor"
   },
   "log_elapsed": "verstrichen",
   "log_score": "Score",
@@ -93,5 +94,6 @@
   "log_needs_answers": "Der Agent braucht Antworten:",
   "log_default_ph": "Standard: {{v}}",
   "log_submit": "Antworten absenden",
-  "log_use_defaults": "Defaults verwenden"
+  "log_use_defaults": "Defaults verwenden",
+  "queued_pos": "in Warteschlange · Pos. {{n}}/{{m}}"
 }

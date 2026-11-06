@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Artifact, FemReport } from "../lib/types";
 import { Card, Lightbox, SectionTitle } from "./ui";
+import SafeImg from "./SafeImg";
 
 function sfTone(sf: number | null): string {
   if (sf == null) return "text-muted";
@@ -124,7 +125,12 @@ export default function FemPanel({
               onClick={() => setLightbox(a.url)}
               className="overflow-hidden rounded-md border border-edge hover:border-edge2"
             >
-              <img src={a.url} alt={a.view ?? a.path} className="w-full" />
+              <SafeImg
+                src={a.url}
+                alt={a.view ?? a.path}
+                className="w-full"
+                fallback={<div className="aspect-video w-full bg-panel2" />}
+              />
               <div className="px-1 py-0.5 text-left text-[10px] text-faint">
                 {a.view ?? a.path.split("/").pop()}
               </div>
