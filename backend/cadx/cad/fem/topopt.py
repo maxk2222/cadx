@@ -27,6 +27,7 @@ from scipy import sparse
 from scipy.sparse import linalg as spla
 from scipy.spatial import cKDTree
 
+from cadx.cad import native as _native
 from cadx.cad.fem.solver import _ke_unit, assemble, element_dofs
 from cadx.cad.fem.voxelize import VoxelDomain, _sealed_pocket_mask
 from cadx.logging import get_logger
@@ -891,8 +892,9 @@ def _solve_u(
             domain=domain,
             free=free,
         )
+    A = _native.spmv_op(Kf)
     x, info = spla.cg(
-        Kf,
+        Kf if A is None else A,
         F[free],
         x0=u0[free] if u0 is not None else None,
         rtol=cg_rtol,
@@ -2006,7 +2008,8 @@ def _adjoint_solve(
     if factor is not None:
         lam[free] = factor(rhs[free])
         return lam
-    x, info = spla.cg(Kf, rhs[free], rtol=1e-5, atol=0.0, maxiter=4000, M=M)
+    A = _native.spmv_op(Kf)
+    x, info = spla.cg(Kf if A is None else A, rhs[free], rtol=1e-5, atol=0.0, maxiter=4000, M=M)
     lam[free] = x
     if info > 0:
         log.warning("topopt.adjoint_cg_no_converge", info=info)

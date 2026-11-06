@@ -2080,6 +2080,7 @@ def _verify_export_structure(  # noqa: C901
         sfx: str,
         od: Path | None = out_dir,
         dom: Any = None,
+        workers: int | None = None,
     ) -> Any:
         # od=None for the auxiliary realizations — their reports feed
         # sf_verified only, so skip the unreferenced per-case PNG renders
@@ -2093,7 +2094,7 @@ def _verify_export_structure(  # noqa: C901
             anchors=anchors,
             keep_regions=keep_list,
             spsolve_dofs=spsolve_eff_v,
-            pool_workers=s.exec_pool_workers,
+            pool_workers=s.exec_pool_workers if workers is None else workers,
             mem_budget_mb=mem_budget,
             suffix=sfx,
             source_mesh=skin,
@@ -2120,20 +2121,20 @@ def _verify_export_structure(  # noqa: C901
     sf_realizations: dict[str, float | None] = {"nominal": report.worst_safety_factor}
     sf_realization_detail: dict[str, Any] = {"nominal": _realization_detail(report)}
     if verify_robust:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from cadx.cad import native as _native
+        from cadx.cad.fem.voxelize import estimate_fem_memory_mb
+
         n_shift = int(getattr(s, "fem_verify_realization_cells", 1) or 1)
         n_shift = max(1, min(n_shift, 4))
+        # mask morphs + coverage doms are cheap deterministic prep on the
+        # caller thread — the solves below are what run long
+        jobs: list[tuple[str, Any, Any]] = []
         for name, mask in (
             ("eroded", ndimage.binary_erosion(export_domain.solid, iterations=n_shift)),
             ("dilated", ndimage.binary_dilation(export_domain.solid, iterations=n_shift)),
         ):
-            if _is_cancelled(cancelled):
-                return {
-                    "cancelled": True,
-                    "phase": f"before_{name}_export_verify",
-                    "report": report,
-                    "warnings": warnings,
-                }
-            sfx = f"{suffix}_ero" if name == "eroded" else f"{suffix}_dil"
             if not np.asarray(mask).any():
                 sf_realizations[name] = None
                 warnings.append(f"export realization '{name}' is empty — skipped")
@@ -2147,13 +2148,70 @@ def _verify_export_structure(  # noqa: C901
                 cov_d = np.asarray(export_domain.coverage, dtype=float).copy()
                 cov_d[(np.asarray(mask) & ~export_domain.solid).ravel()] = 1.0
                 dom = dataclasses.replace(export_domain, coverage=cov_d)
-            try:
-                rep = _solve(mask, sfx, None, dom)
+            jobs.append((name, mask, dom))
+        if _is_cancelled(cancelled):
+            return {
+                "cancelled": True,
+                "phase": "before_eroded_export_verify",
+                "report": report,
+                "warnings": warnings,
+            }
+        # two realizations overlap meaningfully only when the heavy kernels
+        # release the GIL (native fem on) AND two solves fit the memory
+        # budget — same gate vocabulary as the tier check above. Inner
+        # pool_workers=0: forking a case pool from a worker thread is unsafe.
+        est_par = estimate_fem_memory_mb(export_domain, len(cases) or 1, direct=bool(spsolve_eff_v))
+        headroom_par = resources.mem_headroom_mb()
+        parallel_realizations = (
+            len(jobs) > 1
+            and _native.native_enabled("fem")
+            and (not mem_budget or 2 * est_par <= mem_budget * 0.75)
+            and (headroom_par is None or 2 * est_par <= headroom_par * 0.8)
+        )
+        results: dict[str, Any] = {}
+        if parallel_realizations:
+            with ThreadPoolExecutor(max_workers=2) as tp:
+                futs = {
+                    name: tp.submit(
+                        _solve,
+                        mask,
+                        f"{suffix}_{'ero' if name == 'eroded' else 'dil'}",
+                        None,
+                        dom,
+                        0,
+                    )
+                    for name, mask, dom in jobs
+                }
+                for name in futs:
+                    try:
+                        results[name] = futs[name].result()
+                    except Exception as e:
+                        results[name] = e
+        else:
+            for name, mask, dom in jobs:
+                try:
+                    results[name] = _solve(
+                        mask,
+                        f"{suffix}_{'ero' if name == 'eroded' else 'dil'}",
+                        None,
+                        dom,
+                    )
+                except Exception as e:
+                    results[name] = e
+                if _is_cancelled(cancelled):
+                    break
+        for name, _mask, _dom in jobs:
+            rep = results.get(name)
+            if isinstance(rep, Exception):
+                sf_realizations[name] = None
+                warnings.append(f"export realization '{name}' solve failed: {str(rep)[:80]}")
+            elif rep is not None:
                 sf_realizations[name] = rep.worst_safety_factor
                 sf_realization_detail[name] = _realization_detail(rep)
-            except Exception as e:
+            else:
+                # serial path broke on cancellation — the cancelled return
+                # below fires before this None is ever read as a verdict
                 sf_realizations[name] = None
-                warnings.append(f"export realization '{name}' solve failed: {str(e)[:80]}")
             if _is_cancelled(cancelled):
                 return {
                     "cancelled": True,
@@ -2161,7 +2219,7 @@ def _verify_export_structure(  # noqa: C901
                     "report": report,
                     "warnings": warnings,
                 }
-            if sf_realizations[name] is None:
+            if sf_realizations[name] is None and name in results:
                 warnings.append(f"export realization '{name}' produced no safety factor")
     # sf_verified only exists when the NOMINAL realization solved — the
     # headline structure itself being unsolvable IS the verdict; a

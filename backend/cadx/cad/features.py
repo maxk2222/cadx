@@ -945,9 +945,7 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
             ring[:, axis] = top_z + 1.0
             down = np.zeros(3)
             down[axis] = -1.0
-            locs, ray_ids, _ = _qt(
-                "ray_locs", 8, _mesh_ray_locs, mesh, ring, np.tile(down, (8, 1))
-            )
+            locs, ray_ids, _ = _qt("ray_locs", 8, _mesh_ray_locs, mesh, ring, np.tile(down, (8, 1)))
             # first surface each downward ray meets = its highest hit
             first_hit = np.array([locs[ray_ids == r][:, axis].max() for r in np.unique(ray_ids)])
             if len(first_hit) >= 6 and int((first_hit < top_z - 0.3).sum()) >= 5:

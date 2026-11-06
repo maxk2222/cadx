@@ -20,6 +20,7 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse import linalg as spla
 
+from cadx.cad import native as _native
 from cadx.cad.fem.voxelize import VoxelDomain
 from cadx.logging import get_logger
 
@@ -180,13 +181,17 @@ def _cg_watchdog(
     """
     bnorm = float(np.linalg.norm(Ff)) or 1.0
     state = {"it": 0, "best": np.inf, "bad": 0, "flat": 0}
+    # parallel native matvec for the CG iterations + watchdog residual;
+    # LinearOperator is matvec-compatible wherever Kf was used
+    A = _native.spmv_op(Kf)
+    A = Kf if A is None else A
 
     def callback(xk: np.ndarray) -> None:
         state["it"] += 1
         if state["it"] % 40:
             return
         xnorm = float(np.max(np.abs(xk)))
-        ratio = float(np.linalg.norm(Ff - Kf @ xk)) / bnorm
+        ratio = float(np.linalg.norm(Ff - A @ xk)) / bnorm
         if xnorm > 1e6 or not np.isfinite(ratio):
             raise _CgDiverged(state["it"], ratio)
         if ratio < state["best"] * 0.9:
@@ -202,7 +207,7 @@ def _cg_watchdog(
 
     try:
         x, info = spla.cg(
-            Kf, Ff, x0=x0, rtol=1e-6, atol=0.0, maxiter=maxiter, M=M, callback=callback
+            A, Ff, x0=x0, rtol=1e-6, atol=0.0, maxiter=maxiter, M=M, callback=callback
         )
     except _CgDiverged as e:
         return None, None, e
@@ -288,15 +293,52 @@ def assemble(
         jK = np.tile(edof, (1, 24)).ravel()
     else:
         iK, jK = ij
-    if ke_table is not None:
-        sK = (elem_E[active][:, None, None] * ke_table[cls_active]).reshape(-1)
-    else:
-        sK = (elem_E[active][:, None, None] * ke[None]).reshape(-1)
-    K = sparse.coo_matrix(
-        (sK, (iK, jK)), shape=(3 * domain.node_count, 3 * domain.node_count)
-    ).tocsr()
-    K.sum_duplicates()
+    ndofs = 3 * domain.node_count
+    K = _assemble_csr(
+        iK,
+        jK,
+        elem_E[active],
+        ke_table,
+        cls_active if ke_table is not None else None,
+        ke if ke_table is None else None,
+        ndofs,
+    )
     return K, edof, active
+
+
+def _assemble_csr(
+    iK: np.ndarray,
+    jK: np.ndarray,
+    eA: np.ndarray,
+    ke_table: np.ndarray | None,
+    cls_active: np.ndarray | None,
+    ke: np.ndarray | None,
+    ndofs: int,
+) -> sparse.csr_matrix:
+    """COO→canonical CSR for the (iK,jK) pattern.
+
+    Native path: the Assembler canonicalises the pattern once (cached on the
+    ij identity — same contract as the caller's `ij=` reuse) and fills data
+    per iteration, fusing the elem_E broadcast with the scatter. Fallback is
+    the verbatim coo→tocsr→sum_duplicates construction."""
+    if _native.native_enabled("fem"):
+        asm = _native.assembler_for(iK, jK, ndofs)
+        if asm is not None:
+            kt = ke_table if ke_table is not None else ke[None]
+            sK = _native.assemble_values(asm, eA, kt, cls_active)
+            data = None if sK is None else _native.assemble_fill(asm, sK)
+            if data is not None:
+                return sparse.csr_matrix(
+                    (data, np.asarray(asm.indices), np.asarray(asm.indptr)),
+                    shape=(ndofs, ndofs),
+                )
+    if ke_table is not None:
+        sK = (eA[:, None, None] * ke_table[cls_active]).reshape(-1)
+    else:
+        sK = (eA[:, None, None] * ke[None]).reshape(-1)
+    K = sparse.coo_matrix((sK, (iK, jK)), shape=(ndofs, ndofs)).tocsr()
+    K.sum_duplicates()
+    return K
 
 
 def _fixed_dofs(fixed: np.ndarray, nnodes: int) -> np.ndarray:

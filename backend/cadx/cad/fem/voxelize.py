@@ -460,9 +460,7 @@ def _coverage_field(
         # the node grid is a regular lattice too — axis scanlines amortize
         # one ray per line instead of one per node (contains() fallback for
         # meshes the scanline can't classify)
-        node_scan = _vt(
-            "scanline", _scanline_any, m, origin, (nx1, ny1, nz1), pitch, 0.0
-        )
+        node_scan = _vt("scanline", _scanline_any, m, origin, (nx1, ny1, nz1), pitch, 0.0)
         node_in = (
             node_scan.reshape(nx1, ny1, nz1)
             if node_scan is not None
