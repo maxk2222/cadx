@@ -9,12 +9,39 @@ Nodes are the cell corners — node (i,j,k) sits at
 from __future__ import annotations
 
 import math
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import numpy as np
 import trimesh
 from scipy import ndimage
+
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
+
+# thread-local fill-path profiler — cad-light executes on worker threads;
+# emitted as one `voxelize.profile` event per domain
+_VPROF = threading.local()
+
+
+def _vt(kind: str, fn: Callable, *a, **kw):
+    t = time.monotonic()
+    try:
+        return fn(*a, **kw)
+    finally:
+        p: dict | None = getattr(_VPROF, "cur", None)
+        if p is not None:
+            p[kind] = p.get(kind, 0.0) + (time.monotonic() - t)
+
+
+def _vpath(path: str) -> None:
+    p: dict | None = getattr(_VPROF, "cur", None)
+    if p is not None:
+        p["path"] = path
+
 
 # Corner ids of each cell face in element_nodes() Hex8 order
 # (-,-,-) (+,-,-) (+,+,-) (-,+,-) / (-,-,+) (+,-,+) (+,+,+) (-,+,+):
@@ -303,8 +330,9 @@ def _fill_grid(
             m = m.copy()
             m.merge_vertices(merge_norm=True)  # split STL vertices -> watertight
         if m.is_watertight:
-            scan = _scanline_contains(m, origin, dims, pitch, offset=0.5)
+            scan = _vt("scanline", _scanline_contains, m, origin, dims, pitch, offset=0.5)
             if scan is not None and scan.any():
+                _vpath("scanline")
                 return scan.reshape(dims)
             # contains() allocates per-ray candidate buffers that scale with
             # the mesh's face count — unchunked on dense organic meshes it
@@ -320,17 +348,23 @@ def _fill_grid(
                 )
             )
             out = np.zeros(len(centers), dtype=bool)
+            _t_c = time.monotonic()
             for s in range(0, len(centers), chunk):
                 out[s : s + chunk] = np.asarray(m.contains(centers[s : s + chunk]))
+            p: dict | None = getattr(_VPROF, "cur", None)
+            if p is not None:
+                p["contains"] = p.get("contains", 0.0) + (time.monotonic() - _t_c)
             # degenerate/flipped watertight meshes can report every center as
             # outside — don't accept an empty grid, fall through to the
             # surface-distance path instead
             if out.any():
+                _vpath("contains")
                 return out.reshape(dims)
     except Exception:
         pass
     # fallback for non-watertight meshes: surface-near cells + hole fill
     try:
+        _t_s = time.monotonic()
         dist = np.zeros(len(centers), dtype=float)
         for s in range(0, len(centers), 512):
             dist[s : s + 512] = mesh.nearest.on_surface(centers[s : s + 512])[1]
@@ -340,7 +374,11 @@ def _fill_grid(
         # erosion half of the closing strips the outermost cell row on every
         # grid edge (boundary cells have no neighbour beyond the array)
         m = ndimage.binary_closing(m, iterations=1, border_value=1)
+        p = getattr(_VPROF, "cur", None)
+        if p is not None:
+            p["surface_dist"] = p.get("surface_dist", 0.0) + (time.monotonic() - _t_s)
         if m.any():
+            _vpath("surface_dist")
             return np.asarray(m, dtype=bool)
     except Exception:
         pass
@@ -388,14 +426,20 @@ def _coverage_field(
 
         def _contains(query: np.ndarray) -> np.ndarray:
             out = np.zeros(len(query), dtype=bool)
+            _t_c = time.monotonic()
             for s0 in range(0, len(query), chunk):
                 out[s0 : s0 + chunk] = np.asarray(m.contains(query[s0 : s0 + chunk]))
+            p: dict | None = getattr(_VPROF, "cur", None)
+            if p is not None:
+                p["contains"] = p.get("contains", 0.0) + (time.monotonic() - _t_c)
             return out
 
         # the node grid is a regular lattice too — axis scanlines amortize
         # one ray per line instead of one per node (contains() fallback for
         # meshes the scanline can't classify)
-        node_scan = _scanline_contains(m, origin, (nx1, ny1, nz1), pitch, offset=0.0)
+        node_scan = _vt(
+            "scanline", _scanline_contains, m, origin, (nx1, ny1, nz1), pitch, offset=0.0
+        )
         node_in = (
             node_scan.reshape(nx1, ny1, nz1)
             if node_scan is not None
@@ -467,6 +511,8 @@ def voxelize(
     model. The binary `solid` mask is identical either way; coverage
     returns `None` when the mesh admits no reliable containment.
     """
+    _VPROF.cur = {}
+    _t0 = time.monotonic()
     bounds = np.asarray(mesh.bounds, dtype=float)
     lo, hi = bounds[0], bounds[1]
     volume = abs(float(mesh.volume)) if mesh.is_watertight else float(np.prod(hi - lo))
@@ -501,7 +547,17 @@ def voxelize(
     if not matrix.any():
         raise ValueError("voxelization produced an empty grid")
 
-    cov = _coverage_field(mesh, origin, dims, pitch, matrix) if coverage else None
+    cov = _vt("coverage", _coverage_field, mesh, origin, dims, pitch, matrix) if coverage else None
+    p: dict | None = getattr(_VPROF, "cur", None)
+    _VPROF.cur = None
+    log.info(
+        "voxelize.profile",
+        total_s=round(time.monotonic() - _t0, 3),
+        dims=list(dims),
+        faces=len(mesh.faces),
+        path=(p or {}).get("path", "?"),
+        **{f"{k}_s": round(v, 3) for k, v in sorted((p or {}).items()) if k != "path"},
+    )
     return VoxelDomain(
         origin=origin.astype(float),
         pitch=float(pitch),

@@ -600,6 +600,8 @@ def _solve_cases(  # noqa: C901
         report.warnings.append("no load cases provided")
         return
 
+    _t0 = time.monotonic()
+    _ph: dict[str, float] = {"prep_s": 0.0, "assemble_s": 0.0, "reduce_s": 0.0, "solve_s": 0.0}
     elem_E = np.where(domain.solid.ravel(), mat.elastic_modulus_mpa, 0.0)
     coverage = getattr(domain, "coverage", None)
     if coverage is not None:
@@ -681,6 +683,7 @@ def _solve_cases(  # noqa: C901
         if not fixed3.any() or not np.any(F):
             continue
         if asm is None:
+            _t_a = time.monotonic()
             asm = assemble(
                 domain,
                 elem_E,
@@ -689,9 +692,11 @@ def _solve_cases(  # noqa: C901
                 elem_class=elem_class,
                 class_D=class_D,
             )
+            _ph["assemble_s"] += time.monotonic() - _t_a
         K, edof, active = asm
         sig = np.unique(_fixed_dofs(fixed3, domain.node_count)).tobytes()
         if sig not in ctx_cache:
+            _t_r = time.monotonic()
             ctx_cache[sig] = reduce_case(
                 domain,
                 K,
@@ -701,7 +706,9 @@ def _solve_cases(  # noqa: C901
                 aniso=aniso,
                 solver_backend=solver_backend,
             )
+            _ph["reduce_s"] += time.monotonic() - _t_r
         preps[i] = (sig, F)
+    _ph["prep_s"] = time.monotonic() - _t0
 
     def _record(res: FemCaseResult, sol: FemSolution) -> None:
         res.warnings += sol.warnings
@@ -741,6 +748,7 @@ def _solve_cases(  # noqa: C901
     # Children each hold one transient solve's worth of memory on top of the
     # shared COW pages — refuse the pool when the estimate would exceed the
     # budget, and fall back to serial on any pool failure.
+    _t_solve = time.monotonic()
     workers = min(resources.pool_size(pool_workers), len(preps))
     if workers > 1 and asm is not None and mem_budget_mb:
         from cadx.cad.fem.voxelize import estimate_fem_memory_mb
@@ -841,9 +849,20 @@ def _solve_cases(  # noqa: C901
             class_D=class_D,
         )
 
+    _ph["solve_s"] = time.monotonic() - _t_solve
     report.cases.extend(results)
     report.warnings.append(
         "boundary resolution is voxel-limited; stresses near load/fix regions are approximate"
+    )
+    log.info(
+        "fem.profile",
+        **{k: round(v, 3) for k, v in _ph.items()},
+        total_s=round(time.monotonic() - _t0, 3),
+        n_cases=len(load_cases),
+        n_solved=len(preps),
+        dofs=report.grid.get("dofs"),
+        nnz=int(asm[0].nnz) if asm is not None else 0,
+        workers=workers if asm is not None else 0,
     )
 
 

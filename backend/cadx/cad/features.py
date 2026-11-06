@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import math
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -28,6 +30,60 @@ from OCP.TopAbs import TopAbs_Orientation, TopAbs_State
 from pydantic import BaseModel, Field
 
 from cadx.cad.analysis import _FACET_FACE_CAP
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
+
+
+class _Profile:
+    """Per-call accumulator for the feature-extraction query paths.
+
+    Thread-local because cad-light runs executes on worker threads — one
+    `extract_features` call owns its accumulator. Emitted as a single
+    `features.profile` event; doubles as the baseline for the native-kernel
+    rollout (identical counters before and after the swap)."""
+
+    __slots__ = ("i", "n", "s")
+
+    def __init__(self) -> None:
+        self.s: dict[str, float] = {}
+        self.n: dict[str, int] = {}
+        self.i: dict[str, int] = {}
+
+    def add(self, kind: str, dt: float, items: int = 0) -> None:
+        self.s[kind] = self.s.get(kind, 0.0) + dt
+        self.n[kind] = self.n.get(kind, 0) + 1
+        if items:
+            self.i[kind] = self.i.get(kind, 0) + items
+
+
+_PROF = threading.local()
+
+
+def _qt(kind: str, items: int, fn: Any, *a: Any, **kw: Any) -> Any:
+    """Time one query call into the active profile (~50 ns when profiling
+    is off — negligible next to the µs-to-ms queries being measured)."""
+    t = time.monotonic()
+    try:
+        return fn(*a, **kw)
+    finally:
+        p: _Profile | None = getattr(_PROF, "cur", None)
+        if p is not None:
+            p.add(kind, time.monotonic() - t, items)
+
+
+def _emit_profile() -> None:
+    """Flush the thread's accumulator as one `features.profile` event."""
+    p: _Profile | None = getattr(_PROF, "cur", None)
+    _PROF.cur = None
+    if p is None:
+        return
+    log.info(
+        "features.profile",
+        **{f"{k}_s": round(v, 3) for k, v in sorted(p.s.items())},
+        **{f"{k}_n": v for k, v in sorted(p.n.items())},
+        **{f"{k}_items": v for k, v in sorted(p.i.items())},
+    )
 
 
 class MeasuredHoleGroup(BaseModel):
@@ -420,7 +476,8 @@ def _mesh_contains_fn(mesh: Any):
 
     def contains(pts: list[list[float]]):
         try:
-            return np.asarray(mesh.contains(np.asarray(pts)), dtype=bool)
+            arr = np.asarray(pts)
+            return np.asarray(_qt("contains", len(arr), mesh.contains, arr), dtype=bool)
         except Exception:
             return None
 
@@ -478,7 +535,7 @@ def _inside_fraction(
         if cancelled is not None and cancelled():
             break
         try:
-            if shape.is_inside(pt):
+            if _qt("occ_probe", 1, shape.is_inside, pt):
                 inside += 1
         except Exception:
             continue
@@ -606,7 +663,7 @@ def _ray_tunnel(mesh, center: list[float], axis: int, r: float) -> bool:
         origins[k, axis] = mn[axis] - 1.0
     dirs = np.zeros((len(offs), 3))
     dirs[:, axis] = 1.0
-    hits = mesh.ray.intersects_any(origins, dirs)
+    hits = _qt("ray_any", len(origins), mesh.ray.intersects_any, origins, dirs)
     return int((~np.asarray(hits)).sum()) >= 3
 
 
@@ -640,7 +697,9 @@ def _bore_open_local(mesh, center: list[float], axis: int, r: float, vspan: floa
         for k, (o1, o2) in enumerate(ring_off):
             pts[:, k + 1, a1] += o1
             pts[:, k + 1, a2] += o2
-        inside = np.asarray(mesh.contains(pts.reshape(-1, 3))).reshape(len(ts), 5)
+        inside = np.asarray(
+            _qt("contains", pts.size // 3, mesh.contains, pts.reshape(-1, 3))
+        ).reshape(len(ts), 5)
         for row in inside:
             ring_in = bool(row[1:].any())
             if not ring_in:
@@ -688,7 +747,13 @@ def _bore_fit_diameter(
         origins[:, axis] = (mn[axis] - 1.0) if side == 0 else (mx[axis] + 1.0)
         d = np.zeros(3)
         d[axis] = 1.0 if side == 0 else -1.0
-        locs, ray_ids, _ = mesh.ray.intersects_location(origins, np.tile(d, (len(origins), 1)))
+        locs, ray_ids, _ = _qt(
+            "ray_locs",
+            len(origins),
+            mesh.ray.intersects_location,
+            origins,
+            np.tile(d, (len(origins), 1)),
+        )
         first = np.full(uu.size, np.nan)
         for rid in np.unique(ray_ids):
             hit_ax = locs[ray_ids == rid][:, axis]
@@ -781,7 +846,7 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
         direction = np.zeros(3)
         direction[axis] = 1.0
         directions = np.tile(direction, (len(origins), 1))
-        hits_any = mesh.ray.intersects_any(origins, directions)
+        hits_any = _qt("ray_any", len(origins), mesh.ray.intersects_any, origins, directions)
         hits = hits_any.reshape(uu.shape)
         # a tunnel is a zero-hit ray INSIDE the part's projected footprint:
         # rays that miss the silhouette entirely are not holes. The footprint
@@ -860,7 +925,9 @@ def _mesh_through_holes(stl_path: Path, mesh=None) -> tuple[list[MeasuredHoleGro
             ring[:, axis] = top_z + 1.0
             down = np.zeros(3)
             down[axis] = -1.0
-            locs, ray_ids, _ = mesh.ray.intersects_location(ring, np.tile(down, (8, 1)))
+            locs, ray_ids, _ = _qt(
+                "ray_locs", 8, mesh.ray.intersects_location, ring, np.tile(down, (8, 1))
+            )
             # first surface each downward ray meets = its highest hit
             first_hit = np.array([locs[ray_ids == r][:, axis].max() for r in np.unique(ray_ids)])
             if len(first_hit) >= 6 and int((first_hit < top_z - 0.3).sum()) >= 5:
@@ -1029,7 +1096,7 @@ def _edge_convexity(
                 return "unknown", {}
             inside = bool(flags[0])
         else:
-            inside = shape.is_inside(q)
+            inside = _qt("occ_probe", 1, shape.is_inside, q)
     except Exception:
         return "unknown", {}
     return ("convex" if inside else "concave"), {"a1": a1, "a2": a2}
@@ -1467,6 +1534,7 @@ def extract_features(  # noqa: C901 — sequential measurement passes
     the executor's timeout cannot kill a worker thread, so the expensive
     passes must yield cooperatively."""
     out = MeasuredFeatures(approximate=False)
+    _PROF.cur = _Profile()
     bb = shape.bounding_box()
     extent = [
         float(bb.max.X - bb.min.X),
@@ -1483,7 +1551,9 @@ def extract_features(  # noqa: C901 — sequential measurement passes
         out.approximate = True
     contains = _mesh_contains_fn(mesh) if mesh is not None else None
 
-    cyl_faces, cones, tori, chamfer_planes = _scan_faces(shape)
+    cyl_faces, cones, tori, chamfer_planes = _qt(
+        "face_scan", len(shape.faces()), _scan_faces, shape
+    )
     if len(shape.faces()) > _FACET_FACE_CAP:
         out.approximate = True
 
@@ -1493,6 +1563,7 @@ def extract_features(  # noqa: C901 — sequential measurement passes
     holes: list[tuple[float, list[float], list[float], float]] = []
     for r, axis, center, vspan, uspan in cyl_faces:
         if cancelled is not None and cancelled():
+            _emit_profile()
             return out
         try:
             frac = _inside_fraction(shape, center, axis, r, contains=contains, cancelled=cancelled)
@@ -1616,7 +1687,7 @@ def extract_features(  # noqa: C901 — sequential measurement passes
     # structural features on the face-adjacency graph (pockets/grooves/
     # notches — the classes a hole/boss scan cannot see). B-Rep only;
     # skipped entirely on heavily faceted solids
-    _extract_structural(shape, out, contains=contains)
+    _qt("structural", 0, _extract_structural, shape, out, contains=contains)
 
     # quiddity feature recognition (optional dep): enriches with pattern and
     # relationship evidence the face scan cannot express. Additive only —
@@ -1628,11 +1699,13 @@ def extract_features(  # noqa: C901 — sequential measurement passes
         try:
             from cadx.cad.recognition import build_recognition_evidence
 
-            _merge_recognition(out, build_recognition_evidence(shape, cancelled=cancelled))
+            rec = _qt("recognition", 0, build_recognition_evidence, shape, cancelled=cancelled)
+            _merge_recognition(out, rec)
         except Exception:
             pass
     # stable selector ids — must run last so every detector's entries get one
     assign_feature_ids(out)
+    _emit_profile()
     return out
 
 
