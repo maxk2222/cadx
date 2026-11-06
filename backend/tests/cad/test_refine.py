@@ -1942,3 +1942,105 @@ def test_anchor_keep_prism_measured_tunnel_bounds_to_wall():
     }
     p = _anchor_keep_prism(a, margin=2.0, span_axis=(-61.0, 91.0), bounds=bounds)
     assert p["span"] == pytest.approx((45.0 - 10.0 - 2.0, 45.0 + 10.0 + 2.0))
+
+
+def test_merge_probe_features_adds_verified_blind_tap():
+    """A verified blind-tap probe becomes a hole-group entry — the tunnel
+    scan cannot see blind features, so without the merge they are
+    invisible to every features consumer."""
+    from cadx.cad.fem.refine import merge_probe_features
+
+    probes = [
+        {
+            "name": "M8 tap -X",
+            "kind": "thread",
+            "axis": "-z",
+            "pos": [10.0, 5.0, None],
+            "dia_mm": 6.8,
+            "depth_mm": 10.0,
+            "found": True,
+            "open": True,
+            "measured_depth_mm": 10.0,
+            "measured_dia_mm": 6.75,
+            "verified": True,
+        }
+    ]
+    out = merge_probe_features([], probes)
+    assert len(out) == 1
+    g = out[0]
+    assert g["source"] == "refine_probe"
+    assert g["axis"] == "-z"
+    assert g["diameter"] == pytest.approx(6.75)
+    assert g["depth_class"] == "blind"
+    assert g["depth_mm"] == pytest.approx(10.0)
+    assert g["centers_xyz"] == [[10.0, 5.0, None]]
+
+
+def test_merge_probe_features_dedupes_measured_through():
+    """A probe matching an already-measured tunnel (same axis, in-plane
+    centre <2 mm, dia within 0.5 mm) must not double-count it."""
+    from cadx.cad.fem.refine import merge_probe_features
+
+    groups = [
+        {
+            "id": "h1",
+            "diameter": 6.9,
+            "count": 1,
+            "axis": "-z",
+            "centers_xyz": [[10.5, 5.4, None]],
+            "depth_classes": ["through"],
+        }
+    ]
+    probes = [
+        {
+            "name": "M8 tap -X",
+            "kind": "hole",
+            "axis": "-z",
+            "pos": [10.4, 5.2, None],
+            "dia_mm": 6.8,
+            "depth_mm": None,
+            "measured_dia_mm": 6.9,
+            "verified": True,
+        },
+        # same position but a DIFFERENT axis — not the same bore
+        {
+            "name": "side hole",
+            "kind": "hole",
+            "axis": "+x",
+            "pos": [None, 10.4, 5.2],
+            "dia_mm": 6.8,
+            "measured_dia_mm": 6.9,
+            "verified": True,
+        },
+    ]
+    out = merge_probe_features(groups, probes)
+    assert len(out) == 2
+    assert out[0]["id"] == "h1"
+    assert out[1]["source"] == "refine_probe"
+    assert out[1]["axis"] == "+x"
+
+
+def test_merge_probe_features_ignores_unverified_and_obstructions():
+    """verified:false probes and bore_obstruction records never create
+    groups."""
+    from cadx.cad.fem.refine import merge_probe_features
+
+    probes = [
+        {
+            "name": "miss",
+            "kind": "hole",
+            "axis": "+z",
+            "pos": [1.0, 2.0, None],
+            "dia_mm": 4.0,
+            "depth_mm": 8.0,
+            "verified": False,
+        },
+        {
+            "feature": "bore",
+            "kind": "bore_obstruction",
+            "verified": False,
+            "bore_solid_frac": 0.4,
+        },
+        {"name": "no pos", "kind": "hole", "axis": "+z", "pos": [], "verified": True},
+    ]
+    assert merge_probe_features([], probes) == []

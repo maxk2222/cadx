@@ -6326,6 +6326,8 @@ def run_refine(
             )
         res.features["refine"]["warnings"] = warnings
 
+    _audit_refined_features(res, out)
+
     # FEM re-verify — the cuts remove material, the SF must be re-issued
     if _is_cancelled(cancelled):
         _mark_cancelled(res)
@@ -6392,6 +6394,33 @@ def run_refine(
     _attach_verify_spec(res, spec, ProjectSettings(), s, envelope_bound_only=True)
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res
+
+
+def _audit_refined_features(res: ExecResult, out: trimesh.Trimesh) -> None:
+    """Feature audit on the shipped refined mesh: tunnels from the mesh
+    scan plus the verified blind pockets only the refine probes can see —
+    without this a verified blind tap is invisible in version.mesh.features
+    and every consumer (spec gate, UI, evalkit) reports total_holes short.
+    """
+    try:
+        from cadx.cad.features import mesh_features_to_measured
+        from cadx.cad.fem.refine import merge_probe_features
+        from cadx.cad.mesh_features import detect_mesh_features
+
+        mf = mesh_features_to_measured(
+            detect_mesh_features(out).model_dump(mode="json")
+        ).model_dump(mode="json")
+        for k, v in mf.items():
+            res.features.setdefault(k, v)
+        res.features["hole_groups"] = merge_probe_features(
+            res.features.get("hole_groups") or [],
+            (res.features.get("refine") or {}).get("probes") or [],
+        )
+        res.features["total_holes"] = len(
+            [g for g in res.features["hole_groups"] if not g.get("elongated")]
+        )
+    except Exception as e:
+        log.warning("refine.features_measure_failed", error=str(e)[:160])
 
 
 def _refine_analytic_step(

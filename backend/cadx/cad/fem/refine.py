@@ -2894,6 +2894,90 @@ def refine_verify(  # noqa: C901
     return misses
 
 
+def merge_probe_features(
+    hole_groups: list[dict[str, Any]],
+    probes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Verified refine-probe features into a measured ``hole_groups`` list.
+
+    The mesh tunnel scan only sees through-voids — a verified blind tap or
+    pocket is geometrically present but invisible to every features
+    consumer (spec gate, UI, evalkit ``total_holes``). Each probe with
+    ``verified`` true becomes a one-member group tagged
+    ``source="refine_probe"`` with the axial centre coordinate left None
+    (unobserved, same convention as the tunnel scan). Probes matching an
+    already-measured tunnel — same axis letter, in-plane centre within
+    2 mm, diameter within 0.5 mm — are dropped: the mesh measurement
+    stays authoritative and a verified through-bore must not double-count.
+    """
+    out = list(hole_groups or [])
+    added = 0
+    for p in probes or []:
+        if p.get("verified") is not True or p.get("kind") == "bore_obstruction":
+            continue
+        axis = str(p.get("axis") or "")
+        if axis not in _AXES_ANY:
+            continue
+        _ax, au, av = _AXES_ANY[axis]
+        pos = p.get("pos") or []
+        if (
+            not isinstance(pos, list | tuple)
+            or len(pos) <= max(au, av)
+            or pos[au] is None
+            or pos[av] is None
+        ):
+            continue
+        u, v = float(pos[au]), float(pos[av])
+        dia = float(p.get("measured_dia_mm") or p.get("dia_mm") or p.get("dia") or 0.0)
+        letter = axis.lstrip("+-").lower()
+        dupe = False
+        for g in out:
+            if str(g.get("axis") or "").lstrip("+-").lower() != letter:
+                continue
+            if dia > 0 and abs(float(g.get("diameter") or 0.0) - dia) > 0.5:
+                continue
+            for row in g.get("centers_xyz") or []:
+                if (
+                    isinstance(row, list | tuple)
+                    and len(row) == 3
+                    and row[au] is not None
+                    and row[av] is not None
+                    and abs(float(row[au]) - u) < 2.0
+                    and abs(float(row[av]) - v) < 2.0
+                ):
+                    dupe = True
+                    break
+            if dupe:
+                break
+        if dupe:
+            continue
+        added += 1
+        center: list[float | None] = [None, None, None]
+        center[au], center[av] = u, v
+        depth_class = "blind" if p.get("depth_mm") else "through"
+        out.append(
+            {
+                "id": f"rp{added}",
+                "diameter": round(dia, 3),
+                "count": 1,
+                "axis": axis,
+                "depth_class": depth_class,
+                "centers": [[u, v]],
+                "centers_xyz": [center],
+                "depth_classes": [depth_class],
+                "blocked": 0,
+                "elongated": False,
+                "through_axis": axis,
+                "width_mm": round(dia, 3),
+                "length_mm": round(dia, 3),
+                "depth_mm": p.get("measured_depth_mm") or p.get("depth_mm"),
+                "source": "refine_probe",
+                "name": p.get("name"),
+            }
+        )
+    return out
+
+
 def _check_bore_obstruction(
     mesh: trimesh.Trimesh,
     entry: dict[str, Any],

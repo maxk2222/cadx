@@ -2087,6 +2087,12 @@ async def run_topopt_resample_job(ctx: dict[str, Any], payload: dict[str, Any]) 
         return {"ok": True}
 
 
+def _refine_features_block(result: dict[str, Any]) -> dict[str, Any]:
+    """Measured feature audit from the executor result, minus the "refine"
+    sub-block which already ships under mesh["refine"]."""
+    return {k: v for k, v in (result.get("features") or {}).items() if k != "refine"}
+
+
 @_guarded
 async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Post-TopOpt feature finishing (LLM-free): re-cut exact bores/threads/
@@ -2243,6 +2249,10 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
         # refine task's own mesh has no structural metrics, so without the
         # merge the shipped artifact loses sf_verified/volfrac evidence
         result_mesh = result.get("mesh") or {}
+        # measured feature audit (mesh tunnels + verified blind probes the
+        # tunnel scan cannot see) — minus the "refine" sub-block, which
+        # already ships under mesh["refine"] below
+        result_mesh["features"] = _refine_features_block(result)
         parent_top = (parent.mesh or {}).get("topopt") or {}
         result_top = result_mesh.get("topopt") or {}
         if parent_top or result_top:
