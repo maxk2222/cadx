@@ -1,0 +1,7 @@
+# keep the build context small — Rust build artifacts are produced inside
+# the rust-builder stage, not copied from the host
+cadx_native/target
+.venv
+__pycache__
+*.pyc
+.pytest_cache

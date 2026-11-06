@@ -3,6 +3,23 @@
 # cholmod_common carries both field generations (dbound/ndbounds_hit AND
 # sbound/nsbounds_hit) that scikit-sparse's compat .pxd can compile
 # against. bookworm's SS 5.12 cannot build it.
+
+# cadx_native wheel: built on the SAME trixie base so glibc matches the
+# runtime images. Rust only exists in this stage — the services ship the
+# prebuilt wheel. The module is optional (cad/cad/native.py falls back),
+# but always built here so parity tests can gate its behavior.
+FROM python:3.12-slim-trixie AS rust-builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
+    && /root/.cargo/bin/cargo install --locked maturin
+WORKDIR /native
+COPY cadx_native/Cargo.toml cadx_native/Cargo.lock* ./
+COPY cadx_native/pyproject.toml ./
+COPY cadx_native/src ./src
+RUN /root/.cargo/bin/maturin build --release -i python3.12 -o dist
+
 FROM python:3.12-slim-trixie AS base
 
 ENV PYTHONUNBUFFERED=1 \
@@ -28,6 +45,10 @@ COPY cadx ./cadx
 # engine in cad/mesh_repair_pml.py; keeps preview (worker) and executor
 # ops on the same code path
 RUN uv sync --frozen --no-dev --extra repair
+# wheel install AFTER the stage's last `uv sync` — sync removes packages
+# that are not in uv.lock, and cadx_native is a local wheel, not a lock dep
+COPY --from=rust-builder /native/dist/*.whl /tmp/nw/
+RUN uv pip install --python /app/.venv/bin/python /tmp/nw/*.whl && rm -rf /tmp/nw
 
 ENV PATH="/app/.venv/bin:$PATH"
 
@@ -51,6 +72,9 @@ RUN apt-get update \
     && apt-get purge -y build-essential git \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
+# re-install after this stage's own `uv sync` wiped the base-layer copy
+COPY --from=rust-builder /native/dist/*.whl /tmp/nw/
+RUN uv pip install --python /app/.venv/bin/python /tmp/nw/*.whl && rm -rf /tmp/nw
 RUN groupadd -r cad && useradd -r -g cad -u 1000 -m cad \
     && mkdir -p /data && chown -R cad:cad /data
 USER cad
@@ -64,4 +88,6 @@ CMD ["sh", "-c", "trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; kill -TERM 
 FROM executor AS executor-test
 USER root
 RUN uv sync --frozen --extra repair --extra fem
+COPY --from=rust-builder /native/dist/*.whl /tmp/nw/
+RUN uv pip install --python /app/.venv/bin/python /tmp/nw/*.whl && rm -rf /tmp/nw
 USER cad

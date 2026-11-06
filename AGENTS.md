@@ -219,6 +219,18 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   SF-bearing fields, thread them through `toolloop._METRIC_KEYS` so
   compaction doesn't drop them, and chain fallbacks on `is None` (a solved
   SF of 0.0 is a verdict, not a missing value).
+- Native kernels (`backend/cadx_native`, optional Rust/PyO3): build with
+  `cd backend/cadx_native && uvx maturin develop --release` — **re-run after
+  every `make sync`** (uv sync removes non-locked packages). The module is
+  strictly additive: `cadx/cad/native.py` is the only import point, every
+  helper returns `None` on missing/failed native and the caller keeps the
+  Python path. Kill switches: `CADX_NATIVE=0` (master), `CADX_NATIVE_GEOM=0`
+  / `CADX_NATIVE_FEM=0` (bisect). Rules for crate changes: NO global thread
+  pools (the executor forks sandbox/pool children — `std::thread::scope`
+  only), deterministic output per input, trimesh/scipy conventions
+  replicated verbatim (parity tests in `tests/native/` gate every swap).
+  In Docker the `rust-builder` stage builds the wheel; install it AFTER
+  each stage's last `uv sync`.
 - Commits: one per milestone step, descriptive message.
 
 ## MCP server (`cadx/mcpserver/`)

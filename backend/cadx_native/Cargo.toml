@@ -1,0 +1,14 @@
+[package]
+name = "cadx_native"
+version = "0.1.0"
+edition = "2021"
+description = "Native geometry-query and FEM kernels for cadx (optional, Python fallback)"
+license = "Proprietary"
+
+[lib]
+name = "cadx_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+numpy = "0.30.0"
+pyo3 = { version = "0.30.1", features = ["abi3-py312"] }
