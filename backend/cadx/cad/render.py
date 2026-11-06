@@ -159,6 +159,7 @@ def render_views(
     size: int = 1024,
     *,
     thread_features: list[dict[str, Any]] | None = None,
+    thread_detail_features: list[dict[str, Any]] | None = None,
     ghosts: bool = True,
 ) -> dict[str, Path]:
     """Render the 7 standard views. Returns {view: path}.
@@ -166,7 +167,12 @@ def render_views(
     `ghosts=False` skips the translucent x-ray shots — attempt renders on
     the critique loop pay full tessellation + GL cost per PNG while the
     model mostly reads the contact sheet, so previews skip them; the
-    export re-render keeps them for internal-feature inspection."""
+    export re-render keeps them for internal-feature inspection.
+
+    `thread_detail_features` feeds only the clipped close-up
+    (thread_detail.png) — use it for REAL grooves (refine) that need no
+    helix overlay on the standard views; `thread_features` additionally
+    draws preview lines and tags the labels."""
     if not render_available():
         return {}
     import pyvista as pv
@@ -235,7 +241,7 @@ def render_views(
             pl.screenshot(str(out))
             pl.remove_actor(label)
             results[f"{view}{suffix}"] = out
-        detail = _thread_detail_camera(thread_features or [])
+        detail = _thread_detail_camera(thread_features or thread_detail_features or [])
         if detail is not None:
             focal, position, up, half_height, clip_normal = detail
             actor.prop.opacity = 1.0

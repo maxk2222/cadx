@@ -6221,6 +6221,7 @@ def run_refine(
     from cadx.cad.fem.refine import (
         apply_refine,
         rebind_keep_hole_indices,
+        refine_thread_render_features,
         refine_verify,
         resolve_refine_features,
     )
@@ -6381,7 +6382,12 @@ def run_refine(
     render_dir = out_dir / "renders"
     _rq_size, _rq_ghosts = _render_quality(res.detail_mode)
     render_paths = render_views(
-        out, render_dir, res.analysis.bbox_size, size=_rq_size, ghosts=_rq_ghosts
+        out,
+        render_dir,
+        res.analysis.bbox_size,
+        size=_rq_size,
+        thread_detail_features=refine_thread_render_features(out, rep.applied),
+        ghosts=_rq_ghosts,
     )
     res.renders = {v: p.name for v, p in render_paths.items()}
     thumb = render_thumbnail(out, out_dir / "thumbnail.png")

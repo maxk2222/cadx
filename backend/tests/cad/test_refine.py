@@ -2044,3 +2044,61 @@ def test_merge_probe_features_ignores_unverified_and_obstructions():
         {"name": "no pos", "kind": "hole", "axis": "+z", "pos": [], "verified": True},
     ]
     assert merge_probe_features([], probes) == []
+
+
+def test_refine_thread_render_features_maps_helical_taps():
+    """Applied helical taps map to detail-camera features: mouth position
+    on the entry face, axis flipped inward (camera focal = pos + axis*d),
+    major dia from thread_spec, depth as length."""
+    from cadx.cad.fem.refine import refine_thread_render_features
+
+    mesh = _box()  # z in [0,12]
+    applied = [
+        {
+            "name": "M8 tap -X",
+            "kind": "tap",
+            "axis": "-z",
+            "u": 10.0,
+            "v": 5.0,
+            "dia": 6.8,
+            "depth_mm": 10.0,
+            "thread_spec": "M8x1.25",
+            "helical": True,
+        }
+    ]
+    feats = refine_thread_render_features(mesh, applied)
+    assert len(feats) == 1
+    f = feats[0]
+    assert f["axis"] == "+z"  # -z entry → inward +z
+    assert f["position_mm"] == pytest.approx([10.0, 5.0, 0.0])
+    assert f["major_diameter"] == pytest.approx(8.0)
+    assert f["length"] == pytest.approx(10.0)
+    assert f["external"] is False
+
+
+def test_refine_thread_render_features_skips_non_helical():
+    """Plain bores and helical:false entries produce no detail camera."""
+    from cadx.cad.fem.refine import refine_thread_render_features
+
+    mesh = _box()
+    applied = [
+        {
+            "kind": "tap",
+            "axis": "-z",
+            "u": 5.0,
+            "v": 5.0,
+            "depth_mm": 8.0,
+            "thread_spec": "M8x1.25",
+            "helical": False,
+        },
+        {
+            "kind": "hole",
+            "axis": "-z",
+            "u": 6.0,
+            "v": 6.0,
+            "depth_mm": 8.0,
+            "thread_spec": "M8x1.25",
+            "helical": True,
+        },
+    ]
+    assert refine_thread_render_features(mesh, applied) == []

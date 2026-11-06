@@ -2978,6 +2978,51 @@ def merge_probe_features(
     return out
 
 
+def refine_thread_render_features(
+    mesh: trimesh.Trimesh, applied: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Applied helical thread/tap entries → render detail-camera features.
+
+    The refine path has no CADX_FEATURES declarations, so the clipped
+    thread_detail.png close-up never fired even though the grooves exist.
+    ``position_mm`` is the bore mouth on the entry face; the detail camera
+    computes ``focal = position + axis*(start+length/2)``, so the render
+    axis must point INWARD — the applied record's entry-face axis flips
+    sign. ``start`` mirrors the groove build: it is anchored ~1 mm below
+    the mouth."""
+    feats: list[dict[str, Any]] = []
+    for a in applied or []:
+        if not a.get("helical") or str(a.get("kind") or "") not in ("thread", "tap"):
+            continue
+        axis = str(a.get("axis") or "")
+        if axis not in _AXES_ANY:
+            continue
+        spec = _parse_spec(str(a.get("thread_spec") or ""))
+        dia = float(spec[0]) if spec else 0.0
+        depth = float(a.get("depth_mm") or 0.0)
+        if dia <= 0 or depth <= 0:
+            continue
+        ax, au, av = _AXES_ANY[axis]
+        u, v = float(a.get("u") or 0.0), float(a.get("v") or 0.0)
+        entry = _entry_point(mesh, axis, u, v)
+        if entry is None:
+            continue
+        pos = [0.0, 0.0, 0.0]
+        pos[au], pos[av], pos[ax] = u, v, entry
+        feats.append(
+            {
+                "kind": "thread",
+                "axis": f"{'-' if axis[0] == '+' else '+'}{axis[1]}",  # inward
+                "position_mm": pos,
+                "major_diameter": dia,
+                "length": depth,
+                "start": 1.0,
+                "external": False,
+            }
+        )
+    return feats
+
+
 def _check_bore_obstruction(
     mesh: trimesh.Trimesh,
     entry: dict[str, Any],
