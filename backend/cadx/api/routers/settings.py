@@ -68,7 +68,10 @@ async def update_settings(
     values = current.to_storage()
     # explicitly provided null/"" resets the field to its code default
     # (sparse storage: an absent key means "use default")
-    handled = {k for name in _SECRET_KEYS for k in (name, f"clear_{name}")}
+    handled = {k for name in _SECRET_KEYS for k in (name, f"clear_{name}", f"{name}_set")}
+    # SettingsOut echo fields — read-only computed values; accepted by the
+    # schema for round-tripping clients, never persisted
+    handled |= {"data_dir", "resources_detected", "llm_detected"}
     for key in body.model_fields_set - handled:
         v = getattr(body, key)
         if v is None or v == "":

@@ -26,12 +26,21 @@ async def client():
         yield c
 
 
+# SettingsOut-only fields a client may legitimately echo back on PUT —
+# declared on SettingsUpdate so extra="forbid" accepts them, ignored by
+# the router (read-only computed values, never persisted)
+_ECHO_FIELDS = {"data_dir", "resources_detected", "llm_detected"} | {
+    f"{n}_set" for n in _SECRET_FIELDS
+}
+
+
 def test_update_schema_covers_runtime_fields():
     missing = set(RuntimeSettings.model_fields) - set(SettingsUpdate.model_fields)
     assert missing <= set(_SECRET_FIELDS)
-    # every runtime field is writable; only the clear_* helpers add extras
+    # every runtime field is writable; clear_* helpers and the SettingsOut
+    # echo fields are the only extras
     extras = set(SettingsUpdate.model_fields) - set(RuntimeSettings.model_fields)
-    assert extras == {f"clear_{n}" for n in _SECRET_FIELDS}
+    assert extras == {f"clear_{n}" for n in _SECRET_FIELDS} | _ECHO_FIELDS
 
 
 def test_out_schema_covers_runtime_fields():
@@ -59,8 +68,24 @@ def test_update_forbids_unknown_and_secrets_stay_write_only():
     with pytest.raises(ValidationError):
         SettingsUpdate(nonsense_field=1)
     for name in _SECRET_FIELDS:
-        assert f"{name}_set" not in SettingsUpdate.model_fields
         assert name not in SettingsOut.model_fields or name.endswith("_set")
+
+
+async def test_put_accepts_settings_out_echo(client):
+    """The regression that blocked settings saves: a client round-tripping
+    the GET body puts read-only echo fields (resources_detected,
+    llm_detected, data_dir, *_set) into the PUT — they must be accepted and
+    ignored, not 422 and never persisted."""
+    g = (await client.get("/api/settings")).json()
+    r = await client.put("/api/settings", json=g)
+    assert r.status_code == 200, r.text
+    # echo values are not writable: the fake detected value must not stick
+    fake = dict(g, resources_detected={"cpus": 999}, llm_api_key_set=True)
+    r = await client.put("/api/settings", json=fake)
+    assert r.status_code == 200, r.text
+    out = (await client.get("/api/settings")).json()
+    assert out["resources_detected"].get("cpus") != 999
+    assert out["llm_api_key_set"] is False
 
 
 async def test_put_accepts_runtime_only_field(client):

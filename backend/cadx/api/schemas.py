@@ -633,6 +633,13 @@ SettingsUpdate = create_model(
     **_settings_fields(optional=True),
     **{n: (str | None, Field(default=None, max_length=4000)) for n in _SECRET_FIELDS},
     **{f"clear_{n}": (bool, False) for n in _SECRET_FIELDS},
+    # SettingsOut echo fields — a client may round-trip the GET body on
+    # save; they are declared here only so extra="forbid" still accepts
+    # them (the router ignores them entirely — read-only computed values)
+    **{f"{n}_set": (bool | None, Field(default=None)) for n in _SECRET_FIELDS},
+    data_dir=(str | None, Field(default=None)),
+    resources_detected=(dict[str, int] | None, Field(default=None)),
+    llm_detected=(dict[str, int] | None, Field(default=None)),
 )
 
 
