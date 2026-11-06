@@ -341,7 +341,9 @@ class RefineRequest(BaseModel):
     material: str = Field(default="", max_length=40)
     voxel_mm: float | None = Field(default=None, ge=0.3, le=8.0)
     restore_planes: bool | None = None  # None → OptimizeSpec.restore_planes (default on)
-    helical_threads: bool = False  # cut real helical V-groove threads (experimental, FDM)
+    helical_threads: bool | None = (
+        None  # None → runtime refine_helical_threads; explicit False disables grooves
+    )
     auto_plane_restore: bool = (
         False  # auto-detect dominant planar faces on the base mesh and restore them
     )

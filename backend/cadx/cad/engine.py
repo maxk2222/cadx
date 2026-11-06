@@ -6192,7 +6192,7 @@ def run_refine(
     load_cases: list[dict[str, Any]] | None = None,
     base_mesh_path: Path | None = None,
     restore_planes: bool = True,
-    helical_threads: bool = False,
+    helical_threads: bool | None = None,
     auto_plane_restore: bool = False,
     auto_keep_anchors: bool = False,
     material: str = "",
@@ -6270,9 +6270,12 @@ def run_refine(
         keep_regions=keep_regions,
         anchors=anchors or [],
         restore_keeps=restore_planes and base_mesh is not None,
-        # job/spec-level request OR the runtime default — an explicit
-        # per-feature helical=False still wins inside apply_refine
-        helical_threads=bool(helical_threads) or s.refine_helical_threads,
+        # explicit job/spec value wins; only an omitted (None) request
+        # falls back to the runtime default — per-feature helical=False
+        # still wins inside apply_refine
+        helical_threads=(
+            helical_threads if helical_threads is not None else s.refine_helical_threads
+        ),
     )
     warnings = res_warnings + rep.warnings
 

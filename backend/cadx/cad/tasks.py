@@ -1109,7 +1109,7 @@ def run_refine_payload(
             storage.resolve(payload["base_mesh_rel"]) if payload.get("base_mesh_rel") else None
         ),
         restore_planes=bool(payload.get("restore_planes", True)),
-        helical_threads=bool(payload.get("helical_threads", False)),
+        helical_threads=payload.get("helical_threads"),
         auto_plane_restore=bool(payload.get("auto_plane_restore", False)),
         auto_keep_anchors=bool(payload.get("auto_keep_anchors", False)),
         material=payload.get("material") or "",

@@ -1542,7 +1542,7 @@ async def _maybe_spawn_refine(
         # executor may auto-derive anchor keep-boxes from them
         "auto_keep_anchors": bool(not keep_regions and topopt_anchors),
         "material": material,
-        "helical_threads": bool(optimize.get("helical_threads")),
+        "helical_threads": optimize.get("helical_threads"),
         "auto_plane_restore": bool(optimize.get("auto_plane_restore")),
         "restore_planes": optimize.get("restore_planes", True),
     }
@@ -2185,9 +2185,10 @@ async def run_refine_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[s
                     if payload.get("restore_planes") is not None
                     else (spec.optimize.restore_planes if spec and spec.optimize else True)
                 ),
-                "helical_threads": bool(
+                "helical_threads": (
                     payload.get("helical_threads")
-                    or (spec.optimize.helical_threads if spec and spec.optimize else False)
+                    if payload.get("helical_threads") is not None
+                    else (spec.optimize.helical_threads if spec and spec.optimize else None)
                 ),
                 "auto_plane_restore": bool(
                     payload.get("auto_plane_restore")

@@ -834,6 +834,93 @@ def test_run_refine_synthesizes_auto_keep_regions(monkeypatch, tmp_path):
     assert captured["keep_regions"] == [{"kind": "all"}]
 
 
+def test_helical_threads_schema_tri_state():
+    """helical_threads is tri-state everywhere it is declared: omitted →
+    None (runtime default applies downstream); explicit False must survive
+    validation (a plain bool field would coerce/reject None and the old
+    `or`-chains could never express 'off')."""
+    from cadx.api.schemas import RefineRequest
+    from cadx.llm.schemas import OptimizeSpec
+
+    assert OptimizeSpec().helical_threads is None
+    assert OptimizeSpec(helical_threads=False).helical_threads is False
+    assert OptimizeSpec(helical_threads=True).helical_threads is True
+    assert RefineRequest().helical_threads is None
+    assert RefineRequest(helical_threads=False).helical_threads is False
+
+
+def test_refine_payload_forwards_helical_threads_tri_state(monkeypatch, tmp_path):
+    """run_refine_payload must not collapse the flag: explicit False and
+    omitted (None) are different requests."""
+    import cadx.cad.tasks as tasks
+    from cadx.cad.engine import ExecResult
+
+    captured: dict = {}
+
+    def fake_run_refine(**kw):
+        captured.update(kw)
+        r = ExecResult()
+        r.ok = True
+        return r
+
+    monkeypatch.setattr("cadx.cad.engine.run_refine", fake_run_refine)
+    mesh = storage.tmp_dir() / "in.stl"
+    mesh.write_text("solid m\nendsolid m\n")
+    base = {
+        "project_id": str(uuid.uuid4()),
+        "version_id": str(uuid.uuid4()),
+        "iteration": 1,
+        "mesh_rel": storage.relpath(mesh),
+    }
+    for val, want in ((False, False), (True, True), (None, None)):
+        captured.clear()
+        payload = dict(base)
+        if val is not None:
+            payload["helical_threads"] = val
+        tasks.run_refine_payload(payload)
+        assert captured["helical_threads"] is want
+
+
+def test_run_refine_helical_threads_resolution(monkeypatch, tmp_path):
+    """Explicit request wins over the runtime default; None defers to
+    RuntimeSettings.refine_helical_threads."""
+    import trimesh
+
+    import cadx.cad.engine as engine
+    import cadx.cad.fem.refine as refine_mod
+
+    captured: dict = {}
+
+    def fake_apply(mesh, feats, **kw):
+        captured.update(kw)
+        rep = refine_mod.RefineReport()
+        rep.applied = [{"name": "a", "kind": "hole", "axis": "+z", "dia": 4.0}]
+        return mesh, rep
+
+    monkeypatch.setattr(refine_mod, "apply_refine", fake_apply)
+    monkeypatch.setattr(refine_mod, "resolve_refine_features", lambda *a, **k: ([], []))
+    monkeypatch.setattr(engine, "render_views", lambda *a, **k: {})
+    monkeypatch.setattr(engine, "render_thumbnail", lambda *a, **k: None)
+
+    stl = tmp_path / "in.stl"
+    trimesh.creation.box(extents=[40.0, 20.0, 10.0]).export(str(stl))
+    for req, rt_default, want in (
+        (False, True, False),  # explicit off beats runtime on
+        (True, False, True),  # explicit on beats runtime off
+        (None, True, True),  # omitted → runtime default
+        (None, False, False),
+    ):
+        captured.clear()
+        res = engine.run_refine(
+            mesh_path=stl,
+            out_dir=tmp_path,
+            helical_threads=req,
+            runtime=RuntimeSettings(refine_helical_threads=rt_default),
+        )
+        assert res.ok
+        assert captured["helical_threads"] is want
+
+
 def test_lift_chosen_run_metrics_backfills_refine_choice():
     """A committed `refine_features` run ships a sparse flat topopt block —
     the verified metrics live in its agent_runs record. The lift must copy
