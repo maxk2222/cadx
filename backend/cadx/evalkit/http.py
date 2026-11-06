@@ -66,7 +66,23 @@ class HttpDriver:
     async def _req(self, method: str, path: str, **kw: Any) -> Any:
         delay = 1.0
         for attempt in range(_5XX_MAX_RETRIES + 1):
-            r = await self._client.request(method, f"{self.api}{path}", **kw)
+            try:
+                r = await self._client.request(method, f"{self.api}{path}", **kw)
+            except httpx.RequestError:
+                # transport hiccup (dropped keep-alive, ReadError mid-body,
+                # connect reset) — safe to retry only for idempotent verbs;
+                # a POST retry could double-spawn versions/jobs
+                if method in _IDEMPOTENT and attempt < _5XX_MAX_RETRIES:
+                    log.warning(
+                        "eval.http.transient_transport",
+                        method=method,
+                        path=path,
+                        retry=attempt + 1,
+                    )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 16.0)
+                    continue
+                raise
             if r.status_code < 400:
                 return r.json() if r.content else None
             if r.status_code >= 500 and method in _IDEMPOTENT and attempt < _5XX_MAX_RETRIES:
@@ -142,7 +158,7 @@ class HttpDriver:
             try:
                 j = await self.job(job_id)
                 transient = 0
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError):
+            except httpx.RequestError:
                 transient += 1
                 if transient >= 10:
                     raise
