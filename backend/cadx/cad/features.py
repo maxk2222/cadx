@@ -2227,7 +2227,12 @@ def compare_anchor_positions(
         use_centres = centres if want_z else any_axis
         if not use_centres and not want_z:
             use_centres = any_axis
-        d = min((math.hypot(ax - cx, ay - cy) for cx, cy in use_centres), default=None)
+        d: float | None = None
+        best_xy: tuple[float, float] | None = None
+        for cx, cy in use_centres:
+            dd = math.hypot(ax - cx, ay - cy)
+            if d is None or dd < d:
+                d, best_xy = dd, (cx, cy)
         if want_z and (d is None or d > (2.0 if exact else 3.0)) and wrong_axis_centres:
             dw = min(
                 (math.hypot(ax - cx, ay - cy) for cx, cy, _ in wrong_axis_centres),
@@ -2266,11 +2271,16 @@ def compare_anchor_positions(
                 )
             )
         elif d > (2.0 if exact else 3.0):
+            measured = (
+                f" (measured at ({best_xy[0]:.1f}, {best_xy[1]:.1f}))"
+                if best_xy is not None
+                else ""
+            )
             findings.append(
                 FeatureFinding(
                     feature=f"hole {a.get('index', '?')}",
                     expected=f"at ({ax:.1f}, {ay:.1f})",
-                    actual=f"off by {d:.1f} mm",
+                    actual=f"off by {d:.1f} mm{measured}",
                     severity="major" if exact else "minor",
                     fix_hint=(
                         f"move the hole to ({ax:.1f}, {ay:.1f}) — "
@@ -2281,11 +2291,16 @@ def compare_anchor_positions(
                 )
             )
         elif d > 1.0:
+            measured = (
+                f" (measured at ({best_xy[0]:.1f}, {best_xy[1]:.1f}))"
+                if best_xy is not None
+                else ""
+            )
             findings.append(
                 FeatureFinding(
                     feature=f"hole {a.get('index', '?')}",
                     expected=f"at ({ax:.1f}, {ay:.1f})",
-                    actual=f"off by {d:.1f} mm",
+                    actual=f"off by {d:.1f} mm{measured}",
                     severity="minor",
                     fix_hint="nudge the hole to the anchored position",
                 )

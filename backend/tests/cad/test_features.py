@@ -754,3 +754,25 @@ def test_compare_blind_expected_all_blind_no_finding():
         )
     ]
     assert not any("blind" in f.expected for f in compare_features(spec, m))
+
+
+def test_compare_anchor_positions_reports_measured_center():
+    """Deviation findings name the measured centre, not just the delta —
+    resolved-vs-declared must be auditable."""
+    anchors = {
+        "holes": [
+            {"index": 1, "x": 10.0, "y": 0.0, "dia": 5.0, "axis": "+z", "source": "image"}
+        ]
+    }
+    measured = MeasuredFeatures(
+        hole_groups=[
+            MeasuredHoleGroup(diameter=5.0, count=1, axis="+z", centers=[(15.0, 1.0, 4.0)])
+        ],
+        total_holes=1,
+    )
+    findings = compare_anchor_positions(anchors, measured)
+    assert len(findings) == 1
+    f = findings[0]
+    assert "off by 5.1 mm" in f.actual
+    assert "(15.0, 1.0)" in f.actual  # measured centre is reported
+    assert "(10.0, 0.0)" in f.expected  # declared position stays in expected
