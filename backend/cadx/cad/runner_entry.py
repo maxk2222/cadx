@@ -285,7 +285,16 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
     # for mesh_cut/mesh_fuse/mesh_intersect/trim_below; also powers the
     # deterministic anchor re-cut below. Any failure leaves OCC-only behavior.
     mesh_boolean = None
-    if mesh_solid_path or anchor_holes_list:
+    _spec_features = (
+        ((anchors.get("spec") or {}).get("features") or [])
+        if isinstance(anchors, dict)
+        else []
+    )
+    # spec features also warrant the backend: spec_feature_rescue probes the
+    # produced geometry (radial ring / tunnel checks) to rebuild declared
+    # mount features the code dropped — a clean vessel has no anchor holes,
+    # so without this the rescue backend would never load for it.
+    if mesh_solid_path or anchor_holes_list or _spec_features:
         try:
             import cadlib.ops as _cops
 
