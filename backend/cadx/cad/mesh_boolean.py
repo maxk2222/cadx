@@ -617,7 +617,15 @@ def recut_missing_holes(
             if tunnel_open(shape, uv[0], uv[1], axis, _declared_axial_span(h, idx)):
                 continue
             blocked.append((h, idx, uv[0], uv[1]))
-        except Exception:
+        except Exception as e:
+            # a spec anchor whose probe raises (broken B-Rep, degenerate ray)
+            # was skipped silently — the deterministic rescue is exactly the
+            # path meant to rescue missing bores, so its own failure must be
+            # visible on stdout instead of leaving a missing hole unexplained
+            print(
+                f"anchor re-cut: probe failed for "
+                f"Ø{float(h.get('dia') or 0):g}@{h.get('axis', '?')}: {str(e)[:120]}"
+            )
             continue
     if not blocked:
         return shape, []

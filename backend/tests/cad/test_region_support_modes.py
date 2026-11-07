@@ -152,3 +152,49 @@ def test_lint_cavity_with_seal_quiet() -> None:
         )
     ]
     assert lint_region_semantics(spec) == []
+
+
+def test_drop_dead_anchor_refs(monkeypatch) -> None:
+    from cadx.agent.steps import intake
+    from cadx.llm.schemas import LoadSpec, PartSpec
+
+    # 3 spec anchors exist; hole_index 6 is a dead reference the rebinder
+    # could not rescue — the region must be dropped, not left to poison the
+    # case with a silent matched-no-nodes at FEM time
+    monkeypatch.setattr("cadx.agent.anchors._spec_anchors", lambda s: [1, 2, 3])
+    spec = PartSpec(
+        name="tank", summary="", length_x=_dim(80.0), width_y=_dim(80.0), height_z=_dim(120.0)
+    )
+    spec.load_cases = [
+        LoadCase(
+            name="hydro",
+            fixed=[
+                RegionSpec(kind="hole", hole_index=1, fix_mode="all"),
+                RegionSpec(kind="hole", hole_index=6, fix_mode="all"),
+            ],
+            loads=[LoadSpec(region=RegionSpec(kind="surface", axis="+z"), pressure_mpa=0.9)],
+        )
+    ]
+    notes = intake.drop_dead_anchor_refs(spec)
+    assert len(notes) == 1 and "hole_index 6" in notes[0]
+    assert [r.hole_index for r in spec.load_cases[0].fixed] == [1]
+
+
+def test_drop_dead_anchor_refs_empty_table_keeps() -> None:
+    from cadx.agent.steps import intake
+    from cadx.llm.schemas import PartSpec
+
+    # empty anchor table means indices can't be validated — a hole_index
+    # might still resolve by axis/center hint at FEM time, so keep it
+    spec = PartSpec(
+        name="tank", summary="", length_x=_dim(80.0), width_y=_dim(80.0), height_z=_dim(120.0)
+    )
+    spec.load_cases = [
+        LoadCase(
+            name="hydro",
+            fixed=[RegionSpec(kind="hole", hole_index=6, fix_mode="all")],
+            loads=[],
+        )
+    ]
+    assert intake.drop_dead_anchor_refs(spec) == []
+    assert len(spec.load_cases[0].fixed) == 1

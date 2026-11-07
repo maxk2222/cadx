@@ -385,6 +385,59 @@ def lint_support_modes(spec: PartSpec) -> list[str]:
     return notes
 
 
+def drop_dead_anchor_refs(spec: PartSpec) -> list[str]:
+    """Drop regions whose `hole_index` points past the spec anchor table.
+
+    The rebinder rewires miscounts it can identify by name/position; what is
+    left is a genuinely dead reference the agent cannot repair post-intake
+    (load_cases are not editable mid-loop). A dead region only ever produces
+    a 'matched no nodes' warning that poisons the whole case — dropping it
+    lets the case evaluate on its VALID supports/loads, or fail with the
+    honest free-mode lint. Loads lose their target entirely, so the load
+    entry itself is dropped."""
+    from cadx.agent.anchors import _spec_anchors
+
+    n = len(_spec_anchors(spec) or [])
+    if n == 0:
+        return []  # no anchors to validate against — unbound refs resolve by hint
+    notes: list[str] = []
+
+    def _dead(r: Any) -> bool:
+        idx = int(getattr(r, "hole_index", 0) or 0)
+        return idx > n or idx < 0  # 0/None means unbound — kept (resolved by hint)
+
+    for case in spec.load_cases or []:
+        where = f"case '{case.name}'"
+        kept = []
+        for r in case.fixed or []:
+            if _dead(r):
+                notes.append(
+                    f"{where}: fixed region hole_index {r.hole_index} dropped — "
+                    f"only {n} anchor(s) exist; case evaluates on remaining supports"
+                )
+            else:
+                kept.append(r)
+        case.fixed = kept
+        kept_l = []
+        for ld in case.loads or []:
+            r = getattr(ld, "region", None)
+            if r is not None and _dead(r):
+                notes.append(
+                    f"{where}: load '{getattr(ld, 'description', '') or 'unnamed'}' dropped — "
+                    f"its region hole_index {r.hole_index} exceeds the {n} anchor(s)"
+                )
+            else:
+                kept_l.append(ld)
+        case.loads = kept_l
+    if spec.optimize is not None:
+        spec.optimize.keep_regions = [
+            r
+            for r in (spec.optimize.keep_regions or [])
+            if not _dead(r)
+        ]
+    return notes
+
+
 def lint_region_semantics(spec: PartSpec) -> list[str]:
     """Cavity-pressure semantics: a `cavity` region only resolves on a sealed
     interior void — an open neck/nozzle floods the mask empty, which produces
@@ -424,6 +477,9 @@ def sanitize_load_cases(spec: PartSpec) -> None:
         spec.assumptions = (spec.assumptions or []) + [note]
     for note in lint_region_semantics(spec):
         log.info("intake.region_semantics", note=note)
+        spec.assumptions = (spec.assumptions or []) + [note]
+    for note in drop_dead_anchor_refs(spec):
+        log.info("intake.dead_anchor_dropped", note=note)
         spec.assumptions = (spec.assumptions or []) + [note]
     kept: list[LoadCase] = []
     for c in spec.load_cases:
