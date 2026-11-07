@@ -135,6 +135,9 @@ def _spec_words(spec: PartSpec) -> set[str]:
 # prompt — the model doesn't have to discover that a "sealed vessel" is
 # `sealed_tank`, the deterministic match does it for it.
 _VESSEL_WORDS = frozenset({"tank", "vessel", "receiver", "dome", "behaelter", "enclosure"})
+_PROP_WORDS = frozenset(
+    {"propeller", "impeller", "blade", "blades", "fan", "rotor", "turbine", "prop"}
+)
 
 _FOOT_WORDS = ("foot", "lug", "mount", "ear", "tab", "stand", "leg", "base")
 _HOLE_WORDS = ("bolt", "mount", "foot", "clearance", "through", "anchor", "fix", "hole")
@@ -211,8 +214,47 @@ def _sealed_tank_hint(spec: PartSpec) -> str:
     )
 
 
+def _propeller_hint(spec: PartSpec) -> str:
+    """Inject a radial_blade start-template with the spec's real geometry.
+
+    Hand-rolled propeller blades are the single most common codegen failure
+    (the pitch/skew transform stacks wrong — tips land short of the declared
+    radius). The reviewed `radial_blade` helper encodes the whole compound
+    transform; the spec's blade/hub/bore features supply the dims."""
+    blades = 5
+    tip_r, root_r = None, None
+    for f in active_features(spec):
+        words = f"{_fget(f, 'name', '') or ''} {_fget(f, 'type', '') or ''}".lower()
+        d = _fdims(f)
+        if "blade" in words or "airfoil" in words:
+            blades = int(_fget(f, "count", None) or d.get("count") or blades)
+            r = d.get("tip_radius") or d.get("radius")
+            if isinstance(r, (int, float)) and r > 0:
+                tip_r = float(r)
+        elif "hub" in words or "boss" in words:
+            hr = d.get("radius") or (d.get("diameter") or 0) / 2.0
+            if isinstance(hr, (int, float)) and hr > 0:
+                root_r = float(hr) * 0.9  # root stations bury INTO the hub wall
+    dims = f"n_blades={blades}"
+    if root_r:
+        dims += f", root_r={root_r:g}"
+    if tip_r:
+        dims += f", tip_r={tip_r:g}"
+    return (
+        "PART-FAMILY propeller/impeller: cadlib.radial_blade builds the "
+        "lofted blade set — call it "
+        f"`radial_blade({dims}, chord=(root,tip), thickness=(root,tip), "
+        "pitch_root_deg=.., pitch_tip_deg=.., skew_tip_deg=..)` then fuse a "
+        "hub cylinder over the buried root stations and cut the shaft bore + "
+        "keyway. Do NOT hand-loft blades — the pitch-about-radial-axis "
+        "transform is exactly what radial_blade encodes. Read chord/pitch/"
+        "skew from the blade feature's dims."
+    )
+
+
 _PART_FAMILY_HINTS: list[tuple[frozenset[str], Any]] = [
     (_VESSEL_WORDS, _sealed_tank_hint),
+    (_PROP_WORDS, _propeller_hint),
 ]
 
 
