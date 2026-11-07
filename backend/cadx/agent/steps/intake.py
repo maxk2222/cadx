@@ -463,6 +463,9 @@ def lint_region_semantics(spec: PartSpec) -> list[str]:
     return notes
 
 
+_MAX_ASSUMPTION_NOTES = 6
+
+
 def sanitize_load_cases(spec: PartSpec) -> None:
     """Drop degenerate cases (no supports and no loads) a weak model emits as
     `{"name":"","fixed":[],"loads":[]}` — truthy lists of those would skip the
@@ -481,6 +484,13 @@ def sanitize_load_cases(spec: PartSpec) -> None:
     for note in drop_dead_anchor_refs(spec):
         log.info("intake.dead_anchor_dropped", note=note)
         spec.assumptions = (spec.assumptions or []) + [note]
+    # the lint notes above serialize into the codegen prompt (spec_block) —
+    # verbose per-case duplicates push the model toward defensive/broken code.
+    # keep each distinct note once, capped: diagnostic value stays, prompt
+    # dilution goes away
+    if spec.assumptions:
+        deduped = list(dict.fromkeys(spec.assumptions))
+        spec.assumptions = deduped[:_MAX_ASSUMPTION_NOTES]
     kept: list[LoadCase] = []
     for c in spec.load_cases:
         if not c.fixed and not c.loads:
