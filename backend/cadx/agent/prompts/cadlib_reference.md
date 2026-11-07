@@ -173,6 +173,8 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
 
 ### strut
 
+<!-- tags: strut, brace, strebe, diagonal, diagonalstrebe, support, stuetze -->
+
 - `strut(p0, p1, width, thickness, embed=1.0)` — STRAIGHT rectangular bar
   between two world points `p0`/`p1` (mm tuples); `width` runs along the
   axis closest to world Y, `thickness` lies in the bar plane, both ends
@@ -186,6 +188,8 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
 
 ### arch_bridge
 
+<!-- tags: arch, bridge, bogen, bruecke, brücke, handle, griff, buegel, bügel -->
+
 - `arch_bridge(span_x, apex_z, width_y, thickness, *, foot_z=0, embed=1.0,
   n_sections=15)` — ARCHED bar/handle between two feet at ±`span_x`/2 rising
   in the XZ plane so the top surface reaches `apex_z`; feet extend `embed`
@@ -196,6 +200,8 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   the choice for STRAIGHT braces: `part += arch_bridge(90, 25, 8, 6)`.
 
 ### radial_blade
+
+<!-- tags: propeller, impeller, blade, blades, fan, rotor, turbine, marine, prop, propellerblatt, fluegel, flügel -->
 
 - `radial_blade(n_blades=4, root_r=8, tip_r=60, *, chord=(22, 14),
   thickness=(4, 2.5), pitch_root_deg=45, pitch_tip_deg=28, skew_tip_deg=15,

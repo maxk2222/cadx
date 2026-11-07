@@ -188,6 +188,36 @@ def test_part_family_hint_no_feet_falls_back():
     assert "foot_hole_d=0" in hint
 
 
+def test_cadlib_filter_propeller_surfaces_radial_blade():
+    """A propeller spec must surface the reviewed radial_blade primitive —
+    it exists in cadlib but was invisible to the tag filter (no tags line),
+    so the model hand-rolled twisted blade lofts and failed."""
+    spec = _spec(
+        [
+            Feature(name="blade", type="airfoil", dims={}, count=5),
+            Feature(name="hub", type="boss", dims={}, count=1),
+        ]
+    )
+    spec.name = "5-blade marine propeller"
+    spec.summary = "propeller with hub and blades"
+    text = codegen_system(plan=None, spec=spec, fresh=False)
+    assert "### radial_blade" in text
+
+
+def test_cadlib_filter_arch_and_strut_tags():
+    """arch_bridge and strut carry their own trigger vocabulary — a spec
+    naming 'arch bridge' or 'diagonal strut' must surface them."""
+    from cadx.agent.context import _cadlib_sections
+
+    arch = _spec([Feature(name="handle", type="other", dims={}, count=1)])
+    arch.name = "arched carrying handle bridge"
+    assert "### arch_bridge" in _cadlib_sections(arch)
+
+    strut = _spec([Feature(name="diagonal strut", type="rib", dims={}, count=1)])
+    strut.name = "frame with diagonalstrebe"
+    assert "### strut" in _cadlib_sections(strut)
+
+
 def test_part_family_hint_non_vessel_empty():
     from cadx.agent.context import part_family_hint
 
