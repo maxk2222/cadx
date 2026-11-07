@@ -103,3 +103,52 @@ def test_cavity_seal_openings() -> None:
         dom, RegionSpec(kind="cavity", seal_openings_mm=4.0)
     )
     assert sealed_case.any()  # sealed: inner skin resolves
+
+
+def test_lint_cavity_without_seal_flagged() -> None:
+    from cadx.agent.steps.intake import lint_region_semantics
+    from cadx.llm.schemas import LoadSpec, PartSpec
+
+    spec = PartSpec(
+        name="tank", summary="", length_x=_dim(80.0), width_y=_dim(80.0), height_z=_dim(120.0)
+    )
+    spec.load_cases = [
+        LoadCase(
+            name="hydro test",
+            fixed=[RegionSpec(kind="face", axis="-z", fix_mode="all")],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(kind="cavity", description="inner pressure"),
+                    pressure_mpa=0.9,
+                )
+            ],
+        )
+    ]
+    notes = lint_region_semantics(spec)
+    assert len(notes) == 1
+    assert "seal_openings_mm" in notes[0]
+    assert "open nozzle floods" in notes[0]
+
+
+def test_lint_cavity_with_seal_quiet() -> None:
+    from cadx.agent.steps.intake import lint_region_semantics
+    from cadx.llm.schemas import LoadSpec, PartSpec
+
+    spec = PartSpec(
+        name="tank", summary="", length_x=_dim(80.0), width_y=_dim(80.0), height_z=_dim(120.0)
+    )
+    spec.load_cases = [
+        LoadCase(
+            name="hydro test",
+            fixed=[RegionSpec(kind="face", axis="-z", fix_mode="all")],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(
+                        kind="cavity", description="inner", seal_openings_mm=24.0
+                    ),
+                    pressure_mpa=0.9,
+                )
+            ],
+        )
+    ]
+    assert lint_region_semantics(spec) == []

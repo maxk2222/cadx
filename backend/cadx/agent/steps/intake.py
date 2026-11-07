@@ -385,6 +385,31 @@ def lint_support_modes(spec: PartSpec) -> list[str]:
     return notes
 
 
+def lint_region_semantics(spec: PartSpec) -> list[str]:
+    """Cavity-pressure semantics: a `cavity` region only resolves on a sealed
+    interior void — an open neck/nozzle floods the mask empty, which produces
+    a silent no-load case at FEM time. When a case puts pressure inside a
+    vessel that has an opening (hydro test with capped ports), the region
+    must carry `seal_openings_mm` so the solver treats the port as capped."""
+    notes: list[str] = []
+    for case in spec.load_cases or []:
+        regions = list(case.fixed or []) + [
+            getattr(ld, "region", None) for ld in (case.loads or [])
+        ]
+        for r in regions:
+            if r is None or str(getattr(r, "kind", "") or "") != "cavity":
+                continue
+            if getattr(r, "seal_openings_mm", None) is None:
+                notes.append(
+                    f"case '{case.name}': cavity region '{getattr(r, 'description', '') or 'inner'}' "
+                    "resolves only a SEALED interior void — an open nozzle floods it "
+                    "empty (load matches nothing). If the vessel is open and the "
+                    "pressure case models a capped/hydro test, set "
+                    "seal_openings_mm to the largest opening Ø in mm"
+                )
+    return notes
+
+
 def sanitize_load_cases(spec: PartSpec) -> None:
     """Drop degenerate cases (no supports and no loads) a weak model emits as
     `{"name":"","fixed":[],"loads":[]}` — truthy lists of those would skip the
@@ -396,6 +421,9 @@ def sanitize_load_cases(spec: PartSpec) -> None:
         spec.assumptions = (spec.assumptions or []) + [note]
     for note in lint_support_modes(spec):
         log.info("intake.support_modes_free", note=note)
+        spec.assumptions = (spec.assumptions or []) + [note]
+    for note in lint_region_semantics(spec):
+        log.info("intake.region_semantics", note=note)
         spec.assumptions = (spec.assumptions or []) + [note]
     kept: list[LoadCase] = []
     for c in spec.load_cases:

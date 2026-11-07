@@ -780,6 +780,15 @@ _REGION_SCHEMA = {
             "keep regions only: override material inside the region "
             "(e.g. 'aluminum' for a threaded insert)"
         ),
+        "seal_openings_mm": {
+            "type": "number",
+            "description": "cavity regions only: virtually seal openings up to "
+            "this diameter before the flood-fill — REQUIRED for a pressure "
+            "region inside a vessel with an open neck/nozzle (an open vessel "
+            "cannot hold pressure; the inner skin only resolves when the "
+            "opening is treated as capped, e.g. a hydro test). Set it to the "
+            "largest opening Ø in mm; omit for truly sealed pockets",
+        },
         "description": _s("label, e.g. 'M4 bore'"),
     },
 }
