@@ -284,3 +284,69 @@ async def test_sweeper_turn_flag_only_cleared_when_dead(monkeypatch):
     await q._sweep_once({"arq_redis": FakeRedis()})
     async with session_scope() as db:
         assert (await db.get(Chat, cid)).turn_running is False
+
+
+async def test_cad_orphan_sweep_drops_only_own_lane_markers():
+    """A restarted cad worker must clear its OWN lane's stale in-progress
+    markers (dead orphans → poller sees not_found → deliberate resubmit) but
+    never the sibling lane's or agent/chat keys — those lanes' workers own
+    their own sweep, and a live task must not lose its marker."""
+    redis = FakeRedis(
+        {
+            "arq:in-progress:optimize-aaaa-1111",  # cad orphan → drop
+            "arq:in-progress:fem_analyze-bbbb-2222",  # cad orphan → drop
+            "arq:in-progress:execute_version-cccc-3333",  # cad-light → keep
+            "arq:in-progress:edit_feature-dddd-4444",  # cad-light → keep
+            "arq:in-progress:aa9991bc-efb6-4f45",  # agent job uuid → keep
+            "arq:in-progress:chat:c1:m1",  # chat turn → keep
+            "arq:result:optimize-eeee-5555",  # not in-progress → untouched
+        }
+    )
+    await q._sweep_orphaned_executor_tasks(
+        {"arq_redis": redis},
+        frozenset(f.__name__ for f in q.CadWorkerSettings.functions),
+    )
+    assert "arq:in-progress:optimize-aaaa-1111" in redis.deleted
+    assert "arq:in-progress:fem_analyze-bbbb-2222" in redis.deleted
+    # sibling lane + agent + chat markers survive
+    assert "arq:in-progress:execute_version-cccc-3333" in redis.keys
+    assert "arq:in-progress:edit_feature-dddd-4444" in redis.keys
+    assert "arq:in-progress:aa9991bc-efb6-4f45" in redis.keys
+    assert "arq:in-progress:chat:c1:m1" in redis.keys
+    assert "arq:result:optimize-eeee-5555" in redis.keys
+
+
+async def test_cad_orphan_sweep_light_lane_scoped():
+    """The cad-light worker sweeps only its own funcs — never the serial
+    cad lane's in-progress markers."""
+    redis = FakeRedis(
+        {
+            "arq:in-progress:execute_version-aaaa-1111",  # light orphan → drop
+            "arq:in-progress:optimize-bbbb-2222",  # cad lane → keep
+        }
+    )
+    await q._sweep_orphaned_executor_tasks(
+        {"arq_redis": redis},
+        frozenset(f.__name__ for f in q.CadLightWorkerSettings.functions),
+    )
+    assert "arq:in-progress:execute_version-aaaa-1111" in redis.deleted
+    assert "arq:in-progress:optimize-bbbb-2222" in redis.keys
+
+
+async def test_cad_orphan_sweep_bytes_keys_and_empty():
+    """decode_responses=False pools hand back bytes keys; a missing pool or
+    empty func set is a no-op, never a crash."""
+
+    class BytesRedis(FakeRedis):
+        async def scan(self, cursor, match, count=200):
+            prefix = match.rstrip("*")
+            return 0, [k.encode() for k in self.keys if k.startswith(prefix)]
+
+    redis = BytesRedis({"arq:in-progress:optimize-aaaa-1111"})
+    await q._sweep_orphaned_executor_tasks(
+        {"arq_redis": redis}, frozenset({"optimize"})
+    )
+    assert "arq:in-progress:optimize-aaaa-1111" in redis.deleted
+
+    await q._sweep_orphaned_executor_tasks({}, frozenset({"optimize"}))  # no pool
+    await q._sweep_orphaned_executor_tasks({"arq_redis": redis}, frozenset())

@@ -325,7 +325,51 @@ async def agent_startup(ctx: dict[str, Any]) -> None:
     ctx["bg_tasks"].append(asyncio.create_task(_sweep_loop(ctx), name="queue-sweeper"))
 
 
-async def cad_startup(ctx: dict[str, Any]) -> None:
+async def _sweep_orphaned_executor_tasks(
+    ctx: dict[str, Any], func_names: frozenset[str]
+) -> None:
+    """Drop `arq:in-progress:` markers left by a dead executor worker.
+
+    A cad/cad-light restart orphans in-flight arq tasks: the marker lives for
+    the full job_timeout (~2h) while nothing runs them, so the QueueExecutor
+    poller waits out its whole budget before reporting 'task lost'. The
+    deployment runs a single executor container, so at startup EVERY
+    in-progress marker for this worker's own functions is an orphan — delete
+    it and the poller's next status() returns not_found, hitting the graceful
+    task-lost path so the caller resubmits deliberately (cad queues never
+    auto-retry: max_tries=1). Scoped to this worker's func names so the
+    cad/cad-light lanes cannot delete each other's freshly-started tasks, and
+    startup-only (never periodic): a live long SIMP run carries the same
+    marker shape, so only a just-booted worker can prove it owns no tasks.
+    """
+    redis = ctx.get("arq_redis")
+    if redis is None or not func_names:
+        return
+    prefixes = tuple(f"{name}-" for name in func_names)
+    swept = 0
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(
+                cursor, match="arq:in-progress:*", count=200
+            )
+            for key in keys:
+                if isinstance(key, bytes):
+                    key = key.decode()
+                job_id = key[len("arq:in-progress:") :]
+                if job_id.startswith(prefixes):
+                    await redis.delete(key)
+                    swept += 1
+            if not cursor:
+                break
+    except Exception:
+        log.exception("cad.orphan_sweep_failed")
+        return
+    if swept:
+        log.warning("cad.orphan_sweep", count=swept)
+
+
+async def _cad_startup(ctx: dict[str, Any], func_names: frozenset[str]) -> None:
     from cadx.cad import resources
 
     # cgroup-aware thread defaults for everything the executor process spawns
@@ -349,6 +393,20 @@ async def cad_startup(ctx: dict[str, Any]) -> None:
             await db.commit()
     except Exception:
         pass
+    await _sweep_orphaned_executor_tasks(ctx, func_names)
+
+
+async def cad_startup(ctx: dict[str, Any]) -> None:
+    """CadWorkerSettings (queue ``cad``) startup — sweeps cad-lane orphans."""
+    await _cad_startup(ctx, frozenset(f.__name__ for f in CadWorkerSettings.functions))
+
+
+async def cadlight_startup(ctx: dict[str, Any]) -> None:
+    """CadLightWorkerSettings (queue ``cad-light``) startup — sweeps the
+    light lane's orphans only, never the serial cad lane's."""
+    await _cad_startup(
+        ctx, frozenset(f.__name__ for f in CadLightWorkerSettings.functions)
+    )
 
 
 async def worker_shutdown(ctx: dict[str, Any]) -> None:
@@ -443,7 +501,7 @@ class CadLightWorkerSettings:
         edit_feature,
         export_all,
     ]
-    on_startup = cad_startup
+    on_startup = cadlight_startup
     on_shutdown = worker_shutdown
     redis_settings = _redis()
     queue_name = "cad-light"
