@@ -148,6 +148,7 @@ _OPT_TAIL_S = 900.0
 # then queues BEHIND its own still-running task (observed: one blip →
 # double-submit → 45min queue delay → stage timeout)
 _POLL_FAIL_PATIENCE_S = 120.0
+_TASK_LOST_PATIENCE_S = 60.0
 _QUEUE_HARD_FACTOR = 1.5
 
 
@@ -333,6 +334,7 @@ class QueueExecutor:
         # polls, long ones settle to a 5s cadence instead of 1 Hz for hours
         delay = 0.5
         poll_fail_waited = 0.0
+        lost_waited = 0.0
         while True:
             remaining = _remaining_task_budget(timeout_s, queue_cap_s, enqueued_at, started_at)
             if remaining <= 0:
@@ -370,6 +372,25 @@ class QueueExecutor:
             poll_fail_waited = 0.0
             if status == JobStatus.complete:
                 return _with_queue_meta(await _fetch_job_result(job), enqueued_at, started_at)
+            if status == JobStatus.not_found:
+                # the delegated task's arq entry is gone. When it WAS seen
+                # running before, the owning executor worker died mid-task —
+                # waiting out the full timeout just burns the caller's
+                # budget; a never-seen entry gets a short grace in case the
+                # key lags the enqueue.
+                if started_at is not None or lost_waited >= _TASK_LOST_PATIENCE_S:
+                    return _with_queue_meta(
+                        {
+                            "ok": False,
+                            "error": f"executor task '{func}' lost — the worker that "
+                            "owned it died (arq entry vanished, no result)",
+                        },
+                        enqueued_at,
+                        started_at,
+                    )
+                lost_waited += delay
+            else:
+                lost_waited = 0.0
             if status == JobStatus.in_progress and started_at is None:
                 started_at = time.monotonic()
                 if self._emit is not None:

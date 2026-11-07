@@ -150,6 +150,11 @@ services:
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
       PYVISTA_OFF_SCREEN: "true"
+      # crash forensics: native aborts (heap corruption, OCC faults) must
+      # leave a stack in the worker log instead of a bare SIGABRT — the
+      # malloc_consolidate abort seen under native FEM had no backtrace
+      PYTHONFAULTHANDLER: "1"
+      MALLOC_CHECK_: "3"
       # read-only root fs: redirect cache/config dirs into the /tmp tmpfs
       HOME: /tmp
       MPLCONFIGDIR: /tmp/mpl
