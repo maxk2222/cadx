@@ -130,22 +130,52 @@ def sealed_tank(
         outer_d / 2 - wall, height - 2 * wall, max(0.0, dome_h - wall)
     )
     tank = body - cavity
-    # radial lug feet around the base circle: X=protrusion (points radially
-    # after the Z-rotation), Y=width (tangential), Z=height. The lug inner
-    # edge embeds ~2 mm into the wall; it protrudes enough that an optional
-    # Ø foot_hole_d bolt-hole through Z sits in solid material clear of the
-    # wall — the hole lands at the protruding part's centre.
+    # radial lug feet around the base circle: X=radial, Y=tangential width,
+    # Z=height, all resting on z=0. Two things keep the footprint inside a
+    # tight bbox envelope while still carrying a clean bolt hole:
+    #  * the lug is TAPERED — a full-width root blends into the wall and a
+    #    narrower tip protrudes, so the outer corners don't balloon the
+    #    outline the way a full-width ear does;
+    #  * protrusion is kept to what the hole needs — the hole centre must
+    #    sit clear of the cavity wall (inner edge >= inner radius) yet its
+    #    outer edge inside the lug face, which fixes a minimum reach.
     embed = 2.0
-    protrude = max(foot_t, foot_hole_d + 4.0)
-    lug_r = outer_d / 2 - embed + protrude / 2
+    hole_r = foot_hole_d / 2.0
+    cavity_r = outer_d / 2.0 - wall
+    if foot_hole_d > 0:
+        # reach far enough out that a Ø hole clears the cavity wall with a
+        # material margin on both sides, but no farther than the hole needs
+        lug_outer = max(
+            outer_d / 2.0 + foot_hole_d * 0.7,
+            cavity_r + foot_hole_d + 0.8,
+        )
+        t_rad = max(foot_t, foot_hole_d + 3.0)
+    else:
+        lug_outer = outer_d / 2.0 + foot_t
+        t_rad = foot_t
+    # the root must reach INTO the wall — a lug whose inner face stops at the
+    # OD only touches the shell tangentially and fuses into a disjoint solid
+    lug_inner = min(lug_outer - t_rad, outer_d / 2.0 - embed)
+    # taper: full-width root out to `split_r`, narrower tip to the face
+    tip_len = min(4.0, t_rad * 0.45)
+    split_r = lug_outer - tip_len
+    tip_w = foot_w * 0.75
     for i in range(feet):
         a = i * 2 * math.pi / feet
-        lug = Rot(0, 0, math.degrees(a)) * Box(protrude, foot_w, foot_h, align=_CZ)
-        tank += Pos(lug_r * math.cos(a), lug_r * math.sin(a), 0) * lug
+        ca, sa = math.cos(a), math.sin(a)
+        deg = math.degrees(a)
+        root_r = (lug_inner + split_r) / 2.0
+        tank += Pos(root_r * ca, root_r * sa, 0) * (
+            Rot(0, 0, deg) * Box(split_r - lug_inner, foot_w, foot_h, align=_CZ)
+        )
+        tank += Pos(
+            (split_r + lug_outer) / 2.0 * ca, (split_r + lug_outer) / 2.0 * sa, 0
+        ) * (Rot(0, 0, deg) * Box(tip_len, tip_w, foot_h, align=_CZ))
         if foot_hole_d > 0:
-            hole_r = outer_d / 2 + protrude / 2 - embed
-            tank -= Pos(hole_r * math.cos(a), hole_r * math.sin(a), -0.5) * Cylinder(
-                foot_hole_d / 2, foot_h + 1.0, align=_CZ
+            hr = lug_outer - hole_r - 0.4
+            hr = max(hr, cavity_r + hole_r + 0.3)
+            tank -= Pos(hr * ca, hr * sa, -0.5) * Cylinder(
+                hole_r, foot_h + 1.0, align=_CZ
             )
     return tank
 
