@@ -143,6 +143,17 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   `Rot(90, 0, 0)` (→ Y): raised tube holders, bushings, spacers. A closed
   cylinder is NOT a tube — always use this for open bores.
 
+### sealed_tank
+
+- `sealed_tank(outer_d, height, wall=3, feet=0, foot_w=18, foot_t=6,
+  foot_h=20, foot_hole_d=0)` — CLOSED cylindrical tank: shell + flat sealed
+  end caps, interior fully enclosed (pressure vessels / receivers, sealed
+  enclosures). `feet` welds that many radial lugs around the base (each
+  `foot_w` tangential x `foot_h` tall, protruding `foot_t`); `foot_hole_d`
+  cuts a bolt-hole through Z centred in each lug's protruding part. Always
+  prefer this over hand-revolving/cutting a vessel — the sealed cavity comes
+  out watertight by construction.
+
 ### rib
 
 - `rib(length, height, thickness)` — triangular gusset, base along +X on XY,

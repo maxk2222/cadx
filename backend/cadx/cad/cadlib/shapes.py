@@ -66,6 +66,51 @@ def tube(outer_d: float, inner_d: float, length: float) -> Part:
     )
 
 
+def sealed_tank(
+    outer_d: float,
+    height: float,
+    wall: float = 3.0,
+    feet: int = 0,
+    foot_w: float = 18.0,
+    foot_t: float = 6.0,
+    foot_h: float = 20.0,
+    foot_hole_d: float = 0.0,
+) -> Part:
+    """Closed cylindrical tank — shell + flat sealed end caps, no openings.
+
+    Rests on XY (min Z = 0), centred. ``wall`` applies to shell AND both end
+    plates; the interior is one fully enclosed cavity — no bore/cut bridges
+    it. ``feet`` welds that many radial lug feet around the base circle, each
+    ``foot_w`` wide (tangential) x ``foot_h`` tall (Z), protruding ``foot_t``
+    beyond the wall; ``foot_hole_d`` > 0 cuts a bolt-hole through Z centred
+    in each lug's protruding part. Pass 0 feet for a plain sealed vessel."""
+    if wall * 2 >= outer_d or wall * 2 >= height:
+        raise ValueError("sealed_tank: wall too thick for the given size")
+    body = Cylinder(outer_d / 2, height, align=_CZ)
+    cavity = Pos(0, 0, wall) * Cylinder(
+        outer_d / 2 - wall, height - 2 * wall, align=_CZ
+    )
+    tank = body - cavity
+    # radial lug feet around the base circle: X=protrusion (points radially
+    # after the Z-rotation), Y=width (tangential), Z=height. The lug inner
+    # edge embeds ~2 mm into the wall; it protrudes enough that an optional
+    # Ø foot_hole_d bolt-hole through Z sits in solid material clear of the
+    # wall — the hole lands at the protruding part's centre.
+    embed = 2.0
+    protrude = max(foot_t, foot_hole_d + 4.0)
+    lug_r = outer_d / 2 - embed + protrude / 2
+    for i in range(feet):
+        a = i * 2 * math.pi / feet
+        lug = Rot(0, 0, math.degrees(a)) * Box(protrude, foot_w, foot_h, align=_CZ)
+        tank += Pos(lug_r * math.cos(a), lug_r * math.sin(a), 0) * lug
+        if foot_hole_d > 0:
+            hole_r = outer_d / 2 + protrude / 2 - embed
+            tank -= Pos(hole_r * math.cos(a), hole_r * math.sin(a), -0.5) * Cylinder(
+                foot_hole_d / 2, foot_h + 1.0, align=_CZ
+            )
+    return tank
+
+
 def strut(
     p0: tuple[float, float, float],
     p1: tuple[float, float, float],

@@ -496,6 +496,35 @@ def test_tube_open_bore_both_ends():
     assert t.is_inside((5.0, 0.0, 15.0))
 
 
+def test_sealed_tank_closed_cavity():
+    t = cadlib.sealed_tank(80.0, 120.0, wall=3.0)
+    assert t.is_valid
+    assert len(t.solids()) == 1
+    # the cavity is fully enclosed: the axis is hollow between the end plates
+    # but solid inside both cap thicknesses
+    assert not t.is_inside((0.0, 0.0, 60.0))
+    assert t.is_inside((0.0, 0.0, 1.5))
+    assert t.is_inside((0.0, 0.0, 118.5))
+    # shell wall material present, cavity interior empty
+    assert t.is_inside((38.5, 0.0, 60.0))
+    assert not t.is_inside((30.0, 0.0, 60.0))
+
+
+def test_sealed_tank_feet_and_bolt_holes():
+    t = cadlib.sealed_tank(80.0, 120.0, wall=3.0, feet=3, foot_hole_d=6.5)
+    assert len(t.solids()) == 1
+    # feet protrude past the Ø80 body
+    bb = t.bounding_box()
+    assert bb.max.X > 42.0
+    # the bolt-hole runs through Z in the protruding lug — the lug's outer
+    # radius is empty on the hole axis (top AND bottom of the lug are open)
+    import math
+
+    hole_r = 40.0 + (6.5 + 4.0) / 2 - 2.0
+    hx, hy = hole_r, 0.0
+    assert not t.is_inside((hx, hy, 10.0))
+
+
 # --------------------------------------------------------------------------- #
 # strut — straight diagonal bar between two points
 # --------------------------------------------------------------------------- #
