@@ -157,19 +157,30 @@ def _sealed_tank_feet_args(spec: PartSpec) -> str:
     injected ``sealed_tank`` call carries the spec's REAL mounting geometry —
     a static ``feet=0`` template makes the model disable the helper's feet
     and hand-build lugs it gets wrong (embedded into the cavity)."""
-    foot = hole = None
+    foot_feats: list[Any] = []
+    hole = None
     for f in active_features(spec):
         ftype = str(_fget(f, "type", "") or "").lower()
         words = f"{_fget(f, 'name', '') or ''} {_fget(f, 'description', '') or ''}".lower()
         if ftype == "hole" and any(k in words for k in _HOLE_WORDS):
             hole = hole or f
         elif any(k in words for k in _FOOT_WORDS):
-            foot = foot or f
-    if foot is None:
+            foot_feats.append(f)
+    if not foot_feats:
         return "feet=0, foot_hole_d=0"
-    d = _fdims(foot)
-    feet = int(_fget(foot, "count", 1) or 1)
-    foot_h = d.get("depth_total") or d.get("height") or d.get("depth")
+    # feet arrive either as one "feet" feature with count=N or as per-lug
+    # features ("foot lug 1/2/3") each count=1 — sum the declared counts so
+    # both spellings yield the real lug total
+    feet = sum(int(_fget(f, "count", 1) or 1) for f in foot_feats)
+    d = _fdims(foot_feats[0])
+    foot_h = next(
+        (
+            d[k]
+            for k in ("depth_total", "height", "depth", "length", "size", "head_diameter")
+            if isinstance(d.get(k), (int, float)) and d[k] > 0
+        ),
+        None,
+    )
     parts = [f"feet={feet}"]
     for key, dim in (
         ("foot_w", "width"),
