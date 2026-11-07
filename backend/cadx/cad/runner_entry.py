@@ -628,6 +628,17 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         active_anchor_holes = [
             h for h in anchor_holes_list if not (isinstance(h, dict) and h.get("dropped_feature"))
         ]
+        # an invalid B-Rep blocks every re-cut probe (ray/inside checks raise
+        # on degenerate topology) — unify first so the rescue can locate
+        # material; unify_checked keeps the input when it makes things worse
+        if (
+            mesh_boolean is not None
+            and recut_anchors
+            and hasattr(shape, "is_valid")
+            and not shape.is_valid()
+        ):
+            with contextlib.suppress(Exception):
+                shape = mesh_boolean.unify_checked(shape)
         recut_anchors = (
             active_anchor_holes
             if mesh_solid_path
