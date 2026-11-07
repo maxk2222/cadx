@@ -198,3 +198,30 @@ def test_drop_dead_anchor_refs_empty_table_keeps() -> None:
     ]
     assert intake.drop_dead_anchor_refs(spec) == []
     assert len(spec.load_cases[0].fixed) == 1
+
+
+def test_cavity_thin_shell_mesh_verified() -> None:
+    """A watertight thin-shell vessel leaks through the voxel wall (cell-center
+    containment drops cells in a ~pitch-thick curved wall), so plain
+    binary_fill_holes floods the cavity to outside. The mesh-verified gap-seal
+    must recover the inner skin — while a genuinely OPEN vessel stays empty."""
+    import trimesh
+
+    from cadx.cad.fem.voxelize import voxelize
+
+    # hollow sealed box: 3 mm walls — thin enough to leak at coarse pitch
+    outer = trimesh.creation.box(extents=[40.0, 40.0, 40.0])
+    inner = trimesh.creation.box(extents=[34.0, 34.0, 34.0])
+    shell = outer.difference(inner, engine="manifold")
+    dom = voxelize(shell, pitch_mm=2.0, max_elements=200_000)
+
+    sealed = regions.region_cell_mask(dom, RegionSpec(kind="cavity"))
+    assert sealed.any(), "sealed thin-shell cavity should resolve via mesh verify"
+
+    # same shell but with a real opening drilled through the top wall
+    hole = trimesh.creation.cylinder(radius=4.0, height=12.0, sections=24)
+    hole.apply_translation([0.0, 0.0, 24.0])
+    open_shell = shell.difference(hole, engine="manifold")
+    dom_open = voxelize(open_shell, pitch_mm=2.0, max_elements=200_000)
+    open_mask = regions.region_cell_mask(dom_open, RegionSpec(kind="cavity"))
+    assert not open_mask.any(), "a real Ø8 opening must stay honest-empty"

@@ -862,6 +862,50 @@ def attach_to_region(
     )
 
 
+def _cavity_void_mesh_sealed(domain: VoxelDomain, void: np.ndarray) -> bool:
+    """True when the candidate interior void is genuinely enclosed by the
+    source mesh — i.e. it is a real sealed cavity, not a real opening.
+
+    Thin-shell walls (~pitch thick) voxelize as leaky rings: cell-center
+    containment drops cells, so binary_fill_holes connects the interior void
+    to outside even though the mesh is watertight. Dilating the solid mask
+    bridges those rasterization gaps — but it would also seal a REAL neck or
+    outlet, so the candidate is only trusted after this check. Rays cast from
+    the void's deepest cell must strike the shell in (nearly) every direction;
+    an opening lets a fraction escape with zero hits.
+    """
+    mesh = getattr(domain, "source_mesh", None)
+    ray = getattr(getattr(mesh, "ray", None), "intersects_location", None)
+    if ray is None or not np.asarray(void).any():
+        return False
+    st = ndimage.generate_binary_structure(3, 1)
+    lab, n = ndimage.label(void, structure=st)
+    if n == 0:
+        return False
+    sizes = ndimage.sum(void, lab, index=np.arange(1, n + 1))
+    main = lab == (int(np.argmax(sizes)) + 1)  # largest void = the vessel cavity
+    centers = domain.element_centers().reshape((*domain.dims, 3))
+    pts = centers[main]
+    if not len(pts):
+        return False
+    # seed from the void cell farthest from solid — the deepest interior point,
+    # least likely to sit near a genuine opening
+    dist = ndimage.distance_transform_edt(~np.asarray(domain.solid, dtype=bool))
+    seed = pts[int(np.argmax(dist[main]))]
+    rng = np.random.default_rng(0)
+    dirs = rng.normal(size=(96, 3))
+    dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
+    origins = np.tile(seed, (96, 1))
+    try:
+        _locs, ray_idx, _tri = ray(origins, dirs, multiple_hits=True)
+    except Exception:
+        return False
+    hits = np.bincount(np.asarray(ray_idx, dtype=int), minlength=96) if len(ray_idx) else np.zeros(96, int)
+    # a sealed cavity walls off every direction: each ray crosses the shell
+    # (>=2 surface hits). Require the large majority to be walled.
+    return float((hits >= 2).mean()) > 0.9
+
+
 def region_cell_mask(  # noqa: C901
     domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None = None
 ) -> np.ndarray:
@@ -922,19 +966,37 @@ def region_cell_mask(  # noqa: C901
         # region declares `seal_openings_mm` (e.g. a hydro-test whose ports
         # get capped), openings narrower than that are dilated shut first.
         solid = domain.solid
+        st = ndimage.generate_binary_structure(3, 1)
+        probe = solid
         if region.seal_openings_mm:
             close_cells = math.ceil(float(region.seal_openings_mm) / domain.pitch / 2)
             if close_cells > 0:
-                solid = ndimage.binary_closing(
-                    solid,
-                    structure=ndimage.generate_binary_structure(3, 1),
+                probe = ndimage.binary_closing(
+                    probe,
+                    structure=st,
                     iterations=min(close_cells, 4),
                 )
-        sealed = _sealed_pocket_mask(solid)
+        sealed = _sealed_pocket_mask(probe)
+        # `wall` dilation depth: +1 reaches the skin past the void boundary;
+        # the gap-seal path below grows the probe by one more cell, so the
+        # void sits one cell deeper and needs one extra reach.
+        wall_grow = 1
+        if not sealed.any():
+            # Thin-shell rasterization leak: cell-center containment drops
+            # cells in ~pitch-thick curved walls, so the interior void floods
+            # to outside even on a watertight mesh. A one-cell dilation of the
+            # probe bridges those gaps — but it would also seal a REAL neck or
+            # outlet, so the candidate void is only trusted when the source
+            # mesh confirms it stays enclosed (`_cavity_void_mesh_sealed`).
+            gap = ndimage.binary_dilation(probe, structure=st, iterations=1)
+            cand = _sealed_pocket_mask(gap)
+            if cand.any() and _cavity_void_mesh_sealed(domain, cand):
+                sealed = cand
+                wall_grow = 2
         if not sealed.any():
             return np.zeros(domain.solid.shape, dtype=bool)
         wall = (
-            ndimage.binary_dilation(sealed, structure=ndimage.generate_binary_structure(3, 1))
+            ndimage.binary_dilation(sealed, structure=st, iterations=wall_grow)
             & domain.solid
         )
         return _z_clip(domain, region, wall)
@@ -1585,25 +1647,42 @@ def _rebind_dead_hole_regions(
     if not anchors:
         return fixed, loads, []
 
+    def _is_hole(r: Any) -> bool:
+        return getattr(r, "kind", "") in _HOLE_KINDS
+
+    # Pass 1 — claim every anchor a VALID declared index already binds, so a
+    # dead region cannot steal it and double-clamp the same bore. This runs
+    # before any rebind so it is order-independent: a dead region listed first
+    # still may not take a later region's live anchor.
     claimed: set[int] = set()
+    hole_regions = [r for r in fixed if _is_hole(r)] + [
+        ld.region for ld in loads if getattr(ld, "region", None) is not None and _is_hole(ld.region)
+    ]
+    for r in hole_regions:
+        hi = getattr(r, "hole_index", None)
+        if hi and int(hi) >= 1:
+            idx = int(hi)
+            if idx <= len(anchors) and _hole_idx_resolves(domain, r, anchors, idx):
+                claimed.add(idx)
+
     notes: list[str] = []
 
-    def _rebind_region(r: RegionSpec, where: str) -> RegionSpec:
+    def _rb(r: RegionSpec, where: str) -> RegionSpec:
         rebound, note = _rebind_one_hole_region(domain, r, anchors, claimed)
         if note:
             notes.append(f"{where}: {note}")
         return rebound
 
-    new_fixed = [_rebind_region(r, "fixed") for r in fixed]
+    new_fixed = [_rb(r, "fixed") if _is_hole(r) else r for r in fixed]
     new_loads: list[Any] = []
     for ld in loads:
         region = getattr(ld, "region", None)
-        if region is not None and getattr(region, "kind", "") in _HOLE_KINDS:
-            rebound = _rebind_region(
-                region, f"load '{getattr(ld, 'description', '') or 'unnamed'}'"
+        if region is not None and _is_hole(region):
+            ld = ld.model_copy(
+                update={
+                    "region": _rb(region, f"load '{getattr(ld, 'description', '') or 'unnamed'}'")
+                }
             )
-            if rebound is not region:
-                ld = ld.model_copy(update={"region": rebound})
         new_loads.append(ld)
     return new_fixed, new_loads, notes
 

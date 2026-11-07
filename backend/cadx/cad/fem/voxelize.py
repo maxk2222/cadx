@@ -78,6 +78,11 @@ class VoxelDomain:
     # element_nodes/element_centers are recomputed per region per load case
     # otherwise (region resolution calls them constantly on big grids)
     _cache: dict[str, np.ndarray] = field(default_factory=dict, repr=False, compare=False)
+    # the mesh this grid was rasterized from, when available — lets region
+    # resolution verify voxelization artifacts (e.g. thin-shell wall leaks)
+    # against true geometry instead of trusting the binary mask alone.
+    # `None` for hand-built domains (tests, previews without a source mesh).
+    source_mesh: object | None = field(default=None, repr=False, compare=False)
 
     @property
     def node_dims(self) -> tuple[int, int, int]:
@@ -587,6 +592,7 @@ def voxelize(
         pitch_requested=pitch_mm,
         pad_cells=pad,
         coverage=cov,
+        source_mesh=mesh,
     )
 
 
