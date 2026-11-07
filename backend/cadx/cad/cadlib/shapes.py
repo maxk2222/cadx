@@ -15,11 +15,15 @@ import math
 
 from build123d import (
     Align,
+    Axis,
     Box,
+    BuildLine,
     BuildSketch,
     Cone,
     Cylinder,
     Ellipse,
+    EllipticalCenterArc,
+    Line,
     Plane,
     Polygon,
     Pos,
@@ -30,6 +34,8 @@ from build123d import (
     extrude,
     fillet,
     loft,
+    make_face,
+    revolve,
 )
 from build123d.topology import Part
 
@@ -66,29 +72,62 @@ def tube(outer_d: float, inner_d: float, length: float) -> Part:
     )
 
 
+def _dome_cap(radius: float, height: float) -> Part:
+    """Half-ellipsoid solid cap — equator at z=0, crown bulging up to
+    z=``height``. Built by revolving a quarter-ellipse profile, which keeps
+    the cap watertight by construction (no loft/fillet fragile ops)."""
+    with BuildSketch(Plane.XZ) as sk:
+        with BuildLine():
+            EllipticalCenterArc((0.0, 0.0), radius, height, arc_size=90.0)
+            Line((0.0, height), (0.0, 0.0))
+            Line((0.0, 0.0), (radius, 0.0))
+        make_face()
+    return revolve(sk.sketch, axis=Axis.Z)
+
+
+def _vessel_body(radius: float, height: float, dome_h: float) -> Part:
+    """Solid vessel shape z=0..``height``: straight cylindrical shell plus
+    domed (or flat, ``dome_h`` = 0) caps on both ends."""
+    if dome_h <= 0:
+        return Cylinder(radius, height, align=_CZ)
+    shell_h = height - 2 * dome_h
+    body = Pos(0, 0, dome_h) * Cylinder(radius, shell_h, align=_CZ)
+    body += Pos(0, 0, height - dome_h) * _dome_cap(radius, dome_h)
+    body += Pos(0, 0, dome_h) * Rot(180, 0, 0) * _dome_cap(radius, dome_h)
+    return body
+
+
 def sealed_tank(
     outer_d: float,
     height: float,
     wall: float = 3.0,
+    dome_h: float = 0.0,
     feet: int = 0,
     foot_w: float = 18.0,
     foot_t: float = 6.0,
     foot_h: float = 20.0,
     foot_hole_d: float = 0.0,
 ) -> Part:
-    """Closed cylindrical tank — shell + flat sealed end caps, no openings.
+    """Closed cylindrical tank — shell + sealed end caps, no openings.
 
-    Rests on XY (min Z = 0), centred. ``wall`` applies to shell AND both end
-    plates; the interior is one fully enclosed cavity — no bore/cut bridges
-    it. ``feet`` welds that many radial lug feet around the base circle, each
-    ``foot_w`` wide (tangential) x ``foot_h`` tall (Z), protruding ``foot_t``
-    beyond the wall; ``foot_hole_d`` > 0 cuts a bolt-hole through Z centred
-    in each lug's protruding part. Pass 0 feet for a plain sealed vessel."""
+    Rests on XY (min Z = 0), centred. ``wall`` applies to shell AND caps; the
+    interior is one fully enclosed cavity — no bore/cut bridges it.
+    ``dome_h`` > 0 gives both ends a half-ellipsoid cap of that height
+    (``height`` stays the total outer height); pass 0 for flat welded end
+    plates. ``feet`` welds that many radial lug feet around the base circle,
+    each ``foot_w`` wide (tangential) x ``foot_h`` tall (Z), protruding
+    ``foot_t`` beyond the wall; ``foot_hole_d`` > 0 cuts a bolt-hole through
+    Z centred in each lug's protruding part. Pass 0 feet for a plain sealed
+    vessel."""
     if wall * 2 >= outer_d or wall * 2 >= height:
         raise ValueError("sealed_tank: wall too thick for the given size")
-    body = Cylinder(outer_d / 2, height, align=_CZ)
-    cavity = Pos(0, 0, wall) * Cylinder(
-        outer_d / 2 - wall, height - 2 * wall, align=_CZ
+    # a dome can never be deeper than half the body minus the end walls
+    dome_h = min(dome_h, (height - 2 * wall) / 2)
+    body = _vessel_body(outer_d / 2, height, dome_h)
+    # the cavity is the same vessel shrunk by ~wall on every side — nested
+    # smaller vessel keeps the sealed interior watertight by construction
+    cavity = Pos(0, 0, wall) * _vessel_body(
+        outer_d / 2 - wall, height - 2 * wall, max(0.0, dome_h - wall)
     )
     tank = body - cavity
     # radial lug feet around the base circle: X=protrusion (points radially

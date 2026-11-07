@@ -510,6 +510,18 @@ def test_sealed_tank_closed_cavity():
     assert not t.is_inside((30.0, 0.0, 60.0))
 
 
+def test_sealed_tank_domed_caps_sealed():
+    t = cadlib.sealed_tank(80.0, 120.0, wall=3.0, dome_h=8.0)
+    assert t.is_valid
+    assert len(t.solids()) == 1
+    bb = t.bounding_box()
+    assert bb.max.Z - bb.min.Z == pytest.approx(120.0)
+    # dome crowns are solid, the cavity below the crown is hollow
+    assert t.is_inside((0.0, 0.0, 119.0))
+    assert t.is_inside((0.0, 0.0, 1.0))
+    assert not t.is_inside((0.0, 0.0, 60.0))
+
+
 def test_sealed_tank_feet_and_bolt_holes():
     t = cadlib.sealed_tank(80.0, 120.0, wall=3.0, feet=3, foot_hole_d=6.5)
     assert len(t.solids()) == 1
