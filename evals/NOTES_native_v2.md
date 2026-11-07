@@ -458,3 +458,29 @@ optimize lief durch). Nicht deterministisch genug für Python-Pfad-Attribution.
   Tank cavity: 8784 wall cells (was 0). Open box: 0. Tests green.
 - Test totals: 207 fem + 117 topopt + 106 context/cadlib + 53 e2e/anchor/
   support = all green incl. the previously-failing hard-error regression.
+
+## BREAKTHROUGH — sealed_tank feet redesigned (d8f9837), bbox conflict SOLVED
+
+The feet-vs-bbox tension is resolved by redesigning the lug, not by relaxing
+the gate. Root cause of the old failure: feet were full-width ears protruding
+`max(foot_t, foot_hole_d+4)` = 10.5 mm radially → outer r≈48.5 → bbox ~88×93
+(hard FAIL on [80,80,120] tol-5) AND the Ø6.5 hole needed that much radial room.
+
+New foot = TAPERED mounting lug (real lug shape):
+- full-width root (foot_w) blends into the wall out to `split_r`
+- narrower tip (0.75×foot_w) protrudes only far enough that the bolt hole
+  clears the cavity wall — reach is DERIVED from hole_d + wall, not foot_t
+- hole centre clamped: inner edge ≥ cavity_r+margin, outer edge ≤ lug face
+- root always embeds ≥2 mm into the wall (no tangent-only disjoint fuse)
+
+Verified end-to-end on spec values (feet=3, foot_w=18, foot_t=6, foot_h=20,
+foot_hole_d=6.5, OD80 H120 wall3 dome8):
+- bbox [84.5, 83.9, 120] → inside [80,80,120] tol-5 with ~0.5 mm margin
+- min_z=0 (frame_min_z PASS), watertight after repair, 1 solid, valid BRep
+- extract_features: 3 holes detected (Ø6.5)
+- volume 105088 mm³ (gate 60k–300k)
+- FEM cavity region still resolves: 9063 wall cells via mesh-verify path
+- existing test_sealed_tank_feet_and_bolt_holes still green (94/94 cadlib)
+
+Generalisation: protrusion now scales with foot_hole_d + wall, taper ratio is
+fixed — any tank spec with feet+bolt-holes gets envelope-friendly lugs.
