@@ -82,6 +82,13 @@ def _run_summary(r: dict[str, Any], chosen: bool, reasoning: Any) -> dict[str, A
         "volfrac": top.get("volfrac_target"),
         "volfrac_requested": top.get("volfrac_requested"),
         "achieved": top.get("volfrac_achieved"),
+        # the keep/load/fixed floor — when `achieved` sits far above the
+        # target (volfrac stuck near solid) this tells the model whether the
+        # pinned cells left it anything to carve, and which region owns it
+        "passive_frac": top.get("passive_frac"),
+        "min_feasible_volfrac": top.get("min_feasible_volfrac"),
+        "passive_breakdown": top.get("passive_breakdown"),
+        "guide_solver": top.get("guide_solver") or (top.get("guide") or {}).get("solver"),
         "iterations": top.get("iterations"),
         "queued_s": top.get("queued_s"),
         # B18 outcome vocabulary + O6 pitch label on the run digest
