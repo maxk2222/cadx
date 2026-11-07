@@ -472,25 +472,26 @@ def sanitize_load_cases(spec: PartSpec) -> None:
     extraction fallback and produce unsolvable FEM runs. Also clamps bogus
     negative case weights back to neutral, and rebinds `hole_index` region
     refs onto the anchors the case text actually names."""
-    for note in rebind_case_anchors(spec):
-        log.info("intake.case_anchor_rebound", note=note)
-        spec.assumptions = (spec.assumptions or []) + [note]
-    for note in lint_support_modes(spec):
-        log.info("intake.support_modes_free", note=note)
-        spec.assumptions = (spec.assumptions or []) + [note]
-    for note in lint_region_semantics(spec):
-        log.info("intake.region_semantics", note=note)
-        spec.assumptions = (spec.assumptions or []) + [note]
-    for note in drop_dead_anchor_refs(spec):
-        log.info("intake.dead_anchor_dropped", note=note)
-        spec.assumptions = (spec.assumptions or []) + [note]
-    # the lint notes above serialize into the codegen prompt (spec_block) —
-    # verbose per-case duplicates push the model toward defensive/broken code.
-    # keep each distinct note once, capped: diagnostic value stays, prompt
-    # dilution goes away
+    lint_notes = (
+        rebind_case_anchors(spec)
+        + lint_support_modes(spec)
+        + lint_region_semantics(spec)
+        + drop_dead_anchor_refs(spec)
+    )
+    for note in lint_notes:
+        log.info("intake.spec_lint", note=note)
+    if lint_notes:
+        prior = spec.assumptions or []
+        # the recovery path sanitizes a second time — dedupe new-vs-prior so
+        # the same diagnostics can't pile up across calls
+        spec.assumptions = prior + [
+            n for n in dict.fromkeys(lint_notes) if n not in prior
+        ]
+    # the assumptions tail serializes into the codegen prompt via spec_block —
+    # bound it so per-case lint diagnostics can't dilute the generation
+    # instructions; legit (upstream) assumptions stay ahead of the lint notes
     if spec.assumptions:
-        deduped = list(dict.fromkeys(spec.assumptions))
-        spec.assumptions = deduped[:_MAX_ASSUMPTION_NOTES]
+        spec.assumptions = list(dict.fromkeys(spec.assumptions))[:_MAX_ASSUMPTION_NOTES]
     kept: list[LoadCase] = []
     for c in spec.load_cases:
         if not c.fixed and not c.loads:
