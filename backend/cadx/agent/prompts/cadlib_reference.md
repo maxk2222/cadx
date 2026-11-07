@@ -145,6 +145,8 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
 
 ### sealed_tank
 
+<!-- tags: tank, vessel, pressure, receiver, dome, behälter, enclosure -->
+
 - `sealed_tank(outer_d, height, wall=3, dome_h=0, feet=0, foot_w=18,
   foot_t=6, foot_h=20, foot_hole_d=0)` — CLOSED cylindrical tank: shell +
   sealed end caps, interior fully enclosed (pressure vessels / receivers,

@@ -31,6 +31,9 @@ def system_prompt(name: str) -> str:
 # helpers that are always relevant regardless of the spec's feature list
 _CADLIB_ALWAYS = {"through_hole", "profile_body"}
 
+# `<!-- tags: a, b -->` metadata line inside a cadlib_reference `###` section
+_TAG_RE = re.compile(r"<!--\s*tags?:\s*([^-]+?)\s*-->")
+
 
 # shared vocabulary: feature wording -> cadlib helper names. Anything not
 # listed here still shows up in the compact index prepended to the filtered
@@ -77,15 +80,8 @@ _CADLIB_ALIASES: dict[str, set[str]] = {
     "hub": {"tube"},
     "nabe": {"tube"},
     "buchse": {"tube"},
-    # sealed vessels are exactly the part class where hand-rolled domes/cavity
-    # cuts produce broken BReps — the reviewed helper must surface by name
-    "tank": {"sealed_tank"},
-    "vessel": {"sealed_tank"},
-    "pressure": {"sealed_tank"},
-    "receiver": {"sealed_tank"},
-    "dome": {"sealed_tank"},
-    "behälter": {"sealed_tank"},
-    "enclosure": {"sealed_tank"},
+    # sealed vessels use doc-side `<!-- tags: -->` instead of aliases — the
+    # trigger vocabulary lives with the helper, not this central table
     # whenever fillets appear anywhere, safe_fillet earns its tokens
     "fillet": {"finish_edges", "safe_fillet", "safe_fillet_shape"},
     "round": {"finish_edges", "safe_fillet", "safe_fillet_shape"},
@@ -153,6 +149,7 @@ def _cadlib_sections(spec: PartSpec | None) -> str:
     lines = text.split("\n")
     out: list[str] = []
     cur_ok = True
+    cur_tags: set[str] = set()
     section: list[str] = []
 
     def _flush() -> None:
@@ -164,8 +161,20 @@ def _cadlib_sections(spec: PartSpec | None) -> str:
             _flush()
             name = line[4:].strip().split("(")[0].strip()
             cur_ok = name in keep
+            cur_tags = set()
             section = [line]
         else:
+            # self-maintaining alternative to _CADLIB_ALIASES: a helper may
+            # carry `<!-- tags: word, word -->` inside its own section, so the
+            # trigger vocabulary lives next to the doc it surfaces — a new
+            # helper can't go invisible by forgetting the central table
+            m = _TAG_RE.search(line)
+            if m:
+                cur_tags.update(
+                    w.strip().lower() for w in m.group(1).split(",") if w.strip()
+                )
+                cur_ok = cur_ok or bool(cur_tags & keep)
+                continue
             section.append(line)
     _flush()
     idx = _cadlib_index(text)
