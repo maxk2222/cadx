@@ -77,6 +77,15 @@ _CADLIB_ALIASES: dict[str, set[str]] = {
     "hub": {"tube"},
     "nabe": {"tube"},
     "buchse": {"tube"},
+    # sealed vessels are exactly the part class where hand-rolled domes/cavity
+    # cuts produce broken BReps — the reviewed helper must surface by name
+    "tank": {"sealed_tank"},
+    "vessel": {"sealed_tank"},
+    "pressure": {"sealed_tank"},
+    "receiver": {"sealed_tank"},
+    "dome": {"sealed_tank"},
+    "behälter": {"sealed_tank"},
+    "enclosure": {"sealed_tank"},
     # whenever fillets appear anywhere, safe_fillet earns its tokens
     "fillet": {"finish_edges", "safe_fillet", "safe_fillet_shape"},
     "round": {"finish_edges", "safe_fillet", "safe_fillet_shape"},
