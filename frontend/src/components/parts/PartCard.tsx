@@ -153,7 +153,7 @@ export default function PartCard({
               className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
               title={part.name || t("part_untitled")}
             >
-              <span className="min-w-0 break-words text-sm font-medium text-fg">
+              <span className="min-w-0 truncate text-sm font-medium text-fg">
                 {part.name || (
                   <span className="italic text-faint">{t("part_untitled")}</span>
                 )}
