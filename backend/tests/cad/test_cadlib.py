@@ -157,6 +157,29 @@ def test_through_hole_blind_depth():
     assert p.part.is_inside((0.0, 0.0, 5.0))
 
 
+def test_through_hole_span_bounds_cutter():
+    """``span`` caps the through-cutter to that length centred on the
+    workplane — a bounded hole for a local feature that must not reach
+    distant geometry the way the part-diagonal cutter would."""
+    with BuildPart() as p:
+        Box(60, 40, 10, align=_ALIGN_MIN)  # z = 0..10
+        cadlib.through_hole(6.0, span=4.0, on=Pos(0, 0, 5))  # cutter z in [3,7]
+    assert not p.part.is_inside((0.0, 0.0, 4.0))  # inside span → void
+    assert not p.part.is_inside((0.0, 0.0, 6.0))
+    assert p.part.is_inside((0.0, 0.0, 1.0))  # below span → material kept
+    assert p.part.is_inside((0.0, 0.0, 9.0))  # above span → material kept
+
+
+def test_through_hole_default_still_cuts_full_depth():
+    """Regression guard: omitting ``span`` keeps the oversized diagonal
+    cutter — the hole stays guaranteed-through over the whole part."""
+    with BuildPart() as p:
+        Box(60, 40, 10, align=_ALIGN_MIN)
+        cadlib.through_hole(6.0, on=Pos(0, 0, 5))
+    assert not p.part.is_inside((0.0, 0.0, 1.0))
+    assert not p.part.is_inside((0.0, 0.0, 9.0))
+
+
 def test_safe_fillet_empty_selection_returns_zero():
     """An empty/stale edge selection must not crash — safe_fillet retries
     down to min_radius then reports 0.0 so the part stays valid."""
@@ -515,7 +538,7 @@ def test_sealed_tank_domed_caps_sealed():
     assert t.is_valid
     assert len(t.solids()) == 1
     bb = t.bounding_box()
-    assert bb.max.Z - bb.min.Z == pytest.approx(120.0)
+    assert pytest.approx(120.0) == bb.max.Z - bb.min.Z
     # dome crowns are solid, the cavity below the crown is hollow
     assert t.is_inside((0.0, 0.0, 119.0))
     assert t.is_inside((0.0, 0.0, 1.0))
@@ -530,8 +553,6 @@ def test_sealed_tank_feet_and_bolt_holes():
     assert bb.max.X > 42.0
     # the bolt-hole runs through Z in the protruding lug — the lug's outer
     # radius is empty on the hole axis (top AND bottom of the lug are open)
-    import math
-
     hole_r = 40.0 + (6.5 + 4.0) / 2 - 2.0
     hx, hy = hole_r, 0.0
     assert not t.is_inside((hx, hy, 10.0))

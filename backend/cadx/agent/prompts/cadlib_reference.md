@@ -34,13 +34,18 @@ to apply at that workplane (usually a face, e.g. `p.faces().sort_by(Axis.Z)[-1]`
 
 ### through_hole
 
-- `through_hole(diameter, depth=None, csk_dia=None, csk_angle=90,
+- `through_hole(diameter, depth=None, span=None, csk_dia=None, csk_angle=90,
   cbore_dia=None, cbore_depth=None, on=None)` — Ø`diameter` bore along the
   workplane normal, guaranteed through (oversized cutter — never leaves a
-  membrane). `depth` makes it blind; `csk_dia` adds a countersink cone and
-  `cbore_dia`/`cbore_depth` a counterbore, both opening at the workplane.
-  Safest way to place holes at measured anchor positions:
-  `with Locations(Pos(x, y, 0)): through_hole(5.0)`.
+  membrane). `depth` makes it blind; `span` bounds the through-cutter to
+  `span` mm centred on the workplane — USE THIS for holes through LOCAL
+  features (lugs, ears, ribs) on a larger body, where the part-diagonal
+  cutter would reach across the whole part and corrupt a sealed cavity or
+  distant geometry: put the workplane at the feature's mid-plane and set
+  `span` a few mm beyond the through-thickness. `csk_dia` adds a
+  countersink cone and `cbore_dia`/`cbore_depth` a counterbore, both
+  opening at the workplane. Safest way to place holes at measured anchor
+  positions: `with Locations(Pos(x, y, 0)): through_hole(5.0)`.
 
 ### oblong_slot
 

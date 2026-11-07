@@ -309,3 +309,47 @@ optimize lief durch). Nicht deterministisch genug für Python-Pfad-Attribution.
   der eigentliche blocker
 - generalisierbarer fix-kandidat: through_hole bounded/span-modus oder
   bolt_lug-helper; adoption über part_family_hint bleibt modell-limit
+
+## malloc_consolidate root cause + fix (9a28be5)
+- bracket topopt crash: factor_symmetric(L) auf ~344k Helmholtz-Zellen →
+  CHOLMOD/SuperLU numeric factorisation → fill-in → malloc_consolidate
+  (C-level abort, kein except fängt es) → "no completed optimization run"
+- FIX: _HELMHOLTZ_DIRECT_MAX=120k size-gate — >120k solid cells → CG+SSOR
+  (native spmv), L ist SPD+fix für ganzen run → M amortised
+- verifiziert: CG-Pfad L^-1*1 = 1 bis 6e-6, 11/11 helmholtz tests grün
+- bracket v6 (native_v6_helmholtz_cg) läuft — testet ob topopt durchkommt
+
+## runner_entry regression + helmholtz fix — bracket topopt läuft
+- 31caf26 (unify-before-recut) hatte 2 bugs: recut_anchors vor Zuweisung
+  (UnboundLocalError) + is_valid() als method statt property (TypeError)
+  → jeder Executor-Run mit anchors+mesh_boolean crashte → "all iterations
+  failed" — DAS war der echte codegen-blocker, nicht modell!
+- fix 9768ab5: gate auf active_anchor_holes + is_valid property — 10/10 tests
+- helmholtz size-gate (9a28be5): >120k → CG+SSOR. ABER: bracket helmholtz
+  nsolid=95728 < 120k → direct=True — crash war wohl NICHT helmholtz,
+  sondern stiffness-344k-dof oder fragmentation; size-gate ist trotzdem
+  sinnvoller safeguard
+- bracket v7: codegen+fem succeeded, optimize LÄUFT — simp iteriert
+  volfrac=0.2501 stabil, compliance 1324→55, multires 2. level — KEIN CRASH
+
+## executor-restart verwaist cad-queue tasks — orphan-sweep fix (0dfa20c)
+- BEFUND: executor restart (deploy/crash) lässt in-flight cad/cad-light
+  arq tasks verwaist — arq:in-progress marker lebt job_timeout (~2h),
+  executor idle → QueueExecutor pollt status()=in_progress → stall bis
+  _run_task-timeout (~62min optimize) oder marker-expiry. BEOBACHTET:
+  bracket optimize-4ccd47b5 + fem_analyze-ac89497f nach 16:56-restart
+  ~35min gestalled, exec CPU 0.9%
+- mechanism: arq in_progress_timeout_s = max_func_timeout+10 (~7210s),
+  psetex EINMAL bei start, KEIN heartbeat-refresh → TTL zählt nur runter
+- recovery verifiziert: stale marker manuell DEL → poller not_found →
+  "executor task lost" → agent retried SIMP run → exec CPU 287%,
+  neuer task optimize-31bf1a73 lief sauber. alter task: max_tries=1
+  "max retries exceeded" — kein zombie (max_tries=1 by design)
+- FIX 0dfa20c: cad_startup/cadlight_startup sweep arq:in-progress:{func}-*
+  der EIGENEN lane am boot — single executor container ⇒ alle marker der
+  eigenen funcs sind orphan. scoped per func-set (cad vs cad-light
+  disjoint) damit lanes sich nicht gegenseitig löschen; startup-only
+  (nie periodisch — live SIMP trägt gleichen marker, nur frisch-gebooteter
+  worker kann "ich habe keine tasks" beweisen)
+- 12/12 queue_sweeper tests grün; image cadx-cad-executor rebuilt,
+  deploy am nächsten breakpoint (nicht während SIMP in-flight)

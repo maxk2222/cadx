@@ -124,6 +124,7 @@ def through_hole(
     diameter: float,
     *,
     depth: float | None = None,
+    span: float | None = None,
     csk_dia: float | None = None,
     csk_angle: float = 90.0,
     cbore_dia: float | None = None,
@@ -136,20 +137,31 @@ def through_hole(
     through regardless of where along the axis the location sits — this avoids
     the classic ``Pos(x, y, -1) * Cylinder`` mistake that leaves a membrane
     sealing the hole. ``depth`` instead makes a blind hole ``depth`` mm deep
-    below the workplane. ``csk_dia`` adds a countersink cone (``csk_angle``
-    degrees, opening at the workplane); ``cbore_dia`` + ``cbore_depth`` a
-    cylindrical counterbore — both measured down from the workplane.
+    below the workplane. ``span`` bounds the through-cutter to ``span`` mm
+    total, centred on the workplane — for holes in LOCAL features (lugs,
+    ears, ribs) on a larger body, where the part-diagonal cutter would reach
+    across the whole part and corrupt distant geometry or a sealed cavity.
+    Place the workplane at the feature's mid-plane and set ``span`` a few mm
+    beyond the through-thickness; too small a ``span`` leaves a membrane.
+    ``csk_dia`` adds a countersink cone (``csk_angle`` degrees, opening at
+    the workplane); ``cbore_dia`` + ``cbore_depth`` a cylindrical
+    counterbore — both measured down from the workplane.
 
         with Locations(Pos(-15, 0, 0)):            # anywhere along the axis
             through_hole(5.0)                    # guaranteed through
         through_hole(5.0, csk_dia=8.4, on=top_face)   # countersunk, 90°
+        with Locations(lug_mid_plane):
+            through_hole(6.5, span=lug_t + 4)    # bounded lug bolt-hole
     """
     ctx = _require_context("through_hole")
     r = diameter / 2
     if depth is None:
-        bb = ctx.part.bounding_box()
-        s = bb.size
-        height = math.sqrt(s.X * s.X + s.Y * s.Y + s.Z * s.Z) + 10.0
+        if span is not None:
+            height = span
+        else:
+            bb = ctx.part.bounding_box()
+            s = bb.size
+            height = math.sqrt(s.X * s.X + s.Y * s.Y + s.Z * s.Z) + 10.0
         z_mid = 0.0
     else:
         height = depth + 1.0  # 1 mm overshoot above the workplane
