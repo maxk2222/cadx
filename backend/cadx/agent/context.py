@@ -134,15 +134,74 @@ def _spec_words(spec: PartSpec) -> set[str]:
 # to a reviewed base primitive gets the template injected into the codegen
 # prompt — the model doesn't have to discover that a "sealed vessel" is
 # `sealed_tank`, the deterministic match does it for it.
-_PART_FAMILY_HINTS: list[tuple[frozenset[str], str]] = [
-    (
-        frozenset({"tank", "vessel", "receiver", "dome", "behaelter", "enclosure"}),
-        "PART-FAMILY sealed vessel: start from "
-        "cadlib.sealed_tank(outer_d, height, wall, dome_h, feet=0, "
-        "foot_w=18, foot_t=6, foot_h=20, foot_hole_d=0) for the watertight "
-        "body (domes via dome_h, bolt lugs via feet/foot_*), then add the "
-        "remaining features — do NOT hand-revolve the shell/domes.",
-    ),
+_VESSEL_WORDS = frozenset({"tank", "vessel", "receiver", "dome", "behaelter", "enclosure"})
+
+_FOOT_WORDS = ("foot", "lug", "mount", "ear", "tab", "stand", "leg", "base")
+_HOLE_WORDS = ("bolt", "mount", "foot", "clearance", "through", "anchor", "fix", "hole")
+
+
+def _fget(feature: Any, key: str, default: Any = None) -> Any:
+    """Read a Feature field whether it's a pydantic model or a plain dict."""
+    if isinstance(feature, dict):
+        return feature.get(key, default)
+    return getattr(feature, key, default)
+
+
+def _fdims(feature: Any) -> dict[str, Any]:
+    dims = _fget(feature, "dims", {}) or {}
+    return dims if isinstance(dims, dict) else {}
+
+
+def _sealed_tank_feet_args(spec: PartSpec) -> str:
+    """Pull the foot/lug + bolt-hole params out of the spec's features so the
+    injected ``sealed_tank`` call carries the spec's REAL mounting geometry —
+    a static ``feet=0`` template makes the model disable the helper's feet
+    and hand-build lugs it gets wrong (embedded into the cavity)."""
+    foot = hole = None
+    for f in active_features(spec):
+        ftype = str(_fget(f, "type", "") or "").lower()
+        words = f"{_fget(f, 'name', '') or ''} {_fget(f, 'description', '') or ''}".lower()
+        if ftype == "hole" and any(k in words for k in _HOLE_WORDS):
+            hole = hole or f
+        elif any(k in words for k in _FOOT_WORDS):
+            foot = foot or f
+    if foot is None:
+        return "feet=0, foot_hole_d=0"
+    d = _fdims(foot)
+    feet = int(_fget(foot, "count", 1) or 1)
+    foot_h = d.get("depth_total") or d.get("height") or d.get("depth")
+    parts = [f"feet={feet}"]
+    for key, dim in (
+        ("foot_w", "width"),
+        ("foot_t", "thickness"),
+        ("foot_h", None),
+    ):
+        val = foot_h if key == "foot_h" else d.get(dim)
+        if isinstance(val, (int, float)) and val > 0:
+            parts.append(f"{key}={val:g}")
+    if hole is not None:
+        hd = _fdims(hole)
+        dia = hd.get("diameter") or hd.get("bore_diameter")
+        if isinstance(dia, (int, float)) and dia > 0:
+            parts.append(f"foot_hole_d={dia:g}")
+    return ", ".join(parts)
+
+
+def _sealed_tank_hint(spec: PartSpec) -> str:
+    feet_args = _sealed_tank_feet_args(spec)
+    return (
+        "PART-FAMILY sealed vessel: cadlib.sealed_tank builds the WHOLE "
+        "watertight domed tank INCLUDING feet + bolt-holes — call it with "
+        "outer_d/height/wall/dome_h read from the body feature and "
+        f"{feet_args} from the foot-lug + bolt-hole features (these are the "
+        "spec's real values — use them; feet=0/foot_hole_d=0 ONLY if the spec "
+        "has no feet). Do NOT hand-revolve the domes or hand-build the "
+        "feet/holes — the helper places lugs protruding clear of the wall."
+    )
+
+
+_PART_FAMILY_HINTS: list[tuple[frozenset[str], Any]] = [
+    (_VESSEL_WORDS, _sealed_tank_hint),
 ]
 
 
@@ -155,7 +214,7 @@ def part_family_hint(spec: PartSpec | None) -> str:
     words = _spec_words(spec)
     for trigger, hint in _PART_FAMILY_HINTS:
         if words & trigger:
-            return hint
+            return hint(spec) if callable(hint) else hint
     return ""
 
 

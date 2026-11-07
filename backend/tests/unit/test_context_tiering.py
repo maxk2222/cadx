@@ -137,3 +137,58 @@ def test_measured_features_block_legacy_slot_line():
     )
     assert "elongated void" in block
     assert "through_axis" not in block
+
+
+def _vessel_spec(with_feet: bool = True) -> PartSpec:
+    spec = _spec()
+    spec.name = "domed pressure tank"
+    spec.summary = "closed domed vessel"
+    body = Feature(
+        name="sealed tank body",
+        type="other",
+        dims={"diameter": 80.0, "height": 120.0, "wall_thickness": 3.0},
+        count=1,
+    )
+    feats = [body]
+    if with_feet:
+        feats += [
+            Feature(
+                name="foot lug",
+                type="other",
+                dims={"width": 18.0, "thickness": 6.0, "depth_total": 20.0},
+                count=3,
+            ),
+            Feature(name="foot bolt hole", type="hole", dims={"diameter": 6.5}, count=3),
+        ]
+    spec.features = feats
+    return spec
+
+
+def test_part_family_hint_extracts_feet_params():
+    """The sealed-vessel hint must carry the spec's REAL foot/bolt geometry —
+    a static feet=0 template made the model disable the helper's feet and
+    hand-build lugs it embeds into the cavity."""
+    from cadx.agent.context import part_family_hint
+
+    hint = part_family_hint(_vessel_spec(with_feet=True))
+    assert "sealed_tank" in hint
+    assert "feet=3" in hint
+    assert "foot_w=18" in hint
+    assert "foot_t=6" in hint
+    assert "foot_h=20" in hint
+    assert "foot_hole_d=6.5" in hint
+
+
+def test_part_family_hint_no_feet_falls_back():
+    from cadx.agent.context import part_family_hint
+
+    hint = part_family_hint(_vessel_spec(with_feet=False))
+    assert "sealed_tank" in hint
+    assert "feet=0" in hint
+    assert "foot_hole_d=0" in hint
+
+
+def test_part_family_hint_non_vessel_empty():
+    from cadx.agent.context import part_family_hint
+
+    assert part_family_hint(_spec([Feature(name="rib", type="rib", dims={})])) == ""
