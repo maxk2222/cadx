@@ -633,9 +633,9 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
         # material; unify_checked keeps the input when it makes things worse
         if (
             mesh_boolean is not None
-            and recut_anchors
+            and active_anchor_holes
             and hasattr(shape, "is_valid")
-            and not shape.is_valid()
+            and not shape.is_valid
         ):
             with contextlib.suppress(Exception):
                 shape = mesh_boolean.unify_checked(shape)
