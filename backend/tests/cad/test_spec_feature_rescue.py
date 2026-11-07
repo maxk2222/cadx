@@ -1,0 +1,106 @@
+"""spec_feature_rescue — deterministic rebuild of spec-declared mount
+features the generated code dropped or malformed (the executor safety-net
+behind helper-adoption instability)."""
+
+from __future__ import annotations
+
+import pytest
+from build123d import Box
+
+from cadx.cad import cadlib, mesh_boolean
+from cadx.cad import spec_feature_rescue as sfr
+
+
+def _tank_spec() -> dict:
+    return {
+        "name": "domed tank",
+        "features": [
+            {
+                "type": "other",
+                "name": "foot lug",
+                "count": 3,
+                "axis": "z",
+                "dims": {"width": 18.0, "thickness": 6.0, "depth_total": 20.0},
+            },
+            {
+                "type": "hole",
+                "name": "foot bolt hole",
+                "count": 3,
+                "axis": "-z",
+                "dims": {"diameter": 6.5},
+            },
+        ],
+    }
+
+
+def _vessel(*, feet: int = 0) -> object:
+    return cadlib.sealed_tank(
+        outer_d=80, height=120, wall=3, dome_h=8,
+        feet=feet, foot_w=18, foot_t=6, foot_h=20, foot_hole_d=6.5,
+    )
+
+
+def test_bare_vessel_gets_lugs_and_holes():
+    """The recurring failure: model calls sealed_tank(feet=0) or drops
+    disjoint hand-built lugs → bare vessel with no feet/holes. The rescue
+    must rebuild the declared mount ring deterministically."""
+    out, applied = sfr.rescue_spec_features(_vessel(feet=0), _tank_spec(), mesh_boolean)
+    assert applied
+    bb = out.bounding_box()
+    # same envelope the reviewed helper produces for the same spec values
+    assert bb.size.X <= 85.0 and bb.size.Y <= 85.0
+    assert len(out.solids()) == 1
+
+
+def test_realized_ring_is_not_rescued():
+    """When the model DID adopt the helper correctly, the rescue must not
+    double-add lugs — the ring already holds clean bolt holes."""
+    _out, applied = sfr.rescue_spec_features(_vessel(feet=3), _tank_spec(), mesh_boolean)
+    assert applied == []
+
+
+def test_dropped_feature_is_not_resurrected():
+    """A feature the model explicitly dropped stays dropped — the rescue
+    honours feature_drops rather than fighting the audit trail."""
+    spec = _tank_spec()
+    spec["feature_drops"] = [
+        {
+            "feature_index": 0,
+            "feature": spec["features"][0],
+            "reason": "model dropped the foot lugs",
+            "iteration": 1,
+            "session": "codegen",
+            "recorded_at": "x",
+        }
+    ]
+    _o, applied = sfr.rescue_spec_features(_vessel(feet=0), spec, mesh_boolean)
+    assert applied == []
+
+
+def test_non_round_host_skips_honestly():
+    """A prismatic host has no base ring — the lug rescue must skip with no
+    change instead of fusing lugs onto a box corner."""
+    _o, applied = sfr.rescue_spec_features(Box(50, 30, 20), _tank_spec(), mesh_boolean)
+    assert applied == []
+    assert len(_o.solids()) == 1
+
+
+def test_no_mount_feature_is_untouched():
+    """A spec with only a standalone hole and no mount feature does not
+    trigger the additive lug rescue."""
+    spec = {"name": "plate", "features": [
+        {"type": "hole", "name": "mounting hole", "count": 1, "axis": "z",
+         "dims": {"diameter": 5.0}},
+    ]}
+    _o, applied = sfr.rescue_spec_features(_vessel(feet=0), spec, mesh_boolean)
+    assert applied == []
+
+
+def test_base_ring_reports_wall_and_cavity():
+    """_base_ring reads the outer wall radius and inner cavity skin — the
+    measurements the lug reach is derived from."""
+    ring = sfr._base_ring(_vessel(feet=0), 12.0, mesh_boolean)
+    assert ring is not None
+    host_r, cavity_r = ring
+    assert host_r == pytest.approx(40.0, abs=2.0)
+    assert cavity_r == pytest.approx(37.0, abs=2.0)

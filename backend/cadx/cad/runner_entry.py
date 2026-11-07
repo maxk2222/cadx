@@ -665,6 +665,35 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
             except Exception as e:
                 result.setdefault("warnings", []).append(f"anchor re-cut failed: {e}")
 
+        # spec-feature rescue: declared mount-lug/feet + bolt-holes the
+        # generated code dropped or malformed are rebuilt deterministically
+        # via a reviewed builder — the safety-net when a whole-part helper
+        # was called with feet=0 or lugs were hand-built into the cavity.
+        # spec features reach the runner via anchors["spec"] (forwarded by
+        # the worker); dropped features are honoured, non-round hosts skip.
+        try:
+            from cadx.cad import spec_feature_rescue as _sfr
+        except Exception:
+            try:
+                import spec_feature_rescue as _sfr  # type: ignore[no-redef]
+            except Exception:
+                _sfr = None
+        if _sfr is not None and mesh_boolean is not None:
+            try:
+                _sp = (anchors or {}).get("spec") if isinstance(anchors, dict) else None
+                shape2, applied = _sfr.rescue_spec_features(
+                    shape, _sp, mesh_boolean, emit=print
+                )
+                if applied:
+                    shape = shape2
+                    solids = shape.solids()
+                    result.setdefault("warnings", []).append(
+                        "spec-feature rescue: declared mount features missing/"
+                        f"malformed — rebuilt deterministically ({', '.join(applied)})"
+                    )
+            except Exception as e:
+                result.setdefault("warnings", []).append(f"spec-feature rescue failed: {e}")
+
         # hybrid result cleanup: merge coplanar facets into planar faces —
         # cheaper downstream ops, cleaner STEP; validated, keeps input on drift
         if mesh_boolean is not None and mesh_solid_path:
