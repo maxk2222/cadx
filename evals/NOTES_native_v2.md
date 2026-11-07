@@ -353,3 +353,58 @@ optimize lief durch). Nicht deterministisch genug für Python-Pfad-Attribution.
   worker kann "ich habe keine tasks" beweisen)
 - 12/12 queue_sweeper tests grün; image cadx-cad-executor rebuilt,
   deploy am nächsten breakpoint (nicht während SIMP in-flight)
+
+## Deploy/infra findings (tank_feet_v2 run)
+
+- **cadx stack restart left frontend down**: whole `cadx-*` compose project
+  restarted ~18:25Z; `cadx-frontend-1` exited(0) and stayed down (no auto
+  restart). Host port 8080 was then grabbed by an unrelated `./target/debug/
+  loom-server` (user process — NOT killed). Eval driver defaults to
+  `http://localhost:8080` → "api unreachable".
+- **cadx_internal is `internal:true`** → `-p` port-publish silently no-ops on
+  containers attached only to it (docker-proxy never binds; HostConfig shows
+  the mapping but NetworkSettings.Ports stays empty). api sits on BOTH
+  cadx_internal + cadx_public; forwarder must attach to cadx_public.
+- **Workaround (non-destructive)**: throwaway `alpine/socat` container on
+  `cadx_public` publishing `127.0.0.1:8090 → cadx-api-1:8000`; eval run with
+  `--api-url http://localhost:8090`. `/api/health` → 200. Real fix is to bring
+  `cadx-frontend-1` back (needs 8080 free — loom-server conflict is user's).
+- **spec-driven sealed_tank hint (19d35c2)**: `part_family_hint` now extracts
+  foot-lug + bolt-hole dims from spec features and injects the REAL values
+  (`feet=3, foot_w=18, foot_t=6, foot_h=20, foot_hole_d=6.5`) instead of the
+  static `feet=0` template that made the model hand-build cavity-embedded
+  lugs. Tested: feet params extracted, no-feet vessel → `feet=0` fallback,
+  non-vessel → empty. 12/12 context_tiering tests green.
+
+## tank_feet_v2 — spec-driven hint WORKS (sealed_tank adopted)
+
+- `part_family_hint` (19d35c2) now injects the spec's REAL foot/bolt dims.
+  Result: model wrote `cadlib.sealed_tank(outer_d=80, height=120, wall=3,
+  dome_h=8, feet=3, foot_w=18, foot_t=6, foot_h=20, foot_hole_d=6.5)` —
+  clean single-call whole-part build, ALL params matching spec. First time
+  the tank uses the helper correctly (was 0 adoptions across index/doc/
+  static-template before).
+- Code stored per-attempt at `data/projects/<p>/versions/<v>/iterations/
+  <n>/<a>/_run/model.py` — readable even while version.code is still empty.
+- iter1 a1/a3/a4 all adopted sealed_tank+feet. iter2 a2/a3 REGRESSED to
+  `feet=0` + hand-built `Box` feet — improve-loop can still fall back to the
+  old failure mode; adoption is per-attempt not guaranteed.
+- Remaining blocker is NOT geometry: FEM reports "no solvable case"
+  (n_solved=0) — cavity/load-case region matching, same as before. Geometry
+  now correct-by-construction; the eval gates on FEM+verify_spec.
+
+## FEM hole_index rebind (b50098c) — dead-anchor recovery
+
+- Root cause of tank "no solvable case": `hole_index` counts the INTAKE
+  anchor table (spec-est + scan merged). By FEM time the measured list is
+  shorter/reordered → declared index 5/6/7 resolves to nothing → "matched no
+  nodes" → unsolvable. load_cases are frozen post-intake so the improve loop
+  could never repair it.
+- Fix in `regions.py`: `_rebind_dead_hole_regions` — for hole/anchor/bore
+  regions whose index yields no cells, pick best measured anchor (unclaimed,
+  real-source > spec-est, closest dia) and keep only candidates that resolve
+  on THIS voxel geometry. N dead regions spread over N distinct holes.
+  Audited via warning per rebind.
+- Verified on real tank mesh: 3 dead indices → anchors #1/#2/#3, fixed-dofs
+  + pressure (30.6kN) applied. Was unsolvable before.
+- Regression tests in test_regions_anchor_hint.py (dead→rebind, live→untouched).
