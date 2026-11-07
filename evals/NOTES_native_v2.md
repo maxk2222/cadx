@@ -105,3 +105,207 @@ Driver-Fix: `&&`-Kette stirbt bei Non-Zero → mit `;` neu gestartet (pid 42722,
 - NUR generalisierbare Fixes, keine case-spezifischen Hacks
 - Bei Fehler: reproduzieren → root cause → minimaler Fix → Regressionstest → weiter
 - Eval-Treiber NICHT killen wenn nur langsam; harte Fehler → fixen → Deploy → Case neu starten
+
+## native_v3 (02:44) — Master-Plan Runde 2
+Commits: 4e9bddb (fem spec honesty) + 9b9b141 (executor durability). Deployed.
+- fix_mode="bearing": pinnt 2 DOFs ⊥ Bohrachse (Collar) + normal+hole Warnung
+- lint_support_modes: Intake benennt freie rigid modes pro Case
+- dead hole_index: rebinder+regions listen verfügbare Anker
+- cavity(seal_openings_mm): virtuelles Versiegeln für open-vessel inner skin
+- re-cut: spec anchors ohne depth_mm auf dünnem span (<=5x dia, capped)
+- executor_client: JobStatus.not_found → task-lost beim nächsten Poll (~5s statt 2h)
+- executor env: PYTHONFAULTHANDLER=1 + MALLOC_CHECK_=3 (nächster heap-abort → stack)
+- rigid-gap: load-excitation unterscheidet echt-unsolvable (excited→skip) vs
+  konsistent-unterbestimmt (F ⊥ free modes → Federn + lösen) — roller-plate-Fix
+- eval order: tank → bracket → arm → prop (native_v3_*, ;-chain)
+
+## native_v3 Zwischen-Resultate (Tank + Bracket in-flight)
+
+**pressure_tank_autonomous: FAIL** codegen:succeeded verify_spec score=0 (2482s)
+- dominant: kaputte BRep — STEP-roundtrip BRepCheck-Defekte (face/shell/solid)
+  + non-watertight mesh → Loch-Detektion meldet 0 → alle Feature-Checks fail
+- dead hole_index #6 persistierte: Modell reasonierte "re-point to 1/2/3" aber
+  load_cases sind post-intake nicht editierbar → FEM lief auf altem Spec
+- cavity flutete (seal_openings Lint war noch nicht deployt — commit b629acf)
+- re-cut: nur Ø24 geschnitten, 3x Ø6.5-Lugs nicht — probe auf kaputtem BRep
+  warf Exception → `except: continue` schluckte sie still
+- LLM adoptierte neue lints (support_modes_free, case_anchor_rebound) — bewiesen
+
+**bearing_bracket_topopt (in-flight)**: fem n_solved=2 (beide cases lösen jetzt!
+letzte Runde 0), optimize succeeded, exec läuft. malloc_consolidate Crash
+reproduziert im Helmholtz-TopOpt auf 344k-Grid — transient (worker restart,
+optimize lief durch). Nicht deterministisch genug für Python-Pfad-Attribution.
+
+**Implementiert (auf main, vor deployed-Stand):**
+- b629acf: seal_openings_mm Lint + toolspec-Doku (cavity Adoption)
+- e4a43a4: drop_dead_anchor_refs (dead hole_index → drop statt matched-no-nodes)
+  + re-cut probe-failure → stdout warn statt silent except
+- 31caf26: unify_checked vor re-cut bei invalidem BRep
+
+**Befund für nächste Iteration:**
+- drop_dead_anchor_refs: dead hole_index droppen statt Case mit matched-no-nodes
+  zu poisonen — Case läuft auf validen Supports oder fällt mit benannten
+  freien Modi ehrlich
+- unify vor re-cut: kaputte BRep blockiert Probes — unify_checked rescue
+- malloc_consolidate: 2. Repro auf bracket Helmholtz/344k — A/B CADX_NATIVE=0
+  nötig um native vs Python-Pfad zu trennen; stack fehlt (SIGABRT bypassed
+  PYTHONFAULTHANDLER auf arq-worker)
+
+### native_v3 live (04:00) — bracket 1h+ im exec/optimize-loop
+- optimize stage succeeded (28min), exec/autonomous-loop läuft ~1h — normal
+- fem löst jetzt 2/2 cases (letzte Runde 0) — bearing/support fixes wirken
+- tank FAIL bleibt die einzige rote Karte: verify_spec score-0 (broken BRep)
+- naechster deploy-punkt: nach Runde → worker/api redeploy mit
+  b629acf+e4a43a4+31caf26, dann tank-re-run für definitive validation
+
+### bearing_bracket_topopt: FAIL topopt (6561s)
+- codegen PASS 90, fem PASS 90 (2/2 cases lösen — bearing/fix wirken!)
+- topopt FAIL: "agent kept base part: No completed optimization run" — der
+  malloc_consolidate-Crash killte den optimize-Task → kein committables
+  Ergebnis → gates topopt/volfrac/envelope_within/watertight
+- Crash ist 2/2 reproduzierbar auf bracket Helmholtz/344k → DETERMINISTISCHER
+  Blocker. Bisect CADX_NATIVE=0 vs =1 nötig (native kernel vs CHOLMOD/numba)
+- arm läuft seit 05:15
+
+### native_v3 status (05:44) — arm in-flight, gut
+- tank: FAIL verify_spec score-0 (broken BRep dominant + dead hole_index + cavity)
+- bracket: FAIL topopt — malloc_consolidate killte optimize-Run → kein committables
+  Ergebnis → topopt/volfrac/envelope/watertight gates. codegen+fem PASS 90.
+- arm: optimize 33min + fem succeeded, exec läuft — bearing/mode lints adoptiert
+- commits auf main vor deployed: b629acf, e4a43a4, 31caf26
+- naechster Schritt: arm/prop beenden → deploy increment → tank+bracket re-run
+  + malloc_consolidate A/B bisect (CADX_NATIVE=0/1)
+
+### native_v3 live (05:55) — arm exec läuft (~19min nach optimize+fem ✓)
+- arm macht saubere stage-progression: optimize 44min ✓, fem ✓, exec läuft
+- tank FAIL + bracket topopt FAIL (malloc) sind die beiden blockierenden Befunde
+- deploy-punkt: nach arm/prop → redeploy mit b629acf+e4a43a4+31caf26, tank re-run
+
+### robot_arm_mount_autonomous: FAIL topopt volfrac (8168s)
+- codegen PASS 80, fem PASS 80
+- topopt: optimize lief durch (5 iter, beso guide, 6623s) aber
+  volfrac_achieved=0.9975 vs gate max_solid_frac=0.05 — Optimizer entfernte
+  praktisch kein Material, konvergierte zum Basis-Teil. NICHT der malloc-Crash
+  (run_optimize_job retried+recovered).
+- 8168s/6h Laufzeit: autonomer Loop iterierte lange ohne volfrac zu treffen
+- Befund: topopt convergiert zu ~100% solid auf diesem Teil — muss klären ob
+  keep/passive-Maske zu viel sperrt oder solid echt strukturell optimal ist
+
+### bracket: topopt malloc-crash (kein committables Ergebnis) — INFRA
+### tank: verify_spec broken BRep — CODEGEN
+### propeller läuft seit 11:28
+
+### native_v4 (deployed full package, 12:31-)
+- tank: FAIL codegen (1109s) — model produced NO valid candidate (~30min of
+  Tracebacks on ellipsoid+cavity+lug). Intake lints all fired + adopted
+  (hole 1/2/3 fix_mode all), drop_dead+case_anchor_rebound+seal lint live,
+  but codegen quality is the limit — model-quality issue, not infra
+- bracket running — test for malloc_consolidate on 344k topopt
+
+### native_v4 (12:31+, deployed full package) — 3/3 codegen FAILS so far
+- tank: FAIL codegen (1109s) — "all iterations failed to produce executable code"
+- bracket: FAIL codegen (1277s) — same, no STEP/STL artifact
+- arm: in-progress, auch Tracebacks + "missing assignment to result"
+- REGRESSION-Signal: native_v3 produzierten alle Teile (fielen downstream);
+  jetzt 3/3 produzieren KEINEN lauffähigen Kandidaten. Kandidaten-Ursachen:
+  (a) meine lint-notes in spec.assumptions → codegen-Prompt-Context dilution
+  (b) Modell-Non-Determinismus / schlechte Streak
+  (c) systematic prompt/exec bug. Intake-Lints adoptierten korrekt (hole 1/2/3,
+  fix_mode all, drop_dead feuert) — Spec-Seite sauber, Code-Seite bricht.
+
+### native_v4 klärung — KEINE systematische Regression
+- arm version 11 SUCCEEDED — codegen produziert valide Teile. tank+bracket
+  codegen-fails sind teil-spezifisch (ellipsoid/harte geom) + LLM-varianz,
+  nicht meine Changes (execute_version-Tracebacks laufen in generiertem
+  build123d-Code, meine intake/executor-changes wirken spec+post-exec)
+- eval läuft weiter: arm im improve-loop, propeller queued
+
+### native_v4 KLÄRUNG — produzierte Teile, failten an Qualitäts-Gates
+- arm: v9/10/11 SUCCEEDED (Teile da), codegen-stage failte an
+  status/bbox/watertight/verify_spec; nur finale regen v12 gab keinen code
+- → KEINE systematische codegen-regression. die "all iterations failed to
+  produce executable code" ist die FINALE regen nach iter-cap, nicht der
+  ganze stage. gleiche fehlerklasse wie v3 (parts bad/nicht executable)
+- propeller läuft (v9 succ, v10 needs_review, v11 running)
+
+## native_v5 (13:56, dedupe-fix d624a0f deployed)
+- prompt-dilution fix: lint-notes sammeln → dedupe new-vs-prior → cap tail
+  (_MAX_ASSUMPTION_NOTES=6). sanitize läuft 2x (orchestrator:6283+6335) —
+  dedupe verhindert accumulation über Aufrufe hinweg
+- v3/v4: 0/4 (codegen fails dominant — teile produziert aber gates failten;
+  mögliche prompt-dilution durch verbose lint-notes)
+- v5 test: ob dedupe die codegen-qualität zurückholt (tank→bracket→arm→prop)
+
+### native_v5 live — tank iteriert (dedupe fix d624a0f deployed)
+- prompt-dilution fix live (lint-notes collect → dedupe new-vs-prior → cap 6)
+- tank weiter ok=False — ellipsoid+Kavität+Lugs weiter Modell-Limit
+  (dedupe hilft prompt, erzwingt kein komplexes Teil)
+- v3: 0/4 (BRep/malloc/volfrac/dead#2), v4: 0/4 codegen-gates, v5: dedupe test
+- offene bugs: malloc_consolidate (bracket topopt), volfrac convergence (arm)
+
+### native_v5 — tank FAIL codegen (1057s) — 3. codegen-fail
+- dedupe-fix deployed aber tank produziert wieder kein valides teil —
+  ellipsoid+cavity+lugs ist echte modell-qualitäts-limit, nicht prompt-noise
+- bracket läuft — malloc_consolidate bisect ist jetzt der infra-priority
+
+## sealed_tank (1f5c9bd) — generalisierbarer Hebel für vessel-Parts
+- cadlib.sealed_tank(outer_d, height, wall, feet, foot_*) — closed vessel:
+  hollow shell + flat sealed caps (watertight cavity by construction) +
+  radial bolt-lug feet. reviewed primitive statt modell composet fragile
+  dome/cut-booleans → tank-eval vereinfacht auf flat-cap tank+feet
+- PATTERN: modell scheitert an parts mit komplexen kurven/booleans (domes,
+  cavity-cuts, fillets an gebogenen kanten). der lever ist die cadlib-
+  primitive-bibliothek pro part-familie: vessels (sealed_tank ✓), brackets
+  (l_bracket ✓), housings/enclosures (fehlt noch), dome-caps (fehlt noch
+  wenn domes gefordert). das modell produziert valide Teile wenn es aus
+  reviewed helpers assembliert statt raw build123d zu schreiben
+- weitere idee: intake-lint der bei vessel-artiger spec auf sealed_tank
+  hintet (analog support_modes) — adoption-lint statt nur existenz
+
+## sealed_tank adoption — DOC-SURFACING REICHT NICHT (v4_tags)
+- sealed_tank + dome_h + tags deployed (1f5c9bd, 9da5f04, a1608eb) —
+  Doc-Section erreicht den Prompt bei tank/vessel-Specs (verifiziert)
+- aber 0 Adoptions-Treffer: Modell importiert weiter boss/through_hole,
+  dekomponiert cylinder+domes+feet statt sealed-vessel zu erkennen
+- ECHTER Lever: spec.shape_hint/part_family (vessel/bracket/housing) →
+  codegen injiziert das Primitive-Template deterministisch — Modell muss
+  Helper nicht selbst finden, intake-klassifikation wählt ihn
+- nebenbefund: "0 holes detected / mesh not watertight, BRep sagt valid" —
+  mesh-export/detection discrepancy (separater infra-punkt)
+
+## sealed_tank eval v5 (part_family_hint) — adoption 0 aber Fortschritt
+- sealed_tank Helper + tags + part_family_hint deployed (1f5c9bd/9da5f04/a1608eb/f98cd34)
+- spec enthält "tank"/"vessel"/"receiver" → hint FEUERT (verifiziert)
+- aber 0 Adoptions-Treffer: Modell importiert weiter boss/through_hole,
+  hand-baut domes — part_family_hint kann helper nur VORSCHLAGEN nicht zwingen
+- v10: ok=True + fem_analyze jetzt — Teile werden produziert+FEM'd aber
+  worst_sf=None n_solved=0 — cavity/region resolution failt weiter
+- ECHTE Lektion: schwache lokale Modelle adoptieren Helper nicht selbstständig;
+  deterministic spec→helper-Bridge ist der richtige mechanismus (vorschlag),
+  adoption bleibt modell-compliance-limit
+
+## sealed_tank v6 (simplified prompt) — codegen DURCH, FEM region-fail
+- Prompt vereinfacht auf "domed tank + feet only" (0874735, gepusht)
+- DURSCHBRUCH: codegen succeeded (v10 ok=True, verify_spec läuft) —
+  simplified prompt half Modell durch codegen (vorher 5x fail)
+- Modell baut Domes per `revolve` hand-built (nicht sealed_tank) — aber
+  produziert jetzt ein valides Teil
+- FEM erreicht (erstes Mal): n_solved=0, worst_sf=None — cavity-Regionen
+  für internal pressure matchen weiterhin nichts (n_solved=0)
+- ECHTE Lektion: simplified prompt > complex spec für schwache Modelle;
+  sealed_tank-Helper adoptieren nicht — hand-built domes reichen wenn prompt klar
+
+## sealed_tank v6 detail — bolt-hole geometry root cause
+- v6 codegen succeeded + agent-FEM n_solved=2/sf=1.66 — simplify half
+- verify_spec fail: foot bolt holes BLIND (membrane seals) + nur 2/3 vorhanden
+- root cause 1: Modell meidet cadlib.through_hole (Kommentar: oversize
+  cutter = Teil-Diagonale+10mm bridged die sealed cavity → corrupt boolean)
+  → schreibt eigene bounded cutter
+- root cause 2: Pos*Cylinder ist ZENTRIERT — cutter z=-12..10 vs lug z=0..20
+  → nur untere hälfte geschnitten → blind. klassischer zentrierungs-bug
+- root cause 3 (tief): lug radial [R-6,R] eingebettet nicht protrudierend —
+  bohrung bei r=37 trifft innere skin (kavität r~37) → undurchfuehrbar.
+  sealed_tank baut lugs korrekt nach aussen ragend — helper adoption bleibt
+  der eigentliche blocker
+- generalisierbarer fix-kandidat: through_hole bounded/span-modus oder
+  bolt_lug-helper; adoption über part_family_hint bleibt modell-limit
