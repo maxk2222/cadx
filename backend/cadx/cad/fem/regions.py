@@ -918,8 +918,19 @@ def region_cell_mask(  # noqa: C901
         # pressure-vessel inner skin: solid cells 6-adjacent to a SEALED
         # interior void. An open neck/outlet floods the flood-fill so the
         # mask is empty — honest zero-cell + warning downstream, matching
-        # the physics (you cannot pressurize an open vessel).
-        sealed = _sealed_pocket_mask(domain.solid)
+        # the physics (you cannot pressurize an open vessel). When the
+        # region declares `seal_openings_mm` (e.g. a hydro-test whose ports
+        # get capped), openings narrower than that are dilated shut first.
+        solid = domain.solid
+        if region.seal_openings_mm:
+            close_cells = math.ceil(float(region.seal_openings_mm) / domain.pitch / 2)
+            if close_cells > 0:
+                solid = ndimage.binary_closing(
+                    solid,
+                    structure=ndimage.generate_binary_structure(3, 1),
+                    iterations=min(close_cells, 4),
+                )
+        sealed = _sealed_pocket_mask(solid)
         if not sealed.any():
             return np.zeros(domain.solid.shape, dtype=bool)
         wall = (
@@ -1216,6 +1227,17 @@ def _fixed_dof_mask(domain: VoxelDomain, region: RegionSpec, node_mask: np.ndarr
                          dominant component of `normal`.
     """
     out = np.zeros((domain.node_count, 3), dtype=bool)
+    if region.fix_mode == "bearing" and region.kind in ("hole", "anchor", "bore"):
+        # collar/linear guide on the bore wall: pin the two DOFs normal to
+        # the bore axis — the body can still slide (and only slide) along
+        # it. The axis-aligned DOF mask cannot express per-node radial
+        # pins, so this is the closest honest bearing support.
+        axis = str(region.axis or "+z").lstrip("+-").lower()
+        idx = _AXIS3.get(axis, 2)
+        for c in range(3):
+            if c != idx:
+                out[node_mask, c] = True
+        return out
     if region.fix_mode == "normal":
         if region.kind == "plane":
             # per-letter DOFs: "x" pins ux (symmetry), "xy" pins ux+uy
@@ -1508,7 +1530,10 @@ def resolve_case_dofs(  # noqa: C901
         m, cells, fb_ax = _nodes_cells(r)
         tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
         if not m.any():
-            warnings.append(f"case '{case.name}': fixed region {r.kind} {tag} matched no nodes")
+            avail = _anchor_note(domain, r, anchors)
+            warnings.append(
+                f"case '{case.name}': fixed region {r.kind} {tag} matched no nodes" + avail
+            )
             continue
         if fb_ax:
             warnings.append(
@@ -1536,9 +1561,22 @@ def resolve_case_dofs(  # noqa: C901
                 rec["fallback_ax"] = fb_ax
             fixed_out.append(rec)
         if r.fix_mode == "normal":
+            if r.kind in ("hole", "anchor", "bore"):
+                warnings.append(
+                    f"case '{case.name}': '{r.description or r.kind}' fix_mode 'normal' "
+                    "pins only the bore-AXIAL DOF — the part can still slide and tilt; "
+                    "use 'bearing' for a collar support or 'all' for a bolted seat"
+                )
+            else:
+                warnings.append(
+                    f"case '{case.name}': '{r.description or r.kind}' is a roller/symmetry "
+                    "support — the part can still slide; make sure the case is stable"
+                )
+        elif r.fix_mode == "bearing" and r.kind in ("hole", "anchor", "bore"):
             warnings.append(
-                f"case '{case.name}': '{r.description or r.kind}' is a roller/symmetry "
-                "support — the part can still slide; make sure the case is stable"
+                f"case '{case.name}': '{r.description or r.kind}' is a collar support "
+                "(only axial slide stays free) — the case needs a second support "
+                "or 'all' if axial load is expected"
             )
 
     for load in case.loads:
@@ -1567,7 +1605,10 @@ def resolve_case_dofs(  # noqa: C901
                 m = _nodes_of_cells(domain, cells.ravel())
         tag = f"#{r.hole_index}" if r.hole_index else (r.axis or "")
         if not m.any():
-            warnings.append(f"case '{case.name}': load region {r.kind} {tag} matched no nodes")
+            warnings.append(
+                f"case '{case.name}': load region {r.kind} {tag} matched no nodes"
+                + _anchor_note(domain, r, anchors)
+            )
             continue
         # a load patch of only a few cells concentrates a point-load
         # singularity — grow the declared region by ~one pitch at a time

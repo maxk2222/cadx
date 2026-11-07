@@ -50,12 +50,17 @@ except Exception:
     _inspect = None
 
 
-def _bounded_spec_anchor(h: object, mesh_boolean) -> bool:
-    """True when a spec-sourced anchor carries a DECLARED axial span (pos +
-    depth_mm — e.g. a mount hole bound to its 10 mm base plate): the bore
-    interval bounds the deterministic re-cut, so a sealed/missing spec bore
-    gets re-cut safely without blindly piercing the whole part envelope.
-    Unbounded spec anchors stay codegen-owned and are not re-cut."""
+_MAX_RECUT_SPAN_TO_DIA = 5.0
+_MAX_RECUT_SPAN_MM = 25.0
+
+
+def _bounded_spec_anchor(h: object, mesh_boolean, shape=None) -> bool:
+    """True when a spec-sourced anchor's re-cut is safely bounded — either by
+    a DECLARED axial span (pos + depth_mm) or by a MEASURED material span at
+    the anchor point that is plausibly plate-like (<= ~5x dia, capped): the
+    bore interval bounds the deterministic re-cut, so a sealed/missing spec
+    bore gets re-cut safely instead of failing verify_spec later. Anchors
+    whose span is unmeasurable or thick stay codegen-owned."""
     if not isinstance(h, dict):
         return False
     if h.get("dropped_feature"):
@@ -68,7 +73,25 @@ def _bounded_spec_anchor(h: object, mesh_boolean) -> bool:
     idx = {"x": 0, "y": 1, "z": 2}.get(ax)
     if idx is None:
         return False
-    return mesh_boolean._declared_axial_span(h, idx) is not None
+    if mesh_boolean._declared_axial_span(h, idx) is not None:
+        return True
+    if shape is None:
+        return False
+    uv = mesh_boolean._plane_coords(h, idx)
+    if uv is None:
+        return False
+    try:
+        intervals = mesh_boolean._material_intervals(
+            shape, uv[0], uv[1], str(h.get("axis") or "+z")
+        )
+    except Exception:
+        return False
+    if not intervals:
+        return False
+    widest = max(hi - lo for lo, hi in intervals)
+    dia = float(h.get("dia") or 0.0)
+    cap = min(_MAX_RECUT_SPAN_MM, _MAX_RECUT_SPAN_TO_DIA * dia) if dia > 0 else _MAX_RECUT_SPAN_MM
+    return widest <= cap
 
 
 class _ImportGuard(importlib.abc.MetaPathFinder):
@@ -614,7 +637,7 @@ def main(workdir: Path | None = None) -> int:  # noqa: C901
                 if isinstance(h, dict)
                 and (
                     str(h.get("source") or "") in ("image", "image+mesh")
-                    or _bounded_spec_anchor(h, mesh_boolean)
+                    or _bounded_spec_anchor(h, mesh_boolean, shape)
                 )
             ]
         )

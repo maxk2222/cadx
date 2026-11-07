@@ -414,7 +414,7 @@ def beso(  # noqa: C901
                         Kf_i = K[free_i][:, free_i].tocsr()
                         # rigid-mode gap probe once per signature — same
                         # spring-regularisation as simp() (see there)
-                        dd, gap = _solver_mod._rigid_gaps(
+                        dd, gap, _ = _solver_mod._rigid_gaps(
                             domain, used_dofs, case_fd[ci], active=all_idx
                         )
                         loc = np.isin(free_i, dd)

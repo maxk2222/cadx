@@ -650,6 +650,44 @@ class CaseSolve:
     warnings: list[str] = field(default_factory=list)
     deficient_dofs: np.ndarray = field(default_factory=lambda: np.empty(0, dtype=np.int64))
     rigid_gap: str = ""
+    # per deficient component: (component dof ids, (6,k) free rigid-mode basis)
+    free_modes: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)
+
+
+_RIGID_SPRING_REL = 1e-4
+
+
+def _free_mode_excited(
+    domain: VoxelDomain,
+    F: np.ndarray,
+    free_modes: list[tuple[np.ndarray, np.ndarray]],
+) -> bool:
+    """True when the load excites a free rigid mode the supports do not pin.
+
+    An under-constrained component is still solvable when F is orthogonal to
+    every free-mode displacement field (a plate resting on its face under
+    pure normal pressure excites nothing it cannot resist); only a real
+    driving component makes K_ff singular in a way CG would burn on."""
+    fmax = float(np.abs(F).max(initial=0.0))
+    if fmax <= 0.0:
+        return False
+    coords = domain.node_coords()
+    for comp_dofs, basis in free_modes:
+        Fc = F[comp_dofs]
+        fc = float(np.linalg.norm(Fc))
+        if fc <= 1e-9 * fmax:
+            continue  # no load on this component — its modes stay unexcited
+        nodes, dirs = comp_dofs // 3, comp_dofs % 3
+        r = coords[nodes] - coords[nodes].mean(axis=0)
+        sc = float(np.abs(r).max(initial=0.0)) or 1.0
+        r /= sc
+        for m in basis.T:  # rows = free rigid modes (tx..tz, rx..rz)
+            disp = m[:3] + np.cross(np.broadcast_to(m[3:], r.shape), r)
+            ud = disp[np.arange(nodes.size), dirs]
+            n = float(np.linalg.norm(ud))
+            if n > 0.0 and abs(float(ud @ Fc)) / (n * fc) > 1e-6:
+                return True
+    return False
 
 
 def _rigid_gaps(
@@ -657,7 +695,7 @@ def _rigid_gaps(
     used_dofs: np.ndarray,
     fixed_dofs: np.ndarray,
     active: np.ndarray | None = None,
-) -> tuple[np.ndarray, str]:
+) -> tuple[np.ndarray, str, list[tuple[np.ndarray, np.ndarray]]]:
     """Used-DOF ids on components without full rigid-mode restraint.
 
     K is block-diagonal across the active mask's 26-connected components
@@ -688,6 +726,7 @@ def _rigid_gaps(
     coords = domain.node_coords()
     deficient: list[int] = []
     detail: list[str] = []
+    free_modes: list[tuple[np.ndarray, np.ndarray]] = []
     for c in np.unique(node_comp[used_nodes]):
         if c < 0:
             continue
@@ -696,6 +735,8 @@ def _rigid_gaps(
         if not cdofs.size:
             deficient.append(int(c))
             detail.append(f"{ncell}-cell component: no constraints (0/6 modes)")
+            comp_dofs = used_dofs[node_comp[used_dofs // 3] == c]
+            free_modes.append((comp_dofs, np.eye(6)))
             continue
         nodes = cdofs // 3
         dirs = cdofs % 3
@@ -720,10 +761,18 @@ def _rigid_gaps(
         if miss:
             deficient.append(int(c))
             detail.append(f"{ncell}-cell component: {6 - miss}/6 rigid modes pinned")
+            U, s, _ = np.linalg.svd(B)
+            rank = int(
+                np.sum(s > (float(s[0]) * B.shape[1] * np.finfo(float).eps))
+            ) if s.size and s[0] > 0 else 0
+            # free rigid modes = left null space of B (m with B^T m = 0) —
+            # they carry the component's underpinned translations/rotations
+            comp_dofs = used_dofs[node_comp[used_dofs // 3] == c]
+            free_modes.append((comp_dofs, U[:, rank:]))
     if not deficient:
-        return np.empty(0, dtype=np.int64), ""
+        return np.empty(0, dtype=np.int64), "", []
     dd = used_dofs[np.isin(node_comp[used_dofs // 3], np.asarray(deficient))]
-    return dd, "; ".join(detail)
+    return dd, "; ".join(detail), free_modes
 
 
 def reduce_case(
@@ -763,7 +812,9 @@ def reduce_case(
         Kf = sparse.csr_matrix((0, 0))
         return CaseSolve(free=free, Kf=Kf, factor=None, M=None, warnings=warnings)
 
-    deficient_dofs, gap_detail = _rigid_gaps(domain, used_dofs, fixed_dofs, active)
+    deficient_dofs, gap_detail, free_modes = _rigid_gaps(
+        domain, used_dofs, fixed_dofs, active
+    )
     if gap_detail:
         warnings.append(f"rigid-mode check: {gap_detail}")
     Kf = K[free][:, free]
@@ -783,6 +834,7 @@ def reduce_case(
         warnings=warnings,
         deficient_dofs=deficient_dofs,
         rigid_gap=gap_detail,
+        free_modes=free_modes,
     )
 
 
@@ -894,9 +946,9 @@ def solve_reduced(
     solver_name = "spsolve"
     converged = True
     if ctx.deficient_dofs.size:
-        fmax = float(np.abs(F).max(initial=0.0))
-        if fmax > 0.0 and float(np.abs(F[ctx.deficient_dofs]).max(initial=0.0)) > 1e-9 * fmax:
-            # the load reaches an under-constrained component — K_ff is
+        excited = _free_mode_excited(domain, F, ctx.free_modes)
+        if excited:
+            # the load drives a rigid mode the supports do not pin — K_ff is
             # singular and CG would burn maxiter on it; verdict first
             return FemSolution(
                 u=u,
@@ -914,6 +966,19 @@ def solve_reduced(
                     "case unsolvable, solve skipped",
                 ],
             )
+    if ctx.deficient_dofs.size:
+        # consistent under-constraint (load does not excite the free modes):
+        # weak grounding springs on the deficient DOFs make K_ff solvable
+        # without changing the answered physics measurably (~1e-4 rel)
+        scale = float(np.median(np.abs(Kf.diagonal()))) or 1.0
+        spring = np.zeros(Kf.shape[0])
+        spring[np.isin(free, ctx.deficient_dofs)] = _RIGID_SPRING_REL * scale
+        Kf = (Kf + sparse.diags(spring, format="csr")).tocsr()
+        Ff = F[free]
+        warnings.append(
+            f"rigid-mode springs on {int(ctx.deficient_dofs.size)} DOFs "
+            f"({ctx.rigid_gap}) — consistent under-constrained case regularised"
+        )
     if ctx.factor is not None:
         try:
             u[free] = np.asarray(ctx.factor(Ff), dtype=float)

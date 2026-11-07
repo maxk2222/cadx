@@ -283,7 +283,10 @@ class RegionSpec(BaseModel):
     )  # painted surface points [x,y,z] mm (points)
     radius_mm: float | None = None  # brush radius (points); default max(2*margin_mm, 3)
     normal: list[float] = Field(default_factory=list, max_length=3)  # avg surface normal (points)
-    fix_mode: Literal["all", "normal"] = "all"  # encastre vs roller/symmetry (fixed regions)
+    fix_mode: Literal["all", "normal", "bearing"] = "all"  # encastre | roller | collar (fixed)
+    seal_openings_mm: float | None = Field(
+        default=None, ge=0.0
+    )  # cavity: virtually seal openings up to this Ø (hydro-test with capped ports)
     material: Annotated[str, Field(max_length=40)] = ""  # material override (keep zones)
     description: M = ""  # human label, e.g. "mounting holes"
     attach: dict[str, Any] | None = Field(

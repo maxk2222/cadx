@@ -964,15 +964,21 @@ def test_early_loadpath_cert_runs_fem_on_connected_export(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize(
-    ("cancel_at", "expected_solves", "expected_phase"),
+    ("parallel", "cancel_at", "expected_solves", "expected_phase"),
     [
-        (4, 1, "after_nominal_export_verify"),
-        (6, 2, "after_eroded_export_verify"),
+        (False, 4, 1, "after_nominal_export_verify"),
+        (False, 6, 2, "after_eroded_export_verify"),
+        (True, 4, 1, "after_nominal_export_verify"),
+        # the eroded+dilated pair is submitted to the pool atomically — a
+        # cancel landing inside it can no longer separate the two solves,
+        # but the phase still lands on the first named realization
+        (True, 6, 3, "after_eroded_export_verify"),
     ],
 )
 def test_export_verification_stops_between_realizations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    parallel: bool,
     cancel_at: int,
     expected_solves: int,
     expected_phase: str,
@@ -996,6 +1002,11 @@ def test_export_verification_stops_between_realizations(
         polls += 1
         return polls >= cancel_at
 
+    if not parallel:
+        # serial path: realizations solve one at a time between cancel
+        # checks — the parallel path (native fem on) submits the pair
+        # atomically and is covered by its own parametrize cases
+        monkeypatch.setenv("CADX_NATIVE_FEM", "0")
     monkeypatch.setattr("cadx.cad.fem.analyze.run_fem_domain", run_fem_domain)
     info = _verify_export_structure(
         candidate_mesh=candidate,

@@ -766,12 +766,15 @@ _REGION_SCHEMA = {
         },
         "fix_mode": {
             "type": "string",
-            "enum": ["all", "normal"],
+            "enum": ["all", "normal", "bearing"],
             "description": "fixed regions only: 'all' = encastre (default); "
             "'normal' = pin only the axis DOF — roller/sliding/symmetry; "
             "on plane regions it pins the named letters' DOFs — "
             "'x' = ux (symmetry cut), 'xy' = ux+uy (knife edge), "
-            "'xyz' = point support",
+            "'xyz' = point support; "
+            "'bearing' = hole/anchor/bore only: pin both DOFs normal to the "
+            "bore axis — a collar that may still slide along the axis "
+            "(use 'all' for a bolted seat, never 'normal' on a hole)",
         },
         "material": _s(
             "keep regions only: override material inside the region "

@@ -140,6 +140,13 @@ class _Rebinder:
                         "(spec feature position)"
                     )
                     return r.model_copy(update={"hole_index": m})
+                avail = ", ".join(
+                    f"#{i + 1} {a.name or ''}".strip() for i, a in enumerate(self.anchors)
+                )
+                self.notes.append(
+                    f"{where}: hole_index {idx} has no anchor (only {self.n}: {avail}) "
+                    "— the region will match no nodes; re-point or drop it"
+                )
             return r
         names = ", ".join(f"#{i} '{self.anchors[i - 1].name}'" for i in matches[:4])
         self.notes.append(
@@ -333,6 +340,51 @@ def rebind_case_anchors(spec: PartSpec) -> list[str]:
     return _Rebinder(anchors, spec).run(spec)
 
 
+_AXES = "xyz"
+_MODE_NAMES = ("tx", "ty", "tz", "rx", "ry", "rz")
+
+
+def _region_mode_mask(r: Any) -> int:
+    """6-bit mask of rigid-body modes a fixed region can pin (tx..tz, rx..rz),
+    estimated from kind/fix_mode/axis without a mesh. A hole wall pins
+    everything it is told to (encastre); 'bearing' on a bore is the collar
+    the solver implements (everything except sliding along the bore axis);
+    'normal' pins the one axis DOF. Plane+normal pins the named letters."""
+    fix = str(getattr(r, "fix_mode", "all") or "all")
+    kind = str(getattr(r, "kind", "") or "")
+    if fix == "all":
+        return 0b111111
+    ax = str(getattr(r, "axis", "") or "+z").lstrip("+-").lower()
+    if kind in ("hole", "anchor", "bore") and fix == "bearing":
+        idx = _AXES.index(ax[0]) if ax and ax[0] in _AXES else 2
+        return 0b111111 & ~(1 << idx)
+    # fix_mode 'normal': pin the axis DOF only
+    idx = _AXES.index(ax[0]) if ax and ax[0] in _AXES else 2
+    return 1 << idx
+
+
+def lint_support_modes(spec: PartSpec) -> list[str]:
+    """Per-case under-constraint lint: union the mode masks of all fixed
+    regions; below 6 pinned rigid-body modes the FEM solve is singular.
+    Surfaces the free modes by name so the agent can add a real support
+    instead of discovering 'unsolvable' at FEM time."""
+    notes: list[str] = []
+    for case in spec.load_cases or []:
+        if not case.fixed:
+            continue
+        pinned = 0
+        for r in case.fixed:
+            pinned |= _region_mode_mask(r)
+        free = [m for i, m in enumerate(_MODE_NAMES) if not (pinned >> i & 1)]
+        if free:
+            notes.append(
+                f"case '{case.name}': supports leave rigid modes free ({', '.join(free)}) "
+                "— the case will be unsolvable; use fix_mode 'all'/'bearing' "
+                "or add a second support"
+            )
+    return notes
+
+
 def sanitize_load_cases(spec: PartSpec) -> None:
     """Drop degenerate cases (no supports and no loads) a weak model emits as
     `{"name":"","fixed":[],"loads":[]}` — truthy lists of those would skip the
@@ -341,6 +393,9 @@ def sanitize_load_cases(spec: PartSpec) -> None:
     refs onto the anchors the case text actually names."""
     for note in rebind_case_anchors(spec):
         log.info("intake.case_anchor_rebound", note=note)
+        spec.assumptions = (spec.assumptions or []) + [note]
+    for note in lint_support_modes(spec):
+        log.info("intake.support_modes_free", note=note)
         spec.assumptions = (spec.assumptions or []) + [note]
     kept: list[LoadCase] = []
     for c in spec.load_cases:
