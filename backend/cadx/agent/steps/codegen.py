@@ -18,6 +18,7 @@ from cadx.agent.context import (
     measured_features_block,
     measurements_block,
     numbered_code_block,
+    part_family_hint,
     plan_block,
     references_block,
     request_block,
@@ -169,6 +170,8 @@ def _user_parts(
     if rb:
         parts.append({"type": "text", "text": rb})
     parts.append({"type": "text", "text": spec_block(spec)})
+    if hint := part_family_hint(spec):
+        parts.append({"type": "text", "text": hint})
     if plan is not None:
         parts.append({"type": "text", "text": plan_block(plan)})
     bb = bindings_block(spec)
@@ -408,6 +411,8 @@ async def repair(
         parts.append({"type": "text", "text": rb})
     if spec is not None:
         parts.append({"type": "text", "text": spec_block(spec)})
+    if hint := part_family_hint(spec):
+        parts.append({"type": "text", "text": hint})
     if plan is not None:
         parts.append({"type": "text", "text": plan_block(plan)})
     bb = bindings_block(spec)
@@ -522,6 +527,8 @@ async def _repair_session(
         parts.append({"type": "text", "text": rb})
     if spec is not None:
         parts.append({"type": "text", "text": spec_block(spec)})
+    if hint := part_family_hint(spec):
+        parts.append({"type": "text", "text": hint})
     if plan is not None:
         parts.append({"type": "text", "text": plan_block(plan)})
     bb = bindings_block(spec)

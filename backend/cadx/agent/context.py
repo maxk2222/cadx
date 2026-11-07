@@ -120,6 +120,45 @@ def _cadlib_index(text: str) -> str:
     return "ALL helpers (cadlib_lookup / this doc has details): " + ", ".join(rows)
 
 
+def _spec_words(spec: PartSpec) -> set[str]:
+    """Every lowercase word in the spec's name/summary + feature type/names —
+    the shared vocabulary the doc filter and the part-family hint match."""
+    features = active_features(spec)
+    haystack = " ".join(
+        [str(spec.name or ""), str(spec.summary or "")] + [f"{f.type} {f.name}" for f in features]
+    )
+    return {w for w in re.split(r"[^a-z]+", haystack.lower()) if w}
+
+
+# spec words -> a concrete whole-part starting call. A spec-family that maps
+# to a reviewed base primitive gets the template injected into the codegen
+# prompt — the model doesn't have to discover that a "sealed vessel" is
+# `sealed_tank`, the deterministic match does it for it.
+_PART_FAMILY_HINTS: list[tuple[frozenset[str], str]] = [
+    (
+        frozenset({"tank", "vessel", "receiver", "dome", "behaelter", "enclosure"}),
+        "PART-FAMILY sealed vessel: start from "
+        "cadlib.sealed_tank(outer_d, height, wall, dome_h, feet=0, "
+        "foot_w=18, foot_t=6, foot_h=20, foot_hole_d=0) for the watertight "
+        "body (domes via dome_h, bolt lugs via feet/foot_*), then add the "
+        "remaining features — do NOT hand-revolve the shell/domes.",
+    ),
+]
+
+
+def part_family_hint(spec: PartSpec | None) -> str:
+    """Concrete base-primitive call for a spec whose family maps to a
+    whole-part helper — a deterministic spec->code bridge for part classes
+    the model otherwise hand-builds into broken BReps."""
+    if spec is None:
+        return ""
+    words = _spec_words(spec)
+    for trigger, hint in _PART_FAMILY_HINTS:
+        if words & trigger:
+            return hint
+    return ""
+
+
 def _cadlib_sections(spec: PartSpec | None) -> str:
     """cadlib_reference.md filtered to the helpers the spec actually needs.
 
@@ -132,13 +171,7 @@ def _cadlib_sections(spec: PartSpec | None) -> str:
     features = active_features(spec)
     if spec is None or not features:
         return text
-    words: set[str] = set()
-    haystack = " ".join(
-        [str(spec.name or ""), str(spec.summary or "")] + [f"{f.type} {f.name}" for f in features]
-    )
-    for w in re.split(r"[^a-z]+", haystack.lower()):
-        if w:
-            words.add(w)
+    words = _spec_words(spec)
     for alias, helpers in _CADLIB_ALIASES.items():
         if alias in words:
             words.update(helpers)
