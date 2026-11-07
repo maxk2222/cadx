@@ -417,3 +417,60 @@ def test_bore_region_is_a_wall_shell_not_a_sleeve(domain) -> None:
     assert rad.max() <= 15.0 + band + domain.pitch  # thin shell, not a sleeve
     # regression guard: old 0.35·dia band would reach r≈25.5 on this domain
     assert rad.max() < 15.0 + 0.35 * 30.0
+
+
+def _plate_two_holes() -> trimesh.Trimesh:
+    """100x60x8 plate, two Ø6 through-holes along Z at x=-25/+25."""
+    plate = trimesh.creation.box(extents=[100.0, 60.0, 8.0])
+    plate.apply_translation([0.0, 0.0, 4.0])
+    for x in (-25.0, 25.0):
+        hole = trimesh.creation.cylinder(radius=3.0, height=20.0, sections=32)
+        hole.apply_translation([x, 0.0, 4.0])
+        plate = plate.difference(hole, engine="manifold")
+    return plate
+
+
+_TWO_HOLE_ANCHORS = [
+    {"kind": "hole", "index": 1, "x": -25.0, "y": 0.0, "dia": 6.0, "axis": "+z", "source": "scan"},
+    {"kind": "hole", "index": 2, "x": 25.0, "y": 0.0, "dia": 6.0, "axis": "+z", "source": "scan"},
+]
+
+
+@pytest.fixture(scope="module")
+def two_hole_domain():
+    return voxelize(_plate_two_holes(), 1.5, 400_000)
+
+
+def test_dead_hole_index_rebinds_to_measured_anchor(two_hole_domain) -> None:
+    """hole_index counts the intake anchor table — spec-est anchors inflate it
+    so a declared index can point past the detected list. A dead index must
+    rebind onto a measured hole that resolves on THIS geometry, not fail the
+    whole case (load_cases are frozen post-intake)."""
+    case = LoadCase(
+        name="bolted",
+        fixed=[
+            RegionSpec(kind="hole", hole_index=5, fix_mode="all"),
+            RegionSpec(kind="hole", hole_index=6, fix_mode="all"),
+        ],
+        loads=[LoadSpec(region=RegionSpec(kind="face", axis="-z"), force_n=[0, 0, -10])],
+    )
+    fixed3, F, warnings = resolve_case_dofs(two_hole_domain, case, _TWO_HOLE_ANCHORS)
+    assert fixed3.any(), warnings
+    assert np.any(F)
+    assert any("rebound to anchor" in w for w in warnings)
+    # the two dead regions spread over the two distinct real holes
+    rebound = [w for w in warnings if "rebound to anchor" in w]
+    assert len(rebound) == 2
+    assert "#1" in rebound[0] and "#2" in rebound[1]
+
+
+def test_live_hole_index_is_not_rebound(two_hole_domain) -> None:
+    """A hole_index that already resolves must be left untouched — the rebind
+    only fires on genuinely dead references."""
+    case = LoadCase(
+        name="ok",
+        fixed=[RegionSpec(kind="hole", hole_index=1, fix_mode="all")],
+        loads=[LoadSpec(region=RegionSpec(kind="face", axis="-z"), force_n=[0, 0, -10])],
+    )
+    _fixed3, _F, warnings = resolve_case_dofs(two_hole_domain, case, _TWO_HOLE_ANCHORS)
+    assert not any("rebound to anchor" in w for w in warnings)

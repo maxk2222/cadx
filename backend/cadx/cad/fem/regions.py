@@ -1199,14 +1199,44 @@ def _grow_load_spec(r: RegionSpec, pitch: float) -> RegionSpec | None:
     return None
 
 
+def _hole_anchor_inventory(anchors: list[dict] | None, limit: int = 8) -> str:
+    """Compact ``#i Ød axis`` list of the detected hole anchors — appended to
+    unresolved-region warnings so an out-of-range ``hole_index`` shows the
+    indices that DO exist instead of failing silently."""
+    holes = [
+        a
+        for a in (anchors or [])
+        if str(a.get("kind") or "hole") == "hole" or a.get("dia") or a.get("diameter_mm")
+    ]
+    if not holes:
+        return ""
+    parts = []
+    for a in holes[:limit]:
+        idx = a.get("index")
+        dia = a.get("dia") or a.get("diameter_mm")
+        axis = str(a.get("axis") or "").lstrip("+-") or "?"
+        d = f" Ø{float(dia):.1f}" if isinstance(dia, (int, float)) else ""
+        parts.append(f"#{idx}{d} {axis}" if idx else f"{d} {axis}")
+    more = f" +{len(holes) - limit} more" if len(holes) > limit else ""
+    return f" ({len(holes)} hole anchor(s): {', '.join(parts)}{more})"
+
+
 def _anchor_note(domain: VoxelDomain, region: RegionSpec, anchors: list[dict] | None) -> str:
     """`` (anchor #i at (x, y, z) — verify ...)`` suffix for unresolved
     hole/anchor/bore regions — the resolved anchor identity + position so a
     phantom anchor (stale hole_index, mesh artefact) is visible in the
     warning. Empty string when the region names no anchor."""
     idx = region.hole_index
-    if not idx or not anchors or not (1 <= idx <= len(anchors)):
+    if not idx or not anchors:
         return ""
+    if not (1 <= idx <= len(anchors)):
+        # out-of-range index — name the anchors that actually exist so the
+        # caller can rebind instead of guessing blind
+        return (
+            f" (hole_index {idx} out of range — {_hole_anchor_inventory(anchors)}"
+            + (" — rebind to a detected index" if _hole_anchor_inventory(anchors) else "")
+            + ")"
+        )
     g = _anchor_geometry(domain, region, anchors)
     if g is None:
         return f" (anchor #{idx} — verify the hole exists in the geometry)"
@@ -1465,6 +1495,119 @@ def expand_attaches(  # noqa: C901
     return case.model_copy(update={"fixed": fixed, "loads": loads}), warnings
 
 
+_HOLE_KINDS = ("hole", "anchor", "bore")
+# sources that carry measured/mesh/image evidence — a pure "spec"/"spec-est"
+# anchor is a declared-intent guess whose position may not exist in geometry
+_MEASURED_SRC = ("image", "mesh", "scan")
+
+
+def _anchor_is_measured(a: dict[str, Any]) -> bool:
+    src = str(a.get("source") or "")
+    return any(tok in src for tok in _MEASURED_SRC)
+
+
+def _hole_idx_resolves(
+    domain: VoxelDomain, region: RegionSpec, anchors: list[dict], hole_index: int
+) -> bool:
+    probe = region.model_copy(update={"hole_index": hole_index})
+    return bool(np.asarray(region_cell_mask(domain, probe, anchors), dtype=bool).any())
+
+
+def _hole_rebind_candidates(
+    region: RegionSpec, anchors: list[dict], claimed: set[int]
+) -> list[tuple[int, dict[str, Any]]]:
+    """(position, anchor) candidates for a dead hole region, best first —
+    unclaimed + measured-source + closest diameter to the intended bore."""
+    want = float(region.diameter_mm or 0.0)
+    idx = int(region.hole_index or 0)
+    if want <= 0 and 1 <= idx <= len(anchors):
+        want = float(anchors[idx - 1].get("dia") or 0.0)
+    scored: list[tuple[int, int, float, int, dict[str, Any]]] = []
+    for i, a in enumerate(anchors):
+        if str(a.get("kind") or "hole") not in _HOLE_KINDS:
+            continue
+        dia = float(a.get("dia") or 0.0)
+        dia_dev = abs(dia - want) if (dia > 0 and want > 0) else 0.0
+        measured = 0 if _anchor_is_measured(a) else 1
+        claimed_pen = 1 if (i + 1) in claimed else 0
+        scored.append((claimed_pen, measured, dia_dev, i, a))
+    scored.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
+    # hole_index is the 1-based POSITION (_anchor_geometry does
+    # anchors[hole_index - 1]) — carry i + 1, not the anchor's `index` field
+    return [(t[3] + 1, t[4]) for t in scored]
+
+
+def _rebind_one_hole_region(
+    domain: VoxelDomain,
+    region: RegionSpec,
+    anchors: list[dict],
+    claimed: set[int],
+) -> tuple[RegionSpec, str | None]:
+    """Return (region, note): the region rebound onto a measured hole anchor
+    that resolves on this geometry, or (region, None) when nothing better
+    exists. Only fires when the declared hole_index is itself dead."""
+    if not (region.hole_index and int(region.hole_index) >= 1):
+        return region, None
+    idx = int(region.hole_index)
+    if idx <= len(anchors) and _hole_idx_resolves(domain, region, anchors, idx):
+        return region, None  # declared index already lands on real geometry
+    for cand_idx, a in _hole_rebind_candidates(region, anchors, claimed):
+        if cand_idx == idx or cand_idx in claimed:
+            continue
+        if _hole_idx_resolves(domain, region, anchors, cand_idx):
+            claimed.add(cand_idx)
+            note = (
+                f"hole_index {idx} bound no geometry — rebound to anchor "
+                f"#{cand_idx} (dia {float(a.get('dia') or 0):.1f}, "
+                f"source {a.get('source') or '?'})"
+            )
+            return region.model_copy(update={"hole_index": cand_idx}), note
+    return region, None
+
+
+def _rebind_dead_hole_regions(
+    domain: VoxelDomain,
+    fixed: list[RegionSpec],
+    loads: list[Any],
+    anchors: list[dict] | None,
+) -> tuple[list[RegionSpec], list[Any], list[str]]:
+    """Rebind hole regions whose ``hole_index`` resolves to no geometry.
+
+    ``hole_index`` counts the intake anchor table — a positional reference
+    that drifts whenever spec-est (position-guessed) anchors inflate the table
+    or the mesh scan re-orders it. A dead index yields 'matched no nodes' and,
+    because load_cases are frozen post-intake, an unsolvable case the improve
+    loop cannot repair. For each dead hole region, pick the best measured
+    hole anchor — diameter match first, real-source preferred, declaration
+    order as tie-break — and keep only candidates that actually resolve to
+    cells on THIS geometry. Distinct anchors are claimed so N dead regions
+    spread over N real holes instead of collapsing onto one."""
+    if not anchors:
+        return fixed, loads, []
+
+    claimed: set[int] = set()
+    notes: list[str] = []
+
+    def _rebind_region(r: RegionSpec, where: str) -> RegionSpec:
+        rebound, note = _rebind_one_hole_region(domain, r, anchors, claimed)
+        if note:
+            notes.append(f"{where}: {note}")
+        return rebound
+
+    new_fixed = [_rebind_region(r, "fixed") for r in fixed]
+    new_loads: list[Any] = []
+    for ld in loads:
+        region = getattr(ld, "region", None)
+        if region is not None and getattr(region, "kind", "") in _HOLE_KINDS:
+            rebound = _rebind_region(
+                region, f"load '{getattr(ld, 'description', '') or 'unnamed'}'"
+            )
+            if rebound is not region:
+                ld = ld.model_copy(update={"region": rebound})
+        new_loads.append(ld)
+    return new_fixed, new_loads, notes
+
+
 def resolve_case_dofs(  # noqa: C901
     domain: VoxelDomain,
     case: LoadCase,
@@ -1500,6 +1643,17 @@ def resolve_case_dofs(  # noqa: C901
 
     case, attach_warnings = expand_attaches(case, anchors)
     warnings: list[str] = list(attach_warnings)
+    # hole_index is positional into the intake anchor table — it drifts when
+    # spec-est (position-guessed) anchors inflate that table or the mesh scan
+    # re-orders it, leaving a dead index the frozen load_cases can't repair.
+    # Rebind dead hole regions onto measured anchors that resolve on THIS
+    # geometry before resolving DOFs.
+    rf, rl, rb_notes = _rebind_dead_hole_regions(
+        domain, list(case.fixed or []), list(case.loads or []), anchors
+    )
+    if rb_notes:
+        case = case.model_copy(update={"fixed": rf, "loads": rl})
+        warnings += [f"case '{case.name}': {n}" for n in rb_notes]
     nn = domain.node_count
     fixed3 = np.zeros((nn, 3), dtype=bool)
     F = np.zeros(3 * nn)
