@@ -510,6 +510,16 @@ class _FilterOps:
         return out
 
 
+# Helmholtz filter solve strategy: direct Cholesky only up to this many
+# solid cells — beyond it the numeric factorisation's fill-in aborts the
+# process (observed malloc_consolidate on a ~344k-cell domain), so CG with
+# an SSOR preconditioner takes over. CG tolerances are modest — the filter
+# is a smoothing operator, not the physics solve.
+_HELMHOLTZ_DIRECT_MAX = 120_000
+_HELMHOLTZ_CG_RTOL = 1e-5
+_HELMHOLTZ_CG_MAXITER = 4_000
+
+
 def _build_filter_ops(
     domain: VoxelDomain,
     solid_idx: np.ndarray,
@@ -533,33 +543,61 @@ def _build_filter_ops(
     L = _helmholtz_operator(domain, r_cells)
     stats: dict[str, float] = {"solve_s": 0.0}
     big = domain.cell_count > 200_000
+    ns = int(solid_idx.size)
+    # Direct factorisation of the Helmholtz operator is only safe up to a
+    # few 1e5 unknowns — on the 344k-cell bracket the CHOLMOD/SuperLU numeric
+    # factorisation aborts the process (malloc_consolidate, a C-level crash
+    # no `except` can catch). Past the gate every solve goes through CG with
+    # an SSOR preconditioner instead — L is fixed for the whole run, so the
+    # triangular factors amortise over every SIMP iteration.
+    use_direct = ns <= _HELMHOLTZ_DIRECT_MAX
     t_fac = time.monotonic()
     factor = None
-    # L is SPD — factor_symmetric picks CHOLMOD over SuperLU when the
-    # optional scikit-sparse dep is present (observed ~60s SuperLU
-    # factorisation on a 344k-cell domain); the internal splu->factorized
-    # cascade is the fallback and spsolve remains the last resort below
-    from cadx.cad.fem.solver import factor_symmetric
+    if use_direct:
+        # L is SPD — factor_symmetric picks CHOLMOD over SuperLU when the
+        # optional scikit-sparse dep is present (observed ~60s SuperLU
+        # factorisation on a 344k-cell domain); the internal splu->factorized
+        # cascade is the fallback and spsolve remains the last resort below
+        from cadx.cad.fem.solver import factor_symmetric
 
-    with contextlib.suppress(Exception):  # spsolve fallback below
-        factor = factor_symmetric(L)
+        with contextlib.suppress(Exception):  # CG fallback below
+            factor = factor_symmetric(L)
     log.debug(
         "topopt.helmholtz_operator",
-        nsolid=int(solid_idx.size),
+        nsolid=ns,
         r_cells=round(r_cells, 4),
         nnz=int(L.nnz),
         factorized=factor is not None,
+        direct=use_direct,
         factor_s=round(time.monotonic() - t_fac, 3),
     )
-    Lc = L.tocsc()
+    M = None
+    if factor is None:
+        from cadx.cad.fem.solver import _ssor_preconditioner
+
+        M = _ssor_preconditioner(L)
 
     def solve(b: np.ndarray) -> np.ndarray:
         t = time.monotonic()
-        out = factor(b) if factor is not None else spla.spsolve(Lc, b)
+        if factor is not None:
+            out = factor(b)
+        else:
+            A = _native.spmv_op(L)
+            x, info = spla.cg(
+                L if A is None else A,
+                b,
+                rtol=_HELMHOLTZ_CG_RTOL,
+                atol=0.0,
+                maxiter=_HELMHOLTZ_CG_MAXITER,
+                M=M,
+            )
+            if info > 0:
+                log.warning("topopt.helmholtz_cg_no_converge", info=info, nsolid=ns)
+            out = np.asarray(x, dtype=float)
         dt = time.monotonic() - t
         stats["solve_s"] += dt
         if big:
-            log.debug("topopt.helmholtz_solve", nsolid=int(solid_idx.size), ms=round(dt * 1e3, 1))
+            log.debug("topopt.helmholtz_solve", nsolid=ns, ms=round(dt * 1e3, 1))
         return np.asarray(out, dtype=float)
 
     return _FilterOps(kind="helmholtz", solid_idx=solid_idx, solve=solve, stats=stats)
