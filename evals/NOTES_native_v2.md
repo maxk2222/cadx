@@ -408,3 +408,53 @@ optimize lief durch). Nicht deterministisch genug für Python-Pfad-Attribution.
 - Verified on real tank mesh: 3 dead indices → anchors #1/#2/#3, fixed-dofs
   + pressure (30.6kN) applied. Was unsolvable before.
 - Regression tests in test_regions_anchor_hint.py (dead→rebind, live→untouched).
+
+## tank_feet_v2 RESULT — codegen FAIL, feet geometry root cause
+
+- Final model.py DID adopt `sealed_tank` but called it `feet=0` then hand-built
+  lugs: lifted vessel +20 (`part.moved(Pos(0,0,foot_height))`) and fused 3
+  flush `Box` lugs at r≈37 (outer face = OD, NO radial protrusion).
+- Fatal bug in generated code: vessel moved to z=20..140, lugs at z=0..20 are
+  DISJOINT (touch only at dome-apex plane) → `cadlib.largest_solid` kept the
+  tank and DISCARDED all 3 lugs + their holes → bare cylinder, 0 holes,
+  bbox 80×80×120, min_z=20.
+- verify_spec FAIL: `frame_min_z` (min_z=20, feet gone) + `spec_features`
+  (0 lugs, 0 holes). bbox/volume/watertight all passed — geometry was clean,
+  just missing feet.
+- `_sealed_tank_feet_args` extraction bugs found + fixed: spec splits feet
+  into per-lug features (`foot lug 1/2/3`, each count=1) → old code read
+  count of FIRST feature = `feet=1` (should be 3); lug height stored under
+  `head_diameter` (=20) not `height`/`depth` → `foot_h` was dropped.
+  Now sums counts across foot features + reads head_diameter → hint emits
+  `feet=3, foot_w=18, foot_t=6, foot_h=20, foot_hole_d=6.5` (verified live).
+
+## Open design tension — feet vs bbox gate (needs decision)
+
+- `sealed_tank(feet=3, foot_t=6, foot_hole_d=6.5)` protrudes lugs
+  `max(foot_t, foot_hole_d+4)=10.5mm` radially → outer r≈48.5 → part bbox
+  ~88×93×120. Eval bbox gate `[80,80,120] tol=5 match` → FAIL (needs ≤85).
+- So protruding feet CANNOT pass this case's bbox gate. Feet must stay
+  within ~Ø85 — i.e. flush/inset mounting lugs, not protruding feet.
+- Within-Ø80 feet are geometrically tight: wall is r=37..40; a flush lug
+  (outer face r=40) extends into cavity side r<37 → fin inside pressure
+  cavity, or hole breaches inner skin. Needs a helper mode or careful
+  hand-build that actually fuses (unlike the disjoint-lug failure above).
+
+## FEM fixes this round (all tested, committed pending)
+
+- **Rebind two-pass claim fix**: `_rebind_dead_hole_regions` now claims every
+  anchor a VALID declared hole_index already binds BEFORE rebinding dead
+  ones — a dead region can no longer steal a live region's anchor and
+  double-clamp the same bore. Fixes regression
+  `test_unresolved_fixed_region_is_a_hard_error` (was: bare invalid
+  hole_index rebound onto the only anchor → case wrongly solvable).
+  Verified: hard-error preserved AND tank rebind (5→#1,6→#2) still works.
+- **Cavity mesh-verify**: thin-shell voxel walls (~pitch thick) rasterize
+  leaky — `binary_fill_holes` floods a watertight tank's cavity to outside.
+  `VoxelDomain.source_mesh` + `_cavity_void_mesh_sealed` dilates a probe to
+  bridge sub-cell gaps, then ray-verifies the candidate void is truly
+  enclosed (≥90% of 96 rays get ≥2 shell hits) before trusting it. Open
+  vessels still return empty; `seal_openings_mm` honoured.
+  Tank cavity: 8784 wall cells (was 0). Open box: 0. Tests green.
+- Test totals: 207 fem + 117 topopt + 106 context/cadlib + 53 e2e/anchor/
+  support = all green incl. the previously-failing hard-error regression.
