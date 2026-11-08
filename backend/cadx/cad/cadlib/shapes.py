@@ -27,7 +27,9 @@ from build123d import (
     Plane,
     Polygon,
     Pos,
+    Rectangle,
     Rot,
+    Sphere,
     Text,
     ThreePointArc,
     Vector,
@@ -97,6 +99,24 @@ def _vessel_body(radius: float, height: float, dome_h: float) -> Part:
     return body
 
 
+def mount_lug(lug_inner: float, lug_outer: float, foot_w: float, tip_w: float, foot_h: float) -> Part:
+    """One tapered mounting lug as a SINGLE lofted solid — radial along +X
+    (``lug_inner`` embeds into the host wall, ``lug_outer`` is the bolt face),
+    centred on Z in ``[-foot_h/2, +foot_h/2]`` so the caller positions it.
+
+    A full-width root blends into the wall while a narrower tip protrudes,
+    keeping the footprint tight yet still carrying a clean bolt hole. The
+    loft yields one continuous side surface — a lug glued from two
+    overlapping boxes leaves a box-box seam that serialises as unsewn shells
+    on STEP export.
+    """
+    with BuildSketch(Plane(origin=(lug_inner, 0, 0)) * Plane.YZ) as s_root:
+        Rectangle(foot_w, foot_h)
+    with BuildSketch(Plane(origin=(lug_outer, 0, 0)) * Plane.YZ) as s_tip:
+        Rectangle(tip_w, foot_h)
+    return loft([s_root.sketch, s_tip.sketch])
+
+
 def sealed_tank(
     outer_d: float,
     height: float,
@@ -112,36 +132,73 @@ def sealed_tank(
 
     Rests on XY (min Z = 0), centred. ``wall`` applies to shell AND caps; the
     interior is one fully enclosed cavity — no bore/cut bridges it.
-    ``dome_h`` > 0 gives both ends a half-ellipsoid cap of that height
-    (``height`` stays the total outer height); pass 0 for flat welded end
-    plates. ``feet`` welds that many radial lug feet around the base circle,
-    each ``foot_w`` wide (tangential) x ``foot_h`` tall (Z), protruding
-    ``foot_t`` beyond the wall; ``foot_hole_d`` > 0 cuts a bolt-hole through
-    Z centred in each lug's protruding part. Pass 0 feet for a plain sealed
-    vessel."""
+    ``dome_h`` > 0 gives both ends a cap of that height (``height`` stays the
+    total outer height); pass 0 for flat welded end plates. When ``feet`` > 0
+    the bottom cap is a spherical head RECESSED inside a straight skirt that
+    runs to the base plane — the lugs can then reach the mounting surface on
+    clean cylinder wall (a convex outer dome would not survive STEP export
+    once a lug crossed its equator seam); with no feet the bottom is a normal
+    convex cap. ``feet`` welds that many radial lug feet around the base
+    circle, each ``foot_w`` wide (tangential) x ``foot_h`` tall (Z),
+    protruding ``foot_t`` beyond the wall; ``foot_hole_d`` > 0 cuts a
+    bolt-hole through Z centred in each lug's protruding part. Pass 0 feet
+    for a plain sealed vessel."""
     if wall * 2 >= outer_d or wall * 2 >= height:
         raise ValueError("sealed_tank: wall too thick for the given size")
     # a dome can never be deeper than half the body minus the end walls
     dome_h = min(dome_h, (height - 2 * wall) / 2)
-    body = _vessel_body(outer_d / 2, height, dome_h)
-    # the cavity is the same vessel shrunk by ~wall on every side — nested
-    # smaller vessel keeps the sealed interior watertight by construction
-    cavity = Pos(0, 0, wall) * _vessel_body(
-        outer_d / 2 - wall, height - 2 * wall, max(0.0, dome_h - wall)
-    )
-    tank = body - cavity
+    R = outer_d / 2.0
+    cavity_r = R - wall
+    foot_z = 0.0
+    punt: Part | None = None
+    if feet > 0 and dome_h > 0:
+        # feet need a straight cylindrical wall all the way to the mounting
+        # plane — a convex bottom dome can't survive STEP export once a lug
+        # crosses its equator fuse-seam. So the bottom head is a spherical cap
+        # RECESSED inside a straight skirt that continues to the base plane:
+        # still a domed cap on the bottom, but the lugs bolt down on clean
+        # cylinder wall.
+        skirt_top = dome_h + 1.0  # dome rim sits this far up the straight wall
+        body = Pos(0, 0, 0) * Cylinder(R, height - dome_h, align=_CZ)
+        body += Pos(0, 0, height - dome_h) * _dome_cap(R, dome_h)
+        # spherical cap head (convex down) through the skirt inner rim and a
+        # crown dome_h below it; the void inside the skirt under the head is
+        # the punt recess you see from below
+        Rs = (cavity_r * cavity_r + dome_h * dome_h) / (2.0 * dome_h)
+        head = Pos(0, 0, skirt_top + Rs - dome_h) * Sphere(Rs)
+        punt = Pos(0, 0, 0) * Cylinder(cavity_r, skirt_top, align=_CZ) - head
+        # interior floor recessed a wall above the dome rim keeps the head
+        # >=wall at the rim and thickest over the crown
+        floor_z = skirt_top + wall
+        top_inner_z = height - dome_h
+        cavity = Pos(0, 0, floor_z) * Cylinder(
+            cavity_r, top_inner_z - floor_z, align=_CZ
+        )
+        cavity += Pos(0, 0, top_inner_z) * _dome_cap(cavity_r, dome_h - wall)
+    else:
+        body = _vessel_body(R, height, dome_h)
+        # the cavity is the same vessel shrunk by ~wall on every side — nested
+        # smaller vessel keeps the sealed interior watertight by construction
+        cavity = Pos(0, 0, wall) * _vessel_body(
+            cavity_r, height - 2 * wall, max(0.0, dome_h - wall)
+        )
+        # keep the whole lug + bolt hole above the bottom-dome seam so the
+        # lug's wall contact lands on the straight shell only
+        foot_z = (dome_h + 1.0) if dome_h > 0 else 0.0
+    tank = body - cavity if punt is None else body - cavity - punt
     # radial lug feet around the base circle: X=radial, Y=tangential width,
-    # Z=height, all resting on z=0. Two things keep the footprint inside a
-    # tight bbox envelope while still carrying a clean bolt hole:
+    # Z=height. Two things keep the footprint inside a tight bbox envelope
+    # while still carrying a clean bolt hole:
     #  * the lug is TAPERED — a full-width root blends into the wall and a
     #    narrower tip protrudes, so the outer corners don't balloon the
     #    outline the way a full-width ear does;
     #  * protrusion is kept to what the hole needs — the hole centre must
     #    sit clear of the cavity wall (inner edge >= inner radius) yet its
     #    outer edge inside the lug face, which fixes a minimum reach.
+    # STEP-roundtrip hardening: the lug is built as ONE lofted solid (not two
+    # overlapping boxes) — a box-box junction seam serialises as unsewn shells.
     embed = 2.0
     hole_r = foot_hole_d / 2.0
-    cavity_r = outer_d / 2.0 - wall
     if foot_hole_d > 0:
         # reach far enough out that a Ø hole clears the cavity wall with a
         # material margin on both sides, but no farther than the hole needs
@@ -156,25 +213,18 @@ def sealed_tank(
     # the root must reach INTO the wall — a lug whose inner face stops at the
     # OD only touches the shell tangentially and fuses into a disjoint solid
     lug_inner = min(lug_outer - t_rad, outer_d / 2.0 - embed)
-    # taper: full-width root out to `split_r`, narrower tip to the face
-    tip_len = min(4.0, t_rad * 0.45)
-    split_r = lug_outer - tip_len
     tip_w = foot_w * 0.75
     for i in range(feet):
         a = i * 2 * math.pi / feet
         ca, sa = math.cos(a), math.sin(a)
         deg = math.degrees(a)
-        root_r = (lug_inner + split_r) / 2.0
-        tank += Pos(root_r * ca, root_r * sa, 0) * (
-            Rot(0, 0, deg) * Box(split_r - lug_inner, foot_w, foot_h, align=_CZ)
+        tank += Pos(0, 0, foot_z + foot_h / 2.0) * (
+            Rot(0, 0, deg) * mount_lug(lug_inner, lug_outer, foot_w, tip_w, foot_h)
         )
-        tank += Pos(
-            (split_r + lug_outer) / 2.0 * ca, (split_r + lug_outer) / 2.0 * sa, 0
-        ) * (Rot(0, 0, deg) * Box(tip_len, tip_w, foot_h, align=_CZ))
         if foot_hole_d > 0:
             hr = lug_outer - hole_r - 0.4
             hr = max(hr, cavity_r + hole_r + 0.3)
-            tank -= Pos(hr * ca, hr * sa, -0.5) * Cylinder(
+            tank -= Pos(hr * ca, hr * sa, foot_z - 0.5) * Cylinder(
                 hole_r, foot_h + 1.0, align=_CZ
             )
     return tank

@@ -52,6 +52,30 @@ def test_bare_vessel_gets_lugs_and_holes():
     assert len(out.solids()) == 1
 
 
+def test_rescued_feet_reach_the_base_and_roundtrip(tmp_path):
+    """A convex-domed host can't take grounded feet cleanly — a lug crossing
+    the dome equator fuse-seam serialises as unsewn shells and an elevated lug
+    misses the FEM -z support band. The rescue must rebuild the bottom as a
+    skirt + recessed head so the feet sit at the base plane, and the part must
+    survive the STEP roundtrip gate."""
+    from build123d import export_step, import_step
+
+    out, applied = sfr.rescue_spec_features(_vessel(feet=0), _tank_spec(), mesh_boolean)
+    assert applied
+    bb = out.bounding_box()
+    assert pytest.approx(0.0, abs=0.1) == bb.min.Z
+    # a grounded bolt-hole is present: empty at the hole axis near the base
+    assert not out.is_inside((40.9, 0.0, 8.0))
+    # interior stays sealed — hollow axis but solid caps and solid head
+    assert not out.is_inside((0.0, 0.0, 60.0))
+    assert out.is_inside((0.0, 0.0, 118.5))
+    step = tmp_path / "rescued.step"
+    export_step(out, str(step))
+    q = import_step(str(step))
+    assert q.is_valid
+    assert abs(q.volume - out.volume) / out.volume < 0.02
+
+
 def test_realized_ring_is_not_rescued():
     """When the model DID adopt the helper correctly, the rescue must not
     double-add lugs — the ring already holds clean bolt holes."""

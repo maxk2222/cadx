@@ -154,6 +154,23 @@ def _base_ring(shape: Any, z: float, mesh_boolean: Any) -> tuple[float, float] |
     return host_r, max(0.0, cavity_r)
 
 
+def _shell_seam_z(shape: Any, shell_r: float, mesh_boolean: Any) -> float:
+    """Lowest z where the host wall reaches its full straight-shell radius —
+    the bottom-dome -> shell equator. A mounting lug whose wall-embedding
+    face straddles that seam fuses onto a surface that STEP export serialises
+    as unsewn shells, so lugs must sit above it. Returns the seam height
+    (base z when the host is a straight shell all the way down)."""
+    bb = shape.bounding_box()
+    z = bb.min.Z + 0.25
+    top = bb.min.Z + 20.0
+    while z < top:
+        ring = _base_ring(shape, z, mesh_boolean)
+        if ring is not None and ring[0] >= shell_r - 0.15:
+            return z
+        z += 0.25
+    return bb.min.Z
+
+
 def _lug_dims(mount_feats: list[Any]) -> tuple[int, float, float, float]:
     """Aggregate a mount-lug spec into (count, w, t, h) — feet arrive either
     as one feature count=N or as per-lug features each count=1 (sum them)."""
@@ -162,6 +179,39 @@ def _lug_dims(mount_feats: list[Any]) -> tuple[int, float, float, float]:
     t = _dim(mount_feats[0], "thickness", "depth") or 6.0
     h = _dim(mount_feats[0], "depth_total", "height", "head_diameter", "length") or 20.0
     return count, float(w), float(t), float(h)
+
+
+def _skirted_base(shape: Any, host_r: float, cavity_r: float, mesh_boolean: Any) -> Any:
+    """Rebuild a convex-domed bottom as a straight skirt + recessed head so
+    grounded feet can attach to clean cylinder wall — a lug crossing a convex
+    dome's equator fuse-seam serialises as unsewn shells on STEP export, so
+    the dome is recessed inside the skirt instead (same construction
+    sealed_tank uses when it is given feet). Returns the host unchanged when
+    its wall is already straight down to the base plane."""
+    from build123d import Box, Cylinder, Pos, Sphere
+
+    from cadx.cad.cadlib.shapes import _CZ
+
+    bb = shape.bounding_box()
+    base_z = bb.min.Z
+    seam = _shell_seam_z(shape, host_r, mesh_boolean)
+    if seam <= base_z + 1.0:
+        return shape  # straight/skirt wall already — feet can sit at the base
+    wall = max(0.5, host_r - cavity_r)
+    dome_h = seam - base_z  # convex dome depth ≈ equator height off the base
+    rim_z = base_z + dome_h + 1.0  # recessed head's rim this far up the skirt
+    floor_z = rim_z + wall  # new interior floor — solid base cap re-seals here
+    # keep the host above the new interior floor, then cap it with a solid
+    # skirted base whose top face re-seals the opened cavity
+    cutter = Pos(0, 0, floor_z) * Box(
+        host_r * 4.0, host_r * 4.0, (bb.max.Z - floor_z) + 10.0, align=_CZ
+    )
+    host_above = shape & cutter
+    rs = (cavity_r * cavity_r + dome_h * dome_h) / (2.0 * dome_h)
+    head = Pos(0, 0, rim_z + rs - dome_h) * Sphere(rs)
+    punt = Pos(0, 0, base_z) * Cylinder(cavity_r, rim_z - base_z, align=_CZ) - head
+    base = Pos(0, 0, base_z) * Cylinder(host_r, floor_z - base_z, align=_CZ) - punt
+    return host_above + base
 
 
 def add_mount_lug_ring(
@@ -181,7 +231,9 @@ def add_mount_lug_ring(
     sealed_tank lug math: a full-width root embeds ``_EMBED_MM`` into the
     wall, a narrower tip protrudes only as far as the hole needs to clear
     the inner skin. Returns (shape, lugs_added)."""
-    from build123d import Box, Cylinder, Pos, Rot
+    from build123d import Cylinder, Pos, Rot
+
+    from cadx.cad.cadlib.shapes import mount_lug
 
     idx = {"x": 0, "y": 1, "z": 2}[axis.lstrip("+-")]
     if idx != 2:
@@ -200,27 +252,27 @@ def add_mount_lug_ring(
         lug_outer = host_r + foot_t
         t_rad = foot_t
     lug_inner = min(lug_outer - t_rad, host_r - _EMBED_MM)
-    tip_len = min(4.0, t_rad * 0.45)
-    split_r = lug_outer - tip_len
     tip_w = foot_w * 0.75
-    _CZ = None
     from build123d import Align
 
     _CZ = (Align.CENTER, Align.CENTER, Align.MIN)
+    # feet must reach the mounting plane on clean cylinder wall — a convex
+    # bottom dome can't take grounded feet (its equator fuse-seam breaks STEP
+    # export) and elevated lugs miss the FEM -z fixed-support band, so the
+    # bottom is rebuilt as a skirt + recessed head first (no-op for an
+    # already-straight wall).
+    shape = _skirted_base(shape, host_r, cavity_r, mesh_boolean)
+    foot_z = 0.0
     fused = shape
     added = 0
     for i in range(count):
         a = azimuth0 + i * 2 * math.pi / count
         ca, sa = math.cos(a), math.sin(a)
         deg = math.degrees(a)
-        root_r = (lug_inner + split_r) / 2.0
         try:
-            fused += Pos(root_r * ca, root_r * sa, 0) * (
-                Rot(0, 0, deg) * Box(split_r - lug_inner, foot_w, foot_h, align=_CZ)
+            fused += Pos(0, 0, foot_z + foot_h / 2.0) * (
+                Rot(0, 0, deg) * mount_lug(lug_inner, lug_outer, foot_w, tip_w, foot_h)
             )
-            fused += Pos(
-                (split_r + lug_outer) / 2.0 * ca, (split_r + lug_outer) / 2.0 * sa, 0
-            ) * (Rot(0, 0, deg) * Box(tip_len, tip_w, foot_h, align=_CZ))
             added += 1
         except Exception:
             continue
@@ -231,7 +283,7 @@ def add_mount_lug_ring(
             hr = lug_outer - hole_r - 0.4
             hr = max(hr, cavity_r + hole_r + 0.3)
             try:
-                fused -= Pos(hr * ca, hr * sa, -0.5) * Cylinder(
+                fused -= Pos(hr * ca, hr * sa, foot_z - 0.5) * Cylinder(
                     hole_r, foot_h + 1.0, align=_CZ
                 )
             except Exception:
