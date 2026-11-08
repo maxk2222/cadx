@@ -484,3 +484,43 @@ foot_hole_d=6.5, OD80 H120 wall3 dome8):
 
 Generalisation: protrusion now scales with foot_hole_d + wall, taper ratio is
 fixed — any tank spec with feet+bolt-holes gets envelope-friendly lugs.
+
+## tank_skirt_v1 (e053def deployed, 10:25+) — skirt+recessed-dome bottom
+- Fix: sealed_tank(feet>0, dome_h>0) baut nun straight skirt zu z=0 +
+  recessed spherical convex dome im skirt + lofted mount_lug-Füsse am
+  Boden (bolt-hole centroid ~z10 < 12mm -z-Gate). Rescue _skirted_base
+  rebuildet convex-domed host identisch. STEP-roundtrip 0.0% lokal.
+- VORHER: convex-down dome + feet@z0 = immer Fuse-Seam-Defekt am Dome-
+  Äquator (z~8) → STEP roundtrip -13% vol, reimported_valid=False.
+  Erhöhte Füsse (z9-29) clean aber bolt-hole centroid ~z19 > 12mm Gate.
+- Eval-Run v18 läuft (PID 76647), codegen adoptiert sealed_tank korrekt
+  (foot_count=3, foot_width=18), execs ok=True. Monitor /tmp/tank_monitor.log.
+
+## robot-arm volfrac — REALER Befund (v10 optimize)
+- passive_frac=0.2747 → keeps pinnten NICHT übermässig (27% nur).
+- volfrac_achieved=volfrac_min_feasible=0.9975, target_infeasible=true.
+- Solver konnte unter den gegebenen Load-Cases nicht unter ~100% solid
+  ohne SF/constraint-Verletzung → strukturelle Floor, KEIN keep-mask-Bug.
+- Konsequenz: 0.35-0.65 volfrac-Gate physisch unerreichbar für diesen
+  Bracket unter diesen Lasten → eval-case-design Frage (loads/SF/part-
+  Dicke), nicht Optimizer-Bug. Zu prüfen: ob Last-Fälle zu schwer, SF-
+  Schwelle zu streng, oder ob SIMP-extraction zu konservativ schneidet.
+- NICHT verwechseln: passive_frac-Floor (keeps) vs structural floor
+  (FEM-erzwungenes Material) — passive_breakdown zeigt ersteres, der
+  0.9975-Floor ist letzteres.
+
+## arm volfrac — REVIDIERT (v10 method=infill, nicht SIMP)
+- optimize-Stage wählte method=infill (guided gyroid, guide_solver=beso,
+  shell_mm=2.0, period_mm=8.0, alpha=0.7) — KEIN SIMP-Material-Removal.
+- volfrac_estimate=0.7066 (lattice-eligible region) vs
+  volfrac_export_estimate=0.9975 — Export blieb ~solide.
+- volfrac_min/max_feasible=[0.9975,0.9978] über den ganzen density-offset
+  sweep → Lattice reduzierte das exportierte Volumen praktisch nicht.
+- Hypothesen: (a) period 8mm ≈ Bracket-Wanddicke → Gyroid-Zelle passt
+  nicht ins Innere → degeneriert zu solid; (b) guided scope+shell 2mm
+  liess fast kein Infell-Interior auf dünnem Träger; (c) Material-
+  Removal-Boolean schlug fehl/silent → Solid blieb.
+- FÜR EVAL (volfrac 0.35-0.65): thin load-bearing bracket braucht SIMP
+  (echtes Material-Entfernen zu Streben), nicht infill (shell+gyroid
+  behält Volumen). Prüfen: ob agent mode-choice infill für thin bracket
+  falsch ist, oder ob infill-export-Bug. passive_frac=0.27 war redherring.
