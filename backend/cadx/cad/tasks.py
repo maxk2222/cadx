@@ -869,6 +869,7 @@ def run_fem_payload(
         scan_anchors=bool(payload.get("scan_anchors", True)),
         scan_only=bool(payload.get("scan_only")),
         runtime=_runtime(payload),
+        target_volfrac=payload.get("target_volfrac"),
         **_cancel_kwargs(run_fem_pipeline, cancelled),
     )
     preview = d.get("preview") or {}

@@ -99,7 +99,9 @@ def _vessel_body(radius: float, height: float, dome_h: float) -> Part:
     return body
 
 
-def mount_lug(lug_inner: float, lug_outer: float, foot_w: float, tip_w: float, foot_h: float) -> Part:
+def mount_lug(
+    lug_inner: float, lug_outer: float, foot_w: float, tip_w: float, foot_h: float
+) -> Part:
     """One tapered mounting lug as a SINGLE lofted solid — radial along +X
     (``lug_inner`` embeds into the host wall, ``lug_outer`` is the bolt face),
     centred on Z in ``[-foot_h/2, +foot_h/2]`` so the caller positions it.
@@ -140,9 +142,13 @@ def sealed_tank(
     once a lug crossed its equator seam); with no feet the bottom is a normal
     convex cap. ``feet`` welds that many radial lug feet around the base
     circle, each ``foot_w`` wide (tangential) x ``foot_h`` tall (Z),
-    protruding ``foot_t`` beyond the wall; ``foot_hole_d`` > 0 cuts a
-    bolt-hole through Z centred in each lug's protruding part. Pass 0 feet
-    for a plain sealed vessel."""
+    grounded on the base plane (min Z = 0, so the bolt-hole resolves a
+    ``-z`` FEM support). A lug protrudes only as far as its bolt hole
+    needs — with ``foot_hole_d`` > 0 the outer reach is ~``foot_hole_d``
+    * 0.7 past the OD (~4.5 mm for an M6 hole), otherwise ``foot_t``;
+    keep OD + 2*reach inside the declared plan envelope. ``foot_hole_d``
+    > 0 cuts a bolt-hole through Z centred in each lug. Pass 0 feet for a
+    plain sealed vessel."""
     if wall * 2 >= outer_d or wall * 2 >= height:
         raise ValueError("sealed_tank: wall too thick for the given size")
     # a dome can never be deeper than half the body minus the end walls
@@ -171,9 +177,7 @@ def sealed_tank(
         # >=wall at the rim and thickest over the crown
         floor_z = skirt_top + wall
         top_inner_z = height - dome_h
-        cavity = Pos(0, 0, floor_z) * Cylinder(
-            cavity_r, top_inner_z - floor_z, align=_CZ
-        )
+        cavity = Pos(0, 0, floor_z) * Cylinder(cavity_r, top_inner_z - floor_z, align=_CZ)
         cavity += Pos(0, 0, top_inner_z) * _dome_cap(cavity_r, dome_h - wall)
     else:
         body = _vessel_body(R, height, dome_h)
@@ -224,9 +228,7 @@ def sealed_tank(
         if foot_hole_d > 0:
             hr = lug_outer - hole_r - 0.4
             hr = max(hr, cavity_r + hole_r + 0.3)
-            tank -= Pos(hr * ca, hr * sa, foot_z - 0.5) * Cylinder(
-                hole_r, foot_h + 1.0, align=_CZ
-            )
+            tank -= Pos(hr * ca, hr * sa, foot_z - 0.5) * Cylinder(hole_r, foot_h + 1.0, align=_CZ)
     return tank
 
 

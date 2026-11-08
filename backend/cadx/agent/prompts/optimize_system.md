@@ -31,8 +31,12 @@ pick the best one.
   whether optimization is even needed and which case is critical. Also
   returns `recommended_mode` (`infill` | `guided` | `topopt`) +
   `recommended_reasons` — a mechanical routing hint (fill ratio, SF
-  headroom, pinned features) for which structure_mode to try first. It is
-  a hint, not a verdict: combine it with what the user actually asked for.
+  headroom, pinned features) for which structure_mode to try first. The
+  hint also weighs this session's volume target (`recommended_target_volfrac`):
+  shell+infill preserves the silhouette and can only hollow the core, so
+  when the target sits below what that construction can reach the hint
+  flips to `topopt`. It is a hint, not a verdict: combine it with what
+  the user actually asked for.
 - `topopt_run(...)` — full SIMP run + automatic FEM verification of the
   result. Parameters you may vary between runs:
   - `solver`: `oc` (default, volume-only), `mma` (enables the constraint
@@ -105,7 +109,12 @@ pick the best one.
   layout field — a later `topopt_run` on the same version warm-starts
   from it automatically (`warm_start` reports `guide@2x:...`), so an
   infill baseline is also the cheapest way to scout the macro topology
-  before committing a full SIMP sweep.
+  before committing a full SIMP sweep. When the run reports
+  `target_infeasible` or `min_feasible_volfrac` near solid, the lattice
+  could not lighten this geometry (period too coarse vs wall thickness —
+  the export stays ~solid). Retrying infill as-is reproduces the same
+  near-solid export: escalate to `topopt_run` (it removes silhouette
+  material), or raise `target_volume_fraction` above the reported floor.
 - `refine_features(run_index, features?, restore_planes?, load_cases?)` —
   feature finishing on a completed run: re-cuts EXACT bores, printed threads
   (tap-drill for `thread_spec`/`standard` M-sizes), inserts, bearing seats,
@@ -282,8 +291,12 @@ Each `topopt_run` reports:
    pinned features (its coarse layout doubles as the warm start for a
    later SIMP pass), `topopt_run` starting at the spec's
    `target_volume_fraction` for open design freedom or a marginal
-   baseline. Escalate cheap → expensive: a verified infill baseline in
-   hand beats an unfinished SIMP sweep when the budget runs out.
+   baseline. Watch the target: shell+infill keeps the outer skin and only
+   lattices the core — a deep `target_volume_fraction` on a thin or
+   shell-dominated part needs `topopt_run` material removal instead (the
+   hint flips on its own once it knows the target). Escalate cheap →
+   expensive: a verified infill baseline in hand beats an unfinished SIMP
+   sweep when the budget runs out.
 4. LOOK at the render, compare against the base render shown with it.
 5. Adjust ONE parameter and run again:
    - `sf_export` < target → +0.1 volume fraction, or keep regions near the

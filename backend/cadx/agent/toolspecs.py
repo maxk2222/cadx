@@ -3071,6 +3071,7 @@ class ToolSession:
             # structure_mode a follow-up run should start with
             "recommended_mode": fem.get("recommended_mode"),
             "recommended_reasons": fem.get("recommended_reasons"),
+            "recommended_target_volfrac": fem.get("recommended_target_volfrac"),
             "cases": cases,
             "warnings": fem.get("warnings") or [],
             "note": fem.get("note"),
@@ -3208,7 +3209,9 @@ class ToolSession:
         self.fem_left -= 1
         t0 = time.monotonic()
         try:
-            res = await self.fem_fn({**a, "load_cases": cases})
+            res = await self.fem_fn(
+                {**a, "load_cases": cases, "target_volfrac": self.target_volfrac}
+            )
         finally:
             self._struct_budget_spend(t0)
         if not res.get("ok"):

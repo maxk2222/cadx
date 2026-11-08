@@ -558,6 +558,35 @@ def test_sealed_tank_feet_and_bolt_holes():
     assert not t.is_inside((hx, hy, 10.0))
 
 
+def test_sealed_tank_feet_stay_inside_plan_envelope():
+    """A bolted tank must keep its feet inside the declared plan envelope —
+    the lug protrudes only what the bolt hole needs (~foot_hole_d*0.7 past
+    the OD), NOT foot_t. Regression: the agent bypassed sealed_tank(feet=N)
+    fearing a foot_t-wide envelope blowout and hand-built oversized lugs."""
+    foot_hole_d = 6.5
+    t = cadlib.sealed_tank(
+        80.0,
+        120.0,
+        wall=3.0,
+        dome_h=8.0,
+        feet=3,
+        foot_w=18.0,
+        foot_t=6.0,
+        foot_h=20.0,
+        foot_hole_d=foot_hole_d,
+    )
+    assert len(t.solids()) == 1
+    bb = t.bounding_box()
+    # feet grounded on the base plane — a -z FEM support resolves on them
+    assert pytest.approx(0.0, abs=0.1) == bb.min.Z
+    # protrusion is bounded by the bolt-hole need (~foot_hole_d*0.7 = 4.55mm),
+    # well under the foot_t=6 the agent feared — the whole plan footprint
+    # stays comfortably inside an OD+10mm envelope
+    max_reach = max(math.hypot(v.X, v.Y) for v in t.vertices())
+    assert foot_hole_d * 0.7 + 0.6 >= max_reach - 40.0
+    assert 80.0 + 2 * (foot_hole_d * 0.7 + 0.6) >= bb.max.X - bb.min.X
+
+
 # --------------------------------------------------------------------------- #
 # strut — straight diagonal bar between two points
 # --------------------------------------------------------------------------- #

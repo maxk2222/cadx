@@ -2468,19 +2468,51 @@ def _pitch_feature_warn(res: Any, domain: Any, anchors: list[dict] | None) -> No
     )
 
 
+# the shell+lattice construction the recommender reasons about — mirrors the
+# OptimizeSpec.infill_shell_mm / infill_min_density defaults; the hint is
+# computed before the agent picks run params, so it argues from defaults
+_INFILL_SHELL_MM = 2.0
+_INFILL_LATTICE_MIN_OCCUPANCY = 0.25
+# a thin-walled solid is almost all skin — there is no real core to lattice
+# down, so shell+infill can only shave a modest fraction off the silhouette
+_THIN_PART_INFILL_FLOOR = 0.8
+
+
+def _infill_volfrac_floor(dims: Any, pitch: float, fill_ratio: float | None) -> float | None:
+    """Optimistic lower bound on the exported volfrac a shell+lattice run can
+    reach: the closed skin preserves the silhouette and only the core deeper
+    than the shell thickness can lattice down (bottoming out at the lattice
+    occupancy floor). None when the grid gives no extents to reason from."""
+    if fill_ratio is not None and fill_ratio <= 0.35:
+        return _THIN_PART_INFILL_FLOOR
+    try:
+        extents = [float(d) * pitch for d in dims]
+    except (TypeError, ValueError):
+        extents = []
+    if len(extents) != 3 or any(e <= 0 for e in extents):
+        return None
+    core_frac = 1.0
+    for e in extents:
+        core_frac *= max(0.0, (e - 2.0 * _INFILL_SHELL_MM) / e)
+    return 1.0 - core_frac * (1.0 - _INFILL_LATTICE_MIN_OCCUPANCY)
+
+
 def _recommend_structure_mode(
     report: Any,
     *,
     keep_regions: list[Any] | None,
     anchors: list[Any] | None,
+    target_volfrac: float | None = None,
 ) -> tuple[str, list[str]]:
     """Routing hint for the agent — which structure_mode a follow-up
     optimize run should start with.
 
     Mechanical inputs only: the baseline solve's fill ratio (solid volume
-    over bbox volume), its worst safety factor, and the presence of pinned
-    features (keep regions / feature anchors). The agent combines the hint
-    with user intent — it is a recommendation, never a routing decision.
+    over bbox volume), its worst safety factor, the presence of pinned
+    features (keep regions / feature anchors), and — when the session's
+    volume target is known — whether a silhouette-preserving construction
+    could reach it at all. The agent combines the hint with user intent —
+    it is a recommendation, never a routing decision.
     """
     grid = getattr(report, "grid", None) or {}
     dims = grid.get("dims") or []
@@ -2497,32 +2529,60 @@ def _recommend_structure_mode(
     sf_min = min(sfs) if sfs else None
     n_pinned = len(keep_regions or []) + len(anchors or [])
     if sf_min is not None and sf_min < 1.5:
-        return "topopt", [
-            f"baseline worst SF {sf_min:.2f} below the 1.5 default target — "
-            "removing material cannot fix a failing baseline; full topology "
-            "work (or a geometry edit first) is required"
-        ]
-    if fill_ratio is not None and fill_ratio <= 0.35:
-        return "infill", [
-            f"thin-walled part (fill ratio {fr} <= 0.35) — the silhouette is "
-            "already near-optimal; shell+infill costs ~2 solves and is "
-            "watertight by construction"
-        ]
-    if sf_min is not None and sf_min >= 3.0:
-        return "infill", [
-            f"large SF headroom ({sf_min:.1f} >= 2x the 1.5 target) — graded "
-            "infill captures most of the benefit without a SIMP run"
-        ]
-    if n_pinned:
-        return "guided", [
-            f"bulky part (fill ratio {fr}) with {n_pinned} pinned "
-            "feature(s) — a coarse guide picks the retained topology and "
-            "the lattice preserves the features"
-        ]
-    return "topopt", [
-        f"bulky part (fill ratio {fr}) with open design freedom — "
-        "full SIMP redistribution pays here"
-    ]
+        mode, reasons = (
+            "topopt",
+            [
+                f"baseline worst SF {sf_min:.2f} below the 1.5 default target — "
+                "removing material cannot fix a failing baseline; full topology "
+                "work (or a geometry edit first) is required"
+            ],
+        )
+    elif fill_ratio is not None and fill_ratio <= 0.35:
+        mode, reasons = (
+            "infill",
+            [
+                f"thin-walled part (fill ratio {fr} <= 0.35) — the silhouette is "
+                "already near-optimal; shell+infill costs ~2 solves and is "
+                "watertight by construction"
+            ],
+        )
+    elif sf_min is not None and sf_min >= 3.0:
+        mode, reasons = (
+            "infill",
+            [
+                f"large SF headroom ({sf_min:.1f} >= 2x the 1.5 target) — graded "
+                "infill captures most of the benefit without a SIMP run"
+            ],
+        )
+    elif n_pinned:
+        mode, reasons = (
+            "guided",
+            [
+                f"bulky part (fill ratio {fr}) with {n_pinned} pinned "
+                "feature(s) — a coarse guide picks the retained topology and "
+                "the lattice preserves the features"
+            ],
+        )
+    else:
+        mode, reasons = (
+            "topopt",
+            [
+                f"bulky part (fill ratio {fr}) with open design freedom — "
+                "full SIMP redistribution pays here"
+            ],
+        )
+    if target_volfrac is not None and mode in {"infill", "guided"}:
+        floor = _infill_volfrac_floor(dims, pitch, fill_ratio)
+        if floor is not None and target_volfrac < floor:
+            mode = "topopt"
+            reasons.append(
+                f"requested volfrac {target_volfrac:.2f} sits below what "
+                f"shell+lattice can reach on this geometry (optimistic floor "
+                f"~{floor:.2f}) — silhouette-preserving infill cannot lighten "
+                "the part that far; SIMP removes real material, or the "
+                "target itself is infeasible for the structure"
+            )
+    return mode, reasons
 
 
 def _solver_tier_gate(
@@ -2591,6 +2651,7 @@ def run_fem_pipeline(
     scan_only: bool = False,
     runtime: RuntimeSettings | None = None,
     cancelled: Callable[[], bool] | None = None,
+    target_volfrac: float | None = None,
 ) -> dict[str, Any]:
     """FEM verification on an existing mesh artifact. Writes fem/report.json +
     stress renders into <out_dir>/fem/. Returns the report as a dict.
@@ -2691,9 +2752,13 @@ def run_fem_pipeline(
     )
     report_to_json(report, out_dir / "fem" / "report.json")
     fem_d = report.model_dump()
-    mode, reasons = _recommend_structure_mode(report, keep_regions=keep, anchors=anchors)
+    mode, reasons = _recommend_structure_mode(
+        report, keep_regions=keep, anchors=anchors, target_volfrac=target_volfrac
+    )
     fem_d["recommended_mode"] = mode
     fem_d["recommended_reasons"] = reasons
+    if target_volfrac is not None:
+        fem_d["recommended_target_volfrac"] = target_volfrac
     return {"ok": True, "fem": fem_d}
 
 
@@ -4968,6 +5033,20 @@ def run_infill_pipeline(  # noqa: C901
                     f"infill_period_mm={opt.infill_period_mm}; increase the period "
                     "or thicken the part"
                 )
+        elif (
+            meta.get("volfrac_estimate") is not None
+            and export_fraction - float(meta["volfrac_estimate"]) > 0.10
+        ):
+            # the designed lattice existed in the voxel mask but collapsed to
+            # solid at mesh export — period too coarse vs local wall thickness
+            # (the arm/bracket failure: 0.71 mask vs ~1.0 exported solid)
+            warnings.append(
+                f"lattice lost at export — mask volfrac {meta['volfrac_estimate']:.2f} "
+                f"but the shipped solid measures {export_fraction:.2f}; the "
+                f"{opt.infill_period_mm}mm period cannot resolve inside this "
+                "wall — shrink infill_period_mm or switch to topopt material "
+                "removal for deep volume targets"
+            )
         elif opt.infill_scope == "guided" and int(meta.get("interior_cells") or 0) == 0:
             warnings.append(
                 "guided SIMP retained no interior cells for lattice — the export is shell-only; "

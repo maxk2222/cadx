@@ -335,6 +335,9 @@ def _make_fem_fn(ops: _SessionOps) -> Any:
                 "load_cases": cases if cases is not None else ops.spec_cases,
                 "material": str(a.get("material") or "") or ops.default_material,
                 "voxel_mm": probe_voxel,
+                # session volume target — lets the recommended_mode hint
+                # account for whether shell+infill could reach it at all
+                "target_volfrac": a.get("target_volfrac"),
             }
         )
         # O6: label a coarse probe pitch so the SF isn't read as the export

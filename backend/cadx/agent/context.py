@@ -210,7 +210,9 @@ def _sealed_tank_hint(spec: PartSpec) -> str:
         f"{feet_args} from the foot-lug + bolt-hole features (these are the "
         "spec's real values — use them; feet=0/foot_hole_d=0 ONLY if the spec "
         "has no feet). Do NOT hand-revolve the domes or hand-build the "
-        "feet/holes — the helper places lugs protruding clear of the wall."
+        "feet/holes — the helper grounds each lug on the base plane (z=0, so "
+        "the bolt-hole resolves the -z FEM support) and protrudes it only "
+        "~foot_hole_d*0.7 past the OD, inside a tight plan envelope."
     )
 
 
@@ -315,9 +317,7 @@ def _cadlib_sections(spec: PartSpec | None) -> str:
             # helper can't go invisible by forgetting the central table
             m = _TAG_RE.search(line)
             if m:
-                cur_tags.update(
-                    w.strip().lower() for w in m.group(1).split(",") if w.strip()
-                )
+                cur_tags.update(w.strip().lower() for w in m.group(1).split(",") if w.strip())
                 cur_ok = cur_ok or bool(cur_tags & keep)
                 continue
             section.append(line)

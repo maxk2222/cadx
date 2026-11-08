@@ -272,6 +272,50 @@ def test_recommend_marginal_baseline() -> None:
     assert "below" in reasons[0]
 
 
+def test_recommend_thin_part_deep_target_flips_to_topopt() -> None:
+    """The robot-arm trap: a thin part hinted `infill` cannot reach a deep
+    volfrac target — shell+lattice preserves the silhouette, so the hint
+    must flip to real material removal."""
+    mode, reasons = _recommend_structure_mode(
+        _report(fill=0.25, sf=2.0),
+        keep_regions=[],
+        anchors=[],
+        target_volfrac=0.45,
+    )
+    assert mode == "topopt"
+    assert any("shell+lattice" in r for r in reasons)
+
+
+def test_recommend_thin_part_modest_target_stays_infill() -> None:
+    mode, _ = _recommend_structure_mode(
+        _report(fill=0.25, sf=2.0),
+        keep_regions=[],
+        anchors=[],
+        target_volfrac=0.9,
+    )
+    assert mode == "infill"
+
+
+def test_recommend_bulky_infill_floor() -> None:
+    """Bulky part with SF headroom: lattice can reach ~0.34 on a 100mm
+    cube (2mm shell, 0.25 core occupancy floor) — a 0.5 target stays
+    infill, a 0.3 target needs SIMP."""
+    rep = _report(fill=0.6, sf=4.0)
+    mode, _ = _recommend_structure_mode(rep, keep_regions=[], anchors=[], target_volfrac=0.5)
+    assert mode == "infill"
+    mode, reasons = _recommend_structure_mode(rep, keep_regions=[], anchors=[], target_volfrac=0.3)
+    assert mode == "topopt"
+    assert any("shell+lattice" in r for r in reasons)
+
+
+def test_recommend_target_none_unchanged() -> None:
+    """No session target — the hint stays purely mechanical."""
+    mode, _ = _recommend_structure_mode(
+        _report(fill=0.25, sf=2.0), keep_regions=[], anchors=[], target_volfrac=None
+    )
+    assert mode == "infill"
+
+
 # ---------------------------------------------------------------------------
 # _latest_parent_density — escalation warm-start resolver (P4)
 # ---------------------------------------------------------------------------
