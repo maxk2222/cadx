@@ -552,3 +552,34 @@ WP6: worst_sf bereits min(all cases); watertight/brep_source/approximate
   Evidenz vorhanden; dependabot geprüft — transformers<5/diffusers<0.36
   sind dokumentierte compat-Pins (mlx-lm/huggingface_hub), actionable
   Fixes in dac0838; diskcache/minimatch unkritisch/dev-only.
+
+## WP-Runde-2 Eval-Ergebnisse (tank_skirt_v1 / wp_round2_*, 2026-11-08/09)
+
+Tank `tank_skirt_v1` (v19, needs_review, generate succeeded, FEM skipped):
+  Modell adoptierte sealed_tank(feet=3, foot_hole_d=6.5) sauber (WP1 wirkt),
+  bbox exakt 84.55x83.91x120 wie Helper-Messung, 1 solid, 132.6k mm3.
+  Aber verify_spec FAIL: envelope_x/y (Helper-Envelope > Spec-Envelope,
+  eval-Gate ignoriert envelope_x/y eh, tol_mm=5 bbox-Gate passt 84.55)
+  + unrequested_voids — p1-Gruppe 4x Ø6.5 (3 echte Fußlöcher + Phantom
+  bei 0,0,0). Befund: recessed-bottom-head Sphere-Pole bei z=1.0 ist ein
+  degenerierter Punkt → tesselliert als Pinhole (watertight=false raw,
+  nach repair true), Detektor liest Ø6.5-Klasse-Void auf der Achse.
+  FIX: Crown-Flat am Head (apex_flat=min(2,dome_h*0.3)) — Head endet in
+  planarer Krone wie echte Körperböden, kein Pol-Vertex → extract_features
+  misst exakt 3 Ø6.5-Zentren (Fußlöcher), kein Phantom mehr.
+  Regression-Test: test_sealed_tank_recessed_head_has_no_pole.
+
+Bracket `wp_round2_bearing_bracket_topopt` (generate PASS score 95,
+  FEM FAIL): fix_mode "normal" auf Bohrung pinnt nur axiale DOF →
+  Rigid-Body-Modi → unsolvable. Hint existiert ("use bearing"), aber
+  Eval-Fail-Fast stoppt vor Load-Case-Korrektur. GENERAL-Fix nötig:
+  intake/load-Normalisierung (Bore-Support→bearing) ODER Agent-Retry.
+
+Arm `wp_round2_robot_arm_mount_autonomous` (generate PASS 88, FEM
+  teils unsolvable — gleiche normal-vs-bearing Ursache; 1 Case SF 24.2).
+
+Propeller: lief post-Hint (v12 generate running zum Zeitpunkt der Analyse).
+
+Offen nächste Runde:
+  - FEM fix_mode "normal"→"bearing" Normalisierung (bracket + arm Root-Cause)
+  - Propeller End-to-End Ergebnis abwarten

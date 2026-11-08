@@ -169,9 +169,14 @@ def sealed_tank(
         body += Pos(0, 0, height - dome_h) * _dome_cap(R, dome_h)
         # spherical cap head (convex down) through the skirt inner rim and a
         # crown dome_h below it; the void inside the skirt under the head is
-        # the punt recess you see from below
+        # the punt recess you see from below. The pole is cut flat — a real
+        # head has a crown, and the degenerate single-point apex serialises
+        # as a mesh pinhole (watertight fail + a phantom centre void reading)
         Rs = (cavity_r * cavity_r + dome_h * dome_h) / (2.0 * dome_h)
-        head = Pos(0, 0, skirt_top + Rs - dome_h) * Sphere(Rs)
+        apex_flat = min(2.0, dome_h * 0.3)
+        head = Pos(0, 0, skirt_top + Rs - dome_h) * Sphere(Rs) & Pos(
+            0, 0, skirt_top - dome_h + apex_flat
+        ) * Box(3 * Rs, 3 * Rs, 2 * Rs, align=_CZ)
         punt = Pos(0, 0, 0) * Cylinder(cavity_r, skirt_top, align=_CZ) - head
         # interior floor recessed a wall above the dome rim keeps the head
         # >=wall at the rim and thickest over the crown

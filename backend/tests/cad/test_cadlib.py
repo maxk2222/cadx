@@ -587,6 +587,31 @@ def test_sealed_tank_feet_stay_inside_plan_envelope():
     assert 80.0 + 2 * (foot_hole_d * 0.7 + 0.6) >= bb.max.X - bb.min.X
 
 
+def test_sealed_tank_recessed_head_has_no_pole():
+    """The recessed bottom head must end in a flat crown, not a single-point
+    sphere pole — the degenerate apex serialised as a mesh pinhole and the
+    feature detector read it as a phantom Ø6.5 centre void
+    (unrequested_voids)."""
+    t = cadlib.sealed_tank(
+        80.0,
+        120.0,
+        wall=3.0,
+        dome_h=8.0,
+        feet=3,
+        foot_w=18.0,
+        foot_t=6.0,
+        foot_h=20.0,
+        foot_hole_d=6.5,
+    )
+    skirt_top = 8.0 + 1.0
+    # no vertex may sit on the axis inside the recessed-head band — a pole
+    # vertex there is the degenerate apex that broke watertight + detection
+    axis_verts = [v for v in t.vertices() if math.hypot(v.X, v.Y) < 0.5 and 0.5 < v.Z < skirt_top]
+    assert axis_verts == []
+    # the crown flat is a real face: the axis is solid just above it
+    assert t.is_inside((0.0, 0.0, 3.2))
+
+
 # --------------------------------------------------------------------------- #
 # strut — straight diagonal bar between two points
 # --------------------------------------------------------------------------- #
