@@ -524,3 +524,31 @@ fixed — any tank spec with feet+bolt-holes gets envelope-friendly lugs.
   (echtes Material-Entfernen zu Streben), nicht infill (shell+gyroid
   behält Volumen). Prüfen: ob agent mode-choice infill für thin bracket
   falsch ist, oder ob infill-export-Bug. passive_frac=0.27 war redherring.
+
+## Masterplan-Implementierung (acefb6e, 2026-11-08)
+WP1 sealed_tank adoption (Tank-Root-Cause): Doc/Reference/Hint behaupteten
+  Füsse "protrude foot_t" (→Ø86) → Modell umging Helper (feet=0), baute
+  oversized Hand-Lugs (lug_r=37→Ø85.43) auf fragilem convex-dome Sockel
+  (→Ø6.5 Zentrum-Void = nested-dome Artefakt, KEIN Spec-Loch). Fix: ehrliche
+  Semantik — Lug grounded z=0, protrusion nur ~foot_hole_d*0.7 (~4.5mm M6)
+  → Helper erzeugt Ø84.55 ≤ Ø85 Gate. Regression-Test asserts Envelope.
+WP2 unrequested_voids: VERIFIZIERT korrekt — flaggte realen Ø6.5-Defekt;
+  sealed cavities werden nicht misflaggt. Keine Änderung (Exemption würde
+  echte Defekte verstecken).
+WP3 recommended_mode + volfrac target: Recommender ignorierte Target →
+  thin part + deep target hintete infill (export ~1.0). Neu:
+  target_volfrac → analyze_fem → fem_analyze payload → run_fem_pipeline
+  → _recommend_structure_mode. Floor: thin (fill≤0.35) → 0.8; bulky →
+  1-core_frac*(1-0.25) (2mm shell, lattice-min 0.25). Target < floor →
+  flip zu topopt + reason. 4 Tests.
+WP4 propeller: letzter Fail (native_v4) VOR Hint-Commit a0d6610 — keine
+  Post-Hint-Evidenz → kein composite helper (wäre Case-Hack).
+WP5 arm: pipeline meldete bereits target_infeasible/min_feasible=0.9975
+  (korrekt) — Lücke war Mode-Wahl (WP3) + fehlende Export-Loss-Warnung.
+  Neu: Warning wenn volfrac_export - volfrac_estimate > 0.10 (Lattice
+  kollabiert am Mesh-Export, period >> Wanddicke) + infill_run-Doc
+  Eskalation zu topopt_run.
+WP6: worst_sf bereits min(all cases); watertight/brep_source/approximate
+  Evidenz vorhanden; dependabot geprüft — transformers<5/diffusers<0.36
+  sind dokumentierte compat-Pins (mlx-lm/huggingface_hub), actionable
+  Fixes in dac0838; diskcache/minimatch unkritisch/dev-only.
