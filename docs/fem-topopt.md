@@ -537,11 +537,17 @@ silently burned.
 
 `analyze_fem` (and the persisted `v.fem` payload) reports
 `recommended_mode` + `recommended_reasons` — a routing hint computed from
-the baseline solve alone: a failing baseline (SF < 1.5) recommends `topopt`
-(material removal cannot fix it), thin-walled parts (fill ratio ≤ 0.35) or
-large SF headroom (≥ 3) recommend `infill`, a bulky part with pinned
-features recommends `guided` infill, and a bulky part with open design
-freedom recommends `topopt`. Advisory only — the agent decides.
+the baseline solve plus the session's volume target when one is known: a
+failing baseline (SF < 1.5) recommends `topopt` (material removal cannot
+fix it), thin-walled parts (fill ratio ≤ 0.35) or large SF headroom (≥ 3)
+recommend `infill`, a bulky part with pinned features recommends `guided`
+infill, and a bulky part with open design freedom recommends `topopt`.
+When `target_volfrac` is provided the hint also checks reachability:
+shell+infill preserves the outer silhouette and only lattices the core, so
+a requested target below its optimistic floor (a thin part is ~all skin —
+floor ≈ 0.8; a bulky part's floor derives from the 2 mm shell + 0.25
+lattice-occupancy minimum) flips the recommendation to `topopt` with a
+`recommended_target_volfrac` echo. Advisory only — the agent decides.
 
 ### Shell + graded infill (second structural strategy)
 
@@ -594,6 +600,12 @@ failure. Tuning: `infill_period_mm`
 (lattice cell size, default 8), `infill_min_density`/`infill_max_density`
 (occupancy bounds). The lattice cannot redistribute load paths the way SIMP
 can — for thin shells or aggressive volume targets prefer `topopt_run`.
+Export loss is reported honestly: `meta.volfrac_estimate` is the designed
+voxel-mask fraction while `volfrac_export_estimate` measures the shipped
+mesh — when the gap exceeds 10 pp the lattice existed in the mask but
+collapsed to solid at export (period too coarse vs local wall thickness),
+which surfaces as a "lattice lost at export" warning recommending a finer
+period or `topopt_run` material removal.
 
 ### Export island rescue
 
