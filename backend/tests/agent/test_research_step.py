@@ -252,3 +252,108 @@ def test_sanitize_dims_still_restates_true_envelope():
     notes = sanitize_dims(spec, "a lever approx 130 mm long with a small knob")
     assert notes
     assert spec.length_x.source == "stated" and float(spec.length_x.value) == 130.0
+
+
+def _feat(name, pos, count=1, dia=None, depth=None, ftype="hole"):
+    from cadx.llm.schemas import Feature
+
+    dims = {}
+    if dia is not None:
+        dims["diameter"] = dia
+    if depth is not None:
+        dims["depth"] = depth
+    return Feature(
+        name=name,
+        type=ftype,
+        description=name,
+        position=pos,
+        count=count,
+        dims=dims,
+        source="stated",
+    )
+
+
+def test_dedup_merges_rephrased_duplicate_features():
+    """Observed spec: the 4xM3 pattern and the 2xM4 foot holes each declared
+    twice under different phrasing — spec_features then honestly failed
+    against the 3 measured groups."""
+    from cadx.agent.steps.intake import dedup_spec_features
+
+    spec = PartSpec(
+        name="nema",
+        length_x={"value": 20},
+        width_y={"value": 48},
+        height_z={"value": 52},
+        features=[
+            _feat(
+                "pilot bore",
+                "through-hole along y, centred at x=0, z=26",
+                count=1,
+                dia=22.0,
+                depth=4.0,
+            ),
+            _feat(
+                "M3 pattern",
+                "through-holes along y at x=±15.5, z=26±15.5 (z = 10.5 and 41.5)",
+                count=4,
+                dia=3.4,
+            ),
+            _feat(
+                "foot holes",
+                "through-holes along z at y=10, x=±15 (30 mm apart)",
+                count=2,
+                dia=4.5,
+            ),
+            _feat(
+                "M3 pattern again",
+                "Through-holes along Y axis. Positions relative to motor centre: (±15.5, ±15.5).",
+                count=4,
+                dia=3.4,
+            ),
+            _feat(
+                "foot holes again",
+                "Through-holes along Z axis. Centred in the 20 mm flange depth (y=10). Spaced 30 mm apart in X (x=±15).",
+                count=2,
+                dia=4.5,
+            ),
+        ],
+    )
+    notes = dedup_spec_features(spec)
+    assert len(spec.features) == 3
+    assert len(notes) == 2
+    assert [f.count for f in spec.features] == [1, 4, 2]
+
+
+def test_dedup_keeps_distinct_patterns():
+    from cadx.agent.steps.intake import dedup_spec_features
+
+    spec = PartSpec(
+        name="two patterns",
+        length_x={"value": 80},
+        width_y={"value": 40},
+        height_z={"value": 40},
+        features=[
+            _feat("row A", "holes along y at x=±10, z=5", count=2, dia=4.0),
+            _feat("row B", "holes along y at x=±20, z=35", count=2, dia=4.0),
+        ],
+    )
+    assert dedup_spec_features(spec) == []
+    assert len(spec.features) == 2
+
+
+def test_dedup_keeps_different_count_or_dia():
+    from cadx.agent.steps.intake import dedup_spec_features
+
+    spec = PartSpec(
+        name="mixed",
+        length_x={"value": 80},
+        width_y={"value": 40},
+        height_z={"value": 40},
+        features=[
+            _feat("a", "holes along y at x=±10", count=2, dia=4.0),
+            _feat("b", "holes along y at x=±10", count=4, dia=4.0),
+            _feat("c", "holes along y at x=±10", count=2, dia=6.0),
+        ],
+    )
+    assert dedup_spec_features(spec) == []
+    assert len(spec.features) == 3

@@ -949,6 +949,89 @@ def sanitize_feature_kinds(spec: PartSpec) -> list[str]:
     return notes
 
 
+_FEAT_AXIS_RE = re.compile(
+    r"\balong\s*(?:the\s*)?[+-]?\s*([xyz])\b|\b([xyz])\s*[-_]?\s*axis\b|\bvertical\b",
+    re.I,
+)
+
+
+def _feat_axis_word(text: str) -> str | None:
+    m = _FEAT_AXIS_RE.search(text)
+    if not m:
+        return None
+    if m.group(0).lower() == "vertical":
+        return "z"
+    return (m.group(1) or m.group(2) or "").lower() or None
+
+
+def _feat_coords(text: str) -> dict[str, frozenset[float]]:
+    """Per-axis coordinate values a feature declares — ``x=v`` singles,
+    ``x=±v`` symmetric pairs and ``z=c±s`` centre-spread endpoints all
+    reduce to point values so differently phrased declarations of the same
+    pattern compare equal."""
+    from cadx.cad.poshint import _CENTER_SPREAD_RE, _POS_COORD_RE, SYM_COORD_RE
+
+    vals: dict[str, set[float]] = {}
+    masked = [m.span() for m in _CENTER_SPREAD_RE.finditer(text)]
+    masked += [m.span() for m in SYM_COORD_RE.finditer(text)]
+    for m in _CENTER_SPREAD_RE.finditer(text):
+        ax, c, s = m.group(1).lower(), float(m.group(2)), float(m.group(3))
+        vals.setdefault(ax, set()).update((c - s, c + s))
+    for m in SYM_COORD_RE.finditer(text):
+        ax, v = m.group(1).lower(), float(m.group(2))
+        vals.setdefault(ax, set()).update((v, -v))
+    for m in _POS_COORD_RE.finditer(text):
+        if any(s <= m.start() < e for s, e in masked):
+            continue
+        vals.setdefault(m.group(1).lower(), set()).add(float(m.group(2)))
+    return {ax: frozenset(v) for ax, v in vals.items()}
+
+
+def dedup_spec_features(spec: PartSpec) -> list[str]:
+    """Merge features the model declared twice under different phrasing.
+
+    Observed on the NEMA-17 case: the spec listed the 4xM3 pattern and the
+    2xM4 foot holes twice each ("x=±15.5, z=26±15.5" vs "(±15.5, ±15.5)"),
+    inflating the declared feature count so spec_features honestly failed
+    against the 3 real measured groups. Two entries are duplicates when
+    type, bore axis word, count and dims agree and no shared coordinate
+    axis contradicts — an axis declared in only one phrasing cannot
+    contradict. First entry wins; the merge is a sanitize note, not a
+    feature_drop — no intent is lost."""
+    kept: list[Feature] = []
+    seen: list[tuple[tuple, dict[str, frozenset[float]]]] = []
+    notes: list[str] = []
+    for f in spec.features or []:
+        text = f"{f.position or ''} {f.description or ''}"
+        dims = f.dims or {}
+        head = (
+            (f.type or "").strip().lower(),
+            _feat_axis_word(text),
+            int(f.count or 1),
+            dims.get("diameter"),
+            dims.get("depth"),
+        )
+        coords = _feat_coords(text)
+        dup = False
+        for prev_head, prev_coords in seen:
+            if prev_head != head:
+                continue
+            shared = set(coords) & set(prev_coords)
+            if all(coords[ax] == prev_coords[ax] for ax in shared):
+                dup = True
+                break
+        if dup:
+            notes.append(
+                f"duplicate feature dropped: '{(f.name or f.type)[:60]}' — "
+                f"{head[0] or 'feature'} on axis {head[1] or '?'} already declared"
+            )
+            continue
+        seen.append((head, coords))
+        kept.append(f)
+    spec.features = kept
+    return notes
+
+
 def sanitize_prompt_axis_extents(spec: PartSpec, prompt: str) -> list[str]:
     """Raise an understated envelope dim to fit explicit prompt coordinates.
 
@@ -1711,6 +1794,8 @@ def _sanitize_spec(spec: PartSpec, ctx: AgentCtx) -> PartSpec:
         log.info("intake.axis_extents_fixed", note=note)
     for note in sanitize_feature_kinds(spec):
         log.info("intake.feature_kind_fixed", note=note)
+    for note in dedup_spec_features(spec):
+        log.info("intake.feature_deduped", note=note)
     if not spec.process:
         spec.process = ctx.settings.process
     if ctx.research is not None and spec.research is None:

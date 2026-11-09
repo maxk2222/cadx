@@ -6323,6 +6323,8 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
                 spec.features = (
                     fixed.features if tool_echo else _merge_features(spec.features, fixed.features)
                 )
+                for note in intake_step.dedup_spec_features(spec):
+                    await ctx.emit("intake", 0, note)
             if fixed.standard_parts:
                 spec.standard_parts = fixed.standard_parts
             if fixed.name.strip() and tool_echo:
