@@ -796,3 +796,52 @@ Beobachtung: der Runaway trat beim zweiten Optimize-Pass (feiner
 Mesh, 344k DOFs) auf — der grobe erste Pass (SIMP, ~50s/iter) lief
 normal. Korreliert mit Design-Haertung zwischen den Passes, nicht mit
 Mesh-Groesse allein.
+
+## Bracket refine — watertight-Fail: Slit-Scar-Topologie (diagnostiziert, Fix offen)
+
+Run 20261109-202247: codegen✓ fem✓ topopt✓ (SIMP in 14 iters, ~11min —
+der CG-Cap lief, der Runaway trat nicht auf) refine✗.
+Gate-Fail: `watertight: expect true` (fem sf 12.3 ok, refine_verify 4/4
+applied, holes ok).
+
+Der -Y-Tap (0,-22) wurde bei TopOpt "plugged + re-drilled" (channel
+drifted 1.9mm) — der Re-Drill in die duenne optimierte Basis hinterliess
+Schlitz-Narben: zwei parallele Wand-Lippen ~0.3mm auseinander
+(x=2.4 / x=2.1, y=-19..-25, z=0-10) plus 5 count-4 Non-Manifold-Edges an
+den Junction-Vertices (~z=9.7-10). +36 Boundary-Edges total.
+
+Reparatur-Leiter versagt komplett (lokal + Container verifiziert):
+- fill_holes: keine sauberen Loops (Riss-Kolonnen statt Polygone)
+- _stitch_hairline_boundary (tol 0.1 default, auch 1.0 getestet):
+  Reversed-Twin-Pairing matcht die Scar-Topologie nicht
+- manifold3d: Error.NotManifold — die 5 Fremd-Edges blockieren den Import
+- alpha_wrap: laeuft (30k->107k faces) aber _rebuild_drift refuse't
+  (vol 1.69x — Wrap fuellt enclosed TopOpt-Kavitaeten + Input-Vol liest
+  ~40% niedrig weil leaky); Voxel-Fallback -> 392-Face-Wrack
+- pymeshlab repair_non_manifold_edges + close_holes (in-Container):
+  laeuft "ok", Ergebnis weiterhin nicht watertight
+- 2. Refine-Pfad (Export): repair_alpha_wrap_skipped headroom_mb=2168 —
+  Memory-Headroom-Check zu strikt auf dem 12GiB-Container, danach
+  Voxel-Wrack -> export.repair_drift 'volume grew 2.27x'
+
+Nebenbefund spec_features: 3x "M8 tap blind->through" — deklarierte
+10mm-Blindloecher stechen durch die ~5mm-duenne optimierte Basis
+(ehrlicher Spec-vs-Physik-Befund; Taps bleiben funktionale
+Durchgangsgewinde, aber verify_spec meldet Major).
+
+Fix-Optionen (generalisierbar, naechster Schritt):
+1. UPSTREAM: Narben verhindern — Feature-Re-Cuts als einzelnen
+   manifold-Boolean fahren (Input muss manifold sein; plug+drill als
+   Op-Kette), oder Boss um den Tap-Pin fusionieren vor dem Drill.
+2. Scar-Rung in der Leiter: Boundary-Komponenten, die Riss-Kolonnen
+   sind (1-dominanter Span), als Slot-Patch: Lippen-Paare per
+   z-Order zippen statt Reverse-Twin-Heuristik; danach Junction-Dedup.
+3. Excise-and-remesh pro Defekt-Komponente (Ball-Schnitt + lokal
+   Voxel + Ruecknaht) — chirurgisch, kleine Domains.
+4. Headroom-Check fuer alpha_wrap rekalibrieren (2168MB auf 12GiB
+   skippte den besten Rung; Voxel lief danach ins Leere).
+
+Beobachtung: CG-Cap-Fix (bed0f53) half sofort — der Retry lief ohne
+Burn durch denselben Punkt wo der 60-min-Grind sass (leicht andere
+Dichte-Evolution -> andere K-Konditionierung; Cap blieb
+Schutz-Mechanismus ohne je zu feuern).
