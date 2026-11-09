@@ -2112,6 +2112,124 @@ def _plug_channel(
     return out, entry, False
 
 
+def _corridor_wall_fill(
+    out: trimesh.Trimesh,
+    feat: RefineFeature,
+    entry: float,
+    span: float,
+    entry_reseated: bool,
+    report: RefineReport,
+) -> tuple[trimesh.Trimesh, float, bool]:
+    """Re-solidify void/wavy walls inside the bore corridor before the cut.
+
+    Optimized hosts eat bore walls into cavities: radial rays from the bore
+    axis then hit the nearest surface FAR outside the cutter envelope, and
+    the drill — worst the helical groove — severs those wall remnants into
+    sliver sheets hanging in the bore (slit wounds no mesh-level repair
+    rung closes; observed: bracket M8 taps, boundary columns at the wall
+    radius over the full bore depth). The plain plug can't help here: it
+    either never ran (a blind pocket + cavity is no measured tunnel) or the
+    silhouette bound refused it.
+
+    The fill plug is the complement of the part inside a corridor cylinder
+    — `cyl \\ out` — so it follows the void exactly, seals flush to the
+    silhouette and can never protrude past walls that exist. Its radius is
+    bounded to the cutter envelope + wall margin so unrelated cavities
+    survive; directions with no wall at any probed height (slot open to the
+    exterior) refuse the fill entirely — it would grow a rib. On success
+    the plug/ream paths are disarmed (`plug_first`, `dia_extra` cleared —
+    they exist for unfilled wavy walls and would only oversize the bore)
+    and `entry` is re-probed on the fill cap. Returns (mesh, entry,
+    entry_reseated)."""
+    ax, au, av = _AXES_ANY[feat.axis]
+    sgn = 1.0 if feat.axis[0] == "+" else -1.0
+    depth = span if feat.through or feat.depth_mm is None else float(feat.depth_mm)
+    far = entry - sgn * depth
+    lo = max(min(entry, far), float(out.bounds[0][ax]) + 0.15)
+    hi = min(max(entry, far), float(out.bounds[1][ax]) - 0.15)
+    if hi - lo < 0.6:
+        return out, entry, entry_reseated
+    # the cutter's outer reach — a helical groove cuts past the tap drill
+    # (r_out ≈ dia/2 + 0.6 for metric threads) and csk/cbore cones go wider
+    r_nom = (
+        max(
+            _effective_dia(feat),
+            feat.dia + 2.0
+            if feat.helical is not False and feat.kind in ("thread", "tap", "insert")
+            else 0.0,
+            feat.csk_dia or 0.0,
+            feat.cbore_dia or 0.0,
+        )
+        / 2.0
+        + feat.dia_extra / 2.0
+        + 0.6
+    )
+    n_rays = 24
+    angs = np.linspace(0.0, 2.0 * np.pi, n_rays, endpoint=False)
+    worst = np.zeros(n_rays)
+    hits_per_ray = np.zeros(n_rays, dtype=int)
+    open_dirs = np.zeros(n_rays, dtype=bool)
+    for frac in (0.25, 0.5, 0.75):
+        origin = np.zeros(3)
+        origin[au], origin[av], origin[ax] = feat.u, feat.v, lo + frac * (hi - lo)
+        origins = np.tile(origin, (n_rays, 1))
+        dirs = np.zeros((n_rays, 3))
+        dirs[:, au] = np.cos(angs)
+        dirs[:, av] = np.sin(angs)
+        locs, ray_ids, _ = out.ray.intersects_location(
+            ray_origins=origins, ray_directions=dirs, multiple_hits=True
+        )
+        fh = np.full(n_rays, np.inf)
+        nh = np.zeros(n_rays, dtype=int)
+        origin_uv = np.zeros(3)
+        origin_uv[au], origin_uv[av] = feat.u, feat.v
+        for loc, ri in zip(locs, ray_ids, strict=True):
+            p = np.zeros(3)
+            p[au], p[av] = loc[au], loc[av]
+            ri = int(ri)
+            fh[ri] = min(fh[ri], float(np.linalg.norm(p - origin_uv)))
+            nh[ri] += 1
+        worst = np.maximum(worst, np.where(np.isfinite(fh), fh, 0.0))
+        hits_per_ray = np.maximum(hits_per_ray, nh)
+        open_dirs |= ~np.isfinite(fh)
+    if open_dirs.any():
+        return out, entry, entry_reseated
+    # two triggers: the void bulges past the cutter envelope (wavy walls /
+    # cavity breach — first-hit far beyond nominal), or interior surfaces
+    # sit INSIDE the void — but only when they are PATCHY: a freshly cut
+    # helical groove also shows interior surfaces, uniformly in every
+    # direction (ridge in/out + silhouette ≈ the same count everywhere);
+    # sliver/cavity debris is localized (clean directions stay at 2 hits)
+    nh_min, nh_max = int(hits_per_ray.min()), int(hits_per_ray.max())
+    uniform_interior = nh_min > 2 and nh_max - nh_min <= 1
+    if float(worst.max()) <= r_nom and (nh_max <= 2 or uniform_interior):
+        return out, entry, entry_reseated
+    # cover at least the cutter + wall margin so nothing survives inside
+    # the groove; cap at cutter + 3 so the fill can't re-solidify the part
+    r_fill = min(max(float(worst.max()) + 0.4, r_nom + 1.0), r_nom + 3.0)
+    cyl = trimesh.creation.cylinder(radius=r_fill, height=hi - lo, sections=48)
+    cyl.apply_translation([0, 0, -(hi - lo) / 2.0])
+    _orient_cutter(cyl, feat.axis, feat.u, feat.v, entry)
+    try:
+        plug = cyl.difference(out, engine="manifold")
+        filled = out.union(plug, engine="manifold") if len(getattr(plug, "faces", [])) else None
+    except Exception:
+        filled = None
+    if filled is None or not len(getattr(filled, "faces", [])) or not filled.is_watertight:
+        return out, entry, entry_reseated
+    feat.plug_first = False
+    feat.dia_extra = 0.0
+    report.warnings.append(
+        f"feature '{feat.name}': wavy walls / cavity inside the bore "
+        f"corridor (void to r{float(worst.max()):.1f} mm) — re-solidified "
+        f"r{r_fill:.1f} mm before drilling so the cutter leaves no slivers"
+    )
+    new_entry = _entry_point(filled, feat.axis, feat.u, feat.v)
+    # the fill cap is a real surface — a bbox-reseated entry becomes
+    # obsolete whenever the probe lands
+    return filled, new_entry if new_entry is not None else entry, new_entry is None
+
+
 def _apply_cut(
     out: trimesh.Trimesh,
     feat: RefineFeature,
@@ -2181,6 +2299,7 @@ def _apply_cut(
             "open; re-cutting from the bbox face"
         )
     span = float(out.bounds[1][ax] - out.bounds[0][ax])
+    out, entry, entry_reseated = _corridor_wall_fill(out, feat, entry, span, entry_reseated, report)
     if feat.plug_first:
         out, entry, plug_seated = _plug_channel(out, feat, entry, span, report)
         feat.plugged = feat.plugged or bool(feat.plug_first)

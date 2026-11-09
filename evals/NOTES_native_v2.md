@@ -871,3 +871,38 @@ part" mit SF 6.35 (korrekt ehrlich, aber kein Optimum).
 
 Offen: Slit-Scar-Fix (siehe oben, Option 1-4), Tank-Re-Run auf
 Rescue-Fix-Image, dann volle 4-Case-Runde.
+
+## Slit-Scar ROOT CAUSE + Fix (corridor wall fill)
+
+Die Bracket-Refine-Narben waren keine generischen Mesh-Defekte sondern
+ein klarer Mechanismus: radial-Probe von der Bohrachse (24 rays,
+3 Hoehen) zeigte beim echten -Y-Tap first-hit min 3.38 / max 19.0 —
+die SIMP-Kavitaet reichte bis in den Cutter-Korridor. Helical-Groove +
+Drill in wellige Wand = abgetrennte Gewinde-Rippen-Slivers am
+Wand-Radius (vertikale Saeulen z0.7-10, +-z Normalen = Regalboeden).
+
+Zwei Ausfaelle des bestehenden Schutzes:
+- 'M8 tap -Y': _tunnel_center fand keinen Tunnel (Blind-Tasche+Kavitaet
+  ist kein open through-channel) -> plug_first nie gesetzt -> roher Cut.
+- 'M8 tap -X': Tunnel gefunden, aber _plug_cylinder silhouette-bound
+  (r_part < r_void) -> None -> +0.4-Ream -> Wand-Reste im Bohr.
+
+Fix (corridor wall fill): _corridor_wall_fill vor jedem _apply_cut.
+Trigger: first-hit > Cutter-Envelope (Kavitaet/Delle) ODER >2 ray-hits
+pro Richtung (innere Sliver-Flaechen; sauberer Korridor gibt exakt
+wall-in + silhouette-out = 2), aber NICHT bei uniformen Innenflaechen
+(frisch geschnittene Gewinde-Ridges sehen in jeder Richtung gleich
+aus — nh_min>2 & nh_max-nh_min<=1 -> skip, sonst frisst der Fill die
+Grooves). Plug = Komplement des Teils im Korridor-Zylinder (cyl \ out)
+-> folgt dem Void exakt, versiegelt bündig an der Silhouette, kann nie
+protrudieren; r_fill = cutter+1..3mm gebounded. Offene Richtungen
+(kein Wall-Hit -> Slot nach aussen) -> refuse, sonst Rib-Wachstum.
+Nach Fill: plug_first/dia_extra gecleart (waere Oversize-Ream),
+entry re-probed auf dem Fill-Cap.
+
+Verifikation auf dem echten scarred TopOpt-Mesh: apply_refine mit den
+3 M8-Taps -> watertight, 0 boundary, 0 non-manifold, alle Taps blind
+mit Boden exakt z=11.0 (fixt nebenbei den blind->through Befund:
+Korridor-Fill gibt der Tasche wieder Material). Tests: cavity-breach
+fill+watertight, clean-bore no-op, slot-open refuse, e2e watertight.
+104/104 refine-Tests gruen.

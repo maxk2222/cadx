@@ -13,8 +13,10 @@ import trimesh
 from cadx.cad.fem.anchors3d import scan_mesh_anchors
 from cadx.cad.fem.refine import (
     RefineFeature,
+    RefineReport,
     _bore_ring_material,
     _channel_blocked_mm,
+    _corridor_wall_fill,
     _cutter_mesh,
     _entry_point,
     _feature_host_main,
@@ -2102,3 +2104,112 @@ def test_refine_thread_render_features_skips_non_helical():
         },
     ]
     assert refine_thread_render_features(mesh, applied) == []
+
+
+# --------------------------------------------------------------------------- #
+# corridor wall fill — cavity/wavy walls must not sliver the re-cut          #
+# --------------------------------------------------------------------------- #
+
+
+def _pocket_breached_by_cavity() -> trimesh.Trimesh:
+    """60x30x14 block, a blind Ø6.75 pocket at (0,0) from -z to z=11 whose
+    wall is breached mid-depth by a lateral cavity — the SIMP-eaten wall
+    that severed the bracket's M8 thread into slit slivers."""
+    block = _box(60.0, 30.0, 14.0)
+    pocket = trimesh.creation.cylinder(radius=3.375, height=11.0, sections=48)
+    pocket.apply_translation([0.0, 0.0, 5.5])
+    cavity = trimesh.creation.icosphere(subdivisions=2, radius=7.0)
+    cavity.apply_translation([9.0, 0.0, 6.0])
+    return block.difference(trimesh.util.concatenate([pocket, cavity]), engine="manifold")
+
+
+def test_corridor_fill_seals_cavity_breach():
+    """The complement fill re-solidifies the void inside the cutter
+    corridor: the drill then cuts into solid — no wall remnants to sever."""
+    mesh = _pocket_breached_by_cavity()
+    feat = RefineFeature(
+        name="m8",
+        kind="tap",
+        axis="-z",
+        u=0.0,
+        v=0.0,
+        dia=6.75,
+        depth_mm=11.0,
+        through=False,
+        source="spec",
+        thread_spec="M8-1.25",
+    )
+    rep = RefineReport()
+    out, _entry, _rsd = _corridor_wall_fill(mesh, feat, 0.0, 14.0, False, rep)
+    assert out is not mesh
+    assert out.is_watertight
+    # bore axis region is solid through the corridor now — a ray along the
+    # bore hits the fill cap, not the open pocket
+    assert any("wavy walls" in w or "corridor" in w for w in rep.warnings)
+    # the cavity outside the fill radius survives — only the corridor is solid
+    locs, _, _ = out.ray.intersects_location(
+        ray_origins=np.array([[9.0, 0.0, 20.0]]),
+        ray_directions=np.array([[0.0, 0.0, -1.0]]),
+        multiple_hits=True,
+    )
+    zs = sorted(locs[:, 2])
+    assert len(zs) >= 2  # top face + cavity far wall still there
+
+
+def test_corridor_fill_skips_clean_bore():
+    """A nominal bore in solid walls shows ~dia/2 in every direction — the
+    fill is a no-op, not an extra boolean per feature."""
+    mesh = _bored_wide(0.0, 6.8)
+    feat = RefineFeature(name="b", kind="hole", axis="+z", u=0.0, v=0.0, dia=6.75)
+    rep = RefineReport()
+    out2, _, _ = _corridor_wall_fill(mesh, feat, 12.0, 12.0, False, rep)
+    assert out2 is mesh
+    # corridor untouched
+
+
+def test_corridor_fill_refuses_slot_open_to_exterior():
+    """A 'void' reaching the exterior (slot/notch) must not be filled — the
+    complement would grow a rib on the silhouette."""
+    block = _box(60.0, 30.0, 14.0)
+    pocket = trimesh.creation.cylinder(radius=3.375, height=11.0, sections=48)
+    pocket.apply_translation([0.0, 0.0, 5.5])
+    slot = trimesh.creation.icosphere(subdivisions=2, radius=6.0)
+    slot.apply_translation([0.0, -14.0, 6.0])  # breaches the -y face
+    mesh = block.difference(trimesh.util.concatenate([pocket, slot]), engine="manifold")
+    feat = RefineFeature(
+        name="m8",
+        kind="tap",
+        axis="-z",
+        u=0.0,
+        v=0.0,
+        dia=6.75,
+        depth_mm=11.0,
+        through=False,
+        source="spec",
+    )
+    rep = RefineReport()
+    out3, _, _ = _corridor_wall_fill(mesh, feat, 0.0, 14.0, False, rep)
+    assert out3 is mesh
+
+
+def test_apply_refine_cavity_breach_cuts_watertight():
+    """End-to-end: a blind spec tap whose pocket wall was eaten into a
+    cavity must come out watertight with the bore applied — the path that
+    produced 36 boundary edges + 5 non-manifold edges on the bracket."""
+    mesh = _pocket_breached_by_cavity()
+    feat = RefineFeature(
+        name="m8",
+        kind="tap",
+        axis="-z",
+        u=0.0,
+        v=0.0,
+        dia=6.75,
+        depth_mm=11.0,
+        through=False,
+        source="spec",
+        thread_spec="M8-1.25",
+        helical=False,
+    )
+    out, rep = apply_refine(mesh, [feat], restore_keeps=False)
+    assert len(rep.applied) == 1
+    assert out.is_watertight
