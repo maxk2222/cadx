@@ -138,6 +138,13 @@ class RuntimeSettings(BaseModel):
     # hallucinated attributes / property-called-as-method before the
     # sandbox — edit tools surface findings, done/submit gate on sig errors
     agent_sigcheck: bool = True
+    # pre-intake research step: web_search/fetch_url ground referenced
+    # products & norms ("heatsink for i7-14700K") into a sourced
+    # ResearchBrief before the spec call — dims become cited facts, not
+    # hallucinations. off|auto|on; auto fires on product/norm tokens
+    agent_research: Literal["off", "auto", "on"] = "off"
+    agent_research_max_calls: int = Field(default=8, ge=1, le=30)
+    agent_research_max_results: int = Field(default=5, ge=1, le=15)
     # staged codegen: build the part feature-by-feature inside a tool session
     # (add_block/checkpoint/verify) instead of one-shot whole-file submit.
     # "auto" = on whenever tool sessions are enabled.

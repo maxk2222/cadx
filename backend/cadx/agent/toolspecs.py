@@ -316,6 +316,28 @@ INFO_TOOLS = [
     ),
 ]
 
+WEB_TOOLS = [
+    _fn(
+        "web_search",
+        "Search the public web for product/norm specifications (datasheets, "
+        "mounting patterns, socket dims, thread sizes). Free failover "
+        "backends — returns [{title, url, snippet, backend}].",
+        {"query": _s("search query, e.g. 'Intel i7-14700K socket TDP datasheet'")},
+        ["query"],
+    ),
+    _fn(
+        "fetch_url",
+        "Fetch a web page's readable text (nav/scripts stripped, capped). "
+        "Use for datasheet/spec pages found via web_search.",
+        {"url": _s("http(s) URL from a search result")},
+        ["url"],
+    ),
+]
+
+# web research rides the shared info surface — intake's research session,
+# codegen's late questions and edit re-queries all see the same two tools
+INFO_TOOLS = [*INFO_TOOLS, *WEB_TOOLS]
+
 IMAGE_TOOLS = [
     _fn(
         "view_image",
@@ -2547,6 +2569,30 @@ class ToolSession:
         if text.startswith(("unknown quickref topic", "cannot resolve")):
             return {"ok": False, "error": text}
         return {"ok": True, "topic": topic, "reference": text}
+
+    # -- web research ------------------------------------------------------------ #
+
+    async def _tool_web_search(self, a: dict[str, Any]) -> dict[str, Any]:
+        from cadx.agent import webresearch
+
+        query = str(a.get("query", "")).strip()
+        if not query:
+            return {"ok": False, "error": "query is required"}
+        max_results = int(getattr(self.ctx.runtime_settings, "agent_research_max_results", 5) or 5)
+        async with webresearch._client() as client:
+            rows = await webresearch.search(query, client, max_results=max_results)
+        if not rows:
+            return {"ok": False, "error": "no results — all search backends failed or empty"}
+        return {"ok": True, "results": rows}
+
+    async def _tool_fetch_url(self, a: dict[str, Any]) -> dict[str, Any]:
+        from cadx.agent import webresearch
+
+        url = str(a.get("url", "")).strip()
+        if not url:
+            return {"ok": False, "error": "url is required"}
+        async with webresearch._client() as client:
+            return await webresearch.fetch(url, client)
 
     # -- image tools ------------------------------------------------------------ #
 

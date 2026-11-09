@@ -1607,14 +1607,52 @@ def _sanitize_spec(spec: PartSpec, ctx: AgentCtx) -> PartSpec:
         log.info("intake.feature_kind_fixed", note=note)
     if not spec.process:
         spec.process = ctx.settings.process
+    if ctx.research is not None and spec.research is None:
+        # sourced research facts join the auditable assumptions tail —
+        # spec.research keeps the full brief (product, facts, sources)
+        spec.research = ctx.research
+        sourced = [
+            f"researched: {f.claim} = {f.value} {f.unit}".rstrip() + f" [{f.source}]"
+            for f in ctx.research.facts
+            if f.claim and f.value
+        ]
+        for note in sourced[:_MAX_ASSUMPTION_NOTES]:
+            if note[:300] not in spec.assumptions:
+                spec.assumptions.append(note[:300])
     ctx.spec = spec
     return spec
+
+
+def research_block(brief: Any) -> str:
+    """Render the research brief as intake context — sourced facts the
+    spec should build on (they land in spec.assumptions after sanitize)."""
+    facts = "\n".join(
+        f"- {f.claim}: {f.value} {f.unit} (source: {f.source})".rstrip()
+        for f in brief.facts
+        if f.claim and f.value
+    )
+    cons = "\n".join(f"- {c}" for c in brief.constraints if c)
+    open_q = "\n".join(f"- {q}" for q in brief.open_questions if q)
+    out = ["RESEARCHED FACTS (authoritative sources — treat as stated dims,"]
+    if brief.product:
+        out.append(f"about: {brief.product}):")
+    else:
+        out.append("):")
+    if facts:
+        out += ["facts:", facts]
+    if cons:
+        out += ["design constraints:", cons]
+    if open_q:
+        out += ["open questions (sources disagreed — note in assumptions):", open_q]
+    return "\n".join(out)
 
 
 async def run(ctx: AgentCtx) -> PartSpec:
     user_content: list[dict[str, Any]] = [
         {"type": "text", "text": user_block(ctx.prompt, ctx.settings, ctx.mode)}
     ]
+    if ctx.research is not None:
+        user_content.append({"type": "text", "text": research_block(ctx.research)})
     ref = references_block(ctx.assets)
     if ref:
         user_content.append({"type": "text", "text": ref})

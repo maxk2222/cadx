@@ -132,6 +132,9 @@ class AgentCtx:
     measurements: dict[str, Any] = field(default_factory=dict)
     # reconciled hole/feature anchors (T9): FeatureAnchors dict
     anchors: dict[str, Any] | None = None
+    # pre-intake research brief (sourced product/norm facts) — intake
+    # injects it and lands each fact in spec.assumptions with its URL
+    research: Any = None  # ResearchBrief | None
 
     # filled by steps
     spec: PartSpec | None = None

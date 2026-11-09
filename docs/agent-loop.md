@@ -82,7 +82,7 @@ Tools (`agent/toolspecs.py`, primitives in `cad/codeedits.py`):
 
 | Step | Tools |
 |------|-------|
-| intake / plan | `search_catalog`, `lookup_part`, `cadlib_lookup`, `search_library`, `library_part`, `attach_library_part` |
+| intake / plan / research | `search_catalog`, `lookup_part`, `cadlib_lookup`, `search_library`, `library_part`, `attach_library_part`, `web_search`, `fetch_url` |
 | codegen | + `check_snippet`, `submit_code` (catalog + library tools too); staged build (`kind="build"`) instead gets `add_block`, `checkpoint`/`rollback`, `verify`*, `done` |
 | repair / improve | `read_lines`, `search_code`, `replace_lines`, `insert_after`/`insert_before`, `find_replace`, `set_param`, `check_code`, `verify`*, `render_model`* + `list_editable_features`/`edit_feature` (executor-gated hole resize check) + catalog/library lookups + `done` |
 | critique | `read_lines`, `search_code`, `lookup_part`, `search_library`, `library_part` (read-only — no attach) |
@@ -154,6 +154,7 @@ via `llm_tools: "auto"`.
 
 | Step | LLM? | Purpose |
 |------|------|---------|
+| RESEARCH | yes (optional) | Pre-intake grounding: when the prompt references a product/norm ("heatsink for i7-14700K"), a bounded tool session (`web_search`/`fetch_url`, free failover backends DDG→Bing→Wikipedia) returns a `ResearchBrief` — sourced facts with URLs, constraints, open questions. `agent_research` = off/auto|on; facts land in `spec.assumptions` + the `spec.research` artifact. |
 | INTAKE  | yes (vision) | Extract `Spec`: name, summary, units, dimensions (x/y/z, each with value+source), open questions. Sees all input images. May look up catalog parts via tools. |
 | CLARIFY | — | If spec has open questions and project mode is `ask`, the job ends `waiting_for_input` with questions. `assume` mode skips this and lets the LLM state assumptions. `POST /jobs/{id}/answer` resumes the job at PLAN. |
 | PLAN    | yes | Construction plan: ordered steps, PARAMS table (name/value/unit/min/max), standard-parts list (bd_warehouse), notes. May query the catalog via tools. |

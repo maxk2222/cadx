@@ -137,6 +137,26 @@ class FeatureDrop(BaseModel):
     recorded_at: Annotated[str, Field(max_length=40)]
 
 
+class ResearchFact(BaseModel):
+    """One externally-sourced spec fact — the grounding unit the intake
+    spec builds on (sourced, never model-invented)."""
+
+    claim: M = ""
+    value: M = ""
+    unit: Annotated[str, Field(max_length=24)] = ""
+    source: Annotated[str, Field(max_length=500)] = ""
+
+
+class ResearchBrief(BaseModel):
+    """Output of the pre-intake research step: sourced facts + design
+    constraints + open questions about a referenced product or norm."""
+
+    product: Annotated[str, Field(max_length=200)] = ""
+    facts: list[ResearchFact] = Field(default_factory=list, max_length=20)
+    constraints: list[M] = Field(default_factory=list, max_length=12)
+    open_questions: list[M] = Field(default_factory=list, max_length=8)
+
+
 class StandardPartSpec(BaseModel):
     model_config = ConfigDict(json_schema_extra={"required": ["class_name"]})
 
@@ -737,6 +757,9 @@ class PartSpec(BaseModel):
     orientation_note: M = ""
     features: list[Feature] = Field(default_factory=list, max_length=40)
     feature_drops: SkipJsonSchema[list[FeatureDrop]] = Field(default_factory=list)
+    # pre-intake research evidence — pipeline-side artifact (facts carry
+    # source URLs), never model-emitted in the spec call itself
+    research: SkipJsonSchema[ResearchBrief | None] = None
     standard_parts: list[StandardPartSpec] = Field(default_factory=list, max_length=24)
     # multi-image parts: how the body is built up (layers, gaps, joined parts)
     # — survives the spec->codegen handoff that otherwise flattens structure

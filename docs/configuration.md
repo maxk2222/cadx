@@ -74,6 +74,8 @@ from the `CADX_SETTINGS_KEY` env var or an auto-generated
 | `agent_feature_feedback` | `true` | feed measured features (holes, rounds, …) into improve steps |
 | `agent_critique_reask` | `true` | re-ask once when a failing critique lists no discrepancies |
 | `agent_sigcheck` | `true` | static AST signature gate on generated code (pre-execution) |
+| `agent_research` | `off` | pre-intake web research for product/norm dims — `auto` fires on product/norm tokens, `on` always runs |
+| `agent_research_max_calls` / `agent_research_max_results` | `8` / `5` | tool-call budget / results per web_search in the research step |
 | `agent_staged_build` | `auto` | feature-by-feature codegen sessions (`add_block`/`checkpoint`/`verify`); `auto` = on when tool sessions are |
 | `agent_parametrize` | `true` | best-effort mesh → build123d parametric reconstruction (one extra executor task per mesh job) |
 | `agent_codegen_samples` | `1` | best-of-N sampled first codegen attempt (light-verified, best wins) |

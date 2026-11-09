@@ -6253,6 +6253,15 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
         candidate checkpoint and finalise with the best result so far."""
         return bool(ctx.check_finish and await ctx.check_finish())
 
+    # ---------- RESEARCH (optional, gated) ----------
+    if ctx.spec is None and ctx.research is None:
+        try:
+            from cadx.agent.steps import research as research_step
+
+            ctx.research = await research_step.run(ctx)
+        except Exception as e:
+            log.info("research.skipped", error=str(e)[:200])
+
     # ---------- INTAKE ----------
     spec = ctx.spec
     if spec is None:
