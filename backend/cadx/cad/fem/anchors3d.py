@@ -180,6 +180,7 @@ def _anchor(
     kind: str,
     axial_center: float | None = None,
     blind: bool = False,
+    open_rim: bool = False,
 ) -> dict[str, Any]:
     """Anchor dict for a feature at in-plane (u, v) on `axis`.
 
@@ -209,10 +210,47 @@ def _anchor(
     }
     if blind:
         out["blind"] = True
+    if open_rim:
+        out["open_rim"] = True
     return out
 
 
-def scan_mesh_anchors(
+def _tunnel_anchor(
+    mesh: trimesh.Trimesh,
+    axis: str,
+    cells: np.ndarray,
+    inside: np.ndarray,
+    us: np.ndarray,
+    vs: np.ndarray,
+    span: float,
+    step_mm: float,
+    min_area_mm2: float,
+    open_rim: bool = False,
+) -> dict[str, Any] | None:
+    """Score one enclosed void cluster as a tunnel anchor — area/aspect
+    gates keep elongated slots and large off-centre openings out of
+    FASTENER_KINDS (they are lightweight windows, not bores)."""
+    area = float(cells.sum()) * step_mm * step_mm
+    if area < min_area_mm2:
+        return None
+    ii, jj = np.where(cells)
+    mean_u = float(us[ii].mean())
+    mean_v = float(vs[jj].mean())
+    dia = float(2.0 * np.sqrt(area / np.pi) + 0.5 * step_mm)
+    span_u = float(ii.max() - ii.min() + 1) * step_mm
+    span_v = float(jj.max() - jj.min() + 1) * step_mm
+    aspect = max(span_u, span_v) / max(min(span_u, span_v), step_mm)
+    in_plane_dist = math.hypot(mean_u, mean_v)
+    t_kind = "hole"
+    if aspect > 1.65 or (dia > 24.0 and in_plane_dist > 15.0):
+        t_kind = "window"
+    t_depth, t_mid = _tunnel_depth_and_center(mesh, axis, cells, inside, us, vs, span)
+    return _anchor(
+        axis, mean_u, mean_v, dia, t_depth, t_kind, axial_center=t_mid, open_rim=open_rim
+    )
+
+
+def scan_mesh_anchors(  # noqa: C901
     mesh: trimesh.Trimesh | str | Path,
     step_mm: float = 0.7,
     min_area_mm2: float = 3.0,
@@ -254,26 +292,33 @@ def scan_mesh_anchors(
             # the diameter by ~one bin — add half a step back.
             lab, n = ndi.label(footprint & ~inside)
             for i in range(1, n + 1):
-                cells = lab == i
-                area = float(cells.sum()) * step_mm * step_mm
-                if area < min_area_mm2:
-                    continue
-                ii, jj = np.where(cells)
-                mean_u = float(us[ii].mean())
-                mean_v = float(vs[jj].mean())
-                dia = float(2.0 * np.sqrt(area / np.pi) + 0.5 * step_mm)
-                # elongated slots and large off-centre openings are lightweight
-                # WINDOWS, not fastener bores — they must not enter
-                # FASTENER_KINDS or shift the hole_index ordering
-                span_u = float(ii.max() - ii.min() + 1) * step_mm
-                span_v = float(jj.max() - jj.min() + 1) * step_mm
-                aspect = max(span_u, span_v) / max(min(span_u, span_v), step_mm)
-                in_plane_dist = math.hypot(mean_u, mean_v)
-                t_kind = "hole"
-                if aspect > 1.65 or (dia > 24.0 and in_plane_dist > 15.0):
-                    t_kind = "window"
-                t_depth, t_mid = _tunnel_depth_and_center(mesh, axis, cells, inside, us, vs, span)
-                out.append(_anchor(axis, mean_u, mean_v, dia, t_depth, t_kind, axial_center=t_mid))
+                a = _tunnel_anchor(
+                    mesh, axis, lab == i, inside, us, vs, span, step_mm, min_area_mm2
+                )
+                if a is not None:
+                    out.append(a)
+
+            # open-rim rescue: a bore whose rim is sub-resolution reads as
+            # an open notch on the raw mask. A one-step morphological close
+            # re-encloses it — the rescue set is strictly the void cells the
+            # raw pass missed, so no duplicate anchors can form.
+            fp_closed = ndi.binary_fill_holes(ndi.binary_closing(inside))
+            rescue_lab, rescue_n = ndi.label(fp_closed & ~inside & ~(footprint & ~inside))
+            for i in range(1, rescue_n + 1):
+                a = _tunnel_anchor(
+                    mesh,
+                    axis,
+                    rescue_lab == i,
+                    inside,
+                    us,
+                    vs,
+                    span,
+                    step_mm,
+                    min_area_mm2,
+                    open_rim=True,
+                )
+                if a is not None:
+                    out.append(a)
 
         # surface pockets — "+": dips below the local max; "-": raised floor
         # above the local min (a bottom-face bore's ceiling is a local HIGH
