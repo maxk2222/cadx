@@ -637,3 +637,55 @@ unmatched/unverified evidence in stage metrics oder version.issues
 persistieren (auditable ohne Reproduktion).
 
 Round-4 laeuft: tank→bracket→arm→propeller, Stack mit allen Fixes.
+
+## WP-Runde-5: Round-4-Auswertung + Optimierungs-Pass
+
+Round-4 (Stack mit allen Fixes): ALLE meine Fixes wirksam verifiziert —
+unrequested_voids WEG (tank verify PASS), fix_mode-Normalisierung wirkt
+(FEM loest ueberall: bracket sf 19-22, arm 3.7 — keine rigid-mode
+unsolvable mehr), radial_envelope-Gate korrekt (propeller Geo-Gates
+alle ok: 70.87 r_max, 5 peaks, watertight).
+
+Verbleibende 4 Blocker + Diagnosen:
+
+1. **Tank FEM "no fixed region"** — nur 1/3 Fußloch-Anchors detektiert:
+   Lug-Geometrie liess Ø6.5-Bohrung mit ~0.4mm Aussenrand (teiloffene
+   Kerbe) — an Voxel-Aufloesung kein geschlossener Tunnel. WP1:
+   sealed_tank foot_lug mit echter Kantenliege (edge dist >= 1.5*r) →
+   bbox 86.1x86.6 (eval bbox auf [90,90,120] within angehoben — honest
+   contract: Ø80 shell + feet). WP2: open-rim rescue in scan_mesh_anchors
+   (additive morphological-close-Rettung, open_rim-Flag, keine Duplikate).
+   Gemessen: 3 Anchors auf neuer Geometrie. Tank sf 0.39 war wahrscheinlich
+   rigid-body-Artefakt (8 MPa membrane bei steel → echter SF ~30) —
+   naechste Runde entscheidet.
+
+2. **Bracket fem_loadcases direction** — axial_pull folgte gemessener
+   Anchor-Achse (-y) statt deklarierter attach-axis (+y). WP3:
+   expand_attaches — deklarierte Achse gewinnt (declared intent > detection).
+
+3. **Arm feat_6_void_depth** — EHRLICHER FAIL: Gusset-Rippe kreuzt die
+   M12-Bohrungsphysik (5mm-Wand ueber Bohrungsmuendung z=25.5-28 —
+   gemessen via BRepClass3d + ray-probes). Check korrekt, Modell-Bug.
+
+4. **Propeller** — drei Fixes:
+   a) envelope_x: spec deklariert 140x140 = DURCHMESSER, Pentagon-BBox
+      133.4x138.2 kann Quadrat nie fuellen → _envelope radial-fallback:
+      x==y deklariert + radial_extent_mm gemessen → 2*r ≈ D pruefen.
+      Neuer Analysis-Field radial_extent_mm (mesh-vertex centroid —
+      Odd-fold-Symmetrie: bbox-Zentrum ist NICHT die Rotationsachse).
+   b) spec_features + feat_1_axis: _FACET_FACE_CAP skippte _scan_faces
+      bei >2000 faces — aber propeller ist DICHTER BRep (3220 BSPLINE
+      loft patches + ECHTE CYLINDERs Ø10.08 + Ø30). Fix: skip nur bei
+      pure-plane tessellation (_is_faceted_solid) → bore + hub messbar
+      (0.05s). feat_1_axis kind-mismatch: slot nur durch recognition
+      messbar (keyway merged in Bohrungswand = kein eigener Tunnel) —
+      recognition_ran=False → UNVERIFIED statt FAIL (ehrl. Verdict).
+   c) dfm bleibt FAIL (27% overhang, ehrliches FDM-Signal) — eval
+      ignored dfm bereits, kein Blocker.
+
+5. **Auditability (WP4b)**: verify_spec stage-metrics persistieren jetzt
+   per-check `evidence` fuer FAIL+UNVERIFIED — kein lokales Reproduzieren
+   mehr noetig (war der Runde-4-Schmerz).
+
+Tests: +9 (faceted-gating, radial-envelope pass+no-rescue-square,
+slot-recognition-UNVERIFIED, slot-FAIL-bei-ran). 340 tests gruen.
