@@ -576,6 +576,14 @@ def _coaxial(
     return _norm(perp) <= _COAX_TOL
 
 
+def _is_faceted_solid(faces: list) -> bool:
+    """True only for a pure tessellation solid — every face a PLANE
+    triangle. A dense analytic BRep (lofted blades, shattered fillets)
+    clears ``_FACET_FACE_CAP`` too yet still carries real cylinders/cones
+    worth measuring."""
+    return len(faces) > _FACET_FACE_CAP and all(f.geom_type == GeomType.PLANE for f in faces)
+
+
 def _scan_faces(
     shape: Shape,
 ) -> tuple[
@@ -594,10 +602,14 @@ def _scan_faces(
     chamfer_planes = 0
     # faceted mesh solid: every face is a PLANE triangle — a BRepAdaptor scan
     # over tens of thousands of faces costs minutes and can only find noise;
-    # mesh-level probes (ray sampling) below carry the real signal
-    if len(shape.faces()) > _FACET_FACE_CAP:
+    # mesh-level probes (ray sampling) below carry the real signal. A dense
+    # analytic BRep (lofted blades, shattered fillets) clears the same face
+    # cap yet still carries real cylinders/cones — only a pure-plane solid
+    # skips the scan.
+    faces = shape.faces()
+    if _is_faceted_solid(faces):
         return cyl_faces, cones, tori, chamfer_planes
-    for f in shape.faces():
+    for f in faces:
         try:
             gt = f.geom_type
             ad = BRepAdaptor_Surface(f.wrapped)

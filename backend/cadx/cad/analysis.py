@@ -40,6 +40,9 @@ class Analysis(BaseModel):
     triangle_count: int = 0
     roughness_deg: float = 0.0  # mean dihedral angle of near-vertical faces
     footprint_iou: float | None = None  # XY outline vs measured plan view
+    # max XY vertex distance from the mesh centroid — a rotational part's
+    # true radial reach (an odd-fold part's bbox centre is NOT its axis)
+    radial_extent_mm: float | None = None
 
 
 def _vec(v: Any) -> list[float]:
@@ -122,6 +125,7 @@ def analyze(shape: Shape, stl_path: Path | None = None) -> Analysis:
                 continue
 
     watertight: bool | None = None
+    radial_extent_mm: float | None = None
     if stl_path is not None and stl_path.exists():
         try:
             mesh = trimesh.load(str(stl_path))
@@ -131,6 +135,12 @@ def analyze(shape: Shape, stl_path: Path | None = None) -> Analysis:
             )
             if not watertight:
                 warnings.append("mesh is not watertight / winding inconsistent")
+            verts = getattr(mesh, "vertices", None)
+            if verts is not None and len(verts):
+                import numpy as np
+
+                xy = np.asarray(verts)[:, :2]
+                radial_extent_mm = float(np.sqrt(((xy - xy.mean(axis=0)) ** 2).sum(axis=1)).max())
         except Exception:
             watertight = None
 
@@ -164,4 +174,5 @@ def analyze(shape: Shape, stl_path: Path | None = None) -> Analysis:
         sits_on_xy=sits,
         centered_xy=centered,
         warnings=warnings,
+        radial_extent_mm=radial_extent_mm,
     )

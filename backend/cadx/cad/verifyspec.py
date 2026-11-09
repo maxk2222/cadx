@@ -255,12 +255,15 @@ def _void_kind_axis_check(
     cands: list[dict[str, Any]],
     other: list[dict[str, Any]],
     checks: list[dict[str, Any]],
+    recognition_ran: bool = True,
 ) -> None:
     """Axis + kind check for one void spec feature (hole/slot/cutout/pocket).
 
     FAIL when same-kind voids exist but none runs along the stated axis, and
     when only the WRONG kind was measured (a round hole never satisfies a
-    slot spec). UNVERIFIED when no void evidence exists at all."""
+    slot spec). UNVERIFIED when no void evidence exists at all — and for
+    kinds only the recogniser can see (a keyway merging into a bore wall is
+    not a standalone tunnel) when recognition produced no evidence."""
     want_ax = _spec_axis(f)
     check_name = f"feat_{i}_axis" if want_ax else f"feat_{i}_kind"
     base: dict[str, Any] = {"feature": name, "feature_type": ftype}
@@ -282,6 +285,25 @@ def _void_kind_axis_check(
         return
     if not cands:
         kinds = sorted({_kind_label(e) for e in all_voids})
+        if not recognition_ran and ("slot" in ftype or "langloch" in ftype):
+            checks.append(
+                _check(
+                    check_name,
+                    TIER_FEATURES,
+                    "UNVERIFIED",
+                    {
+                        **base,
+                        "reason": (
+                            f"spec '{ftype}' is only measurable by feature "
+                            "recognition, which produced no evidence — absence "
+                            "is unproven, not a kind mismatch"
+                        ),
+                        "measured_kinds": kinds,
+                        "measured_ids": _measured_ids(all_voids),
+                    },
+                )
+            )
+            return
         checks.append(
             _check(
                 check_name,
@@ -1324,7 +1346,16 @@ def _feature_placement(
         # cannot satisfy this feature's position/axis checks by pooling;
         # `other`/kind-mismatch reporting stays on the full void set
         pos_cands = _dia_matched(f, cands)
-        _void_kind_axis_check(i, name, ftype, f, pos_cands, other, checks)
+        _void_kind_axis_check(
+            i,
+            name,
+            ftype,
+            f,
+            pos_cands,
+            other,
+            checks,
+            recognition_ran=bool((measured or {}).get("recognition_ran")),
+        )
         _void_position_check(i, name, f, pos_cands, bbox_min, bbox_max, checks)
         if "slot" in ftype or "langloch" in ftype:
             _slot_orientation_check(i, name, ftype, f, pos_cands, checks)
@@ -1813,6 +1844,34 @@ def _envelope(
             continue
         actual = float(bbox["xyz".index(ax)])
         tol = max(want * tol_pct / 100.0, tol_mm)
+        # rotational-part fallback: a spec declaring length_x == width_y
+        # describes a DIAMETER, not two independent extents — an odd-fold
+        # part (pentagon blades) can never fill the square bbox its
+        # diameter implies. The honest check is radial reach ≈ D/2.
+        radial_extent = (res.get("analysis") or {}).get("radial_extent_mm")
+        if ax in "xy" and isinstance(radial_extent, int | float):
+            dx = _dim_value(spec.get("length_x"))
+            dy = _dim_value(spec.get("width_y"))
+            if dx is not None and dy is not None and abs(dx - dy) <= max(tol, 1e-6):
+                over_r = 2.0 * float(radial_extent) - want
+                delta_r = abs(over_r)
+                ok = (over_r <= tol) if bound_only else (delta_r <= tol)
+                checks.append(
+                    _check(
+                        name,
+                        TIER_ENVELOPE,
+                        "PASS" if ok else "FAIL",
+                        {
+                            "expected_mm": want,
+                            "actual_mm": round(actual, 3),
+                            "radial": True,
+                            "radial_extent_mm": round(float(radial_extent), 3),
+                            "over_mm": round(over_r, 3),
+                            "tol_mm": round(tol, 3),
+                        },
+                    )
+                )
+                continue
         if bound_only:
             # topopt/refine result: the stated dim is an upper bound — the
             # optimized part must fit inside the envelope, shrinking below

@@ -249,9 +249,7 @@ def test_compare_depth_dim_on_through_named_bore_not_blind():
     ("M12 tapped through-bore", depth=15) — the dim alone must not flip the
     expectation to blind, or every through bore fails its own spec."""
     m = MeasuredFeatures(
-        hole_groups=[
-            MeasuredHoleGroup(diameter=10.2, count=1, axis="+z", depth_class="through")
-        ],
+        hole_groups=[MeasuredHoleGroup(diameter=10.2, count=1, axis="+z", depth_class="through")],
         total_holes=1,
     )
     spec = [
@@ -273,9 +271,7 @@ def test_compare_depth_dim_still_flags_unnamed_blind():
         hole_groups=[MeasuredHoleGroup(diameter=5.0, count=2, axis="+z", depth_class="through")],
         total_holes=2,
     )
-    spec = [
-        Feature(name="dowel seat", type="hole", count=2, dims={"diameter": 5.0, "depth": 8.0})
-    ]
+    spec = [Feature(name="dowel seat", type="hole", count=2, dims={"diameter": 5.0, "depth": 8.0})]
     findings = compare_features(spec, m)
     assert any("stopping at depth" in f.actual for f in findings)
 
@@ -845,3 +841,25 @@ def test_groove_opening_to_boss_not_counted():
         p.part -= Pos(0, 0, 10) * Cylinder(radius=6, height=4)
     grooves = _detect_structural_features(p.part)[1]
     assert grooves == []
+
+
+class _StubFace:
+    def __init__(self, geom_type):
+        self.geom_type = geom_type
+
+
+def test_is_faceted_solid_only_for_pure_plane():
+    """A dense analytic BRep (lofted blades, shattered fillets) clears the
+    face cap yet still carries real cylinders — only a pure-plane
+    tessellation solid skips the scan."""
+    from build123d import GeomType
+
+    from cadx.cad.features import _FACET_FACE_CAP, _is_faceted_solid
+
+    n = _FACET_FACE_CAP + 1
+    planes = [_StubFace(GeomType.PLANE) for _ in range(n)]
+    assert _is_faceted_solid(planes) is True
+    dense_brep = [*planes[:-1], _StubFace(GeomType.CYLINDER)]
+    assert _is_faceted_solid(dense_brep) is False
+    small = [_StubFace(GeomType.PLANE) for _ in range(6)]
+    assert _is_faceted_solid(small) is False

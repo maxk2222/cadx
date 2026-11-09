@@ -154,6 +154,13 @@ def harvest(outcome: StageOutcome) -> dict[str, Any]:
                 for c in (report or {}).get("checks") or []
                 if isinstance(c, dict) and c.get("status") == "UNVERIFIED"
             ],
+            # per-check evidence for the non-PASS verdicts — auditability:
+            # a FAIL must name WHY without re-running the pipeline
+            "evidence": {
+                str(c.get("name")): c.get("evidence")
+                for c in (report or {}).get("checks") or []
+                if isinstance(c, dict) and c.get("status") in ("FAIL", "UNVERIFIED")
+            },
         },
         "spec_features_dropped": feature_drop_count(outcome.spec),
         "spec_feature_drops": feature_drop_records(outcome.spec),

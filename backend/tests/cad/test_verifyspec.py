@@ -414,9 +414,15 @@ def test_round_hole_on_wrong_axis_fails():
 
 def test_slot_satisfied_by_round_hole_is_kind_mismatch():
     """A round bore never satisfies a slot spec — kind mismatch FAIL even
-    without a stated axis."""
+    without a stated axis (recognition evidence was available: absence is
+    proven, not merely unmeasured)."""
     spec = _spec(features=[_feat(name="slot", type="slot")])
-    res = _res(features={"hole_groups": [_hole_group(id="h1", axis="+z")]})
+    res = _res(
+        features={
+            "hole_groups": [_hole_group(id="h1", axis="+z")],
+            "recognition_ran": True,
+        }
+    )
     report = verify_spec(spec, res, feature_findings=[])
     c = _by_name(report)["feat_0_kind"]
     assert c["status"] == "FAIL"
@@ -1527,3 +1533,132 @@ def test_position_face_hint_uses_measured_midplane():
     res_bad["analysis"]["bbox_max"] = [50.0, 40.0, 40.0]
     report_bad = verify_spec(spec, res_bad, feature_findings=[])
     assert _by_name(report_bad)["feat_0_position"]["status"] == "FAIL"
+
+
+def test_envelope_radial_fallback_rotational_part():
+    """A spec declaring length_x == width_y describes a diameter, not two
+    square extents: a pentagon-blade rotor reaching r=70 passes the Ø140
+    contract even though its plan bbox is only ~133 mm wide. A square part
+    that merely falls short does NOT pass — its radial reach (~0.707 D)
+    sits far outside the band."""
+    spec = _spec(
+        length_x={"value": 140.0, "source": "stated"},
+        width_y={"value": 140.0, "source": "stated"},
+        height_z={"value": 28.0, "source": "stated"},
+    )
+    res = _res(
+        analysis={
+            "bbox_size": [133.4, 138.2, 28.0],
+            "radial_extent_mm": 70.9,
+            "solid_count": 1,
+            "is_valid": True,
+            "watertight": True,
+            "volume": 26_000.0,
+            "source": "brep",
+        }
+    )
+    checks = _by_name(verify_spec(spec, res))
+    assert checks["envelope_x"]["status"] == "PASS"
+    assert checks["envelope_x"]["evidence"]["radial"] is True
+    assert checks["envelope_y"]["status"] == "PASS"
+    assert checks["envelope_z"]["status"] == "PASS"
+
+
+def test_envelope_radial_fallback_does_not_rescue_square():
+    spec = _spec(
+        length_x={"value": 140.0, "source": "stated"},
+        width_y={"value": 140.0, "source": "stated"},
+    )
+    res = _res(
+        analysis={
+            "bbox_size": [133.0, 133.0, 20.0],
+            "radial_extent_mm": 94.0,
+            "solid_count": 1,
+            "is_valid": True,
+            "watertight": True,
+            "volume": 100_000.0,
+            "source": "brep",
+        }
+    )
+    checks = _by_name(verify_spec(spec, res))
+    assert checks["envelope_x"]["status"] == "FAIL"
+    assert checks["envelope_y"]["status"] == "FAIL"
+
+
+def test_slot_kind_unverified_when_recognition_did_not_run():
+    """A declared slot is only measurable by recognition — a keyway merging
+    into a bore wall is no standalone tunnel. When recognition produced no
+    evidence, 'kind mismatch' overstates: UNVERIFIED is the honest verdict."""
+    spec = _spec(
+        features=[
+            {
+                "name": "shaft bore",
+                "type": "hole",
+                "axis": "z",
+                "dims": {"diameter": 10.0},
+                "position": "x=0, y=0",
+            },
+            {
+                "name": "keyway seat",
+                "type": "slot",
+                "axis": "z",
+                "dims": {"width": 4.0},
+                "position": "on bore wall +x",
+            },
+        ]
+    )
+    res = _res()
+    res["features"] = {
+        "hole_groups": [
+            {
+                "id": "h1",
+                "diameter": 10.0,
+                "axis": "+z",
+                "depth_class": "through",
+                "centers": [[0.0, 0.0]],
+                "count": 1,
+                "blocked": 0,
+            }
+        ],
+        "hole_patterns": [],
+        "slot_patterns": [],
+        "bosses": [],
+        "recognition_ran": False,
+    }
+    checks = _by_name(verify_spec(spec, res))
+    assert checks["feat_1_axis"]["status"] == "UNVERIFIED"
+    assert "recognition" in checks["feat_1_axis"]["evidence"]["reason"]
+
+
+def test_slot_kind_mismatch_still_fails_when_recognition_ran():
+    spec = _spec(
+        features=[
+            {
+                "name": "keyway seat",
+                "type": "slot",
+                "axis": "z",
+                "dims": {"width": 4.0},
+                "position": "on bore wall +x",
+            }
+        ]
+    )
+    res = _res()
+    res["features"] = {
+        "hole_groups": [
+            {
+                "id": "h1",
+                "diameter": 10.0,
+                "axis": "+z",
+                "depth_class": "through",
+                "centers": [[0.0, 0.0]],
+                "count": 1,
+                "blocked": 0,
+            }
+        ],
+        "hole_patterns": [],
+        "slot_patterns": [],
+        "bosses": [],
+        "recognition_ran": True,
+    }
+    checks = _by_name(verify_spec(spec, res))
+    assert checks["feat_0_axis"]["status"] == "FAIL"
