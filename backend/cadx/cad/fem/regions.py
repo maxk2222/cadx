@@ -1497,7 +1497,17 @@ def expand_attaches(  # noqa: C901
         if mech is not None:
             _i0, a, _r = _attach_anchor(ld_spec.region.attach or {}, anchors)
             axis_vec: list[float] | None = None
-            if a is not None:
+            # the attach's declared axis carries the author's sign intent —
+            # it wins over the anchor's measured axis (a bore scanned as
+            # "-y" must not flip a declared "+y" pull into a push)
+            _decl = (ld_spec.region.attach or {}).get("axis")
+            declared_axis = _decl if isinstance(_decl, str) else ""
+            if declared_axis:
+                idx, sgn = _axis_parts(declared_axis)
+                v = [0.0, 0.0, 0.0]
+                v[idx] = float(sgn)
+                axis_vec = v
+            elif a is not None:
                 idx, sgn = _axis_parts(str(a.get("axis") or "+z"))
                 v = [0.0, 0.0, 0.0]
                 v[idx] = float(sgn)

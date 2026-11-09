@@ -289,6 +289,57 @@ def test_expand_attaches_bearing_mechanism() -> None:
     assert ld.mechanism is None
 
 
+def test_expand_attaches_axial_pull_declared_axis_wins() -> None:
+    """The attach's declared axis sign is the author's intent: a "+y" pull
+    must stay "+y" even when the matched anchor was scanned as "-y" (a bore
+    entered from the low side). Only an undeclared attach axis falls back
+    to the measured anchor axis."""
+    anchors = [
+        {**_ATT_ANCHORS[1], "axis": "-y", "index": 3, "name": "seat -y"},
+    ]
+    case = LoadCase(
+        name="axial",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(attach={"name": "seat", "axis": "y"}),
+                mechanism="axial_pull",
+                value_n=3000.0,
+            )
+        ],
+    )
+    out, _warnings = expand_attaches(case, anchors)
+    assert out.loads[0].force_n == [0.0, 3000.0, 0.0]
+
+    case_neg = LoadCase(
+        name="axial",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(attach={"name": "seat", "axis": "-y"}),
+                mechanism="axial_pull",
+                value_n=3000.0,
+            )
+        ],
+    )
+    out_neg, _ = expand_attaches(case_neg, anchors)
+    assert out_neg.loads[0].force_n == [0.0, -3000.0, 0.0]
+
+    case_noaxis = LoadCase(
+        name="axial",
+        fixed=[RegionSpec(kind="face", axis="-z")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(attach={"name": "seat"}),
+                mechanism="axial_pull",
+                value_n=3000.0,
+            )
+        ],
+    )
+    out_noax, _ = expand_attaches(case_noaxis, anchors)
+    assert out_noax.loads[0].force_n == [0.0, -3000.0, 0.0]  # anchor axis fallback
+
+
 def test_expand_attaches_clamp_and_axial_pull() -> None:
     case = LoadCase(
         name="bolt",
