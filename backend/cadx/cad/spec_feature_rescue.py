@@ -25,6 +25,7 @@ imported lazily inside functions.
 from __future__ import annotations
 
 import math
+import re
 from typing import Any
 
 
@@ -37,11 +38,13 @@ def _fdims(f: Any) -> dict[str, Any]:
     return d if isinstance(d, dict) else {}
 
 
-def _ftext(f: Any) -> str:
-    return " ".join(str(_fget(f, k, "") or "") for k in ("name", "type", "description", "position")).lower()
+def _fname_type(f: Any) -> str:
+    return f"{_fget(f, 'name', '')} {_fget(f, 'type', '')}".lower()
 
 
-_MOUNT_WORDS = ("foot", "lug", "ear", "tab", "stand", "leg", "mount", "flange")
+_MOUNT_WORDS = ("foot", "feet", "lug", "ear", "tab", "stand", "leg", "mount", "flange")
+_MOUNT_RE = re.compile(r"\b(?:" + "|".join(_MOUNT_WORDS) + r")\b")
+_HOLE_RE = re.compile(r"\b(?:hole|bore|bohrung|clearance)\b")
 _HOLE_TYPES = ("hole", "bore", "clearance", "through", "bolt", "anchor")
 _EMBED_MM = 2.0  # lug root reach into the host wall — a tangent-only fuse stays a disjoint solid
 
@@ -50,14 +53,18 @@ def _is_mount(f: Any) -> bool:
     ftype = str(_fget(f, "type", "") or "").lower()
     if ftype in _HOLE_TYPES:
         return False
-    return any(w in _ftext(f) for w in _MOUNT_WORDS)
+    # mount words are matched on name+type only — the description/position
+    # text of the host itself routinely mentions the mounting plane
+    # ("from z=0 (foot base) to z=120"), and counting the shell as a lug
+    # inflates the ring and poisons lug dims with the part envelope
+    return bool(_MOUNT_RE.search(_fname_type(f)))
 
 
 def _is_hole(f: Any) -> bool:
     ftype = str(_fget(f, "type", "") or "").lower()
     if ftype in _HOLE_TYPES:
         return True
-    return any(w in _ftext(f) for w in ("hole", "bore", "bohrung", "clearance"))
+    return bool(_HOLE_RE.search(_fname_type(f)))
 
 
 def _count(f: Any) -> int:
@@ -173,11 +180,19 @@ def _shell_seam_z(shape: Any, shell_r: float, mesh_boolean: Any) -> float:
 
 def _lug_dims(mount_feats: list[Any]) -> tuple[int, float, float, float]:
     """Aggregate a mount-lug spec into (count, w, t, h) — feet arrive either
-    as one feature count=N or as per-lug features each count=1 (sum them)."""
+    as one feature count=N or as per-lug features each count=1 (sum them).
+    Dims are the per-key lower-median across the mount features so a stray
+    host-level feature that slipped the name filter cannot poison the lug
+    height with the part's envelope."""
     count = sum(_count(f) for f in mount_feats)
-    w = _dim(mount_feats[0], "width", "length", "size") or 18.0
-    t = _dim(mount_feats[0], "thickness", "depth") or 6.0
-    h = _dim(mount_feats[0], "depth_total", "height", "head_diameter", "length") or 20.0
+
+    def pick(*keys: str) -> float | None:
+        vals = sorted(v for f in mount_feats if (v := _dim(f, *keys)) is not None)
+        return vals[(len(vals) - 1) // 2] if vals else None
+
+    w = pick("width", "length", "size") or 18.0
+    t = pick("thickness", "depth") or 6.0
+    h = pick("depth_total", "height", "head_diameter", "length") or 20.0
     return count, float(w), float(t), float(h)
 
 
@@ -303,7 +318,9 @@ def _hole_realized(shape: Any, hx: float, hy: float, axis: str, mesh_boolean: An
     return True
 
 
-def _ring_realized(shape: Any, count: int, hole_d: float, axis: str, foot_h: float, mesh_boolean: Any) -> bool:
+def _ring_realized(
+    shape: Any, count: int, hole_d: float, axis: str, foot_h: float, mesh_boolean: Any
+) -> bool:
     """True when ``count`` clean Ø``hole_d`` bolt holes already exist on the
     host's base ring. Probes the expected lug-hole positions for both an
     open tunnel and surrounding lug material."""
@@ -355,14 +372,21 @@ def rescue_mount_lugs(
     if not mount_feats:
         return shape, []
     count, foot_w, foot_t, foot_h = _lug_dims(mount_feats)
-    # the coupled bolt-hole spec: a hole feature whose count matches the lugs
-    hole_d = 0.0
-    hole_axis = "+z"
-    for f in features:
-        if _is_hole(f):
-            hole_d = _dim(f, "diameter", "bore_diameter") or 0.0
-            hole_axis = _axis(f, "+z")
-            break
+    # the coupled bolt-hole spec: prefer the hole feature tied to the mount
+    # (a mount word or "bolt" in its name, or a count matching the lugs) —
+    # a spec can carry several unrelated holes and the first one is not
+    # necessarily the lug bolt hole
+    hole_feats = [f for f in features if _is_hole(f)]
+
+    def _hole_rank(f: Any) -> tuple[bool, bool]:
+        text = _fname_type(f)
+        return (bool(_MOUNT_RE.search(text)) or "bolt" in text, _count(f) == count)
+
+    hole_feat = max(hole_feats, key=_hole_rank, default=None)
+    hole_d = (
+        _dim(hole_feat, "diameter", "bore_diameter") if hole_feat is not None else None
+    ) or 0.0
+    hole_axis = _axis(hole_feat, "+z") if hole_feat is not None else "+z"
     applied: list[str] = []
     if hole_d <= 0:
         # feet without a bolt hole — only worth adding when the lugs are
@@ -371,11 +395,19 @@ def rescue_mount_lugs(
         if ring is None:
             return shape, applied
         fused, added = add_mount_lug_ring(
-            shape, count=count, foot_w=foot_w, foot_t=foot_t, foot_h=foot_h,
-            hole_d=0.0, axis=hole_axis, mesh_boolean=mesh_boolean,
+            shape,
+            count=count,
+            foot_w=foot_w,
+            foot_t=foot_t,
+            foot_h=foot_h,
+            hole_d=0.0,
+            axis=hole_axis,
+            mesh_boolean=mesh_boolean,
         )
         if added:
-            applied.append(f"{added}x mount lug {foot_w:g}x{foot_t:g}x{foot_h:g} (no bolt hole declared)")
+            applied.append(
+                f"{added}x mount lug {foot_w:g}x{foot_t:g}x{foot_h:g} (no bolt hole declared)"
+            )
             return fused, applied
         return shape, applied
     # the ring is realized only when every declared bolt hole is present in
@@ -387,8 +419,14 @@ def rescue_mount_lugs(
     except Exception:
         pass
     fused, added = add_mount_lug_ring(
-        shape, count=count, foot_w=foot_w, foot_t=foot_t, foot_h=foot_h,
-        hole_d=hole_d, axis=hole_axis, mesh_boolean=mesh_boolean,
+        shape,
+        count=count,
+        foot_w=foot_w,
+        foot_t=foot_t,
+        foot_h=foot_h,
+        hole_d=hole_d,
+        axis=hole_axis,
+        mesh_boolean=mesh_boolean,
     )
     if added:
         applied.append(

@@ -35,9 +35,58 @@ def _tank_spec() -> dict:
 
 def _vessel(*, feet: int = 0) -> object:
     return cadlib.sealed_tank(
-        outer_d=80, height=120, wall=3, dome_h=8,
-        feet=feet, foot_w=18, foot_t=6, foot_h=20, foot_hole_d=6.5,
+        outer_d=80,
+        height=120,
+        wall=3,
+        dome_h=8,
+        feet=feet,
+        foot_w=18,
+        foot_t=6,
+        foot_h=20,
+        foot_hole_d=6.5,
     )
+
+
+def _tank_spec_per_lug() -> dict:
+    """The per-instance layout real specs produce: the host shell is itself
+    a feature (mentioning the mounting plane in its position text) followed
+    by one feature per lug and per bolt hole."""
+
+    def lug(n: int) -> dict:
+        return {
+            "type": "other",
+            "name": f"foot lug {n}",
+            "count": 1,
+            "axis": "z",
+            "dims": {"width": 18.0, "thickness": 6.0, "head_diameter": 20.0},
+            "position": "at base rim, equally spaced 120 deg",
+        }
+
+    def hole(n: int) -> dict:
+        return {
+            "type": "hole",
+            "name": f"foot bolt hole {n}",
+            "count": 1,
+            "axis": "z",
+            "dims": {"diameter": 6.5},
+            "position": f"through foot lug {n}, centered in lug",
+        }
+
+    return {
+        "name": "domed tank",
+        "features": [
+            {
+                "type": "other",
+                "name": "cylindrical shell with top and bottom dome caps",
+                "count": 1,
+                "axis": "z",
+                "dims": {"diameter": 80.0, "height": 120.0, "wall_thickness": 3.0},
+                "position": "centered on Z axis, from z=0 (foot base) to z=120",
+            },
+            *[lug(i) for i in range(1, 4)],
+            *[hole(i) for i in range(1, 4)],
+        ],
+    }
 
 
 def test_bare_vessel_gets_lugs_and_holes():
@@ -83,6 +132,30 @@ def test_realized_ring_is_not_rescued():
     assert applied == []
 
 
+def test_host_shell_is_not_a_mount():
+    """Regression: the spec's own host-shell feature mentions the mounting
+    plane in its position text ("from z=0 (foot base)"). Matching mount
+    words against the full feature text counted the shell as a fourth lug
+    and read the ring height from the host envelope — the rescue then
+    stamped 4 full-height fins onto every correct part."""
+    _out, applied = sfr.rescue_spec_features(_vessel(feet=3), _tank_spec_per_lug(), mesh_boolean)
+    assert applied == []
+
+
+def test_host_shell_does_not_poison_rescued_ring():
+    """Same spec on a bare vessel: the rescue fires, but must rebuild the
+    declared 3 lugs at lug height — not 4 full-height fins read off the
+    host dims."""
+    out, applied = sfr.rescue_spec_features(_vessel(feet=0), _tank_spec_per_lug(), mesh_boolean)
+    assert applied
+    # a lug stands at the 0-degree declared position, at lug height —
+    # probed tangentially beside the Ø6.5 bolt hole axis at r≈40.9
+    assert out.is_inside((40.9, 4.5, 12.0))
+    # nothing protrudes at 90 deg (the bogus 4th lug) or at mid-height
+    assert not out.is_inside((0.0, 41.0, 60.0))
+    assert not out.is_inside((41.0, 4.5, 60.0))
+
+
 def test_dropped_feature_is_not_resurrected():
     """A feature the model explicitly dropped stays dropped — the rescue
     honours feature_drops rather than fighting the audit trail."""
@@ -112,10 +185,18 @@ def test_non_round_host_skips_honestly():
 def test_no_mount_feature_is_untouched():
     """A spec with only a standalone hole and no mount feature does not
     trigger the additive lug rescue."""
-    spec = {"name": "plate", "features": [
-        {"type": "hole", "name": "mounting hole", "count": 1, "axis": "z",
-         "dims": {"diameter": 5.0}},
-    ]}
+    spec = {
+        "name": "plate",
+        "features": [
+            {
+                "type": "hole",
+                "name": "mounting hole",
+                "count": 1,
+                "axis": "z",
+                "dims": {"diameter": 5.0},
+            },
+        ],
+    }
     _o, applied = sfr.rescue_spec_features(_vessel(feet=0), spec, mesh_boolean)
     assert applied == []
 
