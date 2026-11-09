@@ -583,3 +583,32 @@ Propeller: lief post-Hint (v12 generate running zum Zeitpunkt der Analyse).
 Offen nächste Runde:
   - FEM fix_mode "normal"→"bearing" Normalisierung (bracket + arm Root-Cause)
   - Propeller End-to-End Ergebnis abwarten
+
+## WP-Runde-3: fix_mode normal→bearing/all intake-Normalisierung (e91148b)
+
+Root-Cause bracket+arm BESTÄTIGT aus echten specs: arm spec.json — cases
+arm_weight_shear + self_weight fixierten 4 bores mit fix_mode "normal"
+(nur bore-axiale DOF → 5 rigid modes frei → solver skipped → eval tot);
+bracket spec — beide cases 3 holes "normal". lint_support_modes hatte
+beide korrekt geflaggt ("will be unsolvable") aber nur als advisory
+note in spec.assumptions — niemand fixt die spec.
+
+Fix: normalize_support_modes() in sanitize_load_cases (zwischen rebind
+und lint) — 'normal' auf hole/anchor/bore in under-constrained cases →
+'bearing' wenn collar-Maske alle 6 modes schliesst, sonst 'all'
+(bolted seat). plane/face 'normal' (legit roller/symmetry) + bereits
+vollstaendig constrained cases unberuehrt. Jede Upgrade-Note landet in
+spec.assumptions (audit).
+
+Verifiziert am ECHTEN arm-spec: beide failing cases → 4x 'all',
+residual lint leer. TDD: erster Test fing Bug (probe seedete von
+pinned — alter tz-bit ueberlebte upgrade; rebuild aus unchanged+
+bearing masks). 27 tests region_support_modes + case_anchor_rebind,
+79 agent tests gruen.
+
+Deploy-Strategie: Fix ist worker-only (intake). In-flight tank v20 +
+propeller v13 NICHT killen (evidenz: crown-flat + radial_blade) —
+worker-restart erst wenn beide fertig, dann bracket+arm re-eval.
+Tank v20 FEM-probe converged bereits (sf 0.39, PLA@6bar) — aber nur
+1 hole-anchor detektiert (#1 Ø5.8; #2/#3 "out of range") — separates
+anchor-coverage Thema, merken.
