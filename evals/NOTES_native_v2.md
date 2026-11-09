@@ -689,3 +689,22 @@ Verbleibende 4 Blocker + Diagnosen:
 
 Tests: +9 (faceted-gating, radial-envelope pass+no-rescue-square,
 slot-recognition-UNVERIFIED, slot-FAIL-bei-ran). 340 tests gruen.
+
+## Round-5 (wp5): LLM-Infrastruktur-Ausfall — KEIN Code-Befund
+
+Alle 4 Cases failed innerhalb 17s (tank 308s): `LLMError('HTTP 502')`
+in allen codegen-Iterationen + `intake failed: HTTP 502`.
+
+Diagnose: llm_base_url = https://reacd-vllm.vimba-perch.ts.net/v1
+(external backend). `/v1/models` → 401 (Proxy + Tailscale-Tunnel OK,
+Auth greift), `/v1/chat/completions` → 502 (upstream Model-Server down).
+Worker-Log: codegen_failed x5 Iterationen, alle HTTP 502.
+
+Mesh-Sidecar (localhost:8765) laeuft nicht → kein lokaler Fallback.
+
+ACTION REQUIRED: remote vLLM Host (reacd-vllm) pruefen/neustarten,
+dann wp5 re-run. Stack+Code (alle WP5-Fixes) deployed und bereit:
+docker compose ps ok, executor+worker auf neuem Image.
+
+Offen für Re-Run: tank 3-Anchor-Bindung + echte 6bar-SF, bracket
+direction, arm feat_6 Improve-Loop, propeller bore/hub-Erkennung.
