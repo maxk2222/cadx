@@ -930,6 +930,26 @@ def _gate_outcome(  # noqa: C901
             expected={"max": expected},
         )
 
+    if name == "spec_contains":
+        # substring match over the serialized PartSpec — the auditable check
+        # for pipeline-side evidence (research facts landing in assumptions,
+        # a declared process, …) that geometry gates cannot see
+        if outcome.spec is None:
+            return GateResult(name, None, detail="spec unavailable")
+        import json
+
+        dump = getattr(outcome.spec, "model_dump", None)
+        text = json.dumps(dump(mode="json") if callable(dump) else outcome.spec).lower()
+        need = [str(s).lower() for s in g.get("all") or []]
+        miss = [s for s in need if s not in text]
+        return GateResult(
+            name,
+            not miss,
+            measured=miss or None,
+            expected={"all": need},
+            detail=f"missing {miss[:4]}" if miss else "",
+        )
+
     if name == "code":
         want = bool(g.get("expect", True))
         return GateResult(name, (outcome.code is not None) is want, measured=bool(outcome.code))

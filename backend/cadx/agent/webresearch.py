@@ -23,6 +23,7 @@ log = get_logger(__name__)
 
 _UA = {"User-Agent": "CADX-research/1.0 (+https://devin.ai) CAD spec research"}
 _TIMEOUT = 15.0
+_MAX_BODY = 8_000_000  # bytes — datasheets/pages beyond this are PDFs/dumps
 
 
 def _client() -> httpx.AsyncClient:
@@ -39,7 +40,11 @@ def _safe_url(url: str) -> str | None:
     if u.scheme not in ("http", "https") or not u.hostname:
         return None
     host = u.hostname.lower()
-    if host in ("localhost",) or host.endswith((".local", ".internal")):
+    if (
+        host in ("localhost",)
+        or host.endswith((".local", ".internal", ".lan", ".corp"))
+        or "." not in host  # single-label — docker/k8s service names
+    ):
         return None
     try:
         ip = ipaddress.ip_address(host)
@@ -212,6 +217,13 @@ async def fetch(url: str, client: httpx.AsyncClient, max_chars: int = 6000) -> d
         r.raise_for_status()
     except Exception as e:
         return {"ok": False, "error": f"fetch failed: {e}"}
+    if _safe_url(str(r.url)) is None:
+        return {"ok": False, "error": "redirect target blocked (scheme/host)"}
+    try:
+        if int(r.headers.get("content-length") or 0) > _MAX_BODY:
+            return {"ok": False, "error": f"page too large (>{_MAX_BODY // 1_000_000} MB)"}
+    except ValueError:
+        pass
     ctype = (r.headers.get("content-type") or "").lower()
     if "html" not in ctype and "text" not in ctype:
         return {"ok": False, "error": f"unsupported content-type {ctype or '?'}"}

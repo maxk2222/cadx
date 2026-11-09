@@ -69,6 +69,16 @@ def test_spec_features_dropped_gate_is_strict_and_reports_unavailable():
     assert run_gates([gate], _out(), 0)[0].ok is None
 
 
+def test_spec_contains_gate_matches_serialized_spec():
+    gate = {"type": "spec_contains", "all": ["researched:", "nema 17"]}
+    spec = {"assumptions": ["researched: bolt square = 31 [http://x]"], "name": "NEMA 17 mount"}
+    assert run_gates([gate], _out(spec=spec), 0)[0].ok is True
+    failed = run_gates([gate], _out(spec={"assumptions": ["researched: x"]}), 0)[0]
+    assert failed.ok is False
+    assert failed.measured == ["nema 17"]
+    assert run_gates([gate], _out(), 0)[0].ok is None
+
+
 def test_bbox_gate_match_and_within():
     out = _out(analysis={"bbox_size": [80, 60, 66]})
     assert run_gates(

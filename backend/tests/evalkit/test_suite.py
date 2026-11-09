@@ -29,6 +29,7 @@ def test_shipped_suite_loads_and_validates():
         "block_sidewall_tap",
         "helical_pinion_shaft",
         "m8_hex_screw_threadlen",
+        "nema17_mount_research",
         "sprocket_520_45t",
         "aircraft_wing",
         "bearing_bracket_topopt",
@@ -40,7 +41,7 @@ def test_shipped_suite_loads_and_validates():
         "robot_arm_mount",
         "robot_arm_mount_autonomous",
     ]
-    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3]
     for c in cases:
         assert c.project.startswith("eval:")
         assert c.stages[0].type in ("generate", "meshgen")
@@ -138,6 +139,7 @@ def test_suite_files_present():
         "m8_tapped_plate.json",
         "marine_propeller.json",
         "marine_propeller_autonomous.json",
+        "nema17_mount_research.json",
         "pressure_tank_autonomous.json",
         "robot_arm_infill_escalate.json",
         "robot_arm_infill_guided.json",

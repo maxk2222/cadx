@@ -79,9 +79,43 @@ async def test_safe_url_blocks_internal():
         "file:///etc/passwd",
         "ftp://x/y",
         "not a url",
+        # single-label hosts — docker/k8s service names resolve internally
+        "http://cadx-api:8000/api/system/stack",
+        "http://redis:6379/",
+        "http://worker.internal/x",
     ):
         assert webresearch._safe_url(bad) is None
     assert webresearch._safe_url("https://intel.com/spec") == "https://intel.com/spec"
+
+
+async def test_fetch_revalidates_redirect_target():
+    """A public URL redirecting to an internal host must not be followed
+    blindly — r.url is re-checked after follow_redirects."""
+
+    async def handler(req):
+        if "bait.example" in str(req.url):
+            return httpx.Response(302, headers={"location": "http://localhost/admin"})
+        return httpx.Response(200, text="<html>internal</html>")
+
+    out = await webresearch.fetch("https://bait.example/spec", _client(handler))
+    assert out["ok"] is False
+    assert "redirect" in out["error"]
+
+
+async def test_fetch_rejects_oversized_page():
+    async def handler(req):
+        return httpx.Response(
+            200,
+            text="<html></html>",
+            headers={
+                "content-type": "text/html",
+                "content-length": str(webresearch._MAX_BODY + 1),
+            },
+        )
+
+    out = await webresearch.fetch("https://big.example/dump", _client(handler))
+    assert out["ok"] is False
+    assert "too large" in out["error"]
 
 
 FETCH_HTML = """

@@ -45,6 +45,8 @@ _NEEDS_RESEARCH = re.compile(
     r"\bmount(?:ing)?\s+(?:for|für)\s+\w*\d|"
     r"\bthread(?:ed)?\s+m\d+|"
     r"\b\d{2,4}\s*(?:mm\s*)?(?:fan|lüfter)|"
+    r"\braspberry\s*pi\b|\barduino\b|\besp(?:32|8266)\b|"
+    r"\bnoctua\b|\bprusa\b|\bbambu\b|\bvoron\b|"
     r"\bvitamix\b|\bnerf\b|\bgarmin\b)",
     re.I,
 )

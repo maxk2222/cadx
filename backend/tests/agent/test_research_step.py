@@ -19,6 +19,9 @@ def test_needs_research_matches_product_and_norm_tokens():
         "adapter plate ISO 4762 screw pattern",
         "threaded M6 insert host",
         "Gehäuse für Ryzen 7 7800X3D Kühlkörper",
+        "wall mount case for a raspberry pi 5",
+        "case for an Arduino Uno board",
+        "adapter for a Noctua fan",
     ]
     misses = [
         "simple mounting bracket 100x60x8",
