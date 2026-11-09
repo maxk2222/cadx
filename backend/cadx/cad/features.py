@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 
 from cadx.cad import native as _native
 from cadx.cad.analysis import _FACET_FACE_CAP
+from cadx.cad.radial import radial_peak_count
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -251,6 +252,11 @@ class MeasuredFeatures(BaseModel):
     pockets: list[MeasuredPocket] = Field(default_factory=list)
     grooves: list[MeasuredGroove] = Field(default_factory=list)
     notches: list[MeasuredNotch] = Field(default_factory=list)
+    # radial repetition counts per axis from the polar max-radius profile
+    # (blades/fins/teeth/lobes — lets verify_spec check declared N-fold
+    # radial features that have no void evidence at all)
+    radial_peaks: dict[str, int] = Field(default_factory=dict)
+    radial_peaks_detail: dict[str, str] = Field(default_factory=dict)
 
 
 class FeatureFinding(BaseModel):
@@ -1581,6 +1587,14 @@ def extract_features(  # noqa: C901 — sequential measurement passes
     if mesh is not None and not mesh.is_watertight:
         out.approximate = True
     contains = _mesh_contains_fn(mesh) if mesh is not None else None
+    if mesh is not None:
+        for ax in "xyz":
+            try:
+                n, info = radial_peak_count(mesh, ax)
+                out.radial_peaks[ax] = n
+                out.radial_peaks_detail[ax] = info
+            except Exception:
+                continue
 
     cyl_faces, cones, tori, chamfer_planes = _qt(
         "face_scan", len(shape.faces()), _scan_faces, shape

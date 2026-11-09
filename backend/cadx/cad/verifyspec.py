@@ -1140,9 +1140,7 @@ def _void_position_check(  # noqa: C901
     violations += w_viol
     verified += w_ver
     unverified += w_unverified
-    face_pool = _position_consistent_centers(
-        centers, wants, groups if use_point_groups else None
-    )
+    face_pool = _position_consistent_centers(centers, wants, groups if use_point_groups else None)
     f_viol, f_ver, f_unverified = _face_side_check(faces, face_pool or centers, bounds)
     violations += f_viol
     verified += f_ver
@@ -1379,6 +1377,7 @@ def _feature_placement(
         elif ftype == "cutout":
             cands, other = groups + hole_pats + slot_pats + pockets + grooves + notches, []
         else:
+            _radial_count_check(i, name, f, measured, checks)
             continue
         # narrow to the diameter-matched subset so a differently-sized void
         # cannot satisfy this feature's position/axis checks by pooling;
@@ -1487,6 +1486,83 @@ def _fillet_check(
     else:
         evidence["reason"] = f"no measured fillet radius within {tolerance:g} mm of spec"
         checks.append(_check(f"feat_{i}_fillet", TIER_FEATURES, "FAIL", evidence))
+
+
+# declared N-fold radial repetition: "5 blades at 72 deg spacing around Z",
+# "3 lugs evenly spaced", "fins every 45 deg" — `type=other` features like
+# these reach no void/protrusion check at all, so a missing blade set would
+# verify PASS (propeller run: five declared blades, part was a solid disk).
+_RADIAL_ARRANGEMENT_RE = re.compile(
+    r"(?:"
+    r"around\s+(?:the\s+)?[+-]?[xyz]\b"
+    r"|\bdeg(?:ree)?s?\b[^.;]{0,25}(?:spacing|apart|around|each)"
+    r"|(?:spacing|spaced|angular)[^.;]{0,25}\bdeg"
+    r"|evenly\s+spaced|equally\s+spaced|equal\s+angular"
+    r"|\bradial(?:ly)?\b[^.;]{0,30}(?:around|from|spac|distribut)"
+    r"|pitch\s+circle|bolt\s+circle|\bpcd\b"
+    r"|circumferential"
+    r")",
+    re.I,
+)
+_RADIAL_COUNT_RE = re.compile(
+    r"\b(\d{1,2})\s*(?:instances?|blades?|fins?|teeth|lobes?|spokes?|vanes?|lugs?|tabs?|fold)\b",
+    re.I,
+)
+_RADIAL_AXIS_RE = re.compile(r"around\s+(?:the\s+)?[+-]?([xyz])\b", re.I)
+
+
+def _radial_count_check(
+    i: int,
+    name: str,
+    feature: dict[str, Any],
+    measured: dict[str, Any],
+    checks: list[dict[str, Any]],
+) -> None:
+    """Compare a declared N-fold radial repetition against the executor's
+    polar max-radius autocorrelation count (``features.radial_peaks``).
+
+    Only fires when the feature claims repetition > 1 AND radial-arrangement
+    wording — a plain "other" feature stays unverified as before. The axis
+    comes from explicit "around <axis>" text, then the feature axis field;
+    unresolved axes compare against the strongest measured profile.
+    """
+    text = " ".join(str(feature.get(k) or "") for k in ("name", "position", "description"))
+    if not _RADIAL_ARRANGEMENT_RE.search(text):
+        return
+    count = int(feature.get("count") or 0)
+    if count <= 1:
+        m = _RADIAL_COUNT_RE.search(text)
+        count = int(m.group(1)) if m else 0
+    if count <= 1:
+        return
+    check_name = f"feat_{i}_radial"
+    peaks = (measured or {}).get("radial_peaks") or {}
+    detail = (measured or {}).get("radial_peaks_detail") or {}
+    if not peaks:
+        checks.append(
+            _check(
+                check_name,
+                TIER_FEATURES,
+                "UNVERIFIED",
+                {
+                    "feature": name,
+                    "declared_count": count,
+                    "reason": "no radial profile measurement",
+                },
+            )
+        )
+        return
+    axm = _RADIAL_AXIS_RE.search(text)
+    axis = axm.group(1).lower() if axm else _spec_axis(feature)
+    evidence: dict[str, Any] = {"feature": name, "declared_count": count}
+    if axis:
+        n = int(peaks.get(axis, 0) or 0)
+        evidence.update({"axis": axis, "measured": n, "detail": detail.get(axis)})
+    else:
+        axis = max(peaks, key=lambda a: int(peaks.get(a) or 0))
+        n = int(peaks.get(axis, 0) or 0)
+        evidence.update({"axis": f"any({axis})", "measured": n, "detail": detail.get(axis)})
+    checks.append(_check(check_name, TIER_FEATURES, "PASS" if n == count else "FAIL", evidence))
 
 
 def _unrequested_voids_check(  # noqa: C901

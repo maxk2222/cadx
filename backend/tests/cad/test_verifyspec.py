@@ -607,6 +607,108 @@ def test_face_hint_ignores_foreign_candidate_axis_coords():
     assert not c["evidence"].get("violations")
 
 
+def test_radial_count_missing_blades_fails():
+    """propeller trap: spec declares 5 blades around z, the part is a solid
+    disk — radial_peaks=0 must FAIL, not sail through as type=other."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="blade",
+                type="other",
+                count=5,
+                position="5 instances at 72 deg spacing around Z, radial from hub r=22",
+            )
+        ]
+    )
+    res = _res(features={"radial_peaks": {"x": 0, "y": 0, "z": 0}})
+    c = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_radial"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["declared_count"] == 5
+    assert c["evidence"]["measured"] == 0
+
+
+def test_radial_count_matching_blades_passes():
+    spec = _spec(
+        features=[
+            _feat(
+                name="blade",
+                type="other",
+                count=5,
+                position="5 instances at 72 deg spacing around Z",
+            )
+        ]
+    )
+    res = _res(features={"radial_peaks": {"x": 0, "y": 0, "z": 5}})
+    c = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_radial"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["axis"] == "z"
+
+
+def test_radial_count_unverified_without_measurement():
+    spec = _spec(
+        features=[
+            _feat(name="fins", type="other", count=4, position="4 fins evenly spaced around y")
+        ]
+    )
+    res = _res(features={})
+    c = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_radial"]
+    assert c["status"] == "UNVERIFIED"
+
+
+def test_radial_count_skipped_for_plain_other_feature():
+    """count=1 or no radial wording → no feat_N_radial check at all."""
+    spec = _spec(features=[_feat(name="logo", type="other", count=1, position="top face")])
+    res = _res(features={"radial_peaks": {"x": 0, "y": 0, "z": 1}})
+    checks = _by_name(verify_spec(spec, res, feature_findings=[]))
+    assert "feat_0_radial" not in checks
+
+
+def test_radial_count_not_applied_to_void_features():
+    """a bolt circle is already verified via hole_groups — the radial
+    silhouette check must not double-report on void-typed features."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="bolt circle",
+                type="hole",
+                axis="z",
+                count=4,
+                position="4 holes at 90 deg spacing around z",
+            )
+        ]
+    )
+    res = _res(
+        features={
+            "radial_peaks": {"x": 0, "y": 0, "z": 0},
+            "hole_groups": [
+                _hole_group(
+                    id="h1",
+                    axis="+z",
+                    centers_xyz=[
+                        [20.0, 0.0, None],
+                        [0.0, 20.0, None],
+                        [-20.0, 0.0, None],
+                        [0.0, -20.0, None],
+                    ],
+                )
+            ],
+        }
+    )
+    checks = _by_name(verify_spec(spec, res, feature_findings=[]))
+    assert "feat_0_radial" not in checks
+
+
+def test_radial_count_any_axis_fallback():
+    """'evenly spaced' with no resolvable axis compares the dominant profile."""
+    spec = _spec(
+        features=[_feat(name="teeth", type="other", count=6, position="6 teeth evenly spaced")]
+    )
+    res = _res(features={"radial_peaks": {"x": 0, "y": 0, "z": 4}})
+    c = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_radial"]
+    assert c["status"] == "FAIL"
+    assert c["evidence"]["measured"] == 4
+
+
 def test_face_hint_still_fails_when_all_centres_candidates():
     """No declared coords: every candidate is consistent, so a topmost
     centre far below the +z face is still a real violation."""
@@ -636,9 +738,9 @@ def test_face_hint_still_fails_when_all_centres_candidates():
             ]
         },
     )
-    assert _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_position"][
-        "status"
-    ] == "FAIL"
+    assert (
+        _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_position"]["status"] == "FAIL"
+    )
 
 
 def test_position_prose_is_unverified():
