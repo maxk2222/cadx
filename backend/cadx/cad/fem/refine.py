@@ -2169,6 +2169,7 @@ def _corridor_wall_fill(
     worst = np.zeros(n_rays)
     hits_per_ray = np.zeros(n_rays, dtype=int)
     open_dirs = np.zeros(n_rays, dtype=bool)
+    hot_sets: list[np.ndarray] = []
     for frac in (0.25, 0.5, 0.75):
         origin = np.zeros(3)
         origin[au], origin[av], origin[ax] = feat.u, feat.v, lo + frac * (hi - lo)
@@ -2192,18 +2193,28 @@ def _corridor_wall_fill(
         worst = np.maximum(worst, np.where(np.isfinite(fh), fh, 0.0))
         hits_per_ray = np.maximum(hits_per_ray, nh)
         open_dirs |= ~np.isfinite(fh)
+        hot_sets.append((nh > 2) | (fh > r_nom))
     if open_dirs.any():
         return out, entry, entry_reseated
     # two triggers: the void bulges past the cutter envelope (wavy walls /
     # cavity breach — first-hit far beyond nominal), or interior surfaces
-    # sit INSIDE the void — but only when they are PATCHY: a freshly cut
-    # helical groove also shows interior surfaces, uniformly in every
-    # direction (ridge in/out + silhouette ≈ the same count everywhere);
-    # sliver/cavity debris is localized (clean directions stay at 2 hits)
-    nh_min, nh_max = int(hits_per_ray.min()), int(hits_per_ray.max())
-    uniform_interior = nh_min > 2 and nh_max - nh_min <= 1
-    if float(worst.max()) <= r_nom and (nh_max <= 2 or uniform_interior):
-        return out, entry, entry_reseated
+    # sit INSIDE the void (extra hits per ray). But a freshly cut helical
+    # groove also produces extra hits — and filling it would mint
+    # coincident-face slivers on the union (observed: 747 fragments). The
+    # discriminator: the groove direction ROTATES with height (helix),
+    # while sliver columns and cavity mouths are fixed — compare the
+    # 'hot' direction sets across the three probe heights.
+    nh_max = int(hits_per_ray.max())
+    if float(worst.max()) <= r_nom:
+        if nh_max <= 2:
+            return out, entry, entry_reseated
+        inter = hot_sets[0].copy()
+        union = hot_sets[0].copy()
+        for h in hot_sets[1:]:
+            inter &= h
+            union |= h
+        if not inter.any() or float(inter.sum()) / float(union.sum()) < 0.34:
+            return out, entry, entry_reseated  # rotating signature — real thread
     # cover at least the cutter + wall margin so nothing survives inside
     # the groove; cap at cutter + 3 so the fill can't re-solidify the part
     r_fill = min(max(float(worst.max()) + 0.4, r_nom + 1.0), r_nom + 3.0)

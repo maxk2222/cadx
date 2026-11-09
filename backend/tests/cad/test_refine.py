@@ -2213,3 +2213,29 @@ def test_apply_refine_cavity_breach_cuts_watertight():
     out, rep = apply_refine(mesh, [feat], restore_keeps=False)
     assert len(rep.applied) == 1
     assert out.is_watertight
+
+
+def test_corridor_fill_skips_fresh_helical_groove():
+    """A freshly cut M8 thread shows interior surfaces only along the
+    ROTATING groove direction — the fill must not treat it as slivers
+    (refilling a real groove minted 747 coincident-face fragments)."""
+    from cadx.cad.fem.refine import _thread_groove_solid
+
+    mesh = _bored_wide(0.0, 6.75)
+    groove = _thread_groove_solid(r_in=3.32, r_out=4.3, pitch=1.25, depth=12.0)
+    groove.apply_translation([0.0, 0.0, 12.0])
+    grooved = mesh.difference(groove, engine="manifold")
+    assert grooved is not None and len(grooved.faces)
+    feat = RefineFeature(
+        name="m8",
+        kind="tap",
+        axis="+z",
+        u=0.0,
+        v=0.0,
+        dia=6.75,
+        thread_spec="M8-1.25",
+        helical=True,
+    )
+    rep = RefineReport()
+    out, _, _ = _corridor_wall_fill(grooved, feat, 12.0, 12.0, False, rep)
+    assert out is grooved  # rotating signature recognized — no refill
