@@ -612,3 +612,28 @@ worker-restart erst wenn beide fertig, dann bracket+arm re-eval.
 Tank v20 FEM-probe converged bereits (sf 0.39, PLA@6bar) — aber nur
 1 hole-anchor detektiert (#1 Ø5.8; #2/#3 "out of range") — separates
 anchor-coverage Thema, merken.
+
+## WP-Runde-4: unrequested_voids Root-Cause = verify-Bookkeeping-Bug (37f0917)
+
+Tank unrequested_voids FAIL ueber v19/v20/wp3 — NICHT das Phantom-Loch.
+Reproduktion mit echtem spec + echtem measured-payload zeigt: das
+unmatched evidence war "pattern p1, 4 centres > 3 declared" — wobei die
+4 centres = 3 member voids + pattern-eigenes `center` [0,0,0] (die
+bolt-circle Achse, KEINE Bohrung). _void_center_maps zaehlte `members`
+UND `center` → jede Pattern-Messung meldete count+1 centres → FAIL bei
+count-Deklaration. Trifft JEDEN pattern-Typ (2x2 linear → 5 centres).
+
+Fix: `center` nur noch Fallback wenn keine `members` vorhanden.
+Regression-Test test_unrequested_voids_pattern_center_is_not_a_member
+(red→green verifiziert, 96 verifyspec tests gruen).
+
+Korrektur zur Runde-2-Notiz: crown-flat (d524c76) war trotzdem richtig —
+watertight:false→true war ein echter mesh-defect am degenerierten
+Sphere-Pol — aber es war NIE der unrequested_voids Blocker.
+
+Lernen: verify_evidence nicht in stage metrics persistiert → musste
+lokal aus spec.json + extract_features reproduziert werden. OPTIMIERUNG:
+unmatched/unverified evidence in stage metrics oder version.issues
+persistieren (auditable ohne Reproduktion).
+
+Round-4 laeuft: tank→bracket→arm→propeller, Stack mit allen Fixes.
