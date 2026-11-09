@@ -400,3 +400,50 @@ def test_stated_dim_kept_when_features_fit():
     )
     assert sanitize_stated_dims(spec, "mounting plate 48 mm wide, 20 mm deep foot") == []
     assert spec.length_x.source == "stated"
+
+
+def test_dedup_keeps_enumerated_instances_without_coords():
+    """Tank run: 'foot lug 1/2/3' + 'foot bolt hole 1/2/3' — real placed
+    instances with unparseable position text (empty shared axes) were
+    collapsed to one feature each by the empty-all() bug."""
+    from cadx.agent.steps.intake import dedup_spec_features
+
+    spec = PartSpec(
+        name="tank",
+        length_x={"value": 90},
+        width_y={"value": 90},
+        height_z={"value": 120},
+        features=[
+            _feat("foot lug 1", "radial lug plate on the lower shell, angular position A", count=1),
+            _feat("foot lug 2", "radial lug plate on the lower shell, angular position B", count=1),
+            _feat("foot lug 3", "radial lug plate on the lower shell, angular position C", count=1),
+            _feat("foot bolt hole 1", "through-Z bolt hole in lug plate A", count=1, dia=6.5),
+            _feat("foot bolt hole 2", "through-Z bolt hole in lug plate B", count=1, dia=6.5),
+            _feat("foot bolt hole 3", "through-Z bolt hole in lug plate C", count=1, dia=6.5),
+        ],
+    )
+    assert dedup_spec_features(spec) == []
+    assert len(spec.features) == 6
+
+
+def test_dedup_still_merges_redeclared_pattern_without_coords():
+    from cadx.agent.steps.intake import dedup_spec_features
+
+    spec = PartSpec(
+        name="nema",
+        length_x={"value": 48},
+        width_y={"value": 24},
+        height_z={"value": 52},
+        features=[
+            _feat("M3 bolt circle", "through-holes along y on a square pattern", count=4, dia=3.4),
+            _feat(
+                "mounting hole group",
+                "through-holes along y, positions per datasheet",
+                count=4,
+                dia=3.4,
+            ),
+        ],
+    )
+    notes = dedup_spec_features(spec)
+    assert len(notes) == 1
+    assert len(spec.features) == 1

@@ -1011,6 +1011,17 @@ def _feat_coords(text: str) -> dict[str, frozenset[float]]:
     return {ax: frozenset(v) for ax, v in vals.items()}
 
 
+_FEATURE_INDEX_RE = re.compile(r"^(.*?)[\s_#-]*\d+$")
+
+
+def _feat_base_name(name: str | None) -> str:
+    """Feature name minus a trailing enumeration index — 'foot lug 2'
+    and 'foot lug 3' share base 'foot lug', which marks distinct
+    instances the model numbered, not a re-declaration."""
+    m = _FEATURE_INDEX_RE.match((name or "").strip().lower())
+    return (m.group(1) if m else (name or "").strip().lower()).strip()
+
+
 def dedup_spec_features(spec: PartSpec) -> list[str]:
     """Merge features the model declared twice under different phrasing.
 
@@ -1020,10 +1031,14 @@ def dedup_spec_features(spec: PartSpec) -> list[str]:
     against the 3 real measured groups. Two entries are duplicates when
     type, bore axis word, count and dims agree and no shared coordinate
     axis contradicts — an axis declared in only one phrasing cannot
-    contradict. First entry wins; the merge is a sanitize note, not a
-    feature_drop — no intent is lost."""
+    contradict. With no shared axis at all there is no coordinate
+    evidence, so only merge a whole-pattern re-declaration (count>1) or
+    identically-named entries — index-enumerated names ('foot lug 2' vs
+    'foot lug 3') are distinct placed instances, never duplicates.
+    First entry wins; the merge is a sanitize note, not a feature_drop —
+    no intent is lost."""
     kept: list[Feature] = []
-    seen: list[tuple[tuple, dict[str, frozenset[float]]]] = []
+    seen: list[tuple[tuple, dict[str, frozenset[float]], str]] = []
     notes: list[str] = []
     for f in spec.features or []:
         text = f"{f.position or ''} {f.description or ''}"
@@ -1036,12 +1051,21 @@ def dedup_spec_features(spec: PartSpec) -> list[str]:
             dims.get("depth"),
         )
         coords = _feat_coords(text)
+        base = _feat_base_name(f.name)
         dup = False
-        for prev_head, prev_coords in seen:
+        for prev_head, prev_coords, prev_name in seen:
             if prev_head != head:
                 continue
             shared = set(coords) & set(prev_coords)
-            if all(coords[ax] == prev_coords[ax] for ax in shared):
+            if shared:
+                if all(coords[ax] == prev_coords[ax] for ax in shared):
+                    dup = True
+                    break
+                continue
+            prev_base = _feat_base_name(prev_name)
+            if base == prev_base and (f.name or "") != (prev_name or ""):
+                continue
+            if int(f.count or 1) > 1 or base == prev_base:
                 dup = True
                 break
         if dup:
@@ -1050,7 +1074,7 @@ def dedup_spec_features(spec: PartSpec) -> list[str]:
                 f"{head[0] or 'feature'} on axis {head[1] or '?'} already declared"
             )
             continue
-        seen.append((head, coords))
+        seen.append((head, coords, f.name or ""))
         kept.append(f)
     spec.features = kept
     return notes
