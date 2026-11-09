@@ -151,6 +151,54 @@ def test_refine_verify_through_hole_passes():
     assert refine_verify(_bored(10.0, 6.0), report) == []
 
 
+def test_refine_verify_stale_host_fragmented_rechecks_final_mesh():
+    """bracket -Y tap: the flag is recorded mid-pipeline, before the
+    sliver-drop/keep-union re-attaches the ring — on the final connected
+    mesh it must not force a miss."""
+    report = {
+        "applied": [
+            {
+                "name": "b1",
+                "kind": "hole",
+                "axis": "+z",
+                "x": 10.0,
+                "y": 0.0,
+                "dia": 6.0,
+                "host_fragmented": True,
+            }
+        ]
+    }
+    misses = refine_verify(_bored(10.0, 6.0), report)
+    assert not any(m.get("reason") == "host_fragmented" for m in misses)
+
+
+def test_refine_verify_real_fragment_still_misses():
+    """A bore whose ring really does float free of the main body stays a
+    miss — the re-check confirms the fragment on the final mesh."""
+    ring = trimesh.creation.cylinder(radius=6.0, height=10.0, sections=32)
+    bore = trimesh.creation.cylinder(radius=2.0, height=30.0, sections=32)
+    ring = ring.difference(bore, engine="manifold")
+    ring.apply_translation([10.0, 0.0, 1.0])
+    main = _box()
+    main.apply_translation([0.0, 40.0, 0.0])  # main body well away from the ring
+    mesh = trimesh.util.concatenate([main, ring])
+    report = {
+        "applied": [
+            {
+                "name": "frag",
+                "kind": "hole",
+                "axis": "+z",
+                "x": 10.0,
+                "y": 0.0,
+                "dia": 4.0,
+                "host_fragmented": True,
+            }
+        ]
+    }
+    misses = refine_verify(mesh, report)
+    assert any(m.get("reason") == "host_fragmented" for m in misses)
+
+
 def test_topopt_post_extract_recuts_real_base_bore() -> None:
     """The shared TopOpt finishing step restores/re-cuts a real base tunnel
     before verification, and reports the applied cut with no verification

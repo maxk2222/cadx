@@ -2801,6 +2801,36 @@ def _scan_has_feature(
     return False
 
 
+def _host_fragment_recheck(
+    mesh: trimesh.Trimesh, entry: dict[str, Any], axis: str, uv: tuple[float, float]
+) -> bool | None:
+    """Re-evaluate a recorded ``host_fragmented`` flag on the final mesh.
+
+    ``_feature_host_main`` runs right after each cut — a keep-restore union
+    or the sliver-drop later in the pipeline can re-attach the bore's ring
+    to the main body, leaving the recorded flag stale. True = the ring now
+    belongs to the largest body; False = still floating; None = cannot
+    tell (the recorded evidence then stands)."""
+    ax, _, _ = _AXES_ANY[axis]
+    u, v = float(uv[0]), float(uv[1])
+    depth = entry.get("depth_mm")
+    span = float(depth) if depth else float(mesh.bounds[1][ax] - mesh.bounds[0][ax])
+    dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
+    e = _entry_face_ring(mesh, axis, u, v, dia * 0.5 + 0.75)
+    if e is None:
+        e = _entry_point(mesh, axis, u, v)
+    if e is None:
+        return None
+    feat = RefineFeature(
+        axis=axis,
+        u=u,
+        v=v,
+        dia=dia,
+        depth_mm=float(depth) if depth else None,
+    )
+    return _feature_host_main(mesh, feat, e, span)
+
+
 def refine_verify(  # noqa: C901
     mesh: trimesh.Trimesh | str | Path,
     refine_report: dict[str, Any],
@@ -2855,12 +2885,22 @@ def refine_verify(  # noqa: C901
         if uv is None:
             continue  # no position to check against — cannot verify
         dia = float(entry.get("requested_dia_mm") or entry.get("dia") or 0.0)
-        if entry.get("host_fragmented"):
-            # a hole measured on a floating fragment is not a feature of
-            # the part — count it as a miss even when the surface scan
-            # sees the bore
+        # the flag is measured mid-pipeline — keep-restores and the
+        # sliver-drop afterwards can re-attach the ring to the main
+        # body, leaving the recorded verdict stale. Re-evaluate on the
+        # final mesh: only a still-floating fragment is a miss.
+        if (
+            entry.get("host_fragmented")
+            and _host_fragment_recheck(mesh, entry, axis, uv) is not True
+        ):
             misses.append(
-                {"entry": entry, "x": uv[0], "y": uv[1], "dia": dia, "reason": "host_fragmented"}
+                {
+                    "entry": entry,
+                    "x": uv[0],
+                    "y": uv[1],
+                    "dia": dia,
+                    "reason": "host_fragmented",
+                }
             )
             continue
         # through-features verify on a real through-tunnel — a cavity probe
