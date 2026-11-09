@@ -113,3 +113,33 @@ def test_sanitize_spec_without_research_is_untouched():
     out = _sanitize_spec(spec, ctx)
     assert out.research is None
     assert not any(a.startswith("researched:") for a in out.assumptions)
+
+
+def test_researched_notes_survive_load_case_resanitize():
+    """The orchestrator re-runs sanitize_load_cases on the recovery path —
+    the _MAX_ASSUMPTION_NOTES trim must not cut the pipeline-side sourced
+    notes that _sanitize_spec tail-appends."""
+    from cadx.agent.steps.intake import _MAX_ASSUMPTION_NOTES, sanitize_load_cases
+
+    spec = PartSpec(
+        name="mount",
+        length_x={"value": 48},
+        width_y={"value": 24},
+        height_z={"value": 52},
+    )
+    ctx = _ctx("mount for a nema 17 stepper")
+    ctx.research = _brief()
+    out = _sanitize_spec(spec, ctx)
+    n_researched = sum(1 for a in out.assumptions if a.startswith("researched:"))
+    assert n_researched == 2
+    # model notes beyond the cap + re-sanitize — researched notes stay
+    out.assumptions = [f"model note {i}" for i in range(_MAX_ASSUMPTION_NOTES + 3)] + [
+        a for a in out.assumptions if a.startswith("researched:")
+    ]
+    sanitize_load_cases(out)
+    sanitize_load_cases(out)  # second recovery pass — the observed killer
+    assert [a for a in out.assumptions if a.startswith("researched:")] == [
+        a for a in out.assumptions if a.startswith("researched:")
+    ]
+    assert sum(1 for a in out.assumptions if a.startswith("researched:")) == 2
+    assert sum(1 for a in out.assumptions if a.startswith("model note")) == _MAX_ASSUMPTION_NOTES

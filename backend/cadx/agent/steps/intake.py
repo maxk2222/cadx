@@ -541,9 +541,16 @@ def sanitize_load_cases(spec: PartSpec) -> None:
         spec.assumptions = prior + [n for n in dict.fromkeys(lint_notes) if n not in prior]
     # the assumptions tail serializes into the codegen prompt via spec_block —
     # bound it so per-case lint diagnostics can't dilute the generation
-    # instructions; legit (upstream) assumptions stay ahead of the lint notes
+    # instructions; legit (upstream) assumptions stay ahead of the lint notes.
+    # "researched:" notes are pipeline-side sourced evidence (pre-intake
+    # research step) — they never spend the model's assumption budget and
+    # must survive this trim on every (re-)sanitize pass.
     if spec.assumptions:
-        spec.assumptions = list(dict.fromkeys(spec.assumptions))[:_MAX_ASSUMPTION_NOTES]
+        uniq = list(dict.fromkeys(spec.assumptions))
+        researched = [n for n in uniq if n.startswith("researched:")]
+        spec.assumptions = [n for n in uniq if not n.startswith("researched:")][
+            :_MAX_ASSUMPTION_NOTES
+        ] + researched
     kept: list[LoadCase] = []
     for c in spec.load_cases:
         if not c.fixed and not c.loads:
