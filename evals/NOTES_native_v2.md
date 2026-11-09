@@ -708,3 +708,91 @@ docker compose ps ok, executor+worker auf neuem Image.
 
 Offen für Re-Run: tank 3-Anchor-Bindung + echte 6bar-SF, bracket
 direction, arm feat_6 Improve-Loop, propeller bore/hub-Erkennung.
+
+## Round-6/7 (2026-11-09): spec_feature_rescue Root-Cause — Host-Shell als Mount
+
+Tank-Artefakte zeigten 4 Vollhöhen-Radialfins @90° (r35→44.5, z=0-120,
+Ø6.5 Bolt-Holes ×4) in JEDEM attempt `model.brep` — auch bei
+`sealed_tank(feet=0)`-Code. Nicht Modell-, nicht Render-Artefakt:
+SolidClassifier bestaetigt echtes Volumen im STEP.
+
+Ursache: `cadx/cad/spec_feature_rescue.py` (executor-seitiger Safety-Net
+nach jedem Exec) klassifizierte Mount-Features per Substring-Match auf
+name+type+description+position. Feature 0 des Tank-Specs ("cylindrical
+shell…") enthaelt "(foot base)" in der Position → als Lug gezaehlt:
+- `count` = 3 Lugs + Shell = **4** → Lugs @90° statt 120°
+- `_lug_dims` las Dims von `mount_feats[0]` = Shell → `h=dims[height]=120`
+  → Vollhöhen-Fins; w/t fielen zufaellig auf die Defaults (18/6)
+- `_ring_realized` probierte die 4 falschen Positionen → nie "realized"
+  → Rescue feuerte auf JEDEM korrekten Attempt und ueberschrieb die
+  korrekte 3-Lug-Geometrie mit 4 Fins
+- Folge: unrequested_voids (4 Bohrungen vs 3 deklariert) +
+  step_roundtrip (120mm-Lugs kreuzen Dome-Equator-Fuse-Seam → unsewn
+  shells, 18% Volumen-Drift) — exakt die Tank-FAIL-Signatur
+
+Fix (2927a3d): `_is_mount`/`_is_hole` matchen Mount-/Hole-Woerter per
+Wortgrenze nur auf name+type; `_lug_dims` nimmt Lower-Median ueber alle
+Mount-Features (ein stray Host-Feature kann Dims nicht mehr vergiften);
+Bolt-Hole-Pick bevorzugt mount-benannte Holes/count-Match statt
+first-match. "feet" zu Mount-Woertern (matchte vorher nie). +2 Tests:
+Host-Shell ist kein Mount (rescue feuert nicht auf korrektem Teil),
+bare vessel bekommt 3 Lugs @120°/h=20. 9/9 rescue-Tests, 213 Tests gruen.
+
+Lektion: deterministische Rescue-Pfade duerfen niemals schlechter bauen
+als das Modell — ein Rescue, das auf korrekter Geometrie feuert und sie
+falsch "rettet", ist schlimmer als kein Rescue.
+
+Beobachtung (kein Bug): `worst_sf=None` in fem_analyze = Preview-Calls
+(voxelize-only ohne Solve) bzw. n_solved<k → ehrliche Degradation.
+Offen: bracket zweiter Optimize-Pass (BESO, 344k DOFs) Iteration 2
+>75min @300% CPU — pathologischer Solve-Verdacht, durch Stage-Timeout
+(10800s) gebunden.
+
+## Round-7 Fortsetzung — CG-Runaway-Root-Cause + Fix (bed0f53)
+
+Der "pathologische Solve" aus dem letzten Eintrag bestaetigte sich
+deterministisch und ist KEIN Zufall / keine CPU-Konkurrenz:
+
+- BESO-Pass: Iteration 1 in 58s (cg_iters=170), Iteration 2 >75min
+  bei 300% CPU. arq-Retry nach Executor-Restart reproduzierte den Burn
+  1:1 — diesmal im SIMP-Pass (it7 @50s/iter, it8 >60min).
+- SIGABRT-faulthandler-Stack: beso → _solve_u → native.cg →
+  pyamg multilevel.solve → BSR matvec. Kein Deadlock — ein
+  CG-Stagnations-Burn (~1.2s/iter x 4000 maxiter ≈ 80min).
+- Mechanismus: native cg's Watchdog sieht nur Divergenz (xnorm/blow)
+  und "flat" nur bei ratio_expl > 1.0. Ein Residuum, das UNTER 1.0
+  stagniert (besser als x0, konvergiert aber nie), brennt alle 4000
+  Iterationen ohne Abort. Ursache des Stallings: stale pyamg-Hierarchie
+  — ctx.M wird per _m_reuse() ueber Iterationen gehalten; nach einem
+  grossen Design-Flip (18.8% Zellen) ist die AMG-Hierarchie schlecht
+  konditioniert fuer das neue K-Muster. Die Stale-Erkennung
+  (iters > 1.6x baseline) feuerte erst NACH dem Solve — Henne-Ei:
+  der Solve musste erst durchbrennen, damit M neu gebaut wird.
+
+Fix bed0f53 (generalisierbar, beide Pfade):
+- `_solve_u(maxiter=…)` — Parameter statt hartkodiertem 4000;
+  Default unveraendert, andere Caller unbetroffen.
+- `_cg_maxiter(prev)` = min(4000, max(300, 3*prev)) — ein Solve darf
+  hoechstens 3x seiner letzten Iterationszahl kosten; Regression
+  darueber = Runaway, nicht "haerteres System".
+- beso: capped solve → objective=np.inf → der isfinite-Guard haelt
+  best_mask sauber (unter-konvergiertes F*u unterschaetzt Compliance —
+  wuerde sonst den pathologischen Design-Punkt als "best" speichern)
+  + Warning.
+- simp: capped solve → Warning; die Stale-AMG-Policy (iters > 1.6x
+  m_rate) feuert danach korrekt → M-Rebuild → naechstes _eval
+  konvergiert normal. Approximates u fuer ein eval ist akzeptabel —
+  SIMP korrigiert sich ueber Folge-Iterationen.
+- Tests: _cg_maxiter-Grenzen + beso mit gecaptem Solve (cap greift ab
+  Iteration 2, Warning vorhanden, best_mask bleibt unberuehrt).
+  19/19 beso, 20/20 solver-Tests gruen.
+
+Bemerkung Stage-Design: Optimize-Stage hat 10800s-Timeout — der Burn
+war gebunden, verschlang aber das gesamte Stage-Budget mit ~0
+Fortschritt. Der Cap macht die Deadline jetzt auch INNERHALB eines
+Solves wirksam.
+
+Beobachtung: der Runaway trat beim zweiten Optimize-Pass (feiner
+Mesh, 344k DOFs) auf — der grobe erste Pass (SIMP, ~50s/iter) lief
+normal. Korreliert mit Design-Haertung zwischen den Passes, nicht mit
+Mesh-Groesse allein.
