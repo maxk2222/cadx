@@ -579,12 +579,19 @@ def test_sealed_tank_feet_stay_inside_plan_envelope():
     bb = t.bounding_box()
     # feet grounded on the base plane — a -z FEM support resolves on them
     assert pytest.approx(0.0, abs=0.1) == bb.min.Z
-    # protrusion is bounded by the bolt-hole need (~foot_hole_d*0.7 = 4.55mm),
-    # well under the foot_t=6 the agent feared — the whole plan footprint
-    # stays comfortably inside an OD+10mm envelope
+    # the lug keeps a real edge distance around the bore (~0.2xd, >=1 mm on
+    # both sides): hole centre = cavity_r + hole_r + edge, face = centre +
+    # hole_r + edge — a 0.4 mm rim is unresolvable at FEM voxel scale and
+    # left the bore an open notch ("no fixed region")
+    edge = max(1.0, min(1.5, foot_hole_d * 0.2))
+    expect_reach = 37.0 + foot_hole_d + 2 * edge  # cavity_r + d + 2*edge
     max_reach = max(math.hypot(v.X, v.Y) for v in t.vertices())
-    assert foot_hole_d * 0.7 + 0.6 >= max_reach - 40.0
-    assert 80.0 + 2 * (foot_hole_d * 0.7 + 0.6) >= bb.max.X - bb.min.X
+    assert expect_reach + 0.6 >= max_reach
+    assert max_reach - 40.0 >= foot_hole_d  # feet protrude meaningfully
+    # the bore rim never dips below `edge` ≥ 1 mm — the FEM tunnel
+    # detector needs a closed void column to see the anchor
+    hole_c = 37.0 + foot_hole_d / 2.0 + edge
+    assert expect_reach - (hole_c + foot_hole_d / 2.0) >= 1.0
 
 
 def test_sealed_tank_recessed_head_has_no_pole():

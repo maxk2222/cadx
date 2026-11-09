@@ -211,8 +211,10 @@ def _sealed_tank_hint(spec: PartSpec) -> str:
         "spec's real values — use them; feet=0/foot_hole_d=0 ONLY if the spec "
         "has no feet). Do NOT hand-revolve the domes or hand-build the "
         "feet/holes — the helper grounds each lug on the base plane (z=0, so "
-        "the bolt-hole resolves the -z FEM support) and protrudes it only "
-        "~foot_hole_d*0.7 past the OD, inside a tight plan envelope."
+        "the bolt-hole resolves the -z FEM support) and keeps a real "
+        "~0.2xd edge distance around it (>=1 mm) — bolt feet reach "
+        "~foot_hole_d + ~2.6 mm past the cavity wall; the spec's plan "
+        "envelope must include the feet."
     )
 
 

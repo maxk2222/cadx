@@ -143,10 +143,12 @@ def sealed_tank(
     convex cap. ``feet`` welds that many radial lug feet around the base
     circle, each ``foot_w`` wide (tangential) x ``foot_h`` tall (Z),
     grounded on the base plane (min Z = 0, so the bolt-hole resolves a
-    ``-z`` FEM support). A lug protrudes only as far as its bolt hole
-    needs — with ``foot_hole_d`` > 0 the outer reach is ~``foot_hole_d``
-    * 0.7 past the OD (~4.5 mm for an M6 hole), otherwise ``foot_t``;
-    keep OD + 2*reach inside the declared plan envelope. ``foot_hole_d``
+    ``-z`` FEM support). With ``foot_hole_d`` > 0 the lug reaches the
+    cavity wall + hole dia + a real edge distance (~0.2xd, >=1 mm) on
+    both sides of the bore — roughly ``foot_hole_d`` + ~2.6 mm past the
+    cavity wall (~Ø+13 for an M6 hole on an Ø80 tank), otherwise
+    ``foot_t`` past the OD. Bolt feet always protrude past the body —
+    declare the plan envelope with feet included. ``foot_hole_d``
     > 0 cuts a bolt-hole through Z centred in each lug. Pass 0 feet for a
     plain sealed vessel."""
     if wall * 2 >= outer_d or wall * 2 >= height:
@@ -209,12 +211,13 @@ def sealed_tank(
     embed = 2.0
     hole_r = foot_hole_d / 2.0
     if foot_hole_d > 0:
-        # reach far enough out that a Ø hole clears the cavity wall with a
-        # material margin on both sides, but no farther than the hole needs
-        lug_outer = max(
-            outer_d / 2.0 + foot_hole_d * 0.7,
-            cavity_r + foot_hole_d + 0.8,
-        )
+        # real edge distance on both sides of the bore — a bore sitting
+        # 0.4 mm inside the lug face has no voxel-resolvable rim (the FEM
+        # tunnel scan can't see it) and no structural edge; keep at least
+        # ~1.3 mm (0.2xd, clamped 1.0..1.5) of material around the hole.
+        edge = max(1.0, min(1.5, foot_hole_d * 0.2))
+        hole_c = cavity_r + hole_r + edge
+        lug_outer = hole_c + hole_r + edge
         t_rad = max(foot_t, foot_hole_d + 3.0)
     else:
         lug_outer = outer_d / 2.0 + foot_t
@@ -231,9 +234,9 @@ def sealed_tank(
             Rot(0, 0, deg) * mount_lug(lug_inner, lug_outer, foot_w, tip_w, foot_h)
         )
         if foot_hole_d > 0:
-            hr = lug_outer - hole_r - 0.4
-            hr = max(hr, cavity_r + hole_r + 0.3)
-            tank -= Pos(hr * ca, hr * sa, foot_z - 0.5) * Cylinder(hole_r, foot_h + 1.0, align=_CZ)
+            tank -= Pos(hole_c * ca, hole_c * sa, foot_z - 0.5) * Cylinder(
+                hole_r, foot_h + 1.0, align=_CZ
+            )
     return tank
 
 

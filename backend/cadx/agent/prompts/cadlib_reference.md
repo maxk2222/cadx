@@ -158,9 +158,10 @@ No BuildPart context needed. Parts rest on XY (min Z = 0), centred — place wit
   sealed enclosures). `dome_h` > 0 gives both ends a half-ellipsoid dome of
   that height (`height` stays total outer height); `feet` welds that many
   radial lugs around the base (each `foot_w` tangential x `foot_h` tall),
-  grounded on the base plane — a lug protrudes only ~`foot_hole_d`*0.7
-  past the OD (what the bolt hole needs, ~4.5 mm for M6), so the plan
-  envelope stays tight. `foot_hole_d` cuts a bolt-hole through Z centred
+  grounded on the base plane — the lug keeps a real ~0.2xd edge
+  distance (>=1 mm) around `foot_hole_d` on both sides, so bolt feet
+  reach ~`foot_hole_d` + ~2.6 mm past the cavity wall (~Ø+13 for M6
+  on Ø80); declare the plan envelope including the feet. `foot_hole_d` cuts a bolt-hole through Z centred
   in each lug. Always prefer this over hand-revolving/cutting a vessel —
   the sealed cavity comes out watertight by construction and the feet +
   bolt-holes land inside a spec envelope; do NOT hand-build the lugs.
