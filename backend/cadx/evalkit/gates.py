@@ -5,8 +5,8 @@ Gate specs live in the suite JSON (`stages[].gates`) as
 
 - **outcome gates** — status/score/bbox/features/watertight/verify_spec/
   fem/topopt/tokens/wall time, read off the normalized outcome;
-- **mesh gates** — `radial_peaks`, `volume(_fraction)`, `contains_point`,
-  `bodies` — computed with trimesh on the stage's final committed mesh
+- **mesh gates** — `radial_peaks`, `radial_envelope`, `volume(_fraction)`,
+  `contains_point`, `bodies` — computed with trimesh on the stage's final committed mesh
   (STL/GLB/3MF, authoritative-first via `_mesh_artifact_files`), skipped
   with detail when no mesh is available.
 """
@@ -321,6 +321,28 @@ def _gate_mesh(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
         n, info = _radial_peak_count(mesh, str(g.get("axis") or "z"))
         return GateResult(
             name, want - tol <= n <= want + tol, measured=n, expected=want, detail=info
+        )
+
+    if name == "radial_envelope":
+        # max radial reach about an axis — the honest rotor/impeller check:
+        # an axis-aligned bbox can never reach the tip circle on odd blade
+        # counts (a 5-blade pentagon tops out ~4% short of its Ø)
+        import numpy as np
+
+        ax = str(g.get("axis") or "z").lstrip("+-").lower()
+        a1, a2 = {"x": (1, 2), "y": (0, 2), "z": (0, 1)}.get(ax, (0, 1))
+        v = np.asarray(mesh.vertices, dtype=float)
+        # the rotation axis is the vertex centroid — for odd-fold symmetry
+        # (5 blades) the bbox centre is NOT on the axis and inflates r_max
+        c1, c2 = float(v[:, a1].mean()), float(v[:, a2].mean())
+        r_max = float(np.hypot(v[:, a1] - c1, v[:, a2] - c2).max())
+        want = float(g.get("radius_mm") or 0.0)
+        tol = float(g.get("tol_mm", 1.0))
+        return GateResult(
+            name,
+            abs(r_max - want) <= tol,
+            measured=round(r_max, 2),
+            expected=want,
         )
 
     if name == "volume":
@@ -1086,7 +1108,14 @@ def _gate_outcome(  # noqa: C901
     return GateResult(name, True, detail=f"unknown gate type {name!r} (skipped)")
 
 
-MESH_GATES = {"radial_peaks", "volume", "volume_fraction", "contains_point", "bodies"}
+MESH_GATES = {
+    "radial_peaks",
+    "radial_envelope",
+    "volume",
+    "volume_fraction",
+    "contains_point",
+    "bodies",
+}
 
 
 def run_gates(

@@ -36,8 +36,14 @@
             140,
             28
           ],
-          "match": "match",
+          "match": "within",
           "tol_mm": 5
+        },
+        {
+          "type": "radial_envelope",
+          "axis": "z",
+          "radius_mm": 70,
+          "tol_mm": 4
         },
         {
           "type": "radial_peaks",

@@ -973,3 +973,40 @@ def test_fem_loadcases_clean_case_passes():
     out = _fem_out()
     ok = run_gates([{"type": "fem_loadcases", "min_cases": 1}], out, 0)[0]
     assert ok.ok, ok.detail
+
+
+def test_radial_envelope_measures_tip_radius(tmp_path):
+    """A 5-blade propeller's axis-aligned bbox can never reach the tip
+    circle's Ø — the pentagon of tips tops out short. The envelope check
+    must measure max radial reach, not bbox extents."""
+    hub = trimesh.creation.cylinder(radius=14, height=24, sections=120)
+    hub.apply_translation((0, 0, 12))
+    blades = []
+    for i in range(5):
+        blade = trimesh.creation.box(extents=(58, 16, 3))
+        blade.apply_translation((42, 0, 12))  # radial span to tip r=71
+        blade.apply_transform(
+            trimesh.transformations.rotation_matrix(i * 2 * math.pi / 5, [0, 0, 1])
+        )
+        blade = blade.subdivide().subdivide()
+        blades.append(blade)
+    mesh = trimesh.util.concatenate([hub, *blades])
+    # pentagon footprint — axis-aligned x/y extents stay under 2*tip_r
+    ext = mesh.bounding_box.extents
+    assert float(ext[0]) < 140.0 or float(ext[1]) < 140.0
+    p = tmp_path / "prop5.stl"
+    mesh.export(p)
+    out = _out(artifact_files=[str(p)])
+    g = run_gates(
+        [{"type": "radial_envelope", "axis": "z", "radius_mm": 71, "tol_mm": 1.5}],
+        out,
+        0,
+    )[0]
+    assert g.ok, g.detail
+    # and it still catches a genuinely undersized rotor
+    g2 = run_gates(
+        [{"type": "radial_envelope", "axis": "z", "radius_mm": 60, "tol_mm": 2}],
+        out,
+        0,
+    )[0]
+    assert not g2.ok
