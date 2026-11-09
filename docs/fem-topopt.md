@@ -223,8 +223,13 @@ on the bore wall as tangential traction),
 `force_n` + `remote_point` (same resultant plus the induced lever moment —
 `remote_point` alone applies nothing and warns),
 `g_load` (body acceleration in g units over the region's mass). Support
-regions take `fix_mode`: `"all"` (encastre) or `"normal"` (pins only the
-axis DOF — roller/resting/symmetry; reported as `(nnodes,3)` DOF masks).
+regions take `fix_mode`: `"all"` (encastre), `"bearing"` (hole/anchor/bore
+only — collar: pins the two DOFs normal to the bore axis, axial slide
+stays free) or `"normal"` (pins only the axis DOF — roller/resting/
+symmetry; reported as `(nnodes,3)` DOF masks). `"normal"` on a hole-kind
+support is never a real fixture — intake `sanitize_load_cases` upgrades it
+to `"bearing"`/`"all"` in under-constrained cases (noted in
+`spec.assumptions`).
 Resolution reports per-load `applied` records (which mechanisms landed, with
 the *measured* resultant force and couple about the region centroid, plus
 `couple_requested_nm`/`couple_deficit_nm`/`couple_footprint_mm` for moment
