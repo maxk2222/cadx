@@ -844,20 +844,34 @@ def _dim_stated_in_prompt(value: float, prompt: str) -> bool:
     return weak
 
 
-def sanitize_stated_dims(spec: PartSpec, prompt: str) -> list[str]:
-    """Downgrade ``source="stated"`` envelope dims the prompt never stated.
+def _feature_axis_extents(spec: PartSpec) -> dict[str, float]:
+    """Largest span the declared features need per axis — singles, ±pairs
+    and centre-spread endpoints folded through _feat_coords. x/y are
+    centred so the span is twice the largest |coord|; z is 0-based."""
+    ext: dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
+    for f in spec.features or []:
+        coords = _feat_coords(f"{f.position or ''} {f.description or ''}")
+        for ax, vals in coords.items():
+            ext[ax] = max(ext[ax], max((abs(v) for v in vals), default=0.0))
+    return ext
 
-    Weak models lift feature numbers into envelope dims — observed on the
-    NEMA-17 case: "two Ø4.5 through-holes about 30 mm apart" produced
-    ``length_x=30 stated``, and verify_spec then honestly FAILED a correct
-    48 mm part. 'stated' is a hard contract in verify_spec; a guessed dim
-    must keep ``inferred`` so the check degrades to UNVERIFIED instead of
+
+def sanitize_stated_dims(spec: PartSpec, prompt: str) -> list[str]:
+    """Downgrade ``source="stated"`` envelope dims the spec cannot honour.
+
+    Two honest-label audits: (1) a stated value must be an envelope-bearing
+    prompt number — "two Ø4.5 through-holes about 30 mm apart" produced
+    ``length_x=30 stated`` and verify_spec honestly FAILED a correct 48 mm
+    part; (2) a stated dim the spec's own feature extents contradict is a
+    wrong-axis assignment — "length_x=20 stated" (the prompt's "~20 mm deep"
+    flange value, a Y extent) while features declare x=±15.5 → x needs ≥31.
+    'stated' is a hard contract in verify_spec; a guessed or misplaced dim
+    keeps ``inferred`` so the check degrades to UNVERIFIED instead of
     enforcing the model's own assumption. Runs after the dim upgrades so
-    only surviving labels are audited; skipped without a prompt so edit /
-    resume paths keep earlier stated dims."""
-    if not (prompt or "").strip():
-        return []
+    only surviving labels are audited; the prompt audit is skipped without
+    a prompt so edit / resume paths keep earlier stated dims."""
     notes: list[str] = []
+    ext = _feature_axis_extents(spec)
     for ax, attr in (("x", "length_x"), ("y", "width_y"), ("z", "height_z")):
         d = getattr(spec, attr, None)
         if d is None or getattr(d, "source", "") != "stated":
@@ -866,13 +880,23 @@ def sanitize_stated_dims(spec: PartSpec, prompt: str) -> list[str]:
             v = float(d.value or 0)
         except (TypeError, ValueError):
             continue
-        if v <= 0 or _dim_stated_in_prompt(v, prompt):
+        if v <= 0:
             continue
-        notes.append(
-            f"{ax} dim {v:g} labelled 'stated' but never appears as an "
-            f"envelope value in the prompt — downgraded to inferred"
-        )
-        setattr(spec, attr, d.model_copy(update={"source": "inferred"}))
+        need = 2.0 * ext[ax] if ax in "xy" else ext[ax]
+        if need > v + max(0.5, 0.02 * v):
+            notes.append(
+                f"{ax} dim {v:g} stated but own features reach "
+                f"{ax}={ext[ax]:g} (need ≥{need:g}) — wrong-axis value, "
+                f"downgraded to inferred"
+            )
+            setattr(spec, attr, d.model_copy(update={"source": "inferred"}))
+            continue
+        if (prompt or "").strip() and not _dim_stated_in_prompt(v, prompt):
+            notes.append(
+                f"{ax} dim {v:g} labelled 'stated' but never appears as an "
+                f"envelope value in the prompt — downgraded to inferred"
+            )
+            setattr(spec, attr, d.model_copy(update={"source": "inferred"}))
     return notes
 
 

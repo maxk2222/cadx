@@ -357,3 +357,46 @@ def test_dedup_keeps_different_count_or_dia():
     )
     assert dedup_spec_features(spec) == []
     assert len(spec.features) == 3
+
+
+def test_stated_dim_wrong_axis_downgraded():
+    """'~20 mm deep' is a real stated value — but assigned to X while the
+    spec's own features declare x=±15.5 (need ≥31). The part built x=48
+    correctly; the stated dim is a wrong-axis assignment, not an envelope."""
+    from cadx.agent.steps.intake import sanitize_stated_dims
+
+    spec = PartSpec(
+        name="nema",
+        length_x={"value": 20, "source": "stated"},
+        width_y={"value": 24},
+        height_z={"value": 52},
+        features=[
+            _feat("pilot", "through-hole along y, centred at x=0, z=26", dia=22.0),
+            _feat(
+                "M3",
+                "through-holes along y at x=±15.5, z=26±15.5",
+                count=4,
+                dia=3.4,
+            ),
+            _feat("feet", "through-holes along z at y=10, x=±15", count=2, dia=4.5),
+        ],
+    )
+    notes = sanitize_stated_dims(spec, "mount ~20 mm deep foot flange")
+    assert spec.length_x.source == "inferred"
+    assert notes and "wrong-axis" in notes[0]
+
+
+def test_stated_dim_kept_when_features_fit():
+    from cadx.agent.steps.intake import sanitize_stated_dims
+
+    spec = PartSpec(
+        name="ok",
+        length_x={"value": 48, "source": "stated"},
+        width_y={"value": 24},
+        height_z={"value": 52},
+        features=[
+            _feat("M3", "holes along y at x=±15.5, z=26±15.5", count=4, dia=3.4),
+        ],
+    )
+    assert sanitize_stated_dims(spec, "mounting plate 48 mm wide, 20 mm deep foot") == []
+    assert spec.length_x.source == "stated"

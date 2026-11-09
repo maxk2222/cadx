@@ -6295,6 +6295,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     dim_notes.extend(intake_step.sanitize_standard_part_names(spec))
     dim_notes.extend(intake_step.sanitize_standard_part_dims(spec))
     pos_notes = intake_step.normalize_feature_positions(spec)
+    dim_notes.extend(intake_step.sanitize_stated_dims(spec, prompt))
     if dim_notes or pos_notes:
         outcome.spec = spec.model_dump()
         ctx.spec = spec
