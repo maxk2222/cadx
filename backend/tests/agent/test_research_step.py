@@ -214,3 +214,41 @@ def test_stated_dim_untouched_without_prompt():
     )
     assert sanitize_stated_dims(spec, "") == []
     assert spec.length_x.source == "stated"
+
+
+def test_sanitize_dims_no_restate_from_feature_spacing():
+    """The recovery path re-runs sanitize_dims after _sanitize_spec — its
+    'largest mm = overall size' heuristic must not resurrect the '30 mm
+    apart' spacing as a stated envelope (the second half of the NEMA bug)."""
+    from cadx.agent.steps.intake import sanitize_dims, sanitize_stated_dims
+
+    prompt = (
+        "motor mount for a NEMA 17 stepper, two dia 4.5 mm through-holes "
+        "about 30 mm apart in the feet"
+    )
+    spec = PartSpec(
+        name="nema mount",
+        length_x={"value": 30, "source": "stated"},
+        width_y={"value": 24},
+        height_z={"value": 52},
+    )
+    sanitize_stated_dims(spec, prompt)
+    assert spec.length_x.source == "inferred"
+    # the orchestrator recovery pass — must not re-state
+    sanitize_dims(spec, prompt)
+    assert spec.length_x.source == "inferred"
+    assert float(spec.length_x.value) == 30.0
+
+
+def test_sanitize_dims_still_restates_true_envelope():
+    from cadx.agent.steps.intake import sanitize_dims
+
+    spec = PartSpec(
+        name="lever",
+        length_x={"value": 40},
+        width_y={"value": 20},
+        height_z={"value": 10},
+    )
+    notes = sanitize_dims(spec, "a lever approx 130 mm long with a small knob")
+    assert notes
+    assert spec.length_x.source == "stated" and float(spec.length_x.value) == 130.0

@@ -621,6 +621,16 @@ def sanitize_dims(spec: PartSpec, prompt: str) -> list[str]:
     vals = _prompt_mm_values(prompt)
     if not vals:
         return notes
+    # the largest prompt number is not automatically an envelope — "two
+    # holes 30 mm apart" must not re-state length_x=30 (observed on the
+    # NEMA-17 case: sanitize_stated_dims downgraded the label, then this
+    # recovery re-run resurrected it). Only envelope-context values count.
+    env_val = next(
+        (v for v in vals if _dim_stated_in_prompt(v, prompt)),
+        None,
+    )
+    if env_val is None:
+        return notes
     lx = spec.length_x
     if lx.source == "stated" and lx.value > 0:
         return notes  # the model stated an overall length — trust it
@@ -632,13 +642,13 @@ def sanitize_dims(spec: PartSpec, prompt: str) -> list[str]:
         ),
         default=0.0,
     )
-    if stated_max >= vals[0] * 0.5:
+    if stated_max >= env_val * 0.5:
         return notes  # stated dims already cover the part's overall size
     notes.append(
-        f"prompt states ~{vals[0]:g} mm but intake had length_x="
+        f"prompt states ~{env_val:g} mm but intake had length_x="
         f"{lx.value:g} {lx.source} — re-stated"
     )
-    spec.length_x = lx.model_copy(update={"value": vals[0], "source": "stated"})
+    spec.length_x = lx.model_copy(update={"value": env_val, "source": "stated"})
     return notes
 
 
