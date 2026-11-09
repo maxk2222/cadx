@@ -428,6 +428,7 @@ def run_fem_domain(
     class_D: np.ndarray | None = None,
     micro_amp: np.ndarray | None = None,
     model: str = "resolved",
+    cg_maxiter: int = 5000,
 ) -> FemReport:
     """Verify a structure defined directly on an existing grid — used for
     TopOpt post-verification where re-voxelizing the smoothed export mesh
@@ -481,6 +482,7 @@ def run_fem_domain(
         elem_class=elem_class,
         class_D=class_D,
         micro_amp=micro_amp,
+        cg_maxiter=cg_maxiter,
     )
     return report
 
@@ -561,6 +563,7 @@ def _solve_case_child(i: int) -> tuple[int, FemSolution]:
         solver_backend=st.get("solver_backend", "auto"),
         elem_class=st.get("elem_class"),
         class_D=st.get("class_D"),
+        cg_maxiter=int(st.get("cg_maxiter", 5000)),
     )
     return i, sol
 
@@ -584,6 +587,7 @@ def _solve_cases(  # noqa: C901
     elem_class: np.ndarray | None = None,
     class_D: np.ndarray | None = None,
     micro_amp: np.ndarray | None = None,
+    cg_maxiter: int = 5000,
 ) -> None:
     report.grid = {
         "pitch_mm": round(domain.pitch, 4),
@@ -779,6 +783,7 @@ def _solve_cases(  # noqa: C901
                 solver_backend=solver_backend,
                 elem_class=elem_class,
                 class_D=class_D,
+                cg_maxiter=cg_maxiter,
             )
             # fork inside a threaded async process can leave a child wedged on
             # an inherited lock — a silent hang, not a raised error. Bound the
@@ -831,6 +836,7 @@ def _solve_cases(  # noqa: C901
                 solver_backend=solver_backend,
                 elem_class=elem_class,
                 class_D=class_D,
+                cg_maxiter=cg_maxiter,
             )
         _record(res, sol)
         sol_by_i[i] = sol

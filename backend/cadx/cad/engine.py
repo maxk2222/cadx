@@ -1939,6 +1939,13 @@ def _resolve_topopt_cases(
     return r_resolved, r_weights, r_fixed_nm, r_load_nm, r_unresolved
 
 
+# auxiliary eroded/dilated realizations are sensitivity probes — a CG
+# solve that cannot converge within this budget is pathological (a thin
+# or fragmented mask) and must report failed, not burn the stage
+# deadline: 5000 iters at ~1.2 s/iter is ~100 min on one realization
+_AUX_CG_MAXITER = 1200
+
+
 def _verify_export_structure(  # noqa: C901
     *,
     candidate_mesh: Any,
@@ -2081,6 +2088,7 @@ def _verify_export_structure(  # noqa: C901
         od: Path | None = out_dir,
         dom: Any = None,
         workers: int | None = None,
+        cg_maxiter: int = 5000,
     ) -> Any:
         # od=None for the auxiliary realizations — their reports feed
         # sf_verified only, so skip the unreferenced per-case PNG renders
@@ -2100,6 +2108,7 @@ def _verify_export_structure(  # noqa: C901
             source_mesh=skin,
             cancelled=cancelled,
             solver_backend=solver_backend,
+            cg_maxiter=cg_maxiter,
         )
 
     report = _solve(export_domain.solid, suffix)
@@ -2179,6 +2188,7 @@ def _verify_export_structure(  # noqa: C901
                         None,
                         dom,
                         0,
+                        _AUX_CG_MAXITER,
                     )
                     for name, mask, dom in jobs
                 }
@@ -2195,6 +2205,7 @@ def _verify_export_structure(  # noqa: C901
                         f"{suffix}_{'ero' if name == 'eroded' else 'dil'}",
                         None,
                         dom,
+                        cg_maxiter=_AUX_CG_MAXITER,
                     )
                 except Exception as e:
                     results[name] = e

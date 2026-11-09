@@ -916,6 +916,7 @@ def solve_reduced(
     solver_backend: str = "auto",
     elem_class: np.ndarray | None = None,
     class_D: np.ndarray | None = None,
+    cg_maxiter: int = 5000,
 ) -> FemSolution:
     """Solve + post-stress for a case on its `reduce_case` context.
 
@@ -994,7 +995,7 @@ def solve_reduced(
         if M is None:
             M = _elastic_preconditioner(Kf.tocsr(), domain, free, backend=solver_backend)
         x0 = u0[free] if u0 is not None else None
-        x, info, diverged = _cg_watchdog(Kf, Ff, x0, M, maxiter=5000)
+        x, info, diverged = _cg_watchdog(Kf, Ff, x0, M, maxiter=cg_maxiter)
         if diverged is not None:
             # divergent iterate is numerically meaningless — return zeros so
             # downstream stress fields read as a failed solve, not e14-mm junk
