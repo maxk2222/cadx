@@ -782,6 +782,90 @@ def sanitize_dimset(spec: PartSpec, prompt: str) -> list[str]:
     return notes
 
 
+_ENV_PAIR_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*[x\u00d7]\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+_ENV_KW_RE = re.compile(
+    r"\b(?:width|wide|length|long|height|high|tall|depth|deep|thick(?:ness)?|"
+    r"envelope|overall|footprint|bbox|size|outer|span|"
+    r"breit(?:e)?|l\u00e4nge|lang|h\u00f6he|hoch|tiefe?|dick(?:e|er)?|"
+    r"durchmesser|abmessung(?:en)?|umriss)\b",
+    re.I,
+)
+_NON_ENV_RE = re.compile(
+    r"\b(?:apart|spacing|pitch|distance|offset|centered|centred|"
+    r"hole|holes|bore|drill|thread|tap|screw|bolt|insert|nut|slot|"
+    r"abstand|versatz|l\u00f6ch|loch|bohr|gewinde|schraub|zentri)\b",
+    re.I,
+)
+_NEAR_CHARS = 20
+
+
+def _dim_stated_in_prompt(value: float, prompt: str) -> bool:
+    """Whether ``value`` is an envelope-bearing number in ``prompt``.
+
+    Membership in an explicit ``A x B x C`` / ``A x B`` extent, a ``Ø``
+    prefix, or a size keyword next to the number counts. A number that
+    only appears in feature contexts ("30 mm apart", "holes", "M3") is
+    NOT a stated envelope — it is a spacing, pattern or bore spec that
+    must never pin the part envelope."""
+    text = prompt or ""
+    if any(value in t for t in _dimset_triplets(text)):
+        return True
+    for m in _ENV_PAIR_RE.finditer(text):
+        if value in {
+            float(m.group(1).replace(",", ".")),
+            float(m.group(2).replace(",", ".")),
+        }:
+            return True
+    weak = False
+    for m in re.finditer(r"(\d+(?:[.,]\d+)?)", text):
+        try:
+            if abs(float(m.group(1).replace(",", ".")) - value) > 0.001:
+                continue
+        except ValueError:
+            continue
+        near = text[max(0, m.start() - _NEAR_CHARS) : m.end() + _NEAR_CHARS]
+        if "\u00d8" in near[:_NEAR_CHARS] or "\u2300" in near[:_NEAR_CHARS]:
+            return True
+        if _ENV_KW_RE.search(near):
+            return True
+        wide = text[max(0, m.start() - 60) : m.end() + 60]
+        if not _NON_ENV_RE.search(wide):
+            weak = True
+    return weak
+
+
+def sanitize_stated_dims(spec: PartSpec, prompt: str) -> list[str]:
+    """Downgrade ``source="stated"`` envelope dims the prompt never stated.
+
+    Weak models lift feature numbers into envelope dims — observed on the
+    NEMA-17 case: "two Ø4.5 through-holes about 30 mm apart" produced
+    ``length_x=30 stated``, and verify_spec then honestly FAILED a correct
+    48 mm part. 'stated' is a hard contract in verify_spec; a guessed dim
+    must keep ``inferred`` so the check degrades to UNVERIFIED instead of
+    enforcing the model's own assumption. Runs after the dim upgrades so
+    only surviving labels are audited; skipped without a prompt so edit /
+    resume paths keep earlier stated dims."""
+    if not (prompt or "").strip():
+        return []
+    notes: list[str] = []
+    for ax, attr in (("x", "length_x"), ("y", "width_y"), ("z", "height_z")):
+        d = getattr(spec, attr, None)
+        if d is None or getattr(d, "source", "") != "stated":
+            continue
+        try:
+            v = float(d.value or 0)
+        except (TypeError, ValueError):
+            continue
+        if v <= 0 or _dim_stated_in_prompt(v, prompt):
+            continue
+        notes.append(
+            f"{ax} dim {v:g} labelled 'stated' but never appears as an "
+            f"envelope value in the prompt — downgraded to inferred"
+        )
+        setattr(spec, attr, d.model_copy(update={"source": "inferred"}))
+    return notes
+
+
 _VOID_FEATURE_TYPES = {
     "hole",
     "bore",
@@ -1603,6 +1687,11 @@ def _sanitize_spec(spec: PartSpec, ctx: AgentCtx) -> PartSpec:
     sanitize_material(spec, ctx.prompt or "")
     for note in sanitize_dim_echo(spec, ctx.prompt or ""):
         log.info("intake.dim_echo_fixed", note=note)
+    # audit model-authored 'stated' labels BEFORE the upgrades below set
+    # their own stated dims from derived values (axis extents use 2x|coord|
+    # which never appears verbatim in the prompt)
+    for note in sanitize_stated_dims(spec, ctx.prompt or ""):
+        log.info("intake.stated_dim_fixed", note=note)
     # explicit prompt triplets / axis coordinates are the strongest
     # stated evidence — they run last so dim_echo's feature-extent
     # guesses cannot silently undo them

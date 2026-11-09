@@ -143,3 +143,74 @@ def test_researched_notes_survive_load_case_resanitize():
     ]
     assert sum(1 for a in out.assumptions if a.startswith("researched:")) == 2
     assert sum(1 for a in out.assumptions if a.startswith("model note")) == _MAX_ASSUMPTION_NOTES
+
+
+def test_stated_dim_from_feature_spacing_downgraded():
+    """Observed on the NEMA-17 eval: the model lifted 'two Ø4.5 holes about
+    30 mm apart' into length_x=30 stated — verify_spec then enforced the
+    guess and honestly FAILED a correct 48 mm part."""
+    from cadx.agent.steps.intake import sanitize_stated_dims
+
+    spec = PartSpec(
+        name="nema mount",
+        length_x={"value": 30, "source": "stated"},
+        width_y={"value": 24, "source": "inferred"},
+        height_z={"value": 52, "source": "inferred"},
+    )
+    notes = sanitize_stated_dims(
+        spec,
+        "motor mount for a NEMA 17 stepper, two dia 4.5 mm through-holes "
+        "about 30 mm apart in the feet",
+    )
+    assert spec.length_x.source == "inferred"
+    assert spec.width_y.source == "inferred" and spec.height_z.source == "inferred"
+    assert notes and "length" not in notes[0]
+
+
+def test_stated_dim_kept_when_prompt_states_envelope():
+    from cadx.agent.steps.intake import sanitize_stated_dims
+
+    spec = PartSpec(
+        name="plate",
+        length_x={"value": 48, "source": "stated"},
+        width_y={"value": 24, "source": "stated"},
+        height_z={"value": 80, "source": "stated"},
+    )
+    notes = sanitize_stated_dims(
+        spec, "mounting plate 48 mm wide, 24 mm tall x 80 deep, 3 mm thick"
+    )
+    assert notes == []
+    assert spec.length_x.source == "stated"
+    assert spec.height_z.source == "stated"
+
+
+def test_stated_dim_kept_from_triplet_and_diameter():
+    from cadx.agent.steps.intake import sanitize_stated_dims
+
+    spec = PartSpec(
+        name="rotor",
+        length_x={"value": 140, "source": "stated"},
+        width_y={"value": 140, "source": "stated"},
+        height_z={"value": 60, "source": "stated"},
+    )
+    assert sanitize_stated_dims(spec, "rotor Ø140, hub 60 tall") == []
+    spec2 = PartSpec(
+        name="block",
+        length_x={"value": 120, "source": "stated"},
+        width_y={"value": 70, "source": "stated"},
+        height_z={"value": 90, "source": "stated"},
+    )
+    assert sanitize_stated_dims(spec2, "bracket 120 x 70 x 90 steel") == []
+
+
+def test_stated_dim_untouched_without_prompt():
+    from cadx.agent.steps.intake import sanitize_stated_dims
+
+    spec = PartSpec(
+        name="legacy",
+        length_x={"value": 30, "source": "stated"},
+        width_y={"value": 24},
+        height_z={"value": 52},
+    )
+    assert sanitize_stated_dims(spec, "") == []
+    assert spec.length_x.source == "stated"

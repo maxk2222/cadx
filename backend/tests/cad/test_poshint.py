@@ -191,6 +191,23 @@ def test_coord_points_wordy_connector_still_splits():
     ]
 
 
+def test_coord_points_center_spread_emits_endpoints_not_center():
+    """'z=26±15.5' declares two points at 10.5 and 41.5 — the bare centre
+    must not parse as a phantom point. Observed on the NEMA-17 case: the
+    position check demanded a hole centre at z=26 while the real 31 mm
+    square pattern sat at z=10.5/41.5 → false feat_position FAIL."""
+    pts = parse_coord_points(
+        "through-holes along y at x=±15.5, z=26±15.5 (z = 10.5 and 41.5), centred on the pilot bore"
+    )
+    assert {"z": 26.0} not in pts
+    assert {"z": 10.5} in pts
+    assert {"z": 41.5} in pts
+
+
+def test_coord_points_center_spread_slash_form():
+    assert parse_coord_points("x=10+/-5") == [{"x": 5.0}, {"x": 15.0}]
+
+
 # --------------------------------------------------------------------------- #
 # unicode normalization (U+2212 minus, en/em dash, NBSP)                      #
 # --------------------------------------------------------------------------- #

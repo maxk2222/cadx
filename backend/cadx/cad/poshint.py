@@ -268,6 +268,12 @@ def parse_position_hints(
 # of the SAME axis mean a span declaration, not a second point ("x=-60 bis
 # x=-55"). Wordy connectors ("on the leg to (x=..)", "and") still separate.
 _RANGE_LINK_RE = re.compile(r"^\s*,?\s*(?:bis|to|through|thru|\.\.|\u2013|\u2014)\s*$", re.I)
+# "z=26±15.5" — a centre-plus-spread declaration: the two real points are
+# the ENDPOINTS (10.5, 41.5), never the centre itself. Without masking,
+# _POS_COORD_RE would read the bare centre as a phantom point.
+_CENTER_SPREAD_RE = re.compile(
+    r"\b([xyz])\s*=\s*([+-]?\d+(?:\.\d+)?)\s*(?:±|\+/-)\s*(\d+(?:\.\d+)?)", re.I
+)
 
 
 def parse_coord_points(text: str) -> list[dict[str, float]]:
@@ -286,11 +292,24 @@ def parse_coord_points(text: str) -> list[dict[str, float]]:
     """
     text = _norm_numtext(text or "")
     ranges = _axis_range_matches(text)
+    spreads = [
+        (
+            m.start(),
+            m.end(),
+            m.group(1).lower(),
+            float(m.group(2)),
+            float(m.group(3)),
+        )
+        for m in _CENTER_SPREAD_RE.finditer(text)
+    ]
+    blocked = [(s, e) for s, e, *_ in ranges] + [(s, e) for s, e, *_ in spreads]
     tokens: list[tuple[int, int, str, float]] = []
     for match in _POS_COORD_RE.finditer(text):
-        if any(start <= match.start() < end for start, end, *_ in ranges):
+        if any(start <= match.start() < end for start, end in blocked):
             continue
         tokens.append((match.start(), match.end(), match.group(1).lower(), float(match.group(2))))
+    for start, end, ax, c, s in spreads:
+        tokens.extend([(start, end, ax, c - s), (start, end, ax, c + s)])
     tokens.extend((start, end, axis, (lo + hi) / 2.0) for start, end, axis, lo, hi in ranges)
     tokens.sort(key=lambda token: (token[0], token[1]))
     groups: list[dict[str, float]] = []
