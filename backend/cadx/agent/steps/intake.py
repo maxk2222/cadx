@@ -385,6 +385,61 @@ def lint_support_modes(spec: PartSpec) -> list[str]:
     return notes
 
 
+_SUPPORT_HOLE_KINDS = ("hole", "anchor", "bore")
+
+
+def normalize_support_modes(spec: PartSpec) -> list[str]:
+    """Upgrade fix_mode 'normal' on hole/anchor/bore fixed regions in
+    under-constrained cases. 'normal' on a bore pins only the axial DOF —
+    never a real support (roller/symmetry stays valid on plane/face kinds,
+    which this never touches). Prefer 'bearing' (collar: pins the two DOFs
+    normal to the bore axis, axial slide stays free); escalate to 'all'
+    (bolted seat) when the union still leaves rigid modes free — e.g. N
+    coaxial mounting bores where the collar keeps the axis free."""
+    notes: list[str] = []
+    for case in spec.load_cases or []:
+        fixed = list(case.fixed or [])
+        if not fixed:
+            continue
+        pinned = 0
+        for r in fixed:
+            pinned |= _region_mode_mask(r)
+        if pinned == 0b111111:
+            continue  # already constrained — a stray 'normal' hole adds a
+            # harmless axial pin; preserve the declared intent
+        normal_holes = [
+            r
+            for r in fixed
+            if str(getattr(r, "fix_mode", "all") or "all") == "normal"
+            and str(getattr(r, "kind", "") or "") in _SUPPORT_HOLE_KINDS
+        ]
+        if not normal_holes:
+            continue  # under-constrained for another reason — lint reports it
+        # rebuild the mask as it would stand AFTER a collar upgrade — the
+        # 'normal' axial pin is lost, so seeding from `pinned` would keep a
+        # DOF the new support no longer provides
+        probe = 0
+        for r in fixed:
+            probe |= _region_mode_mask(
+                r.model_copy(update={"fix_mode": "bearing"}) if r in normal_holes else r
+            )
+        target = "bearing" if probe == 0b111111 else "all"
+        case.fixed = [
+            r.model_copy(update={"fix_mode": target}) if r in normal_holes else r for r in fixed
+        ]
+        names = ", ".join(str(getattr(r, "description", "") or r.kind) for r in normal_holes[:4])
+        notes.append(
+            f"case '{case.name}': fix_mode 'normal' on {names} pins only the "
+            f"bore-axial DOF — upgraded to '{target}' "
+            + (
+                "(collar — axial slide stays free)"
+                if target == "bearing"
+                else "(bolted seat — 'normal' on a hole is never a support)"
+            )
+        )
+    return notes
+
+
 def drop_dead_anchor_refs(spec: PartSpec) -> list[str]:
     """Drop regions whose `hole_index` points past the spec anchor table.
 
@@ -430,11 +485,7 @@ def drop_dead_anchor_refs(spec: PartSpec) -> list[str]:
                 kept_l.append(ld)
         case.loads = kept_l
     if spec.optimize is not None:
-        spec.optimize.keep_regions = [
-            r
-            for r in (spec.optimize.keep_regions or [])
-            if not _dead(r)
-        ]
+        spec.optimize.keep_regions = [r for r in (spec.optimize.keep_regions or []) if not _dead(r)]
     return notes
 
 
@@ -470,10 +521,13 @@ def sanitize_load_cases(spec: PartSpec) -> None:
     """Drop degenerate cases (no supports and no loads) a weak model emits as
     `{"name":"","fixed":[],"loads":[]}` — truthy lists of those would skip the
     extraction fallback and produce unsolvable FEM runs. Also clamps bogus
-    negative case weights back to neutral, and rebinds `hole_index` region
-    refs onto the anchors the case text actually names."""
+    negative case weights back to neutral, rebinds `hole_index` region
+    refs onto the anchors the case text actually names, and upgrades
+    `fix_mode 'normal'` on hole-kind supports in under-constrained cases —
+    a bore 'normal' pins only the axial DOF and is never a real support."""
     lint_notes = (
         rebind_case_anchors(spec)
+        + normalize_support_modes(spec)
         + lint_support_modes(spec)
         + lint_region_semantics(spec)
         + drop_dead_anchor_refs(spec)
@@ -484,9 +538,7 @@ def sanitize_load_cases(spec: PartSpec) -> None:
         prior = spec.assumptions or []
         # the recovery path sanitizes a second time — dedupe new-vs-prior so
         # the same diagnostics can't pile up across calls
-        spec.assumptions = prior + [
-            n for n in dict.fromkeys(lint_notes) if n not in prior
-        ]
+        spec.assumptions = prior + [n for n in dict.fromkeys(lint_notes) if n not in prior]
     # the assumptions tail serializes into the codegen prompt via spec_block —
     # bound it so per-case lint diagnostics can't dilute the generation
     # instructions; legit (upstream) assumptions stay ahead of the lint notes

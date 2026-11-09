@@ -13,7 +13,7 @@ import numpy as np
 
 from cadx.cad.fem import regions
 from cadx.cad.fem.voxelize import VoxelDomain
-from cadx.llm.schemas import Dim, LoadCase, RegionSpec
+from cadx.llm.schemas import Dim, LoadCase, PartSpec, RegionSpec
 
 
 def _dim(v: float) -> Dim:
@@ -99,9 +99,7 @@ def test_cavity_seal_openings() -> None:
     open_case = regions.region_cell_mask(dom, RegionSpec(kind="cavity"))
     assert not open_case.any()  # open neck floods — honest empty
 
-    sealed_case = regions.region_cell_mask(
-        dom, RegionSpec(kind="cavity", seal_openings_mm=4.0)
-    )
+    sealed_case = regions.region_cell_mask(dom, RegionSpec(kind="cavity", seal_openings_mm=4.0))
     assert sealed_case.any()  # sealed: inner skin resolves
 
 
@@ -143,9 +141,7 @@ def test_lint_cavity_with_seal_quiet() -> None:
             fixed=[RegionSpec(kind="face", axis="-z", fix_mode="all")],
             loads=[
                 LoadSpec(
-                    region=RegionSpec(
-                        kind="cavity", description="inner", seal_openings_mm=24.0
-                    ),
+                    region=RegionSpec(kind="cavity", description="inner", seal_openings_mm=24.0),
                     pressure_mpa=0.9,
                 )
             ],
@@ -225,3 +221,134 @@ def test_cavity_thin_shell_mesh_verified() -> None:
     dom_open = voxelize(open_shell, pitch_mm=2.0, max_elements=200_000)
     open_mask = regions.region_cell_mask(dom_open, RegionSpec(kind="cavity"))
     assert not open_mask.any(), "a real Ø8 opening must stay honest-empty"
+
+
+# --------------------------------------------------------------------------- #
+# normalize_support_modes — 'normal' on a bore is never a support              #
+# --------------------------------------------------------------------------- #
+
+
+def _spec_with_cases(cases: list[LoadCase]) -> PartSpec:
+    spec = PartSpec(
+        name="arm", summary="", length_x=_dim(100.0), width_y=_dim(80.0), height_z=_dim(40.0)
+    )
+    spec.load_cases = cases
+    return spec
+
+
+def test_normalize_upgrades_coaxial_bores_to_all() -> None:
+    """Robot-arm pattern: N coaxial mounting bores declared fix_mode 'normal'
+    pin only the shared axial DOF — a collar ('bearing') would still leave tz
+    free, so the upgrade must escalate to 'all' (bolted seat)."""
+    from cadx.agent.steps.intake import sanitize_load_cases
+
+    spec = _spec_with_cases(
+        [
+            LoadCase(
+                name="arm_weight_shear",
+                fixed=[
+                    RegionSpec(kind="bore", axis="+z", fix_mode="normal", hole_index=i)
+                    for i in (2, 3, 4, 5)
+                ],
+                loads=[],
+            )
+        ]
+    )
+    sanitize_load_cases(spec)
+    assert [r.fix_mode for r in spec.load_cases[0].fixed] == ["all"] * 4
+    # the rescue is recorded in assumptions, and the unsolvable lint is gone
+    assert any("upgraded to 'all'" in a for a in spec.assumptions)
+    assert not any("unsolvable" in a for a in spec.assumptions)
+
+
+def test_normalize_prefers_bearing_when_sufficient() -> None:
+    """Two bores on orthogonal axes: upgrading both to 'bearing' already
+    covers all 6 rigid modes — the minimal support wins over encastre."""
+    from cadx.agent.steps.intake import sanitize_load_cases
+
+    spec = _spec_with_cases(
+        [
+            LoadCase(
+                name="pinned pair",
+                fixed=[
+                    RegionSpec(kind="hole", axis="+x", fix_mode="normal", hole_index=1),
+                    RegionSpec(kind="hole", axis="+y", fix_mode="normal", hole_index=2),
+                ],
+                loads=[],
+            )
+        ]
+    )
+    sanitize_load_cases(spec)
+    assert [r.fix_mode for r in spec.load_cases[0].fixed] == ["bearing"] * 2
+    assert any("upgraded to 'bearing'" in a for a in spec.assumptions)
+
+
+def test_normalize_leaves_plane_normal_untouched() -> None:
+    """'normal' on a plane is a legitimate roller/symmetry support — never
+    rewritten, even when the case stays under-constrained."""
+    from cadx.agent.steps.intake import sanitize_load_cases
+
+    spec = _spec_with_cases(
+        [
+            LoadCase(
+                name="roller rest",
+                fixed=[RegionSpec(kind="plane", axis="-z", fix_mode="normal")],
+                loads=[],
+            )
+        ]
+    )
+    sanitize_load_cases(spec)
+    assert spec.load_cases[0].fixed[0].fix_mode == "normal"
+    # under-constraint still surfaces via the honest lint note
+    assert any("unsolvable" in a for a in spec.assumptions)
+
+
+def test_normalize_leaves_solvable_case_untouched() -> None:
+    """A case already covering all 6 modes keeps a stray 'normal' bore as
+    declared — the upgrade only fires when it rescues a singular case."""
+    from cadx.agent.steps.intake import sanitize_load_cases
+
+    spec = _spec_with_cases(
+        [
+            LoadCase(
+                name="clamped",
+                fixed=[
+                    RegionSpec(kind="face", axis="-z", fix_mode="all"),
+                    RegionSpec(kind="hole", axis="+z", fix_mode="normal", hole_index=1),
+                ],
+                loads=[],
+            )
+        ]
+    )
+    sanitize_load_cases(spec)
+    modes = [r.fix_mode for r in spec.load_cases[0].fixed]
+    assert modes == ["all", "normal"]
+    assert not any("upgraded" in a for a in spec.assumptions)
+
+
+def test_normalize_mixed_supports_minimal_upgrade() -> None:
+    """Mixed supports: a 'normal' hole upgrades to 'bearing' when the plane
+    roller already supplies the missing axis pin — the case ends fully
+    constrained and the lint stays silent."""
+    from cadx.agent.steps.intake import lint_support_modes, sanitize_load_cases
+
+    spec = _spec_with_cases(
+        [
+            LoadCase(
+                name="half fixed",
+                fixed=[
+                    RegionSpec(kind="plane", axis="-z", fix_mode="normal"),
+                    RegionSpec(kind="hole", axis="+z", fix_mode="normal", hole_index=1),
+                ],
+                loads=[],
+            )
+        ]
+    )
+    sanitize_load_cases(spec)
+    modes = {r.kind: r.fix_mode for r in spec.load_cases[0].fixed}
+    # the plane's roller pin (tz) plus a hole collar covers all six modes —
+    # 'bearing' suffices, so the minimal upgrade wins over 'all'
+    assert modes == {"plane": "normal", "hole": "bearing"}
+    spec.assumptions = []
+    notes = lint_support_modes(spec)
+    assert not notes  # hole 'bearing' + plane 'normal' = fully constrained

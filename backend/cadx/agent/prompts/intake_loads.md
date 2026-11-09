@@ -19,7 +19,10 @@ Rules:
   `anchor_table`, **1-based** (an out-of-range index resolves to nothing
   and kills the case). `fix_mode:
   "all"` (encastre) is
-  the default; `"normal"` = roller/resting contact. For EXACT planes the
+  the default; `"normal"` = roller/resting contact — **never** on a
+  hole/anchor/bore (it pins only the bore-axial DOF, the part slides and
+  tilts free; intake upgrades it automatically, but declare `all` for a
+  bolted seat or `bearing` for a collar directly). For EXACT planes the
   prompt states (a clamped end face, a symmetry cut, a knife-edge
   support) use `{"kind": "plane"}` — `"axis":"-x"` = the -x end plane,
   `"axis":"x","center":[0]` = the interior x=0 plane, `"xy"` = edge lines;
