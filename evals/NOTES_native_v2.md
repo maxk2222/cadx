@@ -845,3 +845,29 @@ Beobachtung: CG-Cap-Fix (bed0f53) half sofort — der Retry lief ohne
 Burn durch denselben Punkt wo der 60-min-Grind sass (leicht andere
 Dichte-Evolution -> andere K-Konditionierung; Cap blieb
 Schutz-Mechanismus ohne je zu feuern).
+
+## Aux-Verify-Burn (robot arm, it12+)
+
+Nach dem SIMP-Cap lief der Arm-Optimize sauber bis it12 (733 MJ,
+konvergierend) — dann 65min 100% CPU ohne Log. SIGABRT-Stack:
+`_verify_export_structure` -> parallel eroded/dilated-Solves ->
+`run_fem_domain` -> `solve_reduced` -> `_cg_watchdog` mit
+hardkodiertem maxiter=5000. Ausserhalb des SIMP/BESO-Caps.
+
+Wichtig: `solve_reduced` ist ehrlich — maxiter -> converged=False ->
+Realization als failed/unverified gewertet, kein aufgeblaehter SF.
+Nur der Burn selbst war ungebunden (~100min/Realization moeglich).
+
+Fix (0e44ad2): `cg_maxiter` durch run_fem_domain -> _solve_cases
+(+ _POOL serial path) -> solve_reduced threaded, Default 5000
+rueckwaertskompatibel. Aux-Realizations (eroded/dilated) auf
+_AUX_CG_MAXITER=1200 gedeckelt — Sensitivitaets-Probes, die >1200
+iters brauchen sind pathologisch und reporten converged=False statt
+die Stage-Deadline zu brennen. Nominal-Solve behaelt volle Policy.
+
+Kaskade beachten: Worker-Crash (pid exit, Helmholtz) + Verify-Burn +
+manuelles SIGABRT frassen alle 3 Topopt-Retries -> "kept the base
+part" mit SF 6.35 (korrekt ehrlich, aber kein Optimum).
+
+Offen: Slit-Scar-Fix (siehe oben, Option 1-4), Tank-Re-Run auf
+Rescue-Fix-Image, dann volle 4-Case-Runde.
