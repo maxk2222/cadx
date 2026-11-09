@@ -959,6 +959,41 @@ def _near_band_check(
     return violations, verified, unverified
 
 
+def _position_consistent_centers(
+    centers: list[dict[str, float]],
+    wants: dict[str, list[float]],
+    groups: list[dict[str, float]] | None,
+) -> list[dict[str, float]]:
+    """Centres not contradicting the feature's declared position — the
+    evidence pool face hints draw on. Without it a '+z face' verdict reads
+    the topmost coordinate of ANY same-axis candidate (a base pocket's
+    z=10 outvoted the real bore's unmeasured z). A centre missing a
+    declared axis stays consistent — unmeasured is not contradicting."""
+    if not wants and not groups:
+        return list(centers)
+    out: list[dict[str, float]] = []
+    for c in centers:
+        ok = True
+        for ax, vals in wants.items():
+            got = c.get(ax)
+            if got is None:
+                continue
+            if not any(abs(float(got) - w) <= _POS_TOL_MM for w in vals):
+                ok = False
+                break
+        if ok and groups:
+            ok = any(
+                all(
+                    c.get(ax) is None or abs(float(c[ax]) - gv) <= _POS_TOL_MM
+                    for ax, gv in g.items()
+                )
+                for g in groups
+            )
+        if ok:
+            out.append(c)
+    return out
+
+
 def _face_side_check(
     faces: list[tuple[str, str]],
     centers: list[dict[str, float]],
@@ -1105,7 +1140,10 @@ def _void_position_check(  # noqa: C901
     violations += w_viol
     verified += w_ver
     unverified += w_unverified
-    f_viol, f_ver, f_unverified = _face_side_check(faces, centers, bounds)
+    face_pool = _position_consistent_centers(
+        centers, wants, groups if use_point_groups else None
+    )
+    f_viol, f_ver, f_unverified = _face_side_check(faces, face_pool or centers, bounds)
     violations += f_viol
     verified += f_ver
     unverified += f_unverified

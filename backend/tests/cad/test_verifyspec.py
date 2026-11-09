@@ -554,6 +554,93 @@ def test_position_midplane_is_unverified_not_failed():
     assert _by_name(report)["feat_0_position"]["status"] == "UNVERIFIED"
 
 
+def test_face_hint_ignores_foreign_candidate_axis_coords():
+    """robot-arm M12 bore: declared '+z face' read a foreign pocket's z=10
+    as the feature's mouth height while the real bore's z is unmeasured.
+    Face evidence only counts position-consistent centres."""
+    spec = _spec(
+        height_z={"value": 40.0, "source": "stated"},
+        features=[
+            _feat(
+                name="M12 tapped bore",
+                type="hole",
+                axis="z",
+                position="x=0, y=0, through z=0..25, opens on top (+z) face",
+            )
+        ],
+    )
+    res = _res(
+        analysis={
+            "bbox_size": [100.0, 80.0, 40.0],
+            "bbox_min": [-50.0, -40.0, 0.0],
+            "bbox_max": [50.0, 40.0, 40.0],
+            "solid_count": 1,
+            "is_valid": True,
+            "watertight": True,
+            "volume": 100_000.0,
+            "source": "brep",
+        },
+        features={
+            "hole_groups": [
+                _hole_group(id="h1", axis="+z", centers_xyz=[[0.0, 0.0, None]]),
+                _hole_group(
+                    id="h3",
+                    axis="-z",
+                    centers_xyz=[
+                        [-42.0, -32.0, None],
+                        [42.0, -32.0, None],
+                        [-42.0, 32.0, None],
+                        [42.0, 32.0, None],
+                    ],
+                ),
+                _hole_group(
+                    id="p1",
+                    axis="-z",
+                    depth_class="blind",
+                    centers_xyz=[[-42.0, -32.0, 10.0]],
+                ),
+            ]
+        },
+    )
+    c = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_position"]
+    assert c["status"] == "UNVERIFIED"
+    assert not c["evidence"].get("violations")
+
+
+def test_face_hint_still_fails_when_all_centres_candidates():
+    """No declared coords: every candidate is consistent, so a topmost
+    centre far below the +z face is still a real violation."""
+    spec = _spec(
+        height_z={"value": 40.0, "source": "stated"},
+        features=[_feat(name="vent", type="hole", axis="z", position="+z face")],
+    )
+    res = _res(
+        analysis={
+            "bbox_size": [100.0, 80.0, 40.0],
+            "bbox_min": [-50.0, -40.0, 0.0],
+            "bbox_max": [50.0, 40.0, 40.0],
+            "solid_count": 1,
+            "is_valid": True,
+            "watertight": True,
+            "volume": 100_000.0,
+            "source": "brep",
+        },
+        features={
+            "hole_groups": [
+                _hole_group(
+                    id="p1",
+                    axis="-z",
+                    depth_class="blind",
+                    centers_xyz=[[-42.0, -32.0, 10.0]],
+                ),
+            ]
+        },
+    )
+    assert _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_position"][
+        "status"
+    ] == "FAIL"
+
+
 def test_position_prose_is_unverified():
     spec = _spec(features=[_feat(name="mount", type="hole", position="somewhere sensible")])
     res = _res(features={"hole_groups": [_hole_group(id="h1", centers=[[0.0, 8.0]])]})
