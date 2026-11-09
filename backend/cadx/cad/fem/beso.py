@@ -64,6 +64,7 @@ from cadx.cad.fem.topopt import (
     TopOptResult,
     _build_filter_ops,
     _CaseCtx,
+    _cg_maxiter,
     _m_reuse,
     _mechanism_guard,
     _prepare_solve,
@@ -365,6 +366,10 @@ def beso(  # noqa: C901
     # policy as simp() (pattern constant, only values change)
     persist_ctx: dict[bytes, _CaseCtx] = {}
     all_idx = np.arange(domain.cell_count)
+    # per-case CG-iteration baseline for the adaptive solve cap — a solve
+    # that regresses far beyond its last count is a runaway burn, not a
+    # legitimately harder system (see _cg_maxiter)
+    last_cg_iters: list[float] = [0.0] * len(cases)
 
     def _phase_timings() -> dict[str, float]:
         out = {k: round(v, 3) for k, v in phase_t.items()}
@@ -390,6 +395,7 @@ def beso(  # noqa: C901
         at_target_iters = at_target_iters + 1 if at_target else 0
 
         x = _density()
+        capped_solve = False
         try:
             E_e = Emin + np.power(x, pen) * (E0 - Emin)
             t_asm = time.monotonic()
@@ -470,6 +476,7 @@ def beso(  # noqa: C901
                         free=free_i,
                     )
                 phase_t["factorize_s"] += time.monotonic() - t_fac
+                cap_i = _cg_maxiter(last_cg_iters[ci])
                 u, solver_name, iters = _solve_u(
                     domain,
                     ctx.Kf,
@@ -479,7 +486,18 @@ def beso(  # noqa: C901
                     factor=ctx.factor,
                     M=ctx.M,
                     cg_rtol=cg_rtol,
+                    maxiter=cap_i,
                 )
+                if solver_name == "cg":
+                    last_cg_iters[ci] = iters
+                    if iters >= cap_i:
+                        capped_solve = True
+                        warnings.append(
+                            f"load case {ci}: CG hit the adaptive {cap_i}-iter "
+                            "cap — under-converged (a stale AMG hierarchy on a "
+                            "freshly flipped design); the objective is held "
+                            "non-improving this iteration"
+                        )
                 u_prev[ci] = None if solver_name == "cg_diverged" else u
                 if solver_name == "cg":
                     phase_t["cg_iters"] = phase_t.get("cg_iters", 0.0) + iters
@@ -523,6 +541,12 @@ def beso(  # noqa: C901
             break
 
         objective = float(np.dot(weights[: len(cases)], obj_cases)) if len(cases) else 0.0
+        if capped_solve:
+            # an under-converged u makes F·u an underestimate — letting it
+            # compete for the best mask would reward the very design that
+            # made the solve pathological; the np.isfinite guard below then
+            # keeps best_keep untouched
+            objective = np.inf
         # solver-noise improvements (~1e-15 u perturbations between the
         # refactorised and a fresh factorisation) must not steal the
         # best-mask record — the mechanism-restore target stays stable

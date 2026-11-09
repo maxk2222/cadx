@@ -981,6 +981,26 @@ def _ctx_snapshot(ctx: _CaseCtx) -> _CaseCtx:
     )
 
 
+_CG_CAP_MULT = 3  # a solve may cost at most this multiple of its previous count
+_CG_CAP_MIN = 300  # floor so a trivially-fast first solve doesn't choke the next
+_CG_CAP_MAX = 4000
+
+
+def _cg_maxiter(prev_cg_iters: float) -> int:
+    """Adaptive per-solve CG budget. A solve needing far more iterations
+    than the previous iteration's solve on the same signature is a
+    runaway burn — a stale AMG hierarchy on a freshly flipped/hardened
+    design, or a pathologically conditioned mask — and the divergence
+    watchdog cannot see it because the residual stagnates below the
+    blow/flat gates instead of exploding. Capping the solve lets the AMG
+    staleness policy rebuild M on the next iteration instead of burning
+    the full iteration budget (~80 min observed on a 344k-DOF BESO pass:
+    iter 1 done in 58 s, iter 2 burning 4000+ iters at ~1.2 s/iter)."""
+    if prev_cg_iters <= 0:
+        return _CG_CAP_MAX
+    return min(_CG_CAP_MAX, max(_CG_CAP_MIN, int(_CG_CAP_MULT * prev_cg_iters)))
+
+
 def _solve_u(
     domain: VoxelDomain,
     Kf: sparse.csr_matrix,
@@ -991,6 +1011,7 @@ def _solve_u(
     M: Any = None,
     cg_rtol: float = 1e-5,
     solver_backend: str = "auto",
+    maxiter: int = 4000,
 ) -> tuple[np.ndarray, str, int]:
     """Light solve: return (full u vector, solver name, CG iterations).
 
@@ -1019,7 +1040,7 @@ def _solve_u(
         u0[free] if u0 is not None else None,
         M,
         rtol=cg_rtol,
-        maxiter=4000,
+        maxiter=maxiter,
     )
     if res is not None:
         x, iters, status, _ratio = res
@@ -1042,7 +1063,7 @@ def _solve_u(
             x0=u0[free] if u0 is not None else None,
             rtol=cg_rtol,
             atol=0.0,
-            maxiter=4000,
+            maxiter=maxiter,
             M=M,
             callback=callback,
         )
@@ -1419,6 +1440,10 @@ def simp(  # noqa: C901
     persist_ctx: dict[bytes, _CaseCtx] = {}
     all_idx = np.arange(ncells)  # every cell assembles at Emin — the
     # rigid-gap component probe sees the whole domain as assembled
+    # per-case CG-iteration baseline for the adaptive solve cap — a solve
+    # that regresses far beyond its last count is a runaway burn (stale
+    # AMG on a hardened design), not a legitimately harder system
+    last_cg_iters: list[float] = [0.0] * len(cases)
 
     def _phase_timings() -> dict[str, float]:
         out = {k: round(v, 3) for k, v in phase_t.items()}
@@ -1569,6 +1594,7 @@ def simp(  # noqa: C901
                 - fallbacks_before
             )
             ctxs.append(_ctx_snapshot(ctx))
+            cap_i = _cg_maxiter(last_cg_iters[ci])
             u, solver_name, iters = _solve_u(
                 domain,
                 ctx.Kf,
@@ -1579,11 +1605,20 @@ def simp(  # noqa: C901
                 M=ctx.M,
                 cg_rtol=cg_rtol,
                 solver_backend=params.solver_backend,
+                maxiter=cap_i,
             )
             # an exploded iterate is a bad warm start for the next density
             # — drop it so the next solve starts cold
             u_prev[ci] = None if solver_name == "cg_diverged" else u
             if solver_name == "cg":
+                last_cg_iters[ci] = iters
+                if iters >= cap_i:
+                    warnings.append(
+                        f"load case {ci}: CG hit the adaptive {cap_i}-iter cap "
+                        "— under-converged (a stale AMG hierarchy on a hardened "
+                        "design); the solve is bounded but the result is "
+                        "approximate this evaluation"
+                    )
                 phase_t["cg_iters"] = phase_t.get("cg_iters", 0.0) + iters
                 if ctx.M is not None and _m_reuse():
                     ctx.m_age += 1

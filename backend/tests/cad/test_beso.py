@@ -161,6 +161,50 @@ def test_beso_void_pins_mirror_across_symmetry_plane(monkeypatch: pytest.MonkeyP
     assert res.void_pin_sym_mirrored == 1
 
 
+def test_cg_maxiter_bounds_runaway_solves() -> None:
+    """The adaptive cap: first solves get the full budget, regressions are
+    capped at a multiple of the previous count with a sane floor."""
+    from cadx.cad.fem.topopt import _CG_CAP_MAX, _CG_CAP_MIN, _cg_maxiter
+
+    assert _cg_maxiter(0) == _CG_CAP_MAX  # no baseline → full budget
+    assert _cg_maxiter(170) == 510  # 3x regression headroom
+    assert _cg_maxiter(50) == _CG_CAP_MIN  # floor, not 150
+    assert _cg_maxiter(2000) == _CG_CAP_MAX  # never above the hard max
+
+
+def test_beso_capped_solve_holds_objective_non_improving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CG solve hitting the adaptive cap returns an under-converged u —
+    its F·u underestimates compliance and must not steal the best mask."""
+    dom, fixed, F = _case()
+    calls: list[int] = []
+    real_solve = beso_mod._solve_u
+
+    def capped_solve(*a: Any, **kw: Any):
+        u, name, iters = real_solve(*a, **kw)
+        calls.append(kw.get("maxiter", 4000))
+        if len(calls) == 1:
+            return u, name, iters  # iteration 1 solves normally
+        return u, "cg", kw.get("maxiter", 4000)  # fake a cap-hit afterwards
+
+    monkeypatch.setattr(beso_mod, "_solve_u", capped_solve)
+    res = beso(
+        dom,
+        E_PLA,
+        NU,
+        [(fixed, F)],
+        np.zeros(dom.cell_count, dtype=bool),
+        _params(max_iter=3, beso_connectivity=False, prevent_sealed_voids=False),
+        # force the iterative path — a small test domain otherwise takes
+        # the direct solve and never exercises the CG cap
+        spsolve_dofs=0,
+    )
+    assert calls[0] == 4000  # first solve gets the full budget
+    assert calls[1] < 4000  # the cap engages from iteration 2 on
+    assert any("adaptive" in w and "cap" in w for w in res.warnings)
+
+
 def test_beso_density_is_binary() -> None:
     """BESO produces a 0/1 design — >=99% of design cells at the floor or 1."""
     dom, fixed, F = _case()
