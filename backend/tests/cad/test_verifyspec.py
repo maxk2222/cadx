@@ -833,6 +833,37 @@ def test_unrequested_void_excess_in_group_fails():
     assert c["evidence"]["unmatched_ids"] == ["h1"]
 
 
+def test_unrequested_voids_pattern_center_is_not_a_member():
+    """A bolt-circle pattern's own ``center`` is the pattern centre, not a
+    void — counting it beside ``members`` inflates 3 real holes to 4 phantom
+    centres and misflags the pattern as exceeding the declared count."""
+    spec = _spec(
+        features=[_feat(name="foot bolt hole", type="hole", count=3, dims={"diameter": 6.5})]
+    )
+    res = _res_bbox90(
+        features={
+            "hole_patterns": [
+                {
+                    "id": "p1",
+                    "kind": "bolt_circle",
+                    "count": 3,
+                    "axis": "+z",
+                    "center": [0.0, 0.0, 0.0],
+                    "diameter": 81.8,
+                    "member_diameter": 6.5,
+                    "members": [
+                        [-20.45, -35.42, 0.0],
+                        [-20.45, 35.42, 0.0],
+                        [40.9, 0.0, 0.0],
+                    ],
+                }
+            ]
+        }
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["unrequested_voids"]["status"] == "PASS"
+
+
 def test_unrequested_voids_pass_when_all_matched():
     """All measured voids accounted for — by dia or by declared position —
     plus a <3 mm pseudo-void that must never be counted."""

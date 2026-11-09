@@ -780,7 +780,11 @@ def _void_center_maps(e: dict[str, Any]) -> list[dict[str, float]]:  # noqa: C90
 
     # Recognition patterns carry absolute 3D centers; unlike a tunnel's
     # projected centers, their axes are not fabricated from a bbox midpoint.
-    for key in ("members", "center"):
+    # ``members`` enumerates the actual member voids; a pattern's own
+    # ``center`` is the pattern centre (bolt-circle middle), not a void —
+    # counting it alongside members inflates the centre count and misflags
+    # the pattern as unrequested. It only stands in when no members exist.
+    for key in ("members", "center") if not e.get("members") else ("members",):
         raw = e.get(key)
         if key == "center":
             raw = [raw] if isinstance(raw, list | tuple) else []
