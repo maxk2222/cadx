@@ -405,6 +405,9 @@ async def _proxy_stream(url: str, payload: dict, on_done: Any = None) -> Respons
 
 
 def _llm_classes(registry: Any) -> list[type]:
+    classes = getattr(registry, "_llm_classes", None)
+    if classes is not None:
+        return list(classes)
     classes = getattr(registry, "_classes", None)
     if classes is not None:
         return [c for c in classes if getattr(c, "kind", "") == "llm"]

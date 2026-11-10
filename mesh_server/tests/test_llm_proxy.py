@@ -275,3 +275,23 @@ def test_upstream_stub_direct(upstream):
     assert r.status_code == 200
     assert r.json()["echo_model"] == "anything"
 
+
+
+async def test_llm_models_split_registry_attrs(upstream):
+    """Regression: the real Registry keeps llm classes in ``_llm_classes``
+    (separate from ``_classes`` = mesh+image adapters) — the listing must
+    read the dedicated attribute."""
+
+    class SplitReg(_Reg):
+        def __init__(self, adapter):
+            super().__init__(adapter)
+            mesh_cls = type("FakeMeshCls", (), {"id": "triposr", "kind": "mesh"})
+            self._classes = [mesh_cls]
+            self._llm_classes = [self._cls]
+
+    reg = SplitReg(_Adapter(upstream))
+    async with _client(_app(reg)) as c:
+        r = await c.get("/v1/llm-models")
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert [m["id"] for m in data] == ["my-llm"]
