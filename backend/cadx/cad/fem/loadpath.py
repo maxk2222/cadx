@@ -157,3 +157,38 @@ def loadpath_field(
         rho[np.asarray(passive_void, dtype=bool).ravel()] = 0.0
     rho[~solid] = 0.0
     return np.asarray(rho, dtype=np.float32)
+
+
+def loadpath_spine_mask(
+    domain: VoxelDomain,
+    cases_resolved: list[tuple[np.ndarray, np.ndarray]],
+    *,
+    corridor_mm: float | None = None,
+    spine_frac: float = 0.8,
+) -> np.ndarray:
+    """Boolean mask of near-geodesic corridor cells across ALL resolved
+    cases — the load path as a hard constraint.
+
+    The corridor field is only a warm-start hint: SIMP can re-thin seeded
+    cells and sever the flange/boss path it was meant to protect
+    (load_path_ok=false with floating keep anchors). Pinning each case's
+    near-peak cells as passive material keeps the resolved load path
+    connected by construction. Per-case fields are thresholded against
+    their OWN peak, so a weak-force case's path pins as firmly as the
+    governing case's (the force-weighted union in ``loadpath_field``
+    deliberately does not)."""
+    solid = domain.solid.ravel()
+    corridor = float(corridor_mm) if corridor_mm else 2.5 * float(domain.pitch)
+    corridor = max(corridor, 1e-6)
+    graph = _solid_graph(domain)
+    spine = np.zeros(domain.cell_count, dtype=bool)
+    for ci, (fixed, F) in enumerate(cases_resolved):
+        rho_c = _case_field(domain, graph, solid, fixed, F, corridor, 0.0)
+        if rho_c is None:
+            log.warning("loadpath.spine_case_skipped", case=ci)
+            continue
+        peak = float(rho_c.max())
+        if peak <= 0.0:
+            continue
+        spine |= rho_c >= peak * float(spine_frac)
+    return spine

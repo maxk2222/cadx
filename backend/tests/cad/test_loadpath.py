@@ -13,7 +13,7 @@ import pytest
 import trimesh
 from scipy import ndimage
 
-from cadx.cad.fem.loadpath import loadpath_field
+from cadx.cad.fem.loadpath import loadpath_field, loadpath_spine_mask
 from cadx.cad.fem.loadpath_cert import loadpath_certificate
 from cadx.cad.fem.voxelize import VoxelDomain, voxelize
 
@@ -140,6 +140,35 @@ def test_loadpath_multicase_weights() -> None:
     rho1 = loadpath_field(dom, [(fixed, np.zeros_like(F))])
     assert rho1.dtype == np.float32
     assert float(rho1.max()) <= 0.15 + 1e-6
+
+
+def test_spine_mask_connects_load_to_fixed() -> None:
+    """The pinned spine is a connected solid path reaching both endpoint
+    regions — the hard-constraint counterpart of the corridor field."""
+    dom = _l_domain()
+    (fixed, F), fix_cells, load_cells = _l_case(dom)
+    spine = loadpath_spine_mask(dom, [(fixed, F)]).reshape(dom.dims)
+    assert spine.any() and (spine & dom.solid == spine).all()
+    _, n = ndimage.label(
+        spine | fix_cells | load_cells, structure=ndimage.generate_binary_structure(3, 1)
+    )
+    assert n == 1
+
+
+def test_spine_mask_covers_weak_cases_too() -> None:
+    """A weak-force case gets its own spine at full coverage — per-case
+    peak normalisation keeps it pinned where the force-weighted union
+    field would leave its corridor far below the governing case's."""
+    dom = _l_domain()
+    (fixed, F), fix_cells, load_cells = _l_case(dom)
+    load2 = np.zeros(dom.dims, dtype=bool)
+    load2[7:9, :, :4] = True  # mid-arm load — a different path segment
+    _, F2 = _case_on(dom, fix_cells, load2)
+    F2 = F2 * 0.3
+    spine = loadpath_spine_mask(dom, [(fixed, F), (fixed, F2)]).reshape(dom.dims)
+    # the weak case's load patch is spine-covered just like the strong one's
+    assert (spine & load2).any()
+    assert (spine & load_cells).any()
 
 
 # ---------------------------------------------------------------------------

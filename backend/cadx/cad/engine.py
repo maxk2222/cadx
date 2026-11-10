@@ -2808,7 +2808,7 @@ def run_topopt_pipeline(  # noqa: C901
     from cadx.cad.fem.analyze import report_to_json, run_fem_domain
     from cadx.cad.fem.beso import beso
     from cadx.cad.fem.extract import density_to_mesh, drop_island_components
-    from cadx.cad.fem.loadpath import loadpath_field
+    from cadx.cad.fem.loadpath import loadpath_field, loadpath_spine_mask
     from cadx.cad.fem.preview import render_regions
     from cadx.cad.fem.regions import (
         anchor_entry_warnings,
@@ -3404,6 +3404,33 @@ def run_topopt_pipeline(  # noqa: C901
             warm_src = "loadpath"
         except Exception as e:
             res.topopt["warnings"].append(f"loadpath warm start failed: {e}")
+        # the corridor field is only an x0 hint — SIMP can re-thin seeded
+        # cells and sever the declared load path (arm r12: flange eaten to
+        # floating pin tabs → load_path_ok=false). Pin each case's
+        # near-geodesic spine as passive material so the resolved path
+        # stays connected by construction.
+        try:
+            spine = loadpath_spine_mask(
+                design_domain,
+                resolved,
+                corridor_mm=params.loadpath_corridor_mm,
+            )
+            spine_new = spine & ~passive
+            if spine_new.any():
+                passive |= spine
+                res.topopt["loadpath_spine_cells"] = int(spine.sum())
+                res.topopt["passive_breakdown"]["loadpath_spine_cells"] = int(spine_new.sum())
+                nsolid = int(design_domain.solid.sum())
+                new_frac = float(passive.sum()) / nsolid if nsolid else 0.0
+                res.topopt["passive_frac"] = round(new_frac, 4)
+                if volfrac and new_frac >= volfrac:
+                    res.topopt["warnings"].append(
+                        f"loadpath spine pins {new_frac:.0%} of the domain — "
+                        f"above the {volfrac:.0%} volume target; the run is "
+                        "feasible only near the pinned floor"
+                    )
+        except Exception as e:
+            res.topopt["warnings"].append(f"loadpath spine pinning failed: {e}")
     else:
         # no explicit warm start — reuse a previous run's density.npz when its
         # grid is identical (agent sessions chain SIMP runs on one base mesh)
