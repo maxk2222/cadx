@@ -1144,3 +1144,15 @@ driver's default --api-url :8080 was hijacked by an unrelated
 Also committed a2aa9cb: evalkit driver fails load-bearing stages
 honestly when no load cases resolve (previously posted
 load_cases=null → pydantic 422, indistinguishable from a real 422).
+
+### spec-feature rescue: rotation-invariant ring detection (b106450)
+- `_ring_realized` probed bolt holes only at canonical azimuths
+  (0/120/240). A generated ring on a rotated offset (the r9 lugs sat
+  clustered at 135-225°) read as missing → the rescue fused a SECOND
+  ring on top — double lugs, mismatched holes, asymmetric pockets.
+- Now: scan the base ring azimuthally for lug material, cluster hits
+  (circular mean across the 2π seam), then scan each cluster radially
+  for a material-flanked open tunnel — recognizes the ring wherever it
+  sits. Regression test rotates the realized ring by 60°.
+- DEPLOY NOTE: spec_feature_rescue runs executor-side (sandbox runner)
+  — needs executor rebuild, deferred until r12 evals finish.
