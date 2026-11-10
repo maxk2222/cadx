@@ -1086,3 +1086,15 @@ Propeller r9 codegen (~40min) was sacrificed for a clean all-fixed validation.
   like convergence so the beta continuation still sharpens.
 - Deploy deferred: the running bracket optimize is ~2h in; the burn ends
   at max_iter=60 anyway. Executor rebuild runs in background.
+
+## r10 verdict: bearing_bracket_topopt PASSED (first full pass)
+Run 20261110-024018: codegen score 90 → fem SF 19.08 → topopt SF 14.78
+(run 2 adopted after run 3's MMA exhausted its wall-clock — honest
+fallback) → refine applied=4, SF 14.1, analytic STEP, 307s. The hardened
+pipeline earned the pass: crash-resubmit saved the optimize across a
+worker OOM-kill, corridor-fill + rotation gate re-cut all taps watertight.
+
+## r11 launched (2026-11-10 ~05:50 CET)
+Full stack: worker 390956c2-era + 346d115 (load-hint regex, parent-settle
+driver wait) and executor with 7830e63 (MMA stagnation guard). Cases:
+tank, propeller (codegen budget now 7200s), arm.
