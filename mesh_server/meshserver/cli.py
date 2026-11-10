@@ -21,10 +21,20 @@ def serve(
     import uvicorn
 
     from meshserver.app import app as fastapi_app
-    from meshserver.config import get_config
+    from meshserver.config import _is_loopback, get_config
 
     cfg = get_config()
-    uvicorn.run(fastapi_app, host=host or cfg.host, port=port or cfg.port)
+    bind_host = host or cfg.host
+    # a --host flag bypasses create_app's bind guard — enforce it here too:
+    # a LAN-wide listener without credentials is never a legal state
+    if not _is_loopback(bind_host) and not cfg.api_keys:
+        typer.echo(
+            f"refusing to bind '{bind_host}' without API keys — set MESH_API_KEY "
+            "(or MESH_API_KEYS) or bind a loopback host",
+            err=True,
+        )
+        raise typer.Exit(1)
+    uvicorn.run(fastapi_app, host=bind_host, port=port or cfg.port)
 
 
 @app.command()

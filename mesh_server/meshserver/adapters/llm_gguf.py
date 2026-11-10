@@ -150,6 +150,14 @@ class LlamaCppAdapter(LlmAdapter):
             ]
             if mmproj := self._mmproj_path():
                 argv += ["--mmproj", str(mmproj)]
+            # runtime-mutable slot count — concurrent client requests get
+            # real parallel decode (continuous batching) instead of the
+            # default single sequence queue; KV cache scales with it, so
+            # the ledger estimate carries a headroom margin
+            effective = getattr(self.cfg, "effective", None)
+            parallel = int(effective("llm_parallel") if effective else 1) or 1
+            if parallel > 1:
+                argv += ["--parallel", str(parallel)]
             return argv
         # llama_cpp.server — different flag names, no --mmproj support worth
         # relying on across versions; vision customs should use the binary

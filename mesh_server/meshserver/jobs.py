@@ -249,6 +249,12 @@ class JobManager:
         # jobs higher so a run of same-model submissions batches on the
         # resident weights instead of thrashing loads
         self._last_model = ""
+        # llm request lane — llm_proxy updates these so /v1/queue shows the
+        # interactive side next to the batch jobs; in-flight models are also
+        # excluded from memory-admission eviction (never kill a live stream)
+        self.llm_in_flight: dict[str, int] = {}
+        self.llm_waiting = 0
+        self.llm_loading: dict[str, float] = {}
 
     # -- public API ------------------------------------------------------- #
 
@@ -266,7 +272,7 @@ class JobManager:
     def _free_mem_ok(self) -> bool:
         """Refuse new jobs under host memory pressure — a job started with no
         headroom stalls at 0% CPU and can swap the host into a panic."""
-        limit = self.cfg.job_min_free_mb
+        limit = self.cfg.effective("job_min_free_mb")
         if limit <= 0:
             return True
         free = self.registry.ledger.free_mb()
@@ -393,15 +399,23 @@ class JobManager:
                 return getattr(cls, "est_mem_mb", None)
         return None
 
-    def _admit(self, job: MeshJob | ImageJob) -> bool:
-        """Memory admission for a queued job.
+    def llm_models_in_use(self) -> set[str]:
+        """llm adapter ids with at least one in-flight request — excluded
+        from memory-admission eviction so a running generation can't be
+        killed mid-stream by an unrelated load."""
+        return {m for m, n in self.llm_in_flight.items() if n > 0}
+
+    def admit_resolved(self, resolved: str) -> bool:
+        """Memory admission for a resolved adapter id — shared by the job
+        queue and the llm proxy's pre-load gate.
 
         No *new* memory is needed when an idle warm worker or the in-process
-        registry already holds the job's model. Otherwise the ledger estimate
+        registry already holds the model. Otherwise the ledger estimate
         must fit while keeping mem_headroom_mb free — evicting idle warm
-        workers (LRU) then resident registry instances to make room."""
+        workers (LRU) then resident registry instances, but never a model
+        with an in-flight llm request."""
         ledger = self.registry.ledger
-        resolved = job.resolved_model
+        exclude = ({resolved} if resolved else set()) | self.llm_models_in_use()
         if resolved:
             warm = self._warm.get(resolved)
             if warm is not None and warm.idle:
@@ -410,14 +424,18 @@ class JobManager:
                 return True  # in-process instance already resident
         need = ledger.est_mb(resolved, self._declared_mem(resolved)) if resolved else 0.0
         while not ledger.fits(need):
-            victim = self._lru_idle_warm(exclude={resolved} if resolved else set())
+            victim = self._lru_idle_warm(exclude=exclude)
             if victim is not None:
                 log.info("warm.evicted_for_memory", model=victim.model)
                 self._evict_warm(victim)
                 continue
-            if self.registry.evict_lru(exclude={resolved} if resolved else set()) is None:
+            if self.registry.evict_lru(exclude=exclude) is None:
                 break
         return ledger.fits(need)
+
+    def _admit(self, job: MeshJob | ImageJob) -> bool:
+        """Memory admission for a queued job."""
+        return self.admit_resolved(job.resolved_model or "")
 
     def _pick_next(self) -> MeshJob | ImageJob | None:
         """Pick the next queued job.
@@ -515,6 +533,14 @@ class JobManager:
             jobs=entries,
             free_mb=ledger.free_mb(),
             residents=ledger.residents(),
+            llm={
+                "in_flight": sum(self.llm_in_flight.values()),
+                "waiting": self.llm_waiting,
+                "loading": [
+                    {"model": m.split("#", 1)[0], "waited_s": round(now - t0, 1)}
+                    for m, t0 in self.llm_loading.items()
+                ],
+            },
         )
 
     # -- worker ------------------------------------------------------------ #

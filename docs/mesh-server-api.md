@@ -12,6 +12,28 @@ The sidecar is a multi-model inference host with three adapter families:
 Base URL: `MESH_BASE_URL`, e.g. `http://localhost:8765` (native) or
 `http://mesh-server:8765` (compose `gpu` profile).
 
+## LAN exposure & auth
+
+The server binds `MESH_HOST` (default `127.0.0.1`). Any **non-loopback
+bind requires bearer credentials** — `create_app` refuses to start and
+`meshserver serve --host` exits non-zero when neither `MESH_API_KEY` nor
+`MESH_API_KEYS` (comma list, multiple valid keys) is set. `MESH_LAN=1`
+without an explicit `MESH_HOST` binds `0.0.0.0`; `scripts/start.sh --lan`
+does the whole flow (generates a key into `.env`, exports it to the
+sidecar + compose services, prints the LAN URL/key once).
+
+With keys configured, every request needs `Authorization: Bearer <key>`
+— the standard OpenAI client credential, so stock SDKs work unchanged.
+Only `GET /v1/health` and `OPTIONS` preflights are exempt; failures
+return `401 {"error": {"type": "authentication_error"}}`. Managed LLM
+subprocesses always stay loopback — LAN terminates at the sidecar. CORS
+defaults to `*` in LAN mode (`MESH_CORS_ORIGINS` overrides with a list).
+
+The backend clients send the key automatically: `MESH_API_KEY` in the
+api/worker env wins over the DB row (infrastructure plumbing), otherwise
+the write-only `mesh_api_key` in Settings → Mesh Server applies. The
+`X-HF-Token` header stays separate (Hugging Face auth, not sidecar auth).
+
 The backend forwards the Hugging Face token stored in WebUI Settings →
 Models → Hugging Face as an `X-HF-Token` request header on every call; a
 middleware applies it process-wide as `HF_TOKEN`, so managed weight
@@ -36,7 +58,14 @@ callers.
 ### `GET /v1/models`
 
 ```json
-{ "models": [MeshModelInfo] }
+{
+  "models": [MeshModelInfo],   // internal management view (CADX)
+  "data": [                   // OpenAI listing — stock SDK discovery
+    {"id": "…", "object": "model", "created": 0, "owned_by": "meshserver",
+     "supports_vision": true, "supports_tools": true, "context_len": 262144,
+     "supports_edit": false, "max_count": 4, "loaded": false, "downloaded": true}
+  ]
+}
 ```
 
 `MeshModelInfo`:
@@ -186,7 +215,96 @@ Same shape as mesh jobs plus `"images": <n>` (result count) and `"backend"`.
 
 Same semantics as mesh job deletion.
 
-## LLM chat completions
+## OpenAI-compatible surface
+
+Stock OpenAI SDKs can point at the sidecar
+(`base_url=http://host:8765/v1`, `api_key=<MESH_API_KEY>`).
+
+### `POST /v1/images/generations`
+
+`{"model": "auto|<id>", "prompt": "…", "negative_prompt": "…", "n": 1..4,
+"size": "WxH", "seed": n, "steps": n, "guidance": f, "quality": "hd",
+"response_format": "b64_json"|"url"}` — synchronously runs an internal
+`ImageJob` through the shared queue (same memory admission + model
+affinity as `/v1/image-jobs`, no separate scheduler). Waits up to
+`openai_image_wait_s` (default 600 s) then returns an honest `504` while
+the job keeps running — the job id rides in `X-Mesh-Job-Id` and stays
+fetchable via `GET /v1/image-jobs/{id}[/image?i=n]`. `data[]` entries are
+`b64_json` (default) or `url` pointing at the job's image endpoint.
+`429` when the queue/memory gate rejects; `404` unknown/incapable model;
+`422` missing prompt.
+
+### `POST /v1/images/edits`
+
+`multipart/form-data`: `image` (required init image), optional `mask`
+(currently ignored — `X-Mesh-Warning` notes it), plus the generation
+fields as form fields. Only `supports_edit` adapters are eligible.
+
+### `POST /v1/embeddings`
+
+Standard OpenAI embeddings body → proxied to the managed llm server's
+`/v1/embeddings` through the same resolve→admit→load path as chat
+(llama.cpp + mlx_lm both serve it).
+
+### `POST /v1/chat/completions`
+
+Standard OpenAI chat-completions body (`model`, `messages`, `tools`,
+`temperature`, `stream`, …) — forwarded as-is, only `model` is rewritten.
+
+Model resolution (`select_llm`) is **capability-aware**: an explicit
+catalog id wins but only when it supports the request's needs — an
+`image_url` content part requires `supports_vision` (a text-only model
+returns `400` instead of silently dropping the image; mlx_lm strips
+image parts server-side), `tools` requires `supports_tools`. `"auto"`
+(or an empty/unknown id — e.g. an external provider's model name leaking
+through) picks the first available **and downloaded** adapter matching
+the capabilities. Check `/v1/models` first.
+
+Request admission is **bounded** — runtime-mutable knobs
+(`PUT /v1/config`, env `MESH_LLM_*`):
+
+- `llm_max_concurrent` (default 4, 0 = unbounded) — proxy semaphore over
+  the whole upstream call (load + generation + stream).
+- `llm_queue_wait_s` (default 30) — bound on the semaphore wait AND the
+  memory-admission wait before an honest `503`.
+- `llm_parallel` (default 1) — llama.cpp `--parallel N` slot count, baked
+  into the server argv at the **next model load** (KV cache scales with
+  slots × ctx).
+- `llm_pin` — keep resident llm models out of idle eviction.
+
+Non-resident loads pass `JobManager.admit_resolved` — the same
+ledger/LRU-eviction memory gate the job queue uses — so a chat request
+can evict an idle model but never one with an in-flight stream, and it
+reports `503 {loading: true, retry_after_s}` instead of falling into an
+uncontrolled "load anyway" OOM path. `/v1/queue` shows the interactive
+lane (`llm.in_flight/waiting/loading`) next to batch jobs.
+
+Responses:
+
+- `200` — upstream JSON or `text/event-stream` relayed verbatim.
+- `400` — capability mismatch (vision/tools vs. explicit model).
+- `404` — `{"error": {"message": …}}` when no llm adapter can serve the
+  request (empty catalog or nothing downloaded/capable).
+- `503` — admission/slot timeout (`loading: true`, `retry_after_s`),
+  load failure/timeout; `502` when the spawned server is unreachable.
+
+## Runtime config
+
+### `GET /v1/config` / `PUT /v1/config`
+
+`GET` returns every `RUNTIME_MUTABLE` knob as
+`{key: {value, applies, source}}` — `applies` is `"immediate"`
+(re-read per call) or `"next_model_load"` (baked into the managed
+server's argv); `source` is `default`/`env`/`overlay`. `PUT` accepts a
+partial patch `{key: value}`, validates type + range, persists the
+overlay atomically to `model_dir/server_config.json`, and returns the
+full new view. `null` removes a key from the overlay (env/default wins
+again); unknown keys are `422`. Mutable keys today:
+`llm_max_concurrent`, `llm_queue_wait_s`, `llm_parallel`, `llm_pin`,
+`openai_image_wait_s`, `unload_idle_s`, `job_min_free_mb`,
+`mem_headroom_mb`.
+
+## LLM chat completions (adapter detail)
 
 Third adapter family (`kind: "llm"`): local LLMs served as managed
 OpenAI-compatible **server subprocesses** on a loopback port —
@@ -243,24 +361,9 @@ a llama.cpp build that supports the `qwen3_5` architecture family plus
 which the backend forwards per request — makes downloads of gated repos
 work transparently.
 
-### `POST /v1/chat/completions`
-
-Standard OpenAI chat-completions body (`model`, `messages`, `tools`,
-`temperature`, `stream`, …) — forwarded as-is, only `model` is rewritten.
-
-Model resolution (`select_llm`): an explicit catalog id wins; `"auto"` (or
-an empty/unknown id — e.g. an external provider's model name leaking
-through) falls back to the first available **and downloaded** adapter.
-Vision requests need `supports_vision`; check `/v1/models` first.
-
-Responses:
-
-- `200` — upstream JSON or `text/event-stream` relayed verbatim.
-- `404` — `{"error": {"message": …}}` when no llm adapter can serve the
-  request (empty catalog or nothing downloaded).
-- `503` — load failure/timeout; may carry `"loading": true` while another
-  request's load is still in flight. `502` when the spawned server is
-  unreachable.
+The chat endpoint contract (capability-aware resolution, bounded
+admission, error shapes) is documented under *OpenAI-compatible surface*
+above.
 
 ## Model management
 
@@ -371,7 +474,12 @@ model):
   "residents": [
     {"id": "qwen3.5-9b-mlx", "mb": 5200, "kind": "model", "pinned": true, "idle_s": 3.1},
     {"id": "warm:triposg", "mb": 6100, "kind": "warm", "pinned": false, "idle_s": 41.0}
-  ]
+  ],
+  "llm": {                            // interactive request lane (llm_proxy)
+    "in_flight": 2,                   // requests holding a semaphore slot
+    "waiting": 1,                     // requests queued for a slot
+    "loading": [{"model": "…", "waited_s": 4.2}]  // loads inside admission
+  }
 }
 ```
 
@@ -409,6 +517,13 @@ In addition to the existing `MESH_*` knobs (see
 | `MESH_LLM_CTX` | `16384` | context size passed to llama.cpp servers |
 | `MESH_LLM_PYTHON` | `""` | interpreter for mlx llm servers (else `mesh_server/.venv-llm/bin/python`, else the shared venv) |
 | `LLAMA_SERVER_BIN` | `""` | explicit `llama-server` binary (else PATH, else `llama_cpp.server`) |
+| `MESH_API_KEY` / `MESH_API_KEYS` | `""` | bearer token(s) — **required** for any non-loopback bind |
+| `MESH_LAN` | `0` | `1` binds `0.0.0.0` when `MESH_HOST` is unset (requires keys) |
+| `MESH_CORS_ORIGINS` | `""` | comma list; empty = `*` in LAN mode, off otherwise |
+| `MESH_LLM_MAX_CONCURRENT` | `4` | proxy semaphore over concurrent llm requests (0 = unbounded) |
+| `MESH_LLM_QUEUE_WAIT_S` | `30` | bound on llm slot + memory-admission waits before `503` |
+| `MESH_LLM_PARALLEL` | `1` | llama.cpp `--parallel N` — applies at next model load |
+| `MESH_OPENAI_IMAGE_WAIT_S` | `600` | sync-wait bound for `/v1/images/*` wrappers |
 
 ## Semantics
 

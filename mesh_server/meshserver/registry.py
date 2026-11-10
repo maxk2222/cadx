@@ -383,10 +383,20 @@ class Registry:
         # no ladder hit — any remaining adapter is better than failing
         return next(iter(avail.values()), None)
 
-    def select_llm(self, requested: str) -> type | None:
+    def select_llm(
+        self,
+        requested: str,
+        *,
+        need_vision: bool = False,
+        need_tools: bool = False,
+    ) -> type | None:
         """Pick an llm adapter class. 'auto' returns the first available and
-        downloaded class; explicit ids return the class (or None). The family
-        list may be empty until llm adapters are registered.
+        downloaded class matching the capability filters; explicit ids
+        return the class only when it also matches — a vision request
+        against a text-only model must surface a capability error at the
+        caller rather than silently dropping the image parts (mlx_lm strips
+        them server-side otherwise). The family list may be empty until
+        llm adapters are registered.
 
         Unknown explicit ids (e.g. an external provider's model name leaking
         through because llm_sidecar_model is unset) fall through to auto —
@@ -397,12 +407,18 @@ class Registry:
             for cls in self._classes + self._llm_classes
             if getattr(cls, "kind", "mesh") == "llm"
         }
+
+        def _capable(cls: type) -> bool:
+            return (not need_vision or getattr(cls, "supports_vision", False)) and (
+                not need_tools or getattr(cls, "supports_tools", True)
+            )
+
         if requested and requested != "auto":
             if cls := all_llm.get(requested):
-                return cls
+                return cls if _capable(cls) else None
             log.warning("registry.unknown_llm_model", requested=requested)
         for cls in all_llm.values():
-            if cls.id in self._failed:
+            if cls.id in self._failed or not _capable(cls):
                 continue
             with contextlib.suppress(Exception):
                 if not cls.downloaded(self.cfg):
@@ -424,8 +440,9 @@ class Registry:
                 self._instances[cls.id] = inst
             if not inst.loaded:
                 # llm servers pin when configured — a generation job must not
-                # evict a pinned chat backend mid-conversation
-                if getattr(cls, "kind", "") == "llm" and self.cfg.llm_pin:
+                # evict a pinned chat backend mid-conversation (runtime-mutable
+                # via /v1/config → effective())
+                if getattr(cls, "kind", "") == "llm" and self.cfg.effective("llm_pin"):
                     self._pinned.add(cls.id)
                 need = self.ledger.est_mb(cls.id, getattr(cls, "est_mem_mb", None))
                 # best-effort eviction: if nothing is evictable the load runs
@@ -504,7 +521,8 @@ class Registry:
         hard_unload()
 
     def maybe_unload_idle(self) -> None:
-        if self.cfg.unload_idle_s <= 0:
+        idle_s = self.cfg.effective("unload_idle_s")
+        if idle_s <= 0:
             return
         now = time.monotonic()
         unloaded = False
@@ -513,7 +531,7 @@ class Registry:
                 if (
                     inst.loaded
                     and aid not in self._pinned
-                    and now - self._last_used.get(aid, 0.0) > self.cfg.unload_idle_s
+                    and now - self._last_used.get(aid, 0.0) > idle_s
                 ):
                     self._unload_instance(aid, inst)
                     unloaded = True

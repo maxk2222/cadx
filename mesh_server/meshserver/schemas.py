@@ -131,6 +131,9 @@ class QueueInfo(BaseModel):
     residents: list[dict] = Field(
         default_factory=list
     )  # [{id, mb, kind, pinned, idle_s}] loaded models + warm workers
+    # interactive llm lane — llm_proxy request bookkeeping (in-flight per
+    # model, requests waiting for a slot/memory admission, loads in flight)
+    llm: dict | None = None
 
 
 class DownloadStatus(BaseModel):

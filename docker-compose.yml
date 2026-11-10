@@ -78,6 +78,9 @@ services:
       # bootstrap seed only — used once to create the DB runtime row when it
       # does not exist yet; afterwards the DB value wins and this is ignored
       MESH_BASE_URL: ${MESH_BASE_URL:-http://host.docker.internal:8765}
+      # bearer key for a LAN-exposed mesh-server (scripts/start.sh --lan
+      # generates one into .env) — seeds the runtime mesh_api_key row
+      MESH_API_KEY: ${MESH_API_KEY:-}
       # host-side updater daemon (scripts/update_server.py) — lets the GUI
       # trigger a full-stack update the api container can't perform itself
       CADX_UPDATE_URL: ${CADX_UPDATE_URL:-http://host.docker.internal:8766}
@@ -117,6 +120,7 @@ services:
       DATA_DIR: /data
       # bootstrap seed only — see api service; change it in the Settings UI
       MESH_BASE_URL: ${MESH_BASE_URL:-http://host.docker.internal:8765}
+      MESH_API_KEY: ${MESH_API_KEY:-}
       # agent jobs are mostly I/O-bound (LLM streaming, executor polls) —
       # external providers must not be serialized by a low job cap; local
       # sidecar backends stay capped via per-service io_slots in the clients.

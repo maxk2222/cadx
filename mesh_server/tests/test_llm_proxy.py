@@ -208,6 +208,45 @@ async def test_load_failed_503_with_loading_flag(upstream):
     assert r.json()["error"]["loading"] is True
 
 
+class _Manager:
+    """JobManager stand-in: admission always passes, loading markers are
+    observable — a foreign 'model#task' key must surface as loading:true."""
+
+    def __init__(self, loading: dict | None = None) -> None:
+        self.llm_loading: dict = dict(loading or {})
+        self.llm_in_flight: dict = {}
+        self.llm_waiting = 0
+
+    def admit_resolved(self, resolved: str) -> bool:  # noqa: ARG002
+        return True
+
+
+async def test_load_failed_503_foreign_load_marks_loading(upstream):
+    reg = _Reg(_Adapter(upstream), boom="weights missing")
+    mgr = _Manager(loading={"my-llm#other-task": 1.0})
+    resp = await chat_completions(
+        reg, ServerConfig(llm_load_timeout_s=5), {"model": "my-llm", "messages": []},
+        manager=mgr,
+    )
+    assert resp.status_code == 503
+    assert resp.body and b'"loading":true' in resp.body.replace(b" ", b"")
+
+
+async def test_admission_timeout_503(upstream):
+    """admit_resolved never grants → bounded wait → 503 + retry hint."""
+    mgr = _Manager()
+    mgr.admit_resolved = lambda _id: False  # type: ignore[method-assign]
+    cfg = ServerConfig(llm_queue_wait_s=0.2, llm_load_timeout_s=5)
+    resp = await chat_completions(
+        _Reg(_Adapter(upstream)),
+        cfg,
+        {"model": "my-llm", "messages": []},
+        manager=mgr,
+    )
+    assert resp.status_code == 503
+    assert b"retry_after_s" in resp.body
+
+
 async def test_no_select_llm_503():
     async with _client(_app(_BareReg())) as c:
         r = await c.post("/v1/chat/completions", json={"model": "x", "messages": []})

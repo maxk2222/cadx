@@ -1,7 +1,12 @@
 """FastAPI app: /v1/health, /v1/models, /v1/jobs CRUD + mesh download,
 /v1/image-jobs CRUD + PNG download (text-to-image adapter family),
-/v1/chat/completions (OpenAI-compatible proxy to local llm adapters),
-/v1/queue + model download/registration management routes."""
+/v1/chat/completions + /v1/embeddings + /v1/images/* (OpenAI-compatible),
+/v1/queue + /v1/config + model download/registration management routes.
+
+LAN exposure: a non-loopback bind requires MESH_API_KEY(S) — the
+BearerAuthMiddleware enforces it per-request and create_app refuses to
+start without keys, so an open GPU endpoint can never be published
+accidentally."""
 
 from __future__ import annotations
 
@@ -13,14 +18,22 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
-from meshserver.config import ServerConfig, get_config
+from meshserver import runtime_config as rcfg
+from meshserver.auth import BearerAuthMiddleware
+from meshserver.config import ServerConfig, _is_loopback, get_config
 from meshserver.downloads import DownloadManager, downloadable
 from meshserver.jobs import ImageJob, JobManager, MeshJob
 from meshserver.llm_models import register_custom_model, unregister_custom_model
-from meshserver.llm_proxy import chat_completions
+from meshserver.llm_proxy import chat_completions, embeddings as llm_embeddings
 from meshserver.logging import configure_logging, get_logger
+from meshserver.openai_compat import (
+    images_edits,
+    images_generations,
+    openai_models,
+)
 from meshserver.registry import Registry
 from meshserver.schemas import (
     DownloadStatus,
@@ -40,6 +53,11 @@ log = get_logger(__name__)
 def create_app(cfg: ServerConfig | None = None) -> FastAPI:
     cfg = cfg or get_config()
     configure_logging()
+    if not _is_loopback(cfg.host) and not cfg.api_keys:
+        raise RuntimeError(
+            f"refusing to bind '{cfg.host}' without API keys — set MESH_API_KEY "
+            "(or MESH_API_KEYS) or bind a loopback host"
+        )
     registry = Registry(cfg)
     manager = JobManager(cfg, registry)
 
@@ -65,6 +83,21 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
         registry.unload_all()
 
     app = FastAPI(title="mesh-server", version="0.1.0", lifespan=lifespan)
+
+    # middleware order (add_middleware wraps outermost-last): the hf-token
+    # forwarder (added below via @app.middleware) ends up outermost, then
+    # CORS (handles preflights + decorates error responses), then bearer
+    # auth innermost before routing — pure ASGI on purpose, since
+    # BaseHTTPMiddleware would buffer and break the SSE relay
+    app.add_middleware(BearerAuthMiddleware, api_keys=cfg.api_keys)
+    origins = [o.strip() for o in cfg.cors_origins.split(",") if o.strip()]
+    if origins or cfg.lan:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins or ["*"],
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     @app.middleware("http")
     async def hf_token_forward(request: Request, call_next):
@@ -94,7 +127,12 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
 
     @app.get("/v1/models", response_model=dict)
     async def models() -> dict:
-        return {"models": [m.model_dump() for m in registry.models()]}
+        # dual-shape: internal `models[]` (CADX management view) plus the
+        # OpenAI `data[]` listing so stock SDKs/clients can discover the
+        # served llm + image model ids
+        listing = {"models": [m.model_dump() for m in registry.models()]}
+        listing.update(await openai_models(registry))
+        return listing
 
     @app.post("/v1/jobs", response_model=JobCreated)
     async def create_job(
@@ -208,11 +246,59 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
         deleted = await manager.delete(job_id)
         return {"ok": True, "deleted": deleted}
 
-    # -- llm chat completions (OpenAI-compatible proxy) -------------------- #
+    # -- OpenAI-compatible surface (llm proxy + image shims) --------------- #
 
     @app.post("/v1/chat/completions")
     async def llm_chat(request: Request) -> Response:
-        return await chat_completions(registry, cfg, json_loads(await request.body()))
+        return await chat_completions(
+            registry, cfg, json_loads(await request.body()), manager=manager
+        )
+
+    @app.post("/v1/embeddings")
+    async def openai_embeddings(request: Request) -> Response:
+        return await llm_embeddings(
+            registry, cfg, json_loads(await request.body()), manager=manager
+        )
+
+    @app.post("/v1/images/generations")
+    async def openai_image_generations(request: Request) -> Response:
+        return await images_generations(
+            manager,
+            cfg,
+            json_loads(await request.body()),
+            base_url=str(request.base_url).rstrip("/"),
+        )
+
+    @app.post("/v1/images/edits")
+    async def openai_image_edits(
+        request: Request,
+        image: UploadFile = File(...),
+        mask: UploadFile | None = File(None),
+    ) -> Response:
+        body = {
+            k: v
+            for k, v in (await request.form()).items()
+            if k not in ("image", "mask") and isinstance(v, str)
+        }
+        return await images_edits(
+            manager,
+            cfg,
+            body,
+            image_name=image.filename or "init.png",
+            image_bytes=await image.read(),
+            has_mask=mask is not None,
+            base_url=str(request.base_url).rstrip("/"),
+        )
+
+    # -- runtime config (scheduling knobs, auth-protected) ----------------- #
+
+    @app.get("/v1/config")
+    async def get_runtime_config() -> dict:
+        return rcfg.config_view(cfg)
+
+    @app.put("/v1/config")
+    async def put_runtime_config(request: Request) -> dict:
+        return rcfg.apply_patch(cfg, json_loads(await request.body()))
 
     # -- scheduling / model management ------------------------------------- #
 

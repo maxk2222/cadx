@@ -66,6 +66,18 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
 - Mesh sidecar (dev):    `make mesh-sync && make mesh-server`  (own uv env in
   `mesh_server/`; `MESH_FAKE=1` for GPU-free runs; see `docs/mesh-generation.md`)
 - Mesh-server tests:     `cd mesh_server && uv run pytest`
+- Mesh sidecar (LAN):    `scripts/start.sh --lan` — binds `0.0.0.0` + generates
+  `MESH_API_KEY` into `.env`; any non-loopback bind WITHOUT a key refuses to
+  start (BearerAuthMiddleware enforces `Authorization: Bearer` per request,
+  only `/v1/health`+`OPTIONS` exempt). OpenAI-compatible surface:
+  `/v1/chat/completions` (multimodal, capability-aware `select_llm` — vision
+  requests never land on text-only models), `/v1/embeddings`,
+  `/v1/images/generations|edits` (sync wrappers over the shared job queue),
+  `/v1/models` dual-shape. LLM admission is bounded (`MESH_LLM_MAX_CONCURRENT`
+  semaphore + `MESH_LLM_QUEUE_WAIT_S` → honest `503{loading,retry_after_s}`,
+  `MESH_LLM_PARALLEL` = llama.cpp `--parallel` at next load) — runtime-mutable
+  via auth'd `GET/PUT /v1/config` (overlay `model_dir/server_config.json`;
+  see `docs/mesh-server-api.md`).
 
 ## Conventions (must follow)
 - Python: type hints everywhere; `ruff` line-length 100; async FastAPI handlers;

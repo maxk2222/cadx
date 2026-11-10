@@ -4,8 +4,8 @@
 #
 # Usage:
 #   scripts/start.sh [--dev] [--tier T] [--fake] [--no-mesh] [--no-setup]
-#                    [--no-build] [--bind-local] [--dry-run] [--open] [--yes]
-#                    [--quiet|--verbose] [--no-color] [-h|--help]
+#                    [--no-build] [--bind-local] [--lan] [--dry-run] [--open]
+#                    [--yes] [--quiet|--verbose] [--no-color] [-h|--help]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,6 +17,7 @@ source scripts/lib/ui.sh
 usage() { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//; /^set -euo/d'; }
 
 DEV=0; NO_MESH=0; NO_SETUP=0; NO_BUILD=0; BIND_LOCAL=0; OPEN=0; TIER_OVERRIDE=""; FAKE=0
+LAN=0
 while [ $# -gt 0 ]; do
   if ui_common_flags "$1"; then shift; continue; fi
   case "$1" in
@@ -27,6 +28,7 @@ while [ $# -gt 0 ]; do
     --no-setup)   NO_SETUP=1; shift ;;
     --no-build)   NO_BUILD=1; shift ;;
     --bind-local) BIND_LOCAL=1; shift ;;
+    --lan)        LAN=1; shift ;;
     --dry-run)    DRY=1; shift ;;
     --open)       OPEN=1; shift ;;
     -h|--help)    usage; exit 0 ;;
@@ -139,7 +141,12 @@ step_done "token ready"
 MESH_PORT=${MESH_PORT:-8765}
 MESH_URL=""
 if [ "$NO_MESH" = 0 ] && [ "$TIER" != "none" ]; then
-  if [ "$DEV" = 1 ] || [ "$BIND_LOCAL" = 1 ]; then
+  if [ "$LAN" = 1 ]; then
+    # LAN exposure: bind all interfaces + enforce bearer auth
+    MESH_HOST="0.0.0.0"
+    MESH_URL="http://host.docker.internal:$MESH_PORT"
+    export MESH_LAN=1
+  elif [ "$DEV" = 1 ] || [ "$BIND_LOCAL" = 1 ]; then
     MESH_HOST="127.0.0.1"
     MESH_URL="http://localhost:$MESH_PORT"
   else
@@ -147,12 +154,39 @@ if [ "$NO_MESH" = 0 ] && [ "$TIER" != "none" ]; then
     # linux, vpnkit on macOS) — linux needs a non-loopback bind
     if [ "$(uname -s)" = "Linux" ]; then
       MESH_HOST="0.0.0.0"
-      warn "binding mesh-server to 0.0.0.0 (required so docker workers can reach it; visible on your LAN)"
     else
       MESH_HOST="127.0.0.1"
     fi
     MESH_URL="http://host.docker.internal:$MESH_PORT"
   fi
+  # non-loopback bind ⇒ bearer auth is mandatory (the sidecar refuses to
+  # start keyless). Generate + persist the key: .env feeds compose
+  # (api/worker env → runtime settings) and run/mesh-server.env feeds the
+  # watchdog respawn contract. User-pinned values win.
+  case "$MESH_HOST" in
+    127.0.0.1|localhost|::1|"") ;;
+    *)
+      if [ -z "${MESH_API_KEY:-}" ] && [ -f .env ]; then
+        # reuse the persisted key first — generating a fresh one while .env
+        # already holds another would desync sidecar vs. containers
+        MESH_API_KEY="$(grep -m1 '^MESH_API_KEY=' .env | cut -d= -f2-)"
+      fi
+      if [ -z "${MESH_API_KEY:-}" ]; then
+        MESH_API_KEY="$(openssl rand -hex 24 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(24))')"
+      fi
+      export MESH_API_KEY
+      touch .env
+      if ! grep -q '^MESH_API_KEY=' .env; then
+        echo "MESH_API_KEY=$MESH_API_KEY" >> .env
+      fi
+      if [ "$LAN" = 1 ]; then
+        info "LAN sidecar: http://$(hostname -I 2>/dev/null | awk '{print $1}' || ipconfig getifaddr en0 2>/dev/null || echo '<lan-ip>'):$MESH_PORT  api key: $MESH_API_KEY"
+        warn "LAN mode: mesh-server binds 0.0.0.0 with bearer auth — clients need Authorization: Bearer <key> (persisted in .env as MESH_API_KEY)"
+      else
+        warn "mesh-server binds $MESH_HOST (docker workers reach it) with bearer auth — key persisted in .env as MESH_API_KEY"
+      fi
+      ;;
+  esac
   export MESH_BASE_URL="$MESH_URL" MESH_MODEL="${MESH_MODEL:-$MODEL}"
   export MESH_IMAGE_MODEL="${MESH_IMAGE_MODEL:-$IMG_MODEL}"
   [ "$TIER" = "fake" ] && export MESH_FAKE=1
@@ -230,6 +264,9 @@ if [ "${MESH_HOST:-}" != "" ]; then
       # gfx archs not covered by the installed torch wheel
       MESH_HOST="$MESH_HOST" MESH_PORT="$MESH_PORT" MESH_DEVICE="$TIER" \
         MESH_FAKE="${MESH_FAKE:-}" \
+        MESH_LAN="${MESH_LAN:-}" \
+        MESH_API_KEY="${MESH_API_KEY:-}" \
+        MESH_CORS_ORIGINS="${MESH_CORS_ORIGINS:-}" \
         MESH_JOB_MAX_RSS_MB="${MESH_JOB_MAX_RSS_MB:-}" \
         HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-}" \
         PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-}" \
@@ -239,6 +276,9 @@ if [ "${MESH_HOST:-}" != "" ]; then
       {
         echo "MESH_HOST=$MESH_HOST"; echo "MESH_PORT=$MESH_PORT"
         echo "MESH_DEVICE=$TIER"; echo "MESH_FAKE=${MESH_FAKE:-}"
+        echo "MESH_LAN=${MESH_LAN:-}"
+        echo "MESH_API_KEY=${MESH_API_KEY:-}"
+        echo "MESH_CORS_ORIGINS=${MESH_CORS_ORIGINS:-}"
         echo "MESH_JOB_MAX_RSS_MB=${MESH_JOB_MAX_RSS_MB:-}"
         echo "HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}"
         echo "PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-}"

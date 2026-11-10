@@ -103,7 +103,7 @@ class MemoryLedger:
         free = self.free_mb()
         if free is None:
             return True
-        return free - need_mb >= self.cfg.mem_headroom_mb
+        return free - need_mb >= self.cfg.effective("mem_headroom_mb")
 
     # -- resident set ------------------------------------------------------- #
 
