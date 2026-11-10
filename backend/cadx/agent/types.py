@@ -138,6 +138,9 @@ class AgentCtx:
 
     # filled by steps
     spec: PartSpec | None = None
+    # the in-loop FEM smoke check retries once with re-extracted cases when
+    # every declared case comes back unsolvable — bounded by this latch
+    load_repair_done: bool = False
     plan: ModelingPlan | None = None
     budget_tokens: int = 400_000
     # True when max_iterations came from project/version config — an explicit

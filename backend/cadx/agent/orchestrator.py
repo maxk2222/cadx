@@ -92,6 +92,17 @@ _LOAD_HINT_RE = re.compile(
     re.I,
 )
 
+
+def _all_cases_unsolvable(fem_res: dict[str, Any]) -> bool:
+    """The fem smoke returned ok but every declared case reported no
+    solvable result — a spec-declaration defect (regions resolving to zero
+    force / empty masks), not a solver failure."""
+    if not fem_res.get("ok"):
+        return False
+    cases = ((fem_res.get("fem") or {}).get("cases")) or []
+    return bool(cases) and all(c.get("safety_factor") is None for c in cases)
+
+
 # cross-agent contract kwargs: the concurrent changes that consume these
 # land independently — probe the signatures once so this file works both
 # before and after they merge (P9/P10)
@@ -3964,29 +3975,48 @@ async def _run_cad(  # noqa: C901
                 or storage.relpath(storage.iteration_dir(ctx.project_id, ctx.version_id, it))
             )
             await ctx.emit("fem", it, f"verifying {len(spec.load_cases)} load case(s)")
+            payload = {
+                "job_id": ctx.job_id,
+                "project_id": str(ctx.project_id),
+                "version_id": str(ctx.version_id),
+                "iteration": it,
+                "mesh_rel": f"{it_rel}/renders/mesh.stl",
+                "load_cases": [c.model_dump() for c in spec.load_cases],
+                # spec-ordered anchor table so hole_index resolves
+                # against declaration order — scanned holes still
+                # merge in afterwards (scan_anchors is on)
+                "anchors": (ctx.anchors or {}).get("holes") or None,
+                "material": ctx.settings.fem_material or spec.material,
+                # iteration verify is a smoke check (solvable? sane SF?) —
+                # a coarser pitch keeps it inside the task timeout on
+                # long parts; the optimize phase re-verifies at full res
+                "voxel_mm": max(1.5, ctx.settings.fem_voxel_mm or 1.5),
+                "runtime_settings": ctx.runtime_settings.executor_values(),
+            }
             try:
-                fem_res = await ctx.executor.fem_analyze(
-                    {
-                        "job_id": ctx.job_id,
-                        "project_id": str(ctx.project_id),
-                        "version_id": str(ctx.version_id),
-                        "iteration": it,
-                        "mesh_rel": f"{it_rel}/renders/mesh.stl",
-                        "load_cases": [c.model_dump() for c in spec.load_cases],
-                        # spec-ordered anchor table so hole_index resolves
-                        # against declaration order — scanned holes still
-                        # merge in afterwards (scan_anchors is on)
-                        "anchors": (ctx.anchors or {}).get("holes") or None,
-                        "material": ctx.settings.fem_material or spec.material,
-                        # iteration verify is a smoke check (solvable? sane SF?) —
-                        # a coarser pitch keeps it inside the task timeout on
-                        # long parts; the optimize phase re-verifies at full res
-                        "voxel_mm": max(1.5, ctx.settings.fem_voxel_mm or 1.5),
-                        "runtime_settings": ctx.runtime_settings.executor_values(),
-                    }
-                )
+                fem_res = await ctx.executor.fem_analyze(payload)
             except Exception as e:
                 fem_res = {"ok": False, "error": str(e)}
+            # all-unsolvable declarations (regions resolving to zero force /
+            # no nodes) are a spec defect the loop cannot otherwise repair —
+            # load_cases are not editable mid-loop. Re-extract them once and
+            # re-verify: bounded by the ctx latch, audited via emit.
+            if _all_cases_unsolvable(fem_res) and not ctx.load_repair_done and not cancelled():
+                ctx.load_repair_done = True
+                cases, _opt = await intake_step.extract_load_cases(ctx, spec)
+                if cases:
+                    spec.load_cases = cases
+                    intake_step.sanitize_load_cases(spec)
+                    payload["load_cases"] = [c.model_dump() for c in spec.load_cases]
+                    await ctx.emit(
+                        "fem",
+                        it,
+                        f"declared cases unsolvable — re-extracted {len(cases)} case(s), re-verifying",
+                    )
+                    try:
+                        fem_res = await ctx.executor.fem_analyze(payload)
+                    except Exception as e:
+                        fem_res = {"ok": False, "error": str(e)}
             if fem_res.get("ok") and fem_res.get("fem"):
                 exec_result["fem"] = fem_res["fem"]
                 sf_min = spec.optimize.safety_factor_min if spec.optimize else 1.5
