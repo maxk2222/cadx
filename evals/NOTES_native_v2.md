@@ -985,3 +985,60 @@ Deploy + Runde 9 (2026-11-10 ~02:0x):
 - Bracket-Fail war Codegen-Gate (durchbohrte Blind-Taps im generierten
   Teil, Agent-Quality); Re-Run gibt neue Chance, sonst Intake/Codegen-
   Verbesserung noetig.
+
+## Echter Worker-Crash (bracket r9 fem, 01:20) + Resubmit-Fix
+
+Der Bracket-FEM-Fail in r9 war ein REALER Crash — unterscheidbar vom
+false-lost: `[diag] worker pid=7 exited` mitten im fem_analyze
+(444k DOFs / 34.5M nnz Solve, ~01:19:5x; parallele codegen/FEM-Last
+auf 12GiB cgroup -> OOM-Kill des heavy-lane Worker-Prozesses).
+
+Mechanik danach: cad-Queue laeuft max_tries=1 (Design: "caller
+resubmits deliberately") — der in-flight getoetete Versuch frisst das
+einzige try-Budget; der restarted Worker claimt das Queue-Member,
+inkrementiert job_try->2 > 1 -> "max 1 retries exceeded" OHNE zu
+laufen. Der Caller bekam also ein permanentes Fail fuer einen Task der
+nie ausgefuehrt wurde — die graceful-lost-Resubmit-Intention griff
+nicht (kein not_found-Pfad: arq hatte ein Result geschrieben).
+
+Fix (746158e): _run_task_once + Wrapper — bei Fehler-Signatur
+"max N retries exceeded" (nur moeglich bei job_try>1 = in-flight kill;
+echte Task-Exceptions serialisieren den eigenen Fehler) einmal
+bounded resubmiten. Zweiter Crash -> wieder Fail, durchgereicht.
+Regression-Tests: crash->resubmit->ok, echter Task-Fehler->kein
+Resubmit.
+
+Ausstehendes Deploy: Worker-Image 0e69fffd hat nur 063740a —
+Rebuild fuer 746158e laeuft; Recreate erst wenn tank+propeller r9
+ihre Agent-Jobs beenden (Restart toetet laufende Agent-Jobs).
+Bracket braucht danach r10 (fem crash waere von diesem Fix abgefangen
+worden — Part war verify_spec PASS, SF 3.54).
+
+## r9 post-mortem + worker hardening (2026-11-10 ~02:40)
+
+### Worker-death resubmit (commit 746158e)
+Real crash observed on bracket r9: `fem_analyze-34d21244` claimed, executor
+worker pid=7 died mid-solve (444k DOFs, OOM under 3-way parallel eval load),
+arq re-queued the member with job_try=2 > max_tries=1 → `"max 1 retries
+exceeded"` without the task ever running. `QueueExecutor` now resubmits once
+with a fresh task id when a task is reported lost/failed after having run;
+genuine task exceptions are never resubmitted. Regression tests cover both
+paths (4/4 in `test_queue_lanes.py`).
+
+### r9 outcomes
+- tank 20261110-020635: codegen gate fail. Rescue fired correctly (3 lugs
+  rebuilt) but verify_spec still FAIL: agent's own `through_hole` cuts left
+  2/3 bolt bores capped below z≈20.5 (0° open, 120°/240° sealed). Legit
+  agent-quality fail caught by verify_spec.
+- bracket 20261110-020704: codegen PASS (taps correct — variance confirmed),
+  fem stage died to the worker crash above → infra fail, now covered by
+  746158e resubmit.
+- propeller 20261110-020704: false-lost fem (063740a root cause) — rerun.
+- arm: honest decline — SIMP with bad `symmetry:"yz"` + missing loadpath
+  corridors produced SF 0.05–0.08 variants; agent correctly rejected both and
+  kept the verified base (SF 2.83). Pipeline behaved as designed.
+
+### Deploy state
+Worker image `390956c2` (063740a + 746158e) recreated ~02:39. r10 evals
+launched 02:40: tank + bracket + propeller in parallel on the patched worker.
+Propeller r9 codegen (~40min) was sacrificed for a clean all-fixed validation.
