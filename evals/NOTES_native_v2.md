@@ -1042,3 +1042,28 @@ paths (4/4 in `test_queue_lanes.py`).
 Worker image `390956c2` (063740a + 746158e) recreated ~02:39. r10 evals
 launched 02:40: tank + bracket + propeller in parallel on the patched worker.
 Propeller r9 codegen (~40min) was sacrificed for a clean all-fixed validation.
+
+### r10 tank fem: the empty-load_cases 422 (commit 346d115)
+- tank r10 codegen passed (score 40, 5 iters, verify_spec envelope overflow
+  tolerated). Fem stage died at wall_s=0.0 — `POST /versions/{id}/fem` →
+  **422 "at least one load case is required"** (SpawnError default is 409;
+  422 is only raised on missing cases). The version spec carried
+  `load_cases=[]` — the intake model ignored the prompt's explicit
+  "declare the load model … in spec.load_cases" instruction.
+- Safety net missed too: `prompt_hints_loads` regex only covered
+  optimize/weight/force keywords. "load", "pressure", "6 bar", "bolted",
+  "fixed supports" matched nothing → `extract_load_cases` never armed.
+- Fix: `_LOAD_HINT_RE` extended with English load/pressure-unit
+  (bar/psi/MPa)/stress/structural/mounting vocabulary — the documented
+  trigger intent already named "forces, mounting or optimization".
+- Propeller prompt has the same gap (old regex silent) — its r10 intake
+  ran pre-fix; if its spec drops load_cases the fem stage will 422 and it
+  needs a rerun on the rebuilt worker.
+- Also added: eval http driver waits (≤300s) for the parent version to
+  settle before same-version/child spawns — job-row terminal ≠ version
+  settled; POSTing in that window hits editability gates (belt & braces —
+  this tank failure was the load-cases 422, not the race, but the race is
+  real for fast stages).
+- Crash-resubmit (746158e) validated in production: executor worker pid=7
+  OOM-killed ~4s into bracket-r10 optimize (344k DOFs alloc), task burned
+  "max retries exceeded" → resubmitted fresh → converged ~61 MJ.
