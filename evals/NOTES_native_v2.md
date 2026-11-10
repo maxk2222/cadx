@@ -1067,3 +1067,22 @@ Propeller r9 codegen (~40min) was sacrificed for a clean all-fixed validation.
 - Crash-resubmit (746158e) validated in production: executor worker pid=7
   OOM-killed ~4s into bracket-r10 optimize (344k DOFs alloc), task burned
   "max retries exceeded" → resubmitted fresh → converged ~61 MJ.
+
+### r10 propeller: legit 90min codegen timeout (case bumped to 7200s)
+- Codegen hit the stage deadline (5400s) mid-iteration-4 with an in-loop
+  fem-verify queued — 5-blade loft geometry genuinely needs >90min on this
+  hardware. Spec DID carry 2 load cases this run (intake variance). No
+  pipeline bug; the case budget was simply tight → bumped to 7200s.
+
+### r10 bracket: MMA stagnation burn → early-stop guard (commit 7830e63)
+- Live observation: `mma.iter` flatlined at compliance 3476.563 (identical
+  to 3 decimals) + volfrac 0.1702 for 39+ evaluations at ~90s each —
+  the xtol-tightening ratchet had driven nlopt into micro-steps that
+  neither xtol nor the guards could end. ~55min of pure burn.
+- Existing guards cover explosion (mechanism) and degradation
+  (plateau-regression) — not a frozen optimum. New stagnation guard:
+  converge_patience evals with last_change <= tol*0.05 and a flat
+  objective → ForcedStop, reported as `mma_status="stagnated"`, treated
+  like convergence so the beta continuation still sharpens.
+- Deploy deferred: the running bracket optimize is ~2h in; the burn ends
+  at max_iter=60 anyway. Executor rebuild runs in background.
