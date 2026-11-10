@@ -1156,3 +1156,16 @@ load_cases=null → pydantic 422, indistinguishable from a real 422).
   sits. Regression test rotates the realized ring by 60°.
 - DEPLOY NOTE: spec_feature_rescue runs executor-side (sandbox runner)
   — needs executor rebuild, deferred until r12 evals finish.
+
+## r12 tank: self-contradictory authored spec (score 10)
+- New failure mode, distinct from blind holes: the agent's spec pins
+  envelope Ø80 AND bolt holes at r=43 — a hole at r=43 needs lug
+  material to ~46.5 → footprint ~93mm. Unsatisfiable by construction:
+  either envelope fails (86-93mm measured) or the hole sits inboard.
+  FEM this time SOLVED (SF 0.57 under 0.6 MPa internal pressure —
+  load cases fine, the declared wall is just too thin for pressure).
+- Candidate general fix (not implemented): an intake-time consistency
+  lint — declared feature radial extents vs declared envelope —
+  flagging "hole at r=X exceeds envelope r=Y" before codegen burns
+  5 iterations on an unsatisfiable spec. Needs numeric position
+  resolution (verify_spec already computes it post-hoc).
