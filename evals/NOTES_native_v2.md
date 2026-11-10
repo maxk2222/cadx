@@ -1098,3 +1098,27 @@ worker OOM-kill, corridor-fill + rotation gate re-cut all taps watertight.
 Full stack: worker 390956c2-era + 346d115 (load-hint regex, parent-settle
 driver wait) and executor with 7830e63 (MMA stagnation guard). Cases:
 tank, propeller (codegen budget now 7200s), arm.
+
+## r11 verdicts (in progress)
+- **robot_arm_mount_autonomous: FAIL at fem gate** — codegen passed
+  (verify_spec 35/0) and the fem JOB succeeded, but both declared cases
+  ("arm weight on seat", "overturning moment 100 Nm") returned
+  safety_factor null — "load on bore resolved to zero force". Spec
+  declaration defect, not solver failure: regions resolve to zero
+  magnitude on the generated geometry. load_cases are not editable
+  mid-loop, so the agent could not self-repair → gate honestly failed.
+  Fix e41eeb0: in-loop fem smoke now re-extracts load cases ONCE when
+  every declared case is unsolvable (bounded via ctx.load_repair_done,
+  audited via emit) — needs worker rebuild + arm re-run.
+- pressure_tank_autonomous: still running (codegen).
+- marine_propeller_autonomous: still running (codegen, 7200s budget).
+
+### tank r10 fem-422 correction
+- Earlier diagnosis ("parent version still running race") was wrong on
+  the mechanism: SpawnError defaults to 409; the observed 422 was
+  pydantic `load_cases: Input should be a valid list, input: null` —
+  the driver posts null when the parent spec has no load_cases. Both
+  fixes landed anyway: `_wait_version_settled` closes the real race and
+  `_LOAD_HINT_RE` makes intake emit cases for pressure/bolt/support
+  prompts. Remaining gap: driver should degrade to parent_spec /
+  parent_params sourcing (or skip) instead of posting null.
