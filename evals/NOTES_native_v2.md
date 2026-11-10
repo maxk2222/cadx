@@ -1122,3 +1122,25 @@ tank, propeller (codegen budget now 7200s), arm.
   `_LOAD_HINT_RE` makes intake emit cases for pressure/bolt/support
   prompts. Remaining gap: driver should degrade to parent_spec /
   parent_params sourcing (or skip) instead of posting null.
+
+## r11 verdicts (complete) — all three failed on agent quality, pipeline correct
+- **robot_arm_mount_autonomous**: codegen passed (verify_spec 35/0) → fem
+  JOB succeeded but BOTH cases sf=null ("load on bore resolved to zero
+  force") → fem gate failed honestly. Fix e41eeb0+5d72af9: in-loop fem
+  smoke now re-extracts load cases ONCE on ANY unsolvable case
+  (ctx.load_repair_done latch, emit-audited).
+- **pressure_tank_autonomous**: verify_spec FAIL (score 5) — foot bolt
+  holes blind instead of through AGAIN (3rd run with this defect —
+  codegen quality, not infra), caps conical not domed, frame_min_z.
+- **marine_propeller_autonomous**: verify_spec FAIL (score 25) — blade
+  tips r≈66-68 vs Ø70 required, root fillets r≈20 vs ~2, loft facets.
+  The 7200s budget sufficed — this is geometry quality, not time.
+
+## r12 launched (2026-11-10 ~07:00 CET)
+Worker rebuilt with e41eeb0+5d72af9 (fem repair). NOTE: the eval
+driver's default --api-url :8080 was hijacked by an unrelated
+`loom-serv` process — r12 launched with
+`--api-url http://localhost:8090` (cadx-api-fwd).
+Also committed a2aa9cb: evalkit driver fails load-bearing stages
+honestly when no load cases resolve (previously posted
+load_cases=null → pydantic 422, indistinguishable from a real 422).
