@@ -93,14 +93,15 @@ _LOAD_HINT_RE = re.compile(
 )
 
 
-def _all_cases_unsolvable(fem_res: dict[str, Any]) -> bool:
-    """The fem smoke returned ok but every declared case reported no
+def _has_unsolvable_case(fem_res: dict[str, Any]) -> bool:
+    """The fem smoke returned ok but at least one declared case reported no
     solvable result — a spec-declaration defect (regions resolving to zero
-    force / empty masks), not a solver failure."""
+    force / empty masks), not a solver failure. Even one dead case fails the
+    downstream stage gate (forbidden warnings), so partial sets repair too."""
     if not fem_res.get("ok"):
         return False
     cases = ((fem_res.get("fem") or {}).get("cases")) or []
-    return bool(cases) and all(c.get("safety_factor") is None for c in cases)
+    return any(c.get("safety_factor") is None for c in cases)
 
 
 # cross-agent contract kwargs: the concurrent changes that consume these
@@ -4001,7 +4002,7 @@ async def _run_cad(  # noqa: C901
             # no nodes) are a spec defect the loop cannot otherwise repair —
             # load_cases are not editable mid-loop. Re-extract them once and
             # re-verify: bounded by the ctx latch, audited via emit.
-            if _all_cases_unsolvable(fem_res) and not ctx.load_repair_done and not cancelled():
+            if _has_unsolvable_case(fem_res) and not ctx.load_repair_done and not cancelled():
                 ctx.load_repair_done = True
                 cases, _opt = await intake_step.extract_load_cases(ctx, spec)
                 if cases:
