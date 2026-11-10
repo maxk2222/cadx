@@ -321,11 +321,15 @@ class QueueExecutor:
                 "ok": False,
                 "error": f"executor submit failed — task not running, safe to retry: {e!r}",
             }
-        job = Job(job_id, pool)
+        # _queue_name must match the enqueue lane — Job defaults to
+        # 'arq:queue', so status() would zscore a key that never exists and
+        # report a still-queued task as not_found/lost (the false "worker
+        # died" path observed on queued-behind-optimize fem_analyze calls).
+        job = Job(job_id, pool, _queue_name=queue)
         started_at: float | None = None
         if self._emit is not None:
             with contextlib.suppress(Exception):
-                pos = await pool.zcard(f"arq:queue:{queue}")
+                pos = await pool.zcard(queue)
                 label = f"queued for executor (pos {pos})"
                 await self._emit("exec", 0, label, sub_label=label)
         queue_cap_s = timeout_s * _QUEUE_HARD_FACTOR
