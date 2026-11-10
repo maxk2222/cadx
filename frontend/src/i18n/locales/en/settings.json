@@ -203,6 +203,8 @@
     "tripo_api_base_h": "empty = default https://api.tripo3d.ai",
     "mesh_base_url": "Mesh server URL",
     "mesh_base_url_h": "e.g. http://localhost:8765 (native) or http://mesh-server:8765 (compose gpu profile); empty = disabled",
+    "mesh_api_key": "Mesh server API key",
+    "mesh_api_key_h": "bearer key the LAN-exposed sidecar requires (start.sh --lan / MESH_LAN=1); empty = no auth",
     "mesh_model": "Default mesh model",
     "mesh_model_h": "auto picks by device. On Apple-silicon MPS the hunyuan3d-2mv variant can stall under memory pressure — prefer hunyuan3d-2.1-mlx or the mini/turbo variants there.",
     "mesh_timeout_s": "Generation timeout (s)",

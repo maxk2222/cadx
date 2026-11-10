@@ -32,6 +32,7 @@ _SECRET_KEYS = (
     "tripo_api_key",
     "image_api_key",
     "hf_token",
+    "mesh_api_key",
 )
 
 

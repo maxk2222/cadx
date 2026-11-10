@@ -228,6 +228,8 @@ export default function SettingsPage() {
   const [clearImageKey, setClearImageKey] = useState(false);
   const [hfKey, setHfKey] = useState("");
   const [clearHfKey, setClearHfKey] = useState(false);
+  const [meshKey, setMeshKey] = useState("");
+  const [clearMeshKey, setClearMeshKey] = useState(false);
   // per-field "custom…" mode for the external-LLM model comboboxes
   const [customModel, setCustomModel] = useState<Record<string, boolean>>({});
   const [saved, setSaved] = useState(false);
@@ -290,7 +292,8 @@ export default function SettingsPage() {
         k === "llm_api_key_set" ||
         k === "tripo_api_key_set" ||
         k === "image_api_key_set" ||
-        k === "hf_token_set"
+        k === "hf_token_set" ||
+        k === "mesh_api_key_set"
       )
         continue;
       out[k] = v == null ? "" : String(v); // nullable fields show empty = default
@@ -314,7 +317,9 @@ export default function SettingsPage() {
       imageKey.trim() ||
       clearImageKey ||
       hfKey.trim() ||
-      clearHfKey
+      clearHfKey ||
+      meshKey.trim() ||
+      clearMeshKey
     )
       return true;
     for (const k of new Set([...Object.keys(form), ...Object.keys(initial)])) {
@@ -332,6 +337,8 @@ export default function SettingsPage() {
     clearImageKey,
     hfKey,
     clearHfKey,
+    meshKey,
+    clearMeshKey,
   ]);
 
   const revert = () => {
@@ -344,6 +351,8 @@ export default function SettingsPage() {
     setClearImageKey(false);
     setHfKey("");
     setClearHfKey(false);
+    setMeshKey("");
+    setClearMeshKey(false);
     setSaveError("");
   };
 
@@ -388,6 +397,8 @@ export default function SettingsPage() {
       else if (imageKey.trim()) body.image_api_key = imageKey.trim();
       if (clearHfKey) body.clear_hf_token = true;
       else if (hfKey.trim()) body.hf_token = hfKey.trim();
+      if (clearMeshKey) body.clear_mesh_api_key = true;
+      else if (meshKey.trim()) body.mesh_api_key = meshKey.trim();
       return api.updateSettings(body);
     },
     onSuccess: () => {
@@ -405,6 +416,8 @@ export default function SettingsPage() {
       setClearImageKey(false);
       setHfKey("");
       setClearHfKey(false);
+      setMeshKey("");
+      setClearMeshKey(false);
       setSaveError("");
       setInitial(form);
       setSaved(true);
@@ -1096,6 +1109,17 @@ export default function SettingsPage() {
             hint: t("f.mesh_base_url_h"),
             wide: true,
           })}
+          <div className="sm:col-span-2">
+            {apiKeyField(
+              t("f.mesh_api_key"),
+              s.mesh_api_key_set,
+              meshKey,
+              setMeshKey,
+              clearMeshKey,
+              () => setClearMeshKey((c) => !c),
+              t("f.mesh_api_key_h"),
+            )}
+          </div>
           <div className="sm:col-span-2">
             <Field
               label={t("f.mesh_model")}

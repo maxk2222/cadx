@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from cadx.agent.mesh_client import MeshHealth, MeshModelInfo, ProgressFn, _dumps
 from cadx.logging import get_logger
@@ -95,18 +95,24 @@ class HttpImageClient(ImagePort):
         *,
         timeout_s: float = 300,
         hf_token: str = "",
+        api_key: str = "",
         io_slot: asyncio.Semaphore | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.hf_token = hf_token
+        self.api_key = api_key
         self._io_slot = io_slot
 
     def _headers(self) -> dict[str, str]:
-        """Per-request credentials for the sidecar — its middleware applies
-        X-HF-Token as HF_TOKEN so downloads and model loads can reach gated
-        Hugging Face repos."""
-        return {"X-HF-Token": self.hf_token} if self.hf_token else {}
+        """Per-request credentials for the sidecar — X-HF-Token for gated HF
+        repos; Authorization bearer for a LAN-exposed server (MESH_LAN=1)."""
+        headers: dict[str, str] = {}
+        if self.hf_token:
+            headers["X-HF-Token"] = self.hf_token
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     async def health(self) -> MeshHealth:
         try:
@@ -537,5 +543,6 @@ def make_image_client(
         url,
         timeout_s=timeout_s or settings.image_timeout_s,
         hf_token=settings.hf_token.get_secret_value(),
+        api_key=getattr(settings, "mesh_api_key", SecretStr("")).get_secret_value(),
         io_slot=local_image_slot(),
     )

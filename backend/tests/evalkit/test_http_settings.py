@@ -141,6 +141,9 @@ async def test_optimize_dispatch_passes_remaining_stage_timeout(driver, monkeypa
         type="optimize",
         timeout_s=60.0,
         optimize={"enabled": True},
+        # dispatch fail-fast requires resolvable cases for load-bearing
+        # stages (posting null only earns a server 422)
+        load_cases=[{"name": "lc", "loads": [], "supports": []}],
     )
     ctx = DriverCtx()
     ctx.parent_version_id = "parent"

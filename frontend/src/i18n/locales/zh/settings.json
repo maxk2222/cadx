@@ -201,6 +201,8 @@
     "tripo_api_base_h": "留空 = 默认 https://api.tripo3d.ai",
     "mesh_base_url": "网格服务器 URL",
     "mesh_base_url_h": "例如 http://localhost:8765（原生）或 http://mesh-server:8765（compose gpu profile）；留空 = 禁用",
+    "mesh_api_key": " API ",
+    "mesh_api_key_h": "LAN  sidecar  Bearer （start.sh --lan / MESH_LAN=1）； = ",
     "mesh_model": "默认网格模型",
     "mesh_model_h": "auto 按设备选择。在 Apple silicon MPS 上 hunyuan3d-2mv 变体在内存压力下可能停滞 — 建议用 hunyuan3d-2.1-mlx 或 mini/turbo 变体。",
     "mesh_timeout_s": "生成超时（秒）",

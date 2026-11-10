@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 
 from cadx.logging import get_logger
 from cadx.runtime_config import RuntimeSettings
@@ -178,6 +178,7 @@ class HttpMeshClient(MeshPort):
         stall_timeout_s: float = 300,
         min_free_mb: float = 0,
         hf_token: str = "",
+        api_key: str = "",
         io_slot: asyncio.Semaphore | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -185,13 +186,19 @@ class HttpMeshClient(MeshPort):
         self.stall_timeout_s = stall_timeout_s
         self.min_free_mb = min_free_mb
         self.hf_token = hf_token
+        self.api_key = api_key
         self._io_slot = io_slot
 
     def _headers(self) -> dict[str, str]:
-        """Per-request credentials for the sidecar — its middleware applies
-        X-HF-Token as HF_TOKEN so managed downloads and model loads can
-        reach gated Hugging Face repos."""
-        return {"X-HF-Token": self.hf_token} if self.hf_token else {}
+        """Per-request credentials for the sidecar — X-HF-Token lets managed
+        downloads/model loads reach gated HF repos; Authorization is the
+        bearer key a LAN-exposed server (MESH_LAN=1) enforces."""
+        headers: dict[str, str] = {}
+        if self.hf_token:
+            headers["X-HF-Token"] = self.hf_token
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     async def health(self) -> MeshHealth:
         try:
@@ -584,5 +591,6 @@ def make_mesh_client(
         stall_timeout_s=settings.mesh_stall_timeout_s,
         min_free_mb=float(getattr(settings, "mesh_min_free_mb", 0) or 0),
         hf_token=settings.hf_token.get_secret_value(),
+        api_key=getattr(settings, "mesh_api_key", SecretStr("")).get_secret_value(),
         io_slot=local_mesh_slot(),
     )

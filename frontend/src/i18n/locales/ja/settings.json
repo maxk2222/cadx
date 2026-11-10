@@ -201,6 +201,8 @@
     "tripo_api_base_h": "空 = デフォルト https://api.tripo3d.ai",
     "mesh_base_url": "メッシュサーバー URL",
     "mesh_base_url_h": "例: http://localhost:8765（ネイティブ）または http://mesh-server:8765（compose gpu プロファイル）。空 = 無効",
+    "mesh_api_key": "メッシュサーバー API キー",
+    "mesh_api_key_h": "LAN サイドカーがする Bearer キー（start.sh --lan / MESH_LAN=1）。 = なし",
     "mesh_model": "デフォルトメッシュモデル",
     "mesh_model_h": "auto はデバイスで選択。Apple silicon MPS では hunyuan3d-2mv バリアントがメモリ圧で停滞することがあり — hunyuan3d-2.1-mlx または mini/turbo バリアントを推奨。",
     "mesh_timeout_s": "生成タイムアウト（秒）",

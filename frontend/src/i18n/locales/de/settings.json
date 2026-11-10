@@ -203,6 +203,8 @@
     "tripo_api_base_h": "leer = Standard https://api.tripo3d.ai",
     "mesh_base_url": "Mesh-Server-URL",
     "mesh_base_url_h": "z. B. http://localhost:8765 (nativ) oder http://mesh-server:8765 (Compose GPU-Profil); leer = deaktiviert",
+    "mesh_api_key": "Mesh-Server API-Key",
+    "mesh_api_key_h": "Bearer-Key, den der LAN-exponierte Sidecar verlangt (start.sh --lan / MESH_LAN=1); leer = ohne Auth",
     "mesh_model": "Standard-Mesh-Modell",
     "mesh_model_h": "auto wählt nach Gerät. Auf Apple-Silicon-MPS kann die hunyuan3d-2mv-Variante unter Speicherdruck hängen — dort hunyuan3d-2.1-mlx oder die Mini-/Turbo-Varianten bevorzugen.",
     "mesh_timeout_s": "Generierungs-Timeout (s)",

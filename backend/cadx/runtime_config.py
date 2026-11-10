@@ -15,7 +15,13 @@ from cadx.secrets_crypto import decrypt_stored, encrypt_secret
 # use; public_values() exposes "<name>_set" booleans instead. to_storage()
 # encrypts them (secrets_crypto); stored "enc:v1:" values are decrypted by
 # the _decrypt_secrets validator on load.
-_SECRET_FIELDS = ("llm_api_key", "tripo_api_key", "image_api_key", "hf_token")
+_SECRET_FIELDS = (
+    "llm_api_key",
+    "tripo_api_key",
+    "image_api_key",
+    "hf_token",
+    "mesh_api_key",
+)
 
 
 class RuntimeSettings(BaseModel):
@@ -266,6 +272,9 @@ class RuntimeSettings(BaseModel):
     # executor_values() into the refine payload.
     refine_helical_threads: bool = True
     mesh_base_url: str = ""
+    # bearer key for a LAN-exposed mesh-server (MESH_LAN=1 ⇒ server enforces
+    # Authorization: Bearer); seeded from MESH_API_KEY env on first boot
+    mesh_api_key: SecretStr = SecretStr("")
     mesh_model: str = "auto"
     # provider routing: "sidecar" = local mesh-server, "tripo" = Tripo3D cloud
     mesh_backend: Literal["sidecar", "tripo"] = "sidecar"
@@ -430,11 +439,20 @@ _EXECUTOR_FIELDS = {
 
 
 async def load_runtime_settings(db: AsyncSession) -> RuntimeSettings:
+    import os
+
     row = await db.get(AppSetting, "runtime")
     values = RuntimeSettings().to_storage()
     if row:
         raw = row.value or {}
         values.update(raw.get("settings", raw))
+    # infrastructure plumbing, not a user credential: when the deployment
+    # pins MESH_API_KEY (start.sh --lan writes it to .env → compose env) it
+    # always wins over the DB row — otherwise an existing install would
+    # 401 against the LAN-exposed sidecar until the key is re-entered in
+    # the settings UI. With no env var the stored row applies unchanged.
+    if env_key := os.environ.get("MESH_API_KEY", "").strip():
+        values["mesh_api_key"] = env_key
     return RuntimeSettings.model_validate(values)
 
 
@@ -483,5 +501,8 @@ async def ensure_runtime_seeded(db: AsyncSession) -> bool:
     seed_hf = os.environ.get("HF_TOKEN", "").strip()
     if seed_hf:
         settings.hf_token = SecretStr(seed_hf)
+    seed_mesh_key = os.environ.get("MESH_API_KEY", "").strip()
+    if seed_mesh_key:
+        settings.mesh_api_key = SecretStr(seed_mesh_key)
     await save_runtime_settings(db, settings)
     return True

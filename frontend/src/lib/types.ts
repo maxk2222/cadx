@@ -978,6 +978,7 @@ export interface Settings {
   image_api_base: string;
   image_api_key_set: boolean;
   hf_token_set: boolean;
+  mesh_api_key_set: boolean;
   image_default_strength: number;
   image_steps: number | null;
   image_guidance: number | null;
@@ -1016,6 +1017,7 @@ export interface SettingsUpdate
       | "tripo_api_key_set"
       | "image_api_key_set"
       | "hf_token_set"
+      | "mesh_api_key_set"
       | "data_dir"
       | "llm_detected"
       | "resources_detected"
@@ -1029,6 +1031,8 @@ export interface SettingsUpdate
   clear_image_api_key?: boolean;
   hf_token?: string;
   clear_hf_token?: boolean;
+  mesh_api_key?: string;
+  clear_mesh_api_key?: boolean;
 }
 
 export interface ProviderTestResult {

@@ -205,6 +205,8 @@
     "tripo_api_base_h": "vazio = padrão https://api.tripo3d.ai",
     "mesh_base_url": "URL do servidor de malha",
     "mesh_base_url_h": "ex.: http://localhost:8765 (nativo) ou http://mesh-server:8765 (perfil gpu do compose); vazio = desativado",
+    "mesh_api_key": "Chave API do servidor mesh",
+    "mesh_api_key_h": "chave bearer exigida pelo sidecar exposto na LAN (start.sh --lan / MESH_LAN=1); vazio = sem auth",
     "mesh_model": "Modelo de malha padrão",
     "mesh_model_h": "auto escolhe por dispositivo. Em MPS de Apple Silicon a variante hunyuan3d-2mv pode travar sob pressão de memória — prefira hunyuan3d-2.1-mlx ou as variantes mini/turbo.",
     "mesh_timeout_s": "Timeout de geração (s)",

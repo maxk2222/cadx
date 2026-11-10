@@ -883,7 +883,8 @@ def make_llm(
     - ``"external"`` (default): ``llm_base_url`` + ``llm_api_key`` — OpenAI,
       OpenRouter, vLLM, ... — the historical behaviour.
     - ``"sidecar"``: the OpenAI-compatible chat endpoint hosted by the local
-      mesh-server sidecar at ``runtime.mesh_base_url`` (no auth). When
+      mesh-server sidecar at ``runtime.mesh_base_url`` (``mesh_api_key``
+      when the server enforces bearer auth, e.g. MESH_LAN=1). When
       ``llm_sidecar_model`` is set it pins BOTH roles to that one local
       model; otherwise the configured role models apply there too.
     """
@@ -904,9 +905,12 @@ def make_llm(
         headers = {}
         if tok := runtime.hf_token.get_secret_value():
             headers["X-HF-Token"] = tok
+        # LAN-exposed sidecars enforce Authorization: Bearer — mesh_api_key
+        # doubles as the OpenAI api_key the client sends
+        key = getattr(runtime, "mesh_api_key", None)
         return LLMClient(
             base_url=base,
-            api_key="",
+            api_key=key.get_secret_value() if key else "",
             model_vision=model,
             model_code=model,
             runtime_settings=runtime,
