@@ -906,3 +906,50 @@ mit Boden exakt z=11.0 (fixt nebenbei den blind->through Befund:
 Korridor-Fill gibt der Tasche wieder Material). Tests: cavity-breach
 fill+watertight, clean-bore no-op, slot-open refuse, e2e watertight.
 104/104 refine-Tests gruen.
+
+## QUEUE-LANE BUG: "executor task lost" = falsches Job-Polling (ROOT CAUSE)
+
+Tank- + Propeller-FEM-Fails waren identische Infra-Fails:
+run_fem_job -> "executor task 'fem_analyze' lost — the worker that owned
+it died (arq entry vanished)" nach exakt 60.5s. Forensik:
+
+- KEIN Worker-Exit/-Restart zu den Fail-Zeiten, kein OOM-Diag.
+- arq:job:<id> existierte fuer beide Tasks noch (~24h TTL) —
+  psetex lief also; ZREM-Pfade (finish_job) loeschen aber immer
+  job_key mit -> Widerspruch.
+- Queue-ZSET heisst 'cad' (kein arq:queue:-Praefix!): ZRANGE cad
+  zeigte ALLE 4 "verlorenen" fem_analyze-Jobs noch als Members —
+  sie warteten hinter dem laufenden Arm-Optimize (SIMP ~400s/iter).
+
+Root cause (executor_client._run_task): Job(job_id, pool) ohne
+_queue_name -> default 'arq:queue'. Job.status() prueft
+result -> in_progress -> zscore('arq:queue', id) — letzteres auf
+einem ZSET das nie existiert. Claimed/finished Tasks maskierten den
+Bug (in_progress/result-Keys treffen zuerst); ein noch QUEUEDER Task
+las als not_found -> 60s _TASK_LOST_PATIENCE_S -> "lost". Genau die
+Contention-Lage: optimize belegt cad-Lane -> fem queued -> 60s ->
+falsch-positiver Worker-Tod. Betraf beide Versuche je Case (retry
+queue hinter demselben Optimize -> wieder 60s -> exhausted).
+
+Fix (063740a): Job(job_id, pool, _queue_name=queue) + zcard(queue)
+fuer das queue-pos emit. Regression-Test in test_queue_lanes.py
+monkeypatcht Job und verifiziert _queue_name-Propagation.
+
+Deploy-Pfad: QueueExecutor laeuft WORKER-seitig (worker_jobs.py) ->
+cadx-worker Image rebuilden (Executor-Image unveraendert). Restart
+erst nach Arm-Ende (in-flight SIMP + arq in_progress-TTL).
+
+Stale-Queue-Hygiene: die 4 toten fem_analyze-Members wurden aus 'cad'
+gezrmd (Caller alle exhausted/failed); optimize-Member blieb.
+
+Implikation: fruehere "worker died"-Fails unter Queue-Contention waren
+vermutlich derselbe False-Positive — kein Worker starb je bei diesen
+60.5s-Fails.
+
+## Verbleibend
+
+- Arm: Optimize laeuft (it7+, ~400s/iter, konvergierend) -> nach
+  Stage-Ende Worker-Rebuild + 3 Re-Runs (tank/propeller/bracket).
+- Bracket-Fail war ehrlicher Codegen-Gate (blind tap durchgebohrt im
+  generierten Teil — Agent-Quality, kein Infra); Re-Run mit frischem
+  Seed kann durchlaufen, sonst Intake/Codegen-Verbesserung noetig.
