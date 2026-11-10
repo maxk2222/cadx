@@ -1169,3 +1169,20 @@ load_cases=null → pydantic 422, indistinguishable from a real 422).
   flagging "hole at r=X exceeds envelope r=Y" before codegen burns
   5 iterations on an unsatisfiable spec. Needs numeric position
   resolution (verify_spec already computes it post-hoc).
+
+## r12 arm: topopt load_path severed → spine pinning (7e6a8b6, executor)
+- SIMP reached volfrac 0.5008, mask SF 3.6 — but load_path_ok=false:
+  the flange slab + gusset were eaten to floating Ø6.5 pin tabs.
+  Corridor warm-start is only an x0 hint; SIMP re-thinned the path.
+- Fix: `loadpath_spine_mask` pins each case's near-geodesic cells as
+  passive material — per-case peak normalisation so weak-force cases
+  pin as firmly as the governing case. Hard connectivity guarantee.
+- Deployed alongside b106450 (rotated-ring rescue) on a fresh executor
+  build; worker carries eaf6e79 (900s fem-smoke bound — the propeller
+  r12 timeout was dominated by smoke calls queueing ~20min behind the
+  arm's SIMP, then dying on cancellation).
+
+## r13 launched (2026-11-10 ~09:40 CET) — fully patched stack
+worker: fem-repair latch + smoke bound; executor: spine pinning +
+rotated-ring rescue + MMA stagnation; driver: parent-settle +
+load-case fail-fast.
