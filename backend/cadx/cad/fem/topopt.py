@@ -2491,6 +2491,12 @@ def _run_mma(  # noqa: C901
     mech_streak_box = [0]
     best_obj = [float("inf")]
     best_v: list[np.ndarray | None] = [None]
+    # stagnation guard — the xtol-tightening ratchet can drive nlopt into
+    # micro-steps the stop criterion never reaches: design change and
+    # compliance sit below report precision while every evaluation still
+    # costs a full solve. Patience is shared with the OC loop.
+    stagn_stop = [False]
+    stagn_streak = [0]
     # plateau-regression guard — stage-local best (reset on beta restarts)
     reg_stop = [False]
     reg_best: list[float | None] = [None]
@@ -2542,6 +2548,26 @@ def _run_mma(  # noqa: C901
                 "solver='oc'"
             )
             reg_stop[0] = True
+            raise nlopt.ForcedStop()
+        # stagnation — sub-precision steps with a flat objective mean the
+        # level cannot converge in reasonable time. Stop this beta level
+        # (not the run): the drive loop treats it as settled and lets the
+        # beta continuation sharpen, exactly like a normal convergence.
+        flat_obj = (
+            len(history) >= 2
+            and abs(history[-1]["compliance_mj"] - history[-2]["compliance_mj"]) <= 1e-6
+        )
+        if params.converge_patience > 0 and 0 < last_change[0] <= params.tol * 0.05 and flat_obj:
+            stagn_streak[0] += 1
+        else:
+            stagn_streak[0] = 0
+        if stagn_streak[0] >= params.converge_patience:
+            warnings.append(
+                f"mma stagnated — design change {last_change[0]:.2e} and a "
+                f"flat objective for {stagn_streak[0]} evaluations; settling "
+                "this beta level"
+            )
+            stagn_stop[0] = True
             raise nlopt.ForcedStop()
 
     def _ev(v: np.ndarray):
@@ -2805,7 +2831,15 @@ def _run_mma(  # noqa: C901
             converged = True
             mma_status = "converged"
         except nlopt.ForcedStop:
-            if mech_stop[0]:
+            if stagn_stop[0]:
+                # settled below report precision — same handling as a clean
+                # convergence: fall through to the gray gate and the beta
+                # continuation instead of abandoning the run
+                converged = True
+                mma_status = "stagnated"
+                stagn_stop[0] = False
+                stagn_streak[0] = 0
+            elif mech_stop[0]:
                 warnings.append(
                     f"mechanism stop after {it_box[0]} MMA evaluations — "
                     f"restoring the design at {best_obj[0]:.1f} mJ"
@@ -2823,7 +2857,8 @@ def _run_mma(  # noqa: C901
                 mma_status = "plateau_regression"
             else:
                 warnings.append(f"cancelled after {it_box[0]} MMA evaluations")
-            break
+            if not stagn_stop[0]:
+                break
         except Exception as e:
             warnings.append(f"mma stopped ({type(e).__name__}: {e})")
             # nlopt's soft numeric stop (roundoff-limited) still returns a
