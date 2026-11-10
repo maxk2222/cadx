@@ -132,6 +132,19 @@ def test_realized_ring_is_not_rescued():
     assert applied == []
 
 
+def test_rotated_ring_is_not_rescued():
+    """The ring may be realized on ANY azimuth — generated code laying the
+    lugs out on a rotated offset must not earn a duplicate rescue ring on
+    the canonical positions (observed: probing 0/120/240 only double-added
+    a second ring onto a rotated-but-realized one)."""
+    from build123d import Rot
+
+    _out, applied = sfr.rescue_spec_features(
+        Rot(0, 0, 60) * _vessel(feet=3), _tank_spec(), mesh_boolean
+    )
+    assert applied == []
+
+
 def test_host_shell_is_not_a_mount():
     """Regression: the spec's own host-shell feature mentions the mounting
     plane in its position text ("from z=0 (foot base)"). Matching mount

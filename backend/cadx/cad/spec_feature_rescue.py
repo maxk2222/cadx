@@ -322,8 +322,9 @@ def _ring_realized(
     shape: Any, count: int, hole_d: float, axis: str, foot_h: float, mesh_boolean: Any
 ) -> bool:
     """True when ``count`` clean Ø``hole_d`` bolt holes already exist on the
-    host's base ring. Probes the expected lug-hole positions for both an
-    open tunnel and surrounding lug material."""
+    host's base ring — at ANY azimuth. The generated code may lay out the
+    ring on a rotated offset; probing only canonical positions would fail a
+    realized-but-rotated ring and fuse a duplicate rescue ring on top."""
     from OCP.gp import gp_Pnt
 
     ring = _base_ring(shape, foot_h * 0.6, mesh_boolean)
@@ -333,26 +334,64 @@ def _ring_realized(
     hole_r = hole_d / 2.0
     lug_outer = max(host_r + hole_d * 0.7, cavity_r + hole_d + 0.8)
     z = foot_h * 0.6
-    realized = 0
-    for i in range(count):
-        a = i * 2 * math.pi / count
+    hr = max(lug_outer - hole_r - 0.4, cavity_r + hole_r + 0.3)
+    # scan the ring for lug material beside each candidate hole centre —
+    # the material check sits TANGENTIALLY beside the hole, well inside the
+    # lug's width (the lug face ends ~0.4 past the hole edge, so a radial
+    # probe overshoots the part and reads empty)
+    n_scan = 72
+    hits: list[float] = []
+    for i in range(n_scan):
+        a = i * 2 * math.pi / n_scan
         ca, sa = math.cos(a), math.sin(a)
-        hr = lug_outer - hole_r - 0.4
-        hr = max(hr, cavity_r + hole_r + 0.3)
         hx, hy = hr * ca, hr * sa
-        # lug material must surround the hole — a bare host has a void at the
-        # hole radius (empty air, also "open"), so an open tunnel alone proves
-        # nothing. The material check sits TANGENTIALLY beside the hole, well
-        # inside the lug's width — the lug face ends ~0.4 past the hole edge,
-        # so a radial probe overshoots the part and reads empty.
         tx = hx - (hole_r + 0.9) * sa  # tangential = (-sin a, cos a)
         ty = hy + (hole_r + 0.9) * ca
         try:
-            lug_here = bool(shape.is_inside(gp_Pnt(tx, ty, z)))
+            if shape.is_inside(gp_Pnt(tx, ty, z)):
+                hits.append(a)
         except Exception:
-            lug_here = False
-        if lug_here and _hole_realized(shape, hx, hy, axis, mesh_boolean):
-            realized += 1
+            continue
+    # group adjacent azimuth hits into lug clusters (a lug spans several
+    # scan steps; gaps split neighbouring lugs), then verify a clean
+    # through-tunnel at each cluster centre
+    clusters: list[list[float]] = []
+    for a in hits:
+        if clusters and a - clusters[-1][-1] <= 1.5 * (2 * math.pi / n_scan):
+            clusters[-1].append(a)
+        else:
+            clusters.append([a])
+    # wrap-around: first and last clusters may be the same lug across 0
+    if len(clusters) > 1 and (clusters[0][0] + 2 * math.pi) - clusters[-1][-1] <= 1.5 * (
+        2 * math.pi / n_scan
+    ):
+        clusters[0] = clusters.pop() + clusters[0]
+    realized = 0
+    for cl in clusters:
+        # circular mean — angles straddling the 2π seam must not average to ~π
+        a = math.atan2(
+            sum(math.sin(x) for x in cl) / len(cl), sum(math.cos(x) for x in cl) / len(cl)
+        )
+        ca, sa = math.cos(a), math.sin(a)
+        # the generated hole need not sit at the rescue's canonical radius —
+        # scan inward across the lug span: a candidate point counts when lug
+        # material flanks it AND a clean through-tunnel exists there
+        r = hr
+        while r >= cavity_r + hole_r + 0.3:
+            px, py = r * ca, r * sa
+            try:
+                solid = bool(
+                    shape.is_inside(gp_Pnt(px - (hole_r + 0.9) * sa, py + (hole_r + 0.9) * ca, z))
+                    or shape.is_inside(
+                        gp_Pnt(px + (hole_r + 0.9) * sa, py - (hole_r + 0.9) * ca, z)
+                    )
+                )
+            except Exception:
+                solid = False
+            if solid and _hole_realized(shape, px, py, axis, mesh_boolean):
+                realized += 1
+                break
+            r -= max(1.0, hole_r)
     return realized >= count
 
 
