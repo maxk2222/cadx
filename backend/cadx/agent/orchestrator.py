@@ -93,6 +93,11 @@ _LOAD_HINT_RE = re.compile(
 )
 
 
+_FEM_SMOKE_TIMEOUT_S = (
+    900.0  # queue wait + coarse solve bound — smoke feedback must never stall the loop
+)
+
+
 def _has_unsolvable_case(fem_res: dict[str, Any]) -> bool:
     """The fem smoke returned ok but at least one declared case reported no
     solvable result — a spec-declaration defect (regions resolving to zero
@@ -3994,10 +3999,25 @@ async def _run_cad(  # noqa: C901
                 "voxel_mm": max(1.5, ctx.settings.fem_voxel_mm or 1.5),
                 "runtime_settings": ctx.runtime_settings.executor_values(),
             }
-            try:
-                fem_res = await ctx.executor.fem_analyze(payload)
-            except Exception as e:
-                fem_res = {"ok": False, "error": str(e)}
+
+            async def _smoke() -> dict[str, Any]:
+                # queue wait + solve both eat the iteration's codegen budget —
+                # a smoke that outlives this bound is skipped honestly, not
+                # allowed to stall the loop (heavy-lane contention made prop
+                # smoke calls sit queued ~20min then die on cancellation)
+                try:
+                    return await asyncio.wait_for(
+                        ctx.executor.fem_analyze(payload), timeout=_FEM_SMOKE_TIMEOUT_S
+                    )
+                except TimeoutError:
+                    return {
+                        "ok": False,
+                        "error": f"fem smoke timed out after {_FEM_SMOKE_TIMEOUT_S}s — skipped",
+                    }
+                except Exception as e:
+                    return {"ok": False, "error": str(e)}
+
+            fem_res = await _smoke()
             # all-unsolvable declarations (regions resolving to zero force /
             # no nodes) are a spec defect the loop cannot otherwise repair —
             # load_cases are not editable mid-loop. Re-extract them once and
@@ -4014,10 +4034,7 @@ async def _run_cad(  # noqa: C901
                         it,
                         f"declared cases unsolvable — re-extracted {len(cases)} case(s), re-verifying",
                     )
-                    try:
-                        fem_res = await ctx.executor.fem_analyze(payload)
-                    except Exception as e:
-                        fem_res = {"ok": False, "error": str(e)}
+                    fem_res = await _smoke()
             if fem_res.get("ok") and fem_res.get("fem"):
                 exec_result["fem"] = fem_res["fem"]
                 sf_min = spec.optimize.safety_factor_min if spec.optimize else 1.5
