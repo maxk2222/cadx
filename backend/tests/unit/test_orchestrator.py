@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_build_issues_solids_gate():
     """Disconnected solids are a major deterministic issue regardless of
     what the critique model scored."""
@@ -1361,3 +1364,43 @@ def test_wants_optimize_forced_mode_wins_over_prompt_hints():
     # …but not under forced cad
     ctx.gen_mode = "cad"
     assert _wants_optimize(ctx, None, spec_opt, False) is False
+
+
+class TestLoadHintRegex:
+    """The load-extraction second chance must arm on load-bearing vocabulary
+    — a prompt describing pressure/mounting/spec.load_cases that matches
+    nothing leaves spec.load_cases empty and the fem stage 422s."""
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            # the r10 tank prompt: pressure + bolted feet + declared load model
+            "sealed compressed-air tank under ~6 bar internal pressure, bolted "
+            "down through the foot holes. Declare the load model: the internal "
+            "pressure on the sealed inner skin, the foot bolt holes as fixed "
+            "supports, in spec.load_cases",
+            "L-bracket mounted with two M6 screws, carries a 20 N downward force",
+            "housing for a torque motor, wall mount, vibration damped",
+            "Druckbehälter 4 bar, auf Füße geschraubt",
+            "shelf bracket holding 5 kg of load",
+            "clamp for the workbench edge",
+            "structural frame member under bending stress",
+        ],
+    )
+    def test_fires_on_load_vocabulary(self, prompt):
+        from cadx.agent.orchestrator import _LOAD_HINT_RE
+
+        assert _LOAD_HINT_RE.search(prompt)
+
+    @pytest.mark.parametrize(
+        "prompt",
+        [
+            "a decorative vase with a spiral pattern",
+            "logo sign, 100mm wide, 3mm thick",
+            "simple box with a lid",
+        ],
+    )
+    def test_silent_on_decorative(self, prompt):
+        from cadx.agent.orchestrator import _LOAD_HINT_RE
+
+        assert not _LOAD_HINT_RE.search(prompt)

@@ -80,6 +80,18 @@ _LIGHTWEIGHT_RE = re.compile(
     re.I,
 )
 
+# prompts that mention forces/pressure/mounting should always carry
+# load_cases — weak intake models routinely drop that half; this hint arms
+# the extraction second-chance pass (extract_load_cases)
+_LOAD_HINT_RE = re.compile(
+    r"optimi|topolog|leicht|light|gewicht|weight|"
+    r"kraft|force|belast|last\b|\bloads?\b|load\s*case|"
+    r"\d+\s*(?:N|kg|kn|nm|nmm|bar|mbar|psi|pa|kpa|mpa)\b|pressur|druck|"
+    r"\bstress|spannung|structur|statik|tragf|\btorque|drehmoment|\bvibrat|"
+    r"\bfix(?:ed|ture|ation)|\bsupport|\bmount|montier|befestig|\bbolt|\bscrew|\bclamp",
+    re.I,
+)
+
 # cross-agent contract kwargs: the concurrent changes that consume these
 # land independently — probe the signatures once so this file works both
 # before and after they merge (P9/P10)
@@ -6280,14 +6292,7 @@ async def run_generation(ctx: AgentCtx) -> RunOutcome:  # noqa: C901
     # right after intake so the planner, per-iteration FEM checks and the
     # topopt phase all see real cases instead of unsolvable placeholders.
     prompt = ctx.prompt or ""
-    prompt_hints_loads = bool(
-        re.search(
-            r"optimi|topolog|leicht|light|gewicht|weight|"
-            r"\d+\s*(?:N|kg)\b|kraft|force|belast|last\b",
-            prompt,
-            re.I,
-        )
-    )
+    prompt_hints_loads = bool(_LOAD_HINT_RE.search(prompt))
     tried_load_extraction = False
     intake_step.sanitize_load_cases(spec)
     dim_notes = intake_step.sanitize_dims(spec, prompt)

@@ -135,6 +135,23 @@ class HttpDriver:
     async def version(self, vid: str) -> dict[str, Any]:
         return await self._get(f"/versions/{vid}")
 
+    async def _wait_version_settled(self, vid: str, timeout_s: float = 300.0) -> None:
+        """Poll until the version leaves a non-terminal status.
+
+        Spawn endpoints gate on editability (succeeded/needs_review); a
+        version in queued/running/waiting_for_input is still finalising after
+        its job row already read terminal. On timeout the caller proceeds —
+        the spawn POST then reports the authoritative gate error."""
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout_s:
+            try:
+                status = str((await self.version(vid)).get("status"))
+            except (EvalApiError, httpx.RequestError):
+                status = "running"  # unknown ≠ settled — keep waiting
+            if status not in ("queued", "running", "waiting_for_input"):
+                return
+            await asyncio.sleep(2.0)
+
     async def job(self, job_id: str) -> dict[str, Any]:
         return await self._get(f"/jobs/{job_id}")
 
@@ -392,6 +409,13 @@ class HttpDriver:
                 wall_s=time.monotonic() - t0,
                 error=f"stage {stage.type} needs a parent version — none available",
             )
+        if ctx.parent_version_id and f"/versions/{ctx.parent_version_id}/" in path:
+            # the parent job's terminal state races its version's status flip
+            # (exports/status writes lag the job row commit) — a same-version
+            # or child spawn POSTed in that window is 422'd by the
+            # editability gate. Wait until the parent settles; whatever state
+            # remains after the budget is the POST's real error to surface.
+            await self._wait_version_settled(ctx.parent_version_id)
         wait_timeout_s = stage.timeout_s
         if stage.type == "optimize":
             remaining_s = max(0.1, stage.timeout_s - (time.monotonic() - t0))
