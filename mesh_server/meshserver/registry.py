@@ -55,6 +55,10 @@ def _is_fake(cls: type) -> bool:
     return str(getattr(cls, "id", "")).startswith("fake")
 
 
+class InsufficientMemoryError(RuntimeError):
+    """strict get() couldn't free enough memory — deferrable, retryable."""
+
+
 class Registry:
     """Knows every adapter class, instantiates available ones lazily.
 
@@ -427,12 +431,23 @@ class Registry:
                 return cls
         return None
 
-    def get(self, cls: type) -> object:
+    def get(
+        self,
+        cls: type,
+        *,
+        protected: set[str] | None = None,
+        strict: bool = False,
+    ) -> object:
         """Instantiate + load the adapter, evicting LRU residents when the
         host can't keep mem_headroom_mb free with the newcomer aboard.
 
-        Multiple models may stay resident as long as they fit — the old
-        single-model invariant is replaced by memory admission."""
+        ``protected`` ids are never eviction candidates (the llm lane passes
+        its in-flight models so a load can't kill a live stream). ``strict``
+        replaces the best-effort "load anyway" fallback with an
+        ``InsufficientMemoryError`` — the honest answer for bounded callers
+        that would rather defer than OOM. Multiple models may stay resident
+        as long as they fit — the old single-model invariant is replaced by
+        memory admission."""
         with self._lock:
             inst = self._instances.get(cls.id)
             if inst is None:
@@ -445,10 +460,17 @@ class Registry:
                 if getattr(cls, "kind", "") == "llm" and self.cfg.effective("llm_pin"):
                     self._pinned.add(cls.id)
                 need = self.ledger.est_mb(cls.id, getattr(cls, "est_mem_mb", None))
+                exclude = {cls.id} | (protected or set())
                 # best-effort eviction: if nothing is evictable the load runs
-                # anyway and the OOM handler sorts out the wreckage
+                # anyway (strict=False) and the OOM handler sorts out the
+                # wreckage; strict callers get a deferrable failure instead
                 while not self.ledger.fits(need):
-                    if self._evict_lru_locked(exclude={cls.id}) is None:
+                    if self._evict_lru_locked(exclude=exclude) is None:
+                        if strict:
+                            raise InsufficientMemoryError(
+                                f"cannot fit '{cls.id}' (~{need:.0f} MB) "
+                                "without evicting a protected/pinned model"
+                            )
                         break
                 try:
                     inst.load()

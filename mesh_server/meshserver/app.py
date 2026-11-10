@@ -251,13 +251,19 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
     @app.post("/v1/chat/completions")
     async def llm_chat(request: Request) -> Response:
         return await chat_completions(
-            registry, cfg, json_loads(await request.body()), manager=manager
+            registry,
+            cfg,
+            json_loads(await _bounded_body(request, _CHAT_BODY_LIMIT)),
+            manager=manager,
         )
 
     @app.post("/v1/embeddings")
     async def openai_embeddings(request: Request) -> Response:
         return await llm_embeddings(
-            registry, cfg, json_loads(await request.body()), manager=manager
+            registry,
+            cfg,
+            json_loads(await _bounded_body(request, _CHAT_BODY_LIMIT)),
+            manager=manager,
         )
 
     @app.post("/v1/images/generations")
@@ -280,12 +286,19 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
             for k, v in (await request.form()).items()
             if k not in ("image", "mask") and isinstance(v, str)
         }
+        image_bytes = await image.read()
+        if len(image_bytes) > 32 * 1024 * 1024:  # bound the in-memory copy
+            return JSONResponse(
+                {"error": {"message": "image too large (max 32 MB)",
+                           "type": "invalid_request_error"}},
+                status_code=413,
+            )
         return await images_edits(
             manager,
             cfg,
             body,
             image_name=image.filename or "init.png",
-            image_bytes=await image.read(),
+            image_bytes=image_bytes,
             has_mask=mask is not None,
             base_url=str(request.base_url).rstrip("/"),
         )
@@ -298,7 +311,10 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
 
     @app.put("/v1/config")
     async def put_runtime_config(request: Request) -> dict:
-        return rcfg.apply_patch(cfg, json_loads(await request.body()))
+        body = json_loads(await _bounded_body(request, 64 * 1024))
+        if not isinstance(body, dict):
+            raise HTTPException(422, "config patch must be a JSON object")
+        return rcfg.apply_patch(cfg, body)
 
     # -- scheduling / model management ------------------------------------- #
 
@@ -356,6 +372,20 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
     app.state.downloads = downloads
     app.state.cfg = cfg
     return app
+
+
+# chat bodies legitimately carry base64 images (content parts) — bounded,
+# not unbounded; /v1/config has its own tighter cap
+_CHAT_BODY_LIMIT = 64 * 1024 * 1024
+
+
+async def _bounded_body(request: Request, limit: int) -> bytes:
+    """Content-Length pre-check before buffering — a LAN-exposed endpoint
+    must not read unbounded request bodies into memory."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > limit:
+        raise HTTPException(413, f"request body exceeds {limit // (1024 * 1024)} MB")
+    return await request.body()
 
 
 def json_loads(data: bytes) -> dict:

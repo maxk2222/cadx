@@ -211,3 +211,35 @@ def test_select_llm(registry):
     assert registry.select_llm("llm-fake") is FakeLlm  # explicit still allowed
     # auto-fallback of an unknown id honours the badlist too
     assert registry.select_llm("nope") is None
+
+
+def test_get_strict_refuses_load_anyway(registry):
+    """strict=True must not fall into the 'load anyway' OOM path — a
+    protected resident is never an eviction candidate."""
+    from meshserver.registry import InsufficientMemoryError
+
+    registry.get(TinyA)  # FREE 1000 → 900, ledger reserve 100
+    with pytest.raises(InsufficientMemoryError):
+        registry.get(BigC, protected={"tiny-a"}, strict=True)
+    assert registry._instances["tiny-a"].loaded  # protected, still resident
+    assert not registry._instances["big-c"].loaded
+
+
+def test_get_strict_loads_when_protected_allows(registry):
+    """strict loads fine once enough evictable/free memory exists."""
+    registry.get(TinyA)  # FREE → 900
+    inst = registry.get(BigC, protected={"tiny-a"}, strict=False)
+    assert inst.loaded  # load-anyway fallback preserved for non-strict
+    # and strict succeeds when it genuinely fits
+    FREE["mb"] = 2000.0
+    registry.get(TinyB, protected={"tiny-a"}, strict=True)
+    assert registry._instances["tiny-b"].loaded
+
+
+def test_get_protected_blocks_eviction_but_not_fit(registry):
+    """protected only narrows eviction — a fitting load doesn't evict."""
+    registry.get(TinyA)
+    FREE["mb"] = 1200.0
+    registry.get(BigC, protected={"tiny-a"}, strict=True)
+    assert registry._instances["tiny-a"].loaded  # never touched
+    assert registry._instances["big-c"].loaded

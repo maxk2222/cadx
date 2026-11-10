@@ -130,11 +130,16 @@ async def _wait_image_job(manager: Any, job: ImageJob, cfg: Any) -> ImageJob | J
         await asyncio.sleep(_POLL_S)
     # honest timeout — the job keeps running and stays fetchable via the
     # internal /v1/image-jobs API (id echoed in the message + header)
-    return _err(
-        504,
-        f"image job '{job.id}' still running after {wait_s:.0f}s — "
-        f"poll /v1/image-jobs/{job.id} for the result",
-        type_="server_error",
+    return JSONResponse(
+        {
+            "error": {
+                "message": f"image job '{job.id}' still running after "
+                f"{wait_s:.0f}s — poll /v1/image-jobs/{job.id} for the result",
+                "type": "server_error",
+            }
+        },
+        status_code=504,
+        headers={"X-Mesh-Job-Id": job.id},
     )
 
 
@@ -159,6 +164,8 @@ async def images_generations(
     manager: Any, cfg: Any, body: dict, *, base_url: str
 ) -> Response:
     """POST /v1/images/generations — OpenAI images API → ImageJob → b64/url."""
+    if not isinstance(body, dict):
+        return _err(422, "request body must be a JSON object")
     resolved = _image_params(body, need_edit=False, registry=manager.registry)
     if isinstance(resolved, JSONResponse):
         return resolved
@@ -193,6 +200,8 @@ async def images_edits(
     base_url: str,
 ) -> Response:
     """POST /v1/images/edits — multipart init image → edit-ladder job."""
+    if not isinstance(body, dict):
+        return _err(422, "request body must be a JSON object")
     resolved = _image_params(body, need_edit=True, registry=manager.registry)
     if isinstance(resolved, JSONResponse):
         return resolved

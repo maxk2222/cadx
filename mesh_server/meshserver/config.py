@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -223,6 +224,7 @@ class ServerConfig:
         if self.lan and not os.environ.get("MESH_HOST"):
             self.host = "0.0.0.0"
         self._overlay_cache: dict | None = None
+        self._overlay_lock = threading.Lock()
 
     # -- runtime overlay (server_config.json) ----------------------------- #
 
@@ -231,15 +233,19 @@ class ServerConfig:
         return self.model_dir / "server_config.json"
 
     def overlay(self) -> dict:
-        if self._overlay_cache is None:
-            try:
-                raw = json.loads(self.overlay_path.read_text())
-                self._overlay_cache = {
-                    k: v for k, v in raw.items() if k in RUNTIME_MUTABLE
-                } if isinstance(raw, dict) else {}
-            except (OSError, json.JSONDecodeError):
-                self._overlay_cache = {}
-        return dict(self._overlay_cache)
+        # effective() is read from worker threads (registry.get in
+        # asyncio.to_thread) while PUT /v1/config writes on the event loop —
+        # the lock keeps the lazy file read + cache swap consistent
+        with self._overlay_lock:
+            if self._overlay_cache is None:
+                try:
+                    raw = json.loads(self.overlay_path.read_text())
+                    self._overlay_cache = {
+                        k: v for k, v in raw.items() if k in RUNTIME_MUTABLE
+                    } if isinstance(raw, dict) else {}
+                except (OSError, json.JSONDecodeError):
+                    self._overlay_cache = {}
+            return dict(self._overlay_cache)
 
     def set_overlay(self, overlay: dict) -> None:
         """Replace the overlay file wholesale (atomic write) — callers pass
@@ -248,7 +254,8 @@ class ServerConfig:
         tmp = self.overlay_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(overlay, indent=1))
         tmp.replace(self.overlay_path)
-        self._overlay_cache = dict(overlay)
+        with self._overlay_lock:
+            self._overlay_cache = dict(overlay)
 
     def effective(self, name: str, default=None):
         """overlay → dataclass field (env-booted) → default."""

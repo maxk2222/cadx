@@ -32,6 +32,7 @@ import httpx
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from meshserver.logging import get_logger
+from meshserver.registry import InsufficientMemoryError
 
 log = get_logger(__name__)
 
@@ -45,7 +46,12 @@ _IMAGE_PART_TYPES = frozenset({"image_url", "image", "input_image"})
 
 
 def _err(status: int, message: str, **extra: Any) -> JSONResponse:
-    return JSONResponse({"error": {"message": message, **extra}}, status_code=status)
+    headers = None
+    if retry := extra.get("retry_after_s"):
+        headers = {"Retry-After": str(int(retry))}
+    return JSONResponse(
+        {"error": {"message": message, **extra}}, status_code=status, headers=headers
+    )
 
 
 def _loading_in_progress(registry: Any, model_id: str, manager: Any = None) -> bool:
@@ -226,20 +232,47 @@ async def _load_llm(
         try:
             # registry.get() blocks on the registry lock + adapter.load() —
             # run it in a thread so concurrent requests converge on the same
-            # single-flight load instead of piling onto the event loop
-            return await asyncio.wait_for(
-                asyncio.to_thread(registry.get, cls),
-                timeout=timeout + 30,  # grace over the subprocess readiness bound
+            # single-flight load instead of piling onto the event loop.
+            # strict: a bounded caller defers honestly rather than falling
+            # into the "load anyway" OOM path; in-flight llm models are
+            # protected from eviction mid-stream.
+            protected = (
+                manager.llm_models_in_use() if manager is not None else set()
             )
+            get = getattr(registry, "get")
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(
+                        get, cls, protected=protected, strict=True
+                    ),
+                    timeout=timeout + 30,  # grace over the subprocess readiness bound
+                )
+            except TypeError:
+                # registry stubs without the new kwargs — degrade to the
+                # legacy call (tests/stubs only; real Registry is strict)
+                return await asyncio.wait_for(
+                    asyncio.to_thread(get, cls),
+                    timeout=timeout + 30,
+                )
         except Exception as e:
             if manager is not None:
                 manager.llm_loading.pop(token, None)  # own load is over —
                 # a surviving key belongs to a concurrent request still
                 # inside the single-flight window
             payload: dict[str, Any] = {"message": str(e)}
-            if _loading_in_progress(registry, getattr(cls, "id", ""), manager):
+            # a strict-fit rejection is retryable by definition — the caller
+            # should come back once a resident finishes/unloads
+            retryable = isinstance(e, InsufficientMemoryError)
+            headers = None
+            if retryable or _loading_in_progress(
+                registry, getattr(cls, "id", ""), manager
+            ):
                 payload["loading"] = True
-            return JSONResponse({"error": payload}, status_code=503)
+                payload["retry_after_s"] = 5
+                headers = {"Retry-After": "5"}
+            return JSONResponse(
+                {"error": payload}, status_code=503, headers=headers
+            )
     finally:
         if manager is not None:
             manager.llm_loading.pop(token, None)
@@ -269,6 +302,8 @@ async def chat_completions(
     registry: Any, cfg: Any, body: dict, manager: Any = None
 ) -> Response:
     """POST /v1/chat/completions — resolve, admit (bounded), load, proxy."""
+    if not isinstance(body, dict):
+        return _err(422, "request body must be a JSON object")
     prepared = await _prepare_llm(registry, cfg, manager, body)
     if isinstance(prepared, JSONResponse):
         return prepared
@@ -296,6 +331,8 @@ async def embeddings(
     """POST /v1/embeddings — same resolve/admit/load path, JSON passthrough
     to the managed server's /v1/embeddings (llama.cpp + mlx_lm both serve
     it; a missing endpoint relays its own status code)."""
+    if not isinstance(body, dict):
+        return _err(422, "request body must be a JSON object")
     prepared = await _prepare_llm(registry, cfg, manager, body)
     if isinstance(prepared, JSONResponse):
         return prepared

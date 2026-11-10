@@ -1202,7 +1202,8 @@ class JobManager:
                 return None, None
             attempted.add(cls.id)
             try:
-                return self.registry.get(cls), cls
+                # protect in-flight llm streams from being evicted mid-request
+                return self.registry.get(cls, protected=self.llm_models_in_use()), cls
             except Exception as e:
                 self.registry.mark_failed(cls.id, str(e))
                 log.warning("job.adapter_load_failed", model=cls.id, error=str(e)[:300])
@@ -1358,7 +1359,7 @@ class JobManager:
         def cancelled() -> bool:
             return job.cancelled
 
-        adapter = self.registry.get(cls)
+        adapter = self.registry.get(cls, protected=self.llm_models_in_use())
         job.message = f"generating with {cls.name}"
         result = adapter.generate(
             ImageGenOpts(

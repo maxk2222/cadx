@@ -273,11 +273,14 @@ Request admission is **bounded** — runtime-mutable knobs
 - `llm_pin` — keep resident llm models out of idle eviction.
 
 Non-resident loads pass `JobManager.admit_resolved` — the same
-ledger/LRU-eviction memory gate the job queue uses — so a chat request
-can evict an idle model but never one with an in-flight stream, and it
-reports `503 {loading: true, retry_after_s}` instead of falling into an
-uncontrolled "load anyway" OOM path. `/v1/queue` shows the interactive
-lane (`llm.in_flight/waiting/loading`) next to batch jobs.
+ledger/LRU-eviction memory gate the job queue uses — and the load itself
+runs `registry.get(strict=True, protected=<in-flight llm ids>)`: an llm
+model with a live request is never an eviction candidate (job-side loads
+pass the same `protected` set), and a model that still can't fit raises
+`InsufficientMemoryError` → `503 {loading: true, retry_after_s: 5,
+Retry-After: 5}` instead of falling into the "load anyway" OOM path the
+batch lane keeps. `/v1/queue` shows the interactive lane
+(`llm.in_flight/waiting/loading`) next to batch jobs.
 
 Responses:
 
