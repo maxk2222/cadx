@@ -12,7 +12,7 @@
       "id": "codegen",
       "type": "generate",
       "mode": "cad",
-      "timeout_s": 5400,
+      "timeout_s": 7200,
       "options": {
         "process": "fdm"
       },
