@@ -93,6 +93,34 @@ async def test_wait_version_settled_timeout_proceeds(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_load_bearing_stage_fails_fast_without_cases(monkeypatch):
+    """A fem stage with no stage-declared cases and an empty parent spec
+    must fail honestly — posting load_cases=None only earns a pydantic 422."""
+    driver = HttpDriver()
+    fake = _FakeApi(["succeeded"])
+    posts: list[str] = []
+    orig = fake.req
+
+    async def req(method: str, path: str, **kw):
+        if method == "POST":
+            posts.append(path)
+        return await orig(method, path, **kw)
+
+    monkeypatch.setattr(driver, "_req", req)
+    await driver.close()
+
+    ctx = DriverCtx()
+    ctx.project_id = "p1"
+    ctx.parent_version_id = "v1"
+    stage = EvalStage(id="fem", type="fem")
+    out = await driver.dispatch(stage, ctx)
+
+    assert out.status == "failed"
+    assert "load cases" in (out.error or "")
+    assert posts == []
+
+
+@pytest.mark.asyncio
 async def test_wait_version_settled_tolerates_errors(monkeypatch):
     driver = HttpDriver()
     calls = {"n": 0}

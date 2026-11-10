@@ -409,6 +409,21 @@ class HttpDriver:
                 wall_s=time.monotonic() - t0,
                 error=f"stage {stage.type} needs a parent version — none available",
             )
+        if (
+            stage.type in ("fem", "optimize", "resample", "refine")
+            and body.get("load_cases") is None
+        ):
+            # these endpoints require a non-null load_cases list — posting
+            # None only earns a pydantic 422. Fail honestly instead: the
+            # stage declared none and the parent fallback cascade found none.
+            return StageOutcome(
+                status="failed",
+                wall_s=time.monotonic() - t0,
+                error=(
+                    f"stage {stage.type} needs load cases — stage declares none "
+                    "and parent spec/params carry none"
+                ),
+            )
         if ctx.parent_version_id and f"/versions/{ctx.parent_version_id}/" in path:
             # the parent job's terminal state races its version's status flip
             # (exports/status writes lag the job row commit) — a same-version
