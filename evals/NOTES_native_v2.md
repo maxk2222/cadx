@@ -953,3 +953,35 @@ vermutlich derselbe False-Positive — kein Worker starb je bei diesen
 - Bracket-Fail war ehrlicher Codegen-Gate (blind tap durchgebohrt im
   generierten Teil — Agent-Quality, kein Infra); Re-Run mit frischem
   Seed kann durchlaufen, sonst Intake/Codegen-Verbesserung noetig.
+
+## Arm-Runde (20261109-235313): ehrlicher topopt-Decline
+
+optimize ok=True (SIMP it12/13, 5150s), refine applied=7 ok=True 235s —
+aber beide Optimize-Runs strukturell kaputt (sf_export 0.05/0.08, Flansch
+weg, Lugs floating) -> Agent lehnte korrekt ab, kept_base SF 2.83 > 1.5.
+Eval-Mark: topopt FAIL (kept_base -> kein Volumenziel).
+
+Root-Cause laut Agent-Post-Mortem (selbst dokumentiert):
+1. symmetry:"yz" gewaehlt — Agent meinte es spiegle die Z-Mittebene
+   (top<->bottom); tatsaechlich spiegelt "yz" um die yz-Ebene = X-Flip
+   (links<->rechts). Semantik-Missverstaendnis, evtl. harmlos.
+2. Loadpath warm-start seedete nur bore-5-Korridore -> Flansch-Pin-
+   Bores ohne Pfad -> SIMP entfernte den Flansch ("unused").
+3. Retry mit korrigierten Parametern vom Stage-Budget verweigert
+   ("no new run can finish in time") — Policy arbeitete korrekt.
+
+Bereits vorhandener Guard: symmetry-mismatch warning (topopt.py ~
+L1257, >15% voxel-mismatch). Neue Evidenz: Agent las "yz" als Z-Flip —
+Toolspec-Beschreibung ("mirror the design about that domain mid-plane")
+laesst die Achsrichtung offen; Verbesserung: Ebene explizit benennen
+(yz = X-Flip etc.) — kosmetisch, kein Blocker.
+
+Deploy + Runde 9 (2026-11-10 ~02:0x):
+- cadx-worker neu gebaut (0e69fffd) mit Queue-Lane-Fix 063740a,
+  recreated — Executor-Image e53e25a0 unveraendert (Fix ist workerseitig).
+- Re-Runs tank + propeller + bracket parallel gestartet; queued Tasks
+  reporten jetzt korrekt 'queued' statt false-lost. Stale arq:job/
+  queue-Reste der false-lost Tasks wurden gezrmd.
+- Bracket-Fail war Codegen-Gate (durchbohrte Blind-Taps im generierten
+  Teil, Agent-Quality); Re-Run gibt neue Chance, sonst Intake/Codegen-
+  Verbesserung noetig.
