@@ -96,3 +96,55 @@ def test_run_task_polls_status_on_the_enqueue_lane(monkeypatch) -> None:
     out = asyncio.run(run())
     assert out["ok"] is True
     assert seen["queue"] == "cad" == seen["status_queue"]
+
+
+def test_run_task_resubmits_once_on_inflight_crash(monkeypatch) -> None:
+    """A worker killed mid-flight leaves 'max N retries exceeded' as the
+    arq result — the task never executed, so one resubmit is safe. A
+    genuine task failure must NOT resubmit."""
+    from cadx.agent import executor_client
+    from cadx.agent.executor_client import JobStatus
+
+    attempts: list[str] = []
+
+    class _Pool:
+        async def enqueue_job(self, func, payload, _queue_name, _job_id):
+            attempts.append(_job_id)
+
+        async def zcard(self, name):
+            return 0
+
+    class _CrashJob:
+        def __init__(self, job_id, pool, _queue_name):
+            pass
+
+        async def status(self):
+            return JobStatus.complete
+
+        async def result(self, *a, **kw):
+            raise RuntimeError("Job execution failed: max 1 retries exceeded")
+
+    class _OkJob(_CrashJob):
+        async def result(self, *a, **kw):
+            return {"ok": True}
+
+    seq = [_CrashJob, _OkJob]
+    monkeypatch.setattr(executor_client, "Job", lambda *a, **kw: seq.pop(0)(*a, **kw))
+    ex = QueueExecutor(pool=_Pool())  # type: ignore[arg-type]
+
+    async def run() -> dict:
+        return await ex._run_task("fem_analyze", {}, 60)
+
+    out = asyncio.run(run())
+    assert out["ok"] is True and len(attempts) == 2
+
+    # a real task failure (its own exception) must not resubmit
+    seq[:] = [_CrashJob]
+    monkeypatch.setattr(executor_client, "Job", lambda *a, **kw: _FailJob(*a, **kw))
+
+    class _FailJob(_CrashJob):
+        async def result(self, *a, **kw):
+            raise ValueError("region 'foot' resolved to 0 nodes")
+
+    out = asyncio.run(run())
+    assert out["ok"] is False and len(attempts) == 3  # no resubmit on task-level failure

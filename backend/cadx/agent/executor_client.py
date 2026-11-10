@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -150,6 +151,12 @@ _OPT_TAIL_S = 900.0
 _POLL_FAIL_PATIENCE_S = 120.0
 _TASK_LOST_PATIENCE_S = 60.0
 _QUEUE_HARD_FACTOR = 1.5
+# arq writes "max N retries exceeded" when a task's retry counter exceeds
+# max_tries — for the cad lanes (max_tries=1) that only happens when the
+# first attempt died in-flight with its worker and the re-claim refused
+# to run. A genuine in-task failure serialises the real exception, so
+# this string is a reliable worker-crash signature: the task never ran.
+_CRASH_RESUBMIT_RE = re.compile(r"max \d+ retries exceeded")
 
 
 def _remaining_task_budget(
@@ -302,6 +309,20 @@ class QueueExecutor:
         return self._pool
 
     async def _run_task(
+        self, func: str, payload: dict[str, Any], timeout_s: float
+    ) -> dict[str, Any]:
+        result = await self._run_task_once(func, payload, timeout_s)
+        if result.get("ok") is not False or not _CRASH_RESUBMIT_RE.search(
+            str(result.get("error") or "")
+        ):
+            return result
+        # worker died mid-flight — the task never executed, so one bounded
+        # resubmit is safe (cad lanes deliberately keep max_tries=1 so the
+        # caller decides; this IS the deliberate resubmit for the one
+        # failure class that never reached user code).
+        return await self._run_task_once(func, payload, timeout_s)
+
+    async def _run_task_once(
         self, func: str, payload: dict[str, Any], timeout_s: float
     ) -> dict[str, Any]:
         pool = await self._get_pool()
