@@ -293,7 +293,11 @@ export default function SettingsPage() {
         k === "tripo_api_key_set" ||
         k === "image_api_key_set" ||
         k === "hf_token_set" ||
-        k === "mesh_api_key_set"
+        k === "mesh_api_key_set" ||
+        // read-only computed objects — String() turns them into
+        // "[object Object]" which the PUT schema (dict) rejects 422
+        k === "llm_detected" ||
+        k === "resources_detected"
       )
         continue;
       out[k] = v == null ? "" : String(v); // nullable fields show empty = default
