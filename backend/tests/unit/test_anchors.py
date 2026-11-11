@@ -1387,3 +1387,81 @@ def test_spec_anchors_entry_face_from_description():
     assert a.axis == "-z"
     assert a.pos == [-46.0, 22.0, 5.0]
     assert a.blind is True
+
+
+def test_spec_anchors_keyway_is_not_a_bore():
+    """marine_propeller r20: a `keyway_slot` feature whose description mentions
+    its host bore ("keyway ... on the +X side of the bore", "not a plain hole")
+    synthesized a phantom Ø10@+x anchor — the deterministic re-cut drilled a
+    horizontal hole through the hub, displaced the measured centre bore and
+    destroyed the keyway. Typed non-hole features must not emit bore anchors
+    on description-only hole words."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="propeller",
+        summary="",
+        units="mm",
+        length_x=d(140),
+        width_y=d(140),
+        height_z=d(28),
+        features=[
+            Feature(
+                name="shaft through-bore",
+                type="through_bore",
+                description="Concentric Ø10 through-bore along Z",
+                dims={"diameter": 10.0},
+                position="concentric on Z axis, through full height z=0..28",
+                count=1,
+                source="stated",
+            ),
+            Feature(
+                name="keyway seat",
+                type="keyway_slot",
+                description=(
+                    "Axial rectangular keyway for a 3x3 DIN 6885 key on a Ø10 "
+                    "shaft. Hub-side depth t2=1.8 (floor at r=6.8), width 3, "
+                    "full height 28. Real keyed fit, not a plain hole."
+                ),
+                dims={"width": 3.0, "depth_total": 1.8, "slot_length": 28.0, "bore_diameter": 10.0},
+                position="on +X side of bore, radial floor at r=6.8 mm, full height z=0..28",
+                count=1,
+                source="stated",
+            ),
+        ],
+        image_roles=[],
+    )
+    anchors = _spec_anchors(spec)
+    assert len(anchors) == 1
+    a = anchors[0]
+    assert a.axis == "+z"
+    assert a.dia == 10.0
+
+
+def test_spec_anchors_untyped_feature_keeps_description_detection():
+    """Coverage guard: an UNTYPED feature whose only hole signal lives in the
+    description still emits an anchor — the description-context demotion only
+    applies to features that carry a type."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="block",
+        summary="",
+        units="mm",
+        length_x=d(60),
+        width_y=d(40),
+        height_z=d(10),
+        features=[
+            Feature(
+                name="mount detail",
+                type="",
+                description="through bore Ø6 drilled at x=10",
+                dims={"diameter": 6.0},
+                position="x=10, y=0",
+                count=1,
+                source="stated",
+            ),
+        ],
+        image_roles=[],
+    )
+    anchors = _spec_anchors(spec)
+    assert len(anchors) == 1
+    assert anchors[0].dia == 6.0

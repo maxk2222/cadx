@@ -188,13 +188,22 @@ def _independent_features(spec: PartSpec) -> list[Feature]:
 def _hole_like(f: Feature) -> bool:
     """Spec feature that is (or carries) a bore: hole-ish type, a hole-ish
     name ('hole'/'bore'/'loch'/'bohrung' — intake writes EN and DE names), or
-    a metric bolt designation."""
-    blob = f"{f.type or ''} {f.name or ''} {f.description or ''}".lower()
-    return (
-        f.type in _HOLE_TYPES
-        or bool(re.search(r"hole|bore|loch|bohr|thread|gewinde|tap|durchgang|senk", blob))
-        or bool(_bolt_size(f.standard or f.name or ""))
-    )
+    a metric bolt designation. Hole-words in ``description``/``position`` are
+    HOST CONTEXT on a differently-typed feature ("keyway on the +X side of
+    the bore", "not a plain hole") — they describe what the feature sits on,
+    never what it is, so they only count when the feature carries no type."""
+    typed = bool(str(f.type or "").strip())
+    if str(f.type or "").strip().lower() in _HOLE_TYPES:
+        return True
+    blob = f"{f.type or ''} {f.name or ''} {f.standard or ''} {f.thread_spec or ''}".lower()
+    if re.search(r"hole|bore|loch|bohr|thread|gewinde|tap|durchgang|senk", blob):
+        return True
+    if _bolt_size(f.standard or f.name or ""):
+        return True
+    if typed:
+        return False
+    ctx = f"{f.description or ''} {f.position or ''}".lower()
+    return bool(re.search(r"hole|bore|loch|bohr|thread|gewinde|tap|durchgang|senk", ctx))
 
 
 _BLIND_RE = re.compile(

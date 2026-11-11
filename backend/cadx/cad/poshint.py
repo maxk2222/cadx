@@ -106,6 +106,16 @@ _POS_MID_RE = re.compile(
     r"|\bmid(?:dle)?[\s-]*(?:of\s+(?:the\s+)?)?([xyz])(?:[\s-]*axis)?\b",
     re.I,
 )
+# "concentric on the z axis" / "coaxial with z" — the feature's centre lies
+# ON the named axis, so the two OTHER coordinates are 0 (a bore "concentric
+# on Z" sits at x=0, y=0; the named axis itself stays open as the bore's
+# axial direction). Distinct from "centred in y" which zeroes the NAMED axis.
+_POS_CONCENTRIC_RE = re.compile(
+    r"\b(?:concentric(?:ally)?|coaxial)\s+"
+    r"(?:with|to|about|on|along|around)\s+(?:the\s+|der\s+|die\s+|dem\s+)?"
+    r"([xyz])(?:[\s-]*axis|[\s-]*achse)?\b",
+    re.I,
+)
 _POS_FACE_TOKEN_RE = re.compile(r"(?<![\w])([+-][xyz])(?![\w])")
 # "drilled along +z" / "in -x direction" / "extends +z" name a bore's travel
 # DIRECTION, not the face it opens on — masked before the bare-token scan so
@@ -251,6 +261,12 @@ def parse_position_hints(
     for m in _POS_MID_RE.finditer("".join(masked)):
         ax = next(g for g in m.groups() if g).lower()
         coords.setdefault(ax, 0.0)
+        _mask(m.span())
+    for m in _POS_CONCENTRIC_RE.finditer("".join(masked)):
+        ax = m.group(1).lower()
+        for other in "xyz":
+            if other != ax:
+                coords.setdefault(other, 0.0)
         _mask(m.span())
     for m in _POS_DIRECTION_TOKEN_RE.finditer("".join(masked)):
         _mask(m.span())
