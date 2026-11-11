@@ -948,16 +948,22 @@ def _dimset_triplets(prompt: str) -> list[tuple[float, float, float]]:
 
 
 def sanitize_dimset(spec: PartSpec, prompt: str) -> list[str]:
-    """Raise an understated envelope dim to an explicit prompt triplet.
+    """Reconcile envelope dims with an explicit prompt triplet.
 
     Weak models smear a feature dimension into an envelope dim — observed
     twice: "Steel cube 40 x 40 x 40, bore 20 deep" parsed as height_z=20
     (the bore depth), producing a 40x40x20 slab. An explicitly written
-    triplet is strong evidence for the envelope. Correction is raise-only:
-    a stated dim larger than the triplet member is left alone — prompts may
-    carry feature triplets ("base plate 100 x 80 x 10" in a taller part)
-    and the smear failure mode is always understatement. When several
-    triplets appear, the largest-volume one anchors the check."""
+    triplet is strong evidence for the envelope. Understatements are
+    always raised. Overstatements on the footprint axes are corrected too,
+    but only the additive-misread signature: a modest overshoot that never
+    itself appears as an envelope value in the prompt (arm r25: "base plate
+    100 x 80 x 10" + flange read as protruding produced length_x=108 — the
+    model added the flange width to the plate instead of seating it inside;
+    sanitize_stated_dims then dropped the label, leaving envelope_x
+    UNVERIFIED and the loop blind). z stays raise-only — parts legitimately
+    tower above a stated base height. Large overshoots are left alone: a
+    genuinely larger intended envelope is not ours to cut down. When
+    several triplets appear, the largest-volume one anchors the check."""
     notes: list[str] = []
     trips = _dimset_triplets(prompt)
     if not trips:
@@ -970,6 +976,22 @@ def sanitize_dimset(spec: PartSpec, prompt: str) -> list[str]:
             continue
         have = float(d.value or 0)
         if have > 0 and want <= have + max(0.5, 0.02 * have):
+            if (
+                ax in "xy"
+                and have > want + max(0.5, 0.02 * want)
+                and have <= want * 1.35
+                and not _dim_stated_in_prompt(have, prompt)
+            ):
+                notes.append(
+                    f"{ax} dim {have:g} ({d.source}) above prompt triplet "
+                    f"{' x '.join(f'{v:g}' for v in env)} and never stated "
+                    f"itself — re-stated {ax}={want:g}"
+                )
+                setattr(
+                    spec,
+                    {"x": "length_x", "y": "width_y", "z": "height_z"}[ax],
+                    d.model_copy(update={"value": want, "source": "stated"}),
+                )
             continue
         notes.append(
             f"{ax} dim {have:g} ({d.source}) below prompt triplet "

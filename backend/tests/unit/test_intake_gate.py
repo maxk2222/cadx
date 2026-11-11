@@ -496,9 +496,10 @@ def test_dimset_fixes_feature_depth_smear() -> None:
     assert s.height_z.value == 40.0
 
 
-def test_dimset_never_lowers_a_stated_dim() -> None:
+def test_dimset_never_lowers_z_dim() -> None:
     """'base plate 100 x 80 x 10' inside a 40-tall part: the triplet is a
-    feature envelope, not the part — a correct height_z=40 must survive."""
+    feature envelope, not the part — a correct height_z=40 must survive.
+    z stays raise-only; only x/y overshoots get corrected."""
     from cadx.agent.steps.intake import sanitize_dimset
 
     s = _cube_spec()
@@ -507,6 +508,53 @@ def test_dimset_never_lowers_a_stated_dim() -> None:
     s.height_z = s.height_z.model_copy(update={"value": 40.0})
     assert sanitize_dimset(s, "Base plate 100 x 80 x 10.") == []
     assert s.height_z.value == 40.0
+
+
+def test_dimset_lowers_additive_overstatement_xy() -> None:
+    """Observed E2E (robot_arm_mount_autonomous r25): 'Base plate
+    100 x 80 x 10' + 'flange at the +X edge on the plate' produced
+    length_x=108 — the model added the protruding flange width to the
+    plate. 108 never appears as an envelope value in the prompt, so the
+    written triplet wins and verify_spec enforces it loudly."""
+    from cadx.agent.steps.intake import sanitize_dimset
+
+    s = _cube_spec()
+    s.length_x = s.length_x.model_copy(update={"value": 108.0, "source": "inferred"})
+    s.width_y = s.width_y.model_copy(update={"value": 80.0})
+    s.height_z = s.height_z.model_copy(update={"value": 40.0})
+    notes = sanitize_dimset(
+        s, "Base plate 100 x 80 x 10, flange at the +X edge on the plate."
+    )
+    assert notes
+    assert s.length_x.value == 100.0
+    assert s.length_x.source == "stated"
+
+
+def test_dimset_keeps_large_overstatement() -> None:
+    """A dim far above the triplet is a genuinely larger intended
+    envelope, not an additive misread — leave it alone."""
+    from cadx.agent.steps.intake import sanitize_dimset
+
+    s = _cube_spec()
+    s.length_x = s.length_x.model_copy(update={"value": 160.0, "source": "stated"})
+    notes = sanitize_dimset(s, "Base plate 100 x 80 x 10.")
+    assert s.length_x.value == 160.0
+    assert not any("above prompt triplet" in n for n in notes)
+
+
+def test_dimset_keeps_prompt_stated_overstatement() -> None:
+    """An overshoot that the prompt itself states as an envelope value
+    ('overall 120 long') outranks the plate triplet — the model quoted
+    the prompt, not a miscalculation."""
+    from cadx.agent.steps.intake import sanitize_dimset
+
+    s = _cube_spec()
+    s.length_x = s.length_x.model_copy(update={"value": 120.0, "source": "stated"})
+    notes = sanitize_dimset(
+        s, "Base plate 100 x 80 x 10 with a tab, overall length 120 mm."
+    )
+    assert s.length_x.value == 120.0
+    assert not any("above prompt triplet" in n for n in notes)
 
 
 def test_dimset_skips_thread_designation_triplets() -> None:
