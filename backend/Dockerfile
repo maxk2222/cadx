@@ -79,9 +79,11 @@ RUN groupadd -r cad && useradd -r -g cad -u 1000 -m cad \
     && mkdir -p /data && chown -R cad:cad /data
 USER cad
 ENV PYTHONFAULTHANDLER=1
-# diag wrapper: logs incoming signals and arq's exit code so silent
-# clean-exit restarts reveal whether docker or the process ended it
-CMD ["sh", "-c", "trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; kill -TERM $C1 $C2 $C3 2>/dev/null' TERM; trap 'echo \"[diag] got SIGINT, forwarding\" >&2; kill -INT $C1 $C2 $C3 2>/dev/null' INT; arq cadx.queue.CadWorkerSettings & C1=$!; arq cadx.queue.CadLightWorkerSettings & C2=$!; arq cadx.queue.CadFemWorkerSettings & C3=$!; while kill -0 $C1 2>/dev/null && kill -0 $C2 2>/dev/null && kill -0 $C3 2>/dev/null; do sleep 2; done; D=unknown; kill -0 $C1 2>/dev/null || D=$C1; kill -0 $C2 2>/dev/null || D=$C2; kill -0 $C3 2>/dev/null || D=$C3; echo \"[diag] worker pid=$D exited — restarting all\" >&2; kill -TERM $C1 $C2 $C3 2>/dev/null; wait $C1 $C2 $C3; exit 1"]
+# per-lane supervisor: each arq worker is respawned INDEPENDENTLY — a dying
+# lane (transient OCC/segfault exit) must never kill a multi-hour SIMP on a
+# sibling lane (the old restart-all policy cancelled robot_arm r23's topopt
+# at iteration 12). Signals forward to all three; STOP stops respawning.
+CMD ["sh", "-c", "S=''; trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; S=1; kill -TERM $C1 $C2 $C3 2>/dev/null' TERM; trap 'echo \"[diag] got SIGINT, forwarding\" >&2; S=1; kill -INT $C1 $C2 $C3 2>/dev/null' INT; arq cadx.queue.CadWorkerSettings & C1=$!; arq cadx.queue.CadLightWorkerSettings & C2=$!; arq cadx.queue.CadFemWorkerSettings & C3=$!; while [ -z \"$S\" ]; do kill -0 $C1 2>/dev/null || { echo \"[diag] cad lane pid=$C1 died — respawning cad only\" >&2; arq cadx.queue.CadWorkerSettings & C1=$!; }; kill -0 $C2 2>/dev/null || { echo \"[diag] cad-light lane pid=$C2 died — respawning cad-light only\" >&2; arq cadx.queue.CadLightWorkerSettings & C2=$!; }; kill -0 $C3 2>/dev/null || { echo \"[diag] cad-fem lane pid=$C3 died — respawning cad-fem only\" >&2; arq cadx.queue.CadFemWorkerSettings & C3=$!; }; sleep 2; done; wait $C1 $C2 $C3 2>/dev/null; exit 0"]
 
 # test variant of the executor image: same env + dev deps, for
 # `docker build --target executor-test` then run pytest tests/cad inside it.
