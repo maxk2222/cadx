@@ -35,6 +35,8 @@ import re
 from typing import Any
 
 from cadx.cad.poshint import (
+    _POS_FACE_WORDS,
+    parse_axis_ranges,
     parse_coord_points,
     parse_position_hints,
     parse_symmetric_coords,
@@ -994,17 +996,41 @@ def _position_consistent_centers(
     return out
 
 
+# entry-face phrases ("entry face on +z", "drilled from -z face",
+# "opens on the +x side") — unlike a mere side hint ("on the +x side"),
+# they bind the feature's mouth to a face of its OWN declared span.
+_ENTRY_FACE_RE = re.compile(
+    r"(?:entry\s+face|eintritts?fl[aä]che|opens?|drilled|gebohrt|mouth)\b[^,;.]*?"
+    r"(?:(?<![\w])([+-][xyz])(?![\w])|\b(top|bottom|upper|lower|front|back|rear|left|right)\b)",
+    re.I,
+)
+def _entry_faces(text: str) -> set[str]:
+    out: set[str] = set()
+    for m in _ENTRY_FACE_RE.finditer(text or ""):
+        if m.group(1):
+            out.add(m.group(1).lower())
+        elif m.group(2):
+            out.add(_POS_FACE_WORDS[m.group(2).lower()])
+    return out
+
+
 def _face_side_check(
     faces: list[tuple[str, str]],
     centers: list[dict[str, float]],
     bounds: dict[str, tuple[float, float]],
+    ranges: dict[str, tuple[float, float]] | None = None,
+    entry_faces: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, list[dict[str, Any]]]:
     """'+x face'/'front' side hints: the outermost measured centre must sit
     on the declared side of the mid-plane — where the mid-plane is the
     measured bbox centre, not the origin (parts rest on z>=0). A centre at
     the declared outer face also verifies (the mouth-on-face reading). A
     mid-plane centre is ambiguous (not wrong); missing coordinate axes
-    stay UNVERIFIED."""
+    stay UNVERIFIED. When the face is declared as the feature's ENTRY face
+    and the feature carries its own axial span ("z=0 to z=10, entry face
+    on +z"), the face resolves to the RANGE end in that direction — a
+    base-plate hole opens on the plate's +z top at z=10, not on the
+    part's z=40 envelope face. Plain side hints keep the envelope reading."""
     violations: list[dict[str, Any]] = []
     verified = 0
     unverified: list[dict[str, Any]] = []
@@ -1015,6 +1041,14 @@ def _face_side_check(
             continue
         plus = face[0] == "+"
         best = max(vals) if plus else min(vals)
+        rng = (ranges or {}).get(face[1])
+        if rng is not None and face in (entry_faces or set()):
+            target = rng[1] if plus else rng[0]
+            if abs(best - target) <= _POS_TOL_MM:
+                verified += 1
+            else:
+                violations.append({"face": face, "measured_mm": round(best, 3)})
+            continue
         bnd = bounds.get(face[1])
         if bnd is not None:
             target = bnd[1] if plus else bnd[0]
@@ -1141,7 +1175,13 @@ def _void_position_check(  # noqa: C901
     verified += w_ver
     unverified += w_unverified
     face_pool = _position_consistent_centers(centers, wants, groups if use_point_groups else None)
-    f_viol, f_ver, f_unverified = _face_side_check(faces, face_pool or centers, bounds)
+    f_viol, f_ver, f_unverified = _face_side_check(
+        faces,
+        face_pool or centers,
+        bounds,
+        parse_axis_ranges(hint_text),
+        _entry_faces(hint_text),
+    )
     violations += f_viol
     verified += f_ver
     unverified += f_unverified

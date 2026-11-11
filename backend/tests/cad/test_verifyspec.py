@@ -1851,3 +1851,89 @@ def test_slot_kind_mismatch_still_fails_when_recognition_ran():
     }
     checks = _by_name(verify_spec(spec, res))
     assert checks["feat_0_axis"]["status"] == "FAIL"
+
+
+def test_entry_face_resolves_declared_range_not_envelope():
+    """robot-arm r21: mounting holes 'through Z (z=0 to z=10), entry face
+    on +z' in a 40 mm tall part — the mouth is the plate's own +z top at
+    z=10, not the part's z=40 envelope face. A plain side hint keeps the
+    envelope reading (no range → no entry semantics)."""
+    spec = _spec(
+        height_z={"value": 40.0, "source": "stated"},
+        features=[
+            _feat(
+                name="mounting_holes",
+                type="hole",
+                axis="z",
+                count=4,
+                position=(
+                    "at (x=±42, y=±32), through Z (z=0 to z=10), entry face on +z"
+                ),
+            )
+        ],
+    )
+    res = _res(
+        analysis={
+            "bbox_size": [100.0, 80.0, 40.0],
+            "bbox_min": [-50.0, -40.0, 0.0],
+            "bbox_max": [50.0, 40.0, 40.0],
+            "solid_count": 1,
+            "is_valid": True,
+            "watertight": True,
+            "volume": 100_000.0,
+            "source": "brep",
+        },
+        features={
+            "hole_groups": [
+                _hole_group(
+                    id="h3",
+                    axis="+z",
+                    centers_xyz=[
+                        [-42.0, -32.0, 10.0],
+                        [42.0, -32.0, 10.0],
+                        [-42.0, 32.0, 10.0],
+                        [42.0, 32.0, 10.0],
+                    ],
+                ),
+            ]
+        },
+    )
+    c = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_position"]
+    assert c["status"] == "PASS"
+    assert not c["evidence"].get("violations")
+
+
+def test_entry_face_range_miss_still_fails():
+    """The declared range end is load-bearing: a mouth measured away from
+    the span's +z end contradicts 'entry face on +z'."""
+    spec = _spec(
+        features=[
+            _feat(
+                name="mounting_holes",
+                type="hole",
+                axis="z",
+                count=4,
+                position=(
+                    "at (x=±42, y=±32), through Z (z=0 to z=10), entry face on +z"
+                ),
+            )
+        ],
+    )
+    res = _res(
+        features={
+            "hole_groups": [
+                _hole_group(
+                    id="h3",
+                    axis="+z",
+                    centers_xyz=[
+                        [-42.0, -32.0, 30.0],
+                        [42.0, -32.0, 30.0],
+                        [-42.0, 32.0, 30.0],
+                        [42.0, 32.0, 30.0],
+                    ],
+                ),
+            ]
+        },
+    )
+    c = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_position"]
+    assert c["status"] == "FAIL"
