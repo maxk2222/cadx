@@ -147,6 +147,52 @@ async def test_stream_error_raises_llmerror(monkeypatch):
         await c.chat("code", [{"role": "user", "content": "hi"}])
 
 
+@pytest.mark.parametrize("status", [520, 524])
+async def test_stream_retries_cloudflare_5xx(monkeypatch, status):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if len(calls) < 3:
+            return httpx.Response(status, text="cf error")
+        return httpx.Response(
+            200,
+            content=_sse(
+                {"choices": [{"delta": {"content": "ok"}}]},
+                usage={"prompt_tokens": 1, "completion_tokens": 1},
+            ),
+        )
+
+    _patch_transport(monkeypatch, handler)
+    monkeypatch.setattr(client_mod.asyncio, "sleep", _instant_sleep())
+    c = _mk()
+    r = await c.chat("code", [{"role": "user", "content": "hi"}])
+    assert r.text == "ok"
+    assert len(calls) == 3
+
+
+async def test_stream_400_still_not_retried(monkeypatch):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(400, text="bad request")
+
+    _patch_transport(monkeypatch, handler)
+    monkeypatch.setattr(client_mod.asyncio, "sleep", _instant_sleep())
+    c = _mk()
+    with pytest.raises(Exception):
+        await c.chat("code", [{"role": "user", "content": "hi"}])
+    assert len(calls) <= 3  # 400 → non-stream fallback path, no 5xx retry loop
+
+
+def _instant_sleep():
+    async def _sleep(_delay):
+        return None
+
+    return _sleep
+
+
 def test_looks_degenerate_word_salad():
     from cadx.llm.client import _looks_degenerate
 

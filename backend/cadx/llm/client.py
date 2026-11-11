@@ -104,6 +104,13 @@ _CORE_PAYLOAD_KEYS = frozenset(
 
 _STRUCT_CHARS = '\n"{}[]()<>0123456789'
 
+# Transient upstream statuses worth a retry: rate limit plus any 5xx — generic
+# server errors AND CDN/proxy codes (Cloudflare 520-527, e.g. 520/522/524) that
+# sit outside the classic 502/503/504 set. Persistent 5xx still fail, just
+# after the bounded retry budget.
+def _retryable_status(status: int) -> bool:
+    return status == 429 or status >= 500
+
 _STOPWORDS = frozenset(
     [
         "the",
@@ -372,14 +379,14 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         delay = 2.0
         last_err: Exception | None = None
-        for _ in range(3):
+        for _ in range(6):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout_s) as client:
                     resp = await client.post(
                         f"{self.base_url}/chat/completions", json=payload, headers=headers
                     )
                     resp, payload = await self._handle_400(client, resp, payload, headers, role)
-                if resp.status_code in (429, 500, 502, 503, 504):
+                if _retryable_status(resp.status_code):
                     last_err = LLMError(f"HTTP {resp.status_code}: {resp.text[:300]}")
                     await asyncio.sleep(delay)
                     delay *= 2
@@ -563,7 +570,7 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         delay = 2.0
         last_err: Exception | None = None
-        for _ in range(3):
+        for _ in range(6):
             try:
                 async with (
                     httpx.AsyncClient(
@@ -583,7 +590,7 @@ class LLMClient:
                 ):
                     if resp.status_code == 400:
                         raise _RetryNoStream()
-                    if resp.status_code in (429, 500, 502, 503, 504):
+                    if _retryable_status(resp.status_code):
                         last_err = LLMError(f"HTTP {resp.status_code}")
                         await asyncio.sleep(delay)
                         delay *= 2
