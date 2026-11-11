@@ -4024,7 +4024,7 @@ async def _run_cad(  # noqa: C901
             # no nodes) are a spec defect the loop cannot otherwise repair —
             # load_cases are not editable mid-loop. Re-extract them once and
             # re-verify: bounded by the ctx latch, audited via emit.
-            if _has_unsolvable_case(fem_res) and not ctx.load_repair_done and not cancelled():
+            if _has_unsolvable_case(fem_res) and not ctx.load_repair_done and not await cancelled():
                 ctx.load_repair_done = True
                 cases, _opt = await intake_step.extract_load_cases(ctx, spec)
                 if cases:
