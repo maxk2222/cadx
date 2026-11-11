@@ -222,3 +222,71 @@ def test_base_ring_reports_wall_and_cavity():
     host_r, cavity_r = ring
     assert host_r == pytest.approx(40.0, abs=2.0)
     assert cavity_r == pytest.approx(37.0, abs=2.0)
+
+
+def _hub(*, keyway: bool = False) -> object:
+    """Ø40x28 hub, Ø10 through-bore at (0,0), optional 3x1.8 keyway on +y."""
+    from build123d import Cylinder, Pos
+
+    hub = Pos(0, 0, 14) * Cylinder(20, 28) - Pos(0, 0, 14) * Cylinder(5, 28.4)
+    if keyway:
+        hub -= Pos(0, 5.75, 14) * Box(3.0, 2.1, 28)
+    return hub
+
+
+def _prop_spec() -> dict:
+    return {
+        "name": "propeller",
+        "features": [
+            {
+                "type": "through_bore",
+                "name": "shaft bore",
+                "count": 1,
+                "axis": "",
+                "dims": {"diameter": 10.0, "depth": 28.0},
+                "position": "concentric on Z axis, full height",
+            },
+            {
+                "type": "keyway_slot",
+                "name": "keyway seat",
+                "count": 1,
+                "axis": "",
+                "dims": {"width": 3.0, "depth_partial": 1.8, "slot_length": 28.0},
+                "position": "in bore wall on +y side, full height z=0..28",
+            },
+        ],
+    }
+
+
+def test_keyway_rescue_cuts_declared_slot():
+    """marine_propeller r21: the model never managed a real 3x1.8 DIN 6885
+    keyway in the Ø10 bore wall — deterministic rescue cuts it on the
+    declared +y side for the wall's full axial span."""
+    from OCP.gp import gp_Pnt
+
+    hub = _hub(keyway=False)
+    out, applied = sfr.rescue_keyway_slots(hub, _prop_spec()["features"], mesh_boolean)
+    assert applied and "keyway" in applied[0]
+    assert not out.is_inside(gp_Pnt(0, 5.9, 14))  # slot interior void
+    assert out.is_inside(gp_Pnt(0, -5.9, 14))  # opposite wall untouched
+    assert out.is_inside(gp_Pnt(5.9, 0, 14))  # tangentially beside the slot
+
+
+def test_keyway_rescue_idempotent_and_side_aware():
+    from OCP.gp import gp_Pnt
+
+    hub = _hub(keyway=True)
+    out, applied = sfr.rescue_keyway_slots(hub, _prop_spec()["features"], mesh_boolean)
+    assert applied == []  # realized slot — probe reads void, no cut
+    feats = _prop_spec()["features"]
+    feats[1] = {**feats[1], "position": "in bore wall on -x side, full height"}
+    out2, applied2 = sfr.rescue_keyway_slots(hub, feats, mesh_boolean)
+    assert applied2  # declared side moved — rescue cuts the -x slot too
+    assert not out2.is_inside(gp_Pnt(-5.9, 0, 14))
+
+
+def test_keyway_rescue_skips_when_bore_missing():
+    hub = _hub(keyway=False)
+    feats = [f for f in _prop_spec()["features"] if f["type"] == "keyway_slot"]
+    out, applied = sfr.rescue_keyway_slots(hub, feats, mesh_boolean)
+    assert applied == []  # no host bore — nothing to hang the keyway on

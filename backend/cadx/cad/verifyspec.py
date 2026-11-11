@@ -1632,6 +1632,7 @@ def _unrequested_voids_check(  # noqa: C901
         and (
             (ft := str(f.get("type") or "").lower()) in void_types
             or "hole" in ft
+            or "bore" in ft
             or "slot" in ft
             or "langloch" in ft
             or "notch" in ft

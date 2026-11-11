@@ -14,6 +14,9 @@ Scope (deliberately conservative — generalisable patterns, not case hacks):
   through bolt-hole, welded around a round host's base ring. This is the
   recurring mounting-feet pattern on cylindrical hosts (tanks, flanges,
   hubs, impellers). The lug uses the proven sealed_tank taper math.
+- **keyway slots**: ``keyway_slot``/``keyseat`` features cut into a +z
+  host bore's wall on the declared side — spec width/depth/side drive a
+  deterministic box cut whose axial span is measured on the part.
 - **spec-declared holes**: standalone ``hole``/``bore`` features whose
   position is resolvable are routed through the existing bounded re-cut.
 
@@ -395,6 +398,164 @@ def _ring_realized(
     return realized >= count
 
 
+_KEYWAY_RE = re.compile(r"keyway|keyseat|keilnut|keilbahn")
+
+
+def _keyway_feats(features: list[Any]) -> list[Any]:
+    return [f for f in features if _KEYWAY_RE.search(_fname_type(f))]
+
+
+def _parse_pos(text: str) -> tuple[dict[str, float], list[str], list[Any], list[Any]]:
+    try:
+        from cadx.cad.poshint import parse_position_hints
+
+        return parse_position_hints(text or "")
+    except Exception:
+        try:
+            import poshint
+
+            return poshint.parse_position_hints(text or "")
+        except Exception:
+            return {}, [], [], []
+
+
+def _structured_xy(f: Any) -> tuple[float, float] | None:
+    """Feature centre from ``centers``/parsed coords — None unless both
+    in-plane coordinates resolve (a guessed slot position is worse than
+    no rescue)."""
+    for c in _fget(f, "centers", []) or []:
+        if isinstance(c, dict):
+            try:
+                return float(c["x"]), float(c["y"])
+            except (KeyError, TypeError, ValueError):
+                continue
+    coords, _faces, _ends, _nears = _parse_pos(
+        str(_fget(f, "position", "") or "") or str(_fget(f, "description", "") or "")
+    )
+    if "x" in coords and "y" in coords:
+        return float(coords["x"]), float(coords["y"])
+    return None
+
+
+def _keyway_side(f: Any) -> str | None:
+    """Signed in-plane direction the slot opens toward ('+x'/'-y'...)."""
+    text = f"{_fget(f, 'position', '') or ''} {_fget(f, 'description', '') or ''}"
+    _c, faces, _e, _n = _parse_pos(text)
+    for face in faces:
+        if face[-1:] in ("x", "y"):
+            return face
+    m = re.search(r"(?<![\w])([+-][xy])(?![\w])", text.lower())
+    return m.group(1) if m else None
+
+
+def _keyway_wall_depth(f: Any, bore_r: float) -> float | None:
+    """Slot depth INTO the hub wall (DIN t2). A declared value exceeding
+    the bore radius is the slot-floor radius, not a wall depth."""
+    for k in ("hub_depth", "depth_partial", "slot_depth", "depth_mm", "depth", "depth_total"):
+        v = _dim(f, k)
+        if v is not None and v <= bore_r * 1.2:
+            return v
+    return None
+
+
+def _keyway_host_bore(f: Any, features: list[Any]) -> Any | None:
+    """Bore feature the keyway sits in — dia-matched via dims.bore_diameter
+    when declared, else the unique hole feature."""
+    holes = [h for h in features if _is_hole(h) and h is not f]
+    dia = _dim(f, "bore_diameter", "shaft_diameter", "shaft_dia", "bore_dia")
+    if dia:
+        for h in holes:
+            hd = _dim(h, "diameter", "dia", "bore_diameter")
+            if hd is not None and abs(hd - dia) <= 0.3 * dia:
+                return h
+    return holes[0] if len(holes) == 1 else None
+
+
+def rescue_keyway_slots(
+    shape: Any,
+    features: list[Any],
+    mesh_boolean: Any,
+    emit=print,
+) -> tuple[Any, list[str]]:
+    """Cut a declared keyway slot into its host bore's wall when the
+    produced geometry has material where the slot must be void. The spec
+    declares width / wall depth / side / host bore; the slot's axial span
+    is measured on the part itself (`_material_intervals` at the bore
+    centre). Cutting is idempotent — a correctly realized slot loses no
+    extra material, so the probe only guards against pointless booleans."""
+    from build123d import Box, Pos
+
+    applied: list[str] = []
+    out = shape
+    for f in _keyway_feats(features):
+        try:
+            width = _dim(f, "width", "slot_width", "b")
+            bore = _keyway_host_bore(f, features)
+            if width is None or bore is None:
+                continue
+            bore_d = _dim(bore, "diameter", "dia", "bore_diameter")
+            if bore_d is None or bore_d <= 0:
+                continue
+            depth = _keyway_wall_depth(f, bore_d / 2.0)
+            if depth is None:
+                continue
+            axis = _axis(bore, "+z")
+            letter = axis[-1]
+            if letter != "z":
+                continue  # only +z host bores supported — side-face bores stay codegen-owned
+            side = _keyway_side(f)
+            if side is None:
+                continue
+            xy = _structured_xy(bore)
+            if xy is None:
+                continue
+            bx, by = xy
+            if not mesh_boolean.tunnel_open(shape, bx, by, axis):
+                continue  # host bore missing — the bounded re-cut owns that failure
+            bore_r = bore_d / 2.0
+            sgn = 1.0 if side.startswith("+") else -1.0
+            along_y = side[-1:] == "y"
+            # the slot's axial span is the WALL's material column — measured
+            # at the slot's radial position, never at the (void) bore centre
+            probe_r = bore_r + depth / 2.0
+            px = bx if along_y else bx + sgn * probe_r
+            py = by + sgn * probe_r if along_y else by
+            intervals = mesh_boolean._material_intervals(shape, px, py, axis)
+            if not intervals:
+                continue
+            z_lo, z_hi = min(lo for lo, _ in intervals), max(hi for _, hi in intervals)
+            z_span = z_hi - z_lo
+            slot_len = _dim(f, "slot_length", "length", "height") or z_span
+            slot_len = min(slot_len, z_span)
+            z_mid = (z_hi + z_lo) / 2.0
+            # probe the wall midpoint where the slot must be void — still
+            # solid means the slot is missing or malformed
+            from OCP.gp import gp_Pnt
+
+            try:
+                if not shape.is_inside(gp_Pnt(px, py, z_mid)):
+                    continue  # already void — slot realized
+            except Exception:
+                continue
+            overlap = 0.3  # reach slightly inside the bore — guaranteed breakthrough
+            span = depth + overlap
+            r_mid = bore_r - overlap + span / 2.0
+            cx = bx if along_y else bx + sgn * r_mid
+            cy = by + sgn * r_mid if along_y else by
+            cutter = Pos(cx, cy, z_mid) * (
+                Box(width, span, slot_len) if along_y else Box(span, width, slot_len)
+            )
+            out2 = out - cutter
+            if out2 is None:
+                continue
+            out = out2
+            applied.append(f"keyway {width:g}x{depth:g}@{side} on Ø{bore_d:g}")
+        except Exception as e:
+            emit(f"keyway rescue failed for {_fget(f, 'name', '?')}: {str(e)[:120]}")
+            continue
+    return out, applied
+
+
 def rescue_mount_lugs(
     shape: Any,
     features: list[Any],
@@ -495,6 +656,14 @@ def rescue_spec_features(
         return shape, []
     dropped = _dropped_indices(spec)
     active = [f for i, f in enumerate(features) if i not in dropped]
-    if not any(_is_mount(f) for f in active):
-        return shape, []
-    return rescue_mount_lugs(shape, active, mesh_boolean, emit=emit)
+    applied: list[str] = []
+    out = shape
+    # keyway slots first — they cut into a host bore the lug rescue may
+    # still grow; cutting after the fuse would nick fresh lug material
+    if _keyway_feats(active):
+        out, kw = rescue_keyway_slots(out, active, mesh_boolean, emit=emit)
+        applied += kw
+    if any(_is_mount(f) for f in active):
+        out2, lugs = rescue_mount_lugs(out, active, mesh_boolean, emit=emit)
+        out, applied = out2, applied + lugs
+    return out, applied
