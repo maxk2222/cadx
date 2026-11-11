@@ -787,6 +787,10 @@ def _prompt_mm_values(prompt: str) -> list[float]:
         vals.add(float(m.group(1).replace(",", ".")))
     for m in _DIMSET_RE.finditer(prompt):
         vals.update(float(g.replace(",", ".")) for g in m.groups())
+    # unitless "A x B x C" triplets also carry numbers — the shared parser
+    # already rejects thread/size designations ("M10x1.5x100", "Ø26x8x4")
+    for t in _dimset_triplets(prompt):
+        vals.update(t)
     return sorted(vals, reverse=True)
 
 
@@ -807,8 +811,11 @@ def sanitize_dims(spec: PartSpec, prompt: str) -> list[str]:
     # holes 30 mm apart" must not re-state length_x=30 (observed on the
     # NEMA-17 case: sanitize_stated_dims downgraded the label, then this
     # recovery re-run resurrected it). Only envelope-context values count.
+    # And only X-evidenced ones may re-state length_x: "Ø80 x 120 tall"
+    # puts its largest number on Z, not on the part's length.
+    x_vals = _prompt_x_extent_values(prompt)
     env_val = next(
-        (v for v in vals if _dim_stated_in_prompt(v, prompt)),
+        (v for v in vals if v in x_vals and _dim_stated_in_prompt(v, prompt)),
         None,
     )
     if env_val is None:
@@ -824,8 +831,10 @@ def sanitize_dims(spec: PartSpec, prompt: str) -> list[str]:
         ),
         default=0.0,
     )
-    if stated_max >= env_val * 0.5:
-        return notes  # stated dims already cover the part's overall size
+    if stated_max >= env_val:
+        # a stated dim at/above the envelope value means the model already
+        # pinned the overall size — env_val is a sub-dimension of it.
+        return notes
     notes.append(
         f"prompt states ~{env_val:g} mm but intake had length_x="
         f"{lx.value:g} {lx.source} — re-stated"
@@ -989,6 +998,36 @@ _NON_ENV_RE = re.compile(
     re.I,
 )
 _NEAR_CHARS = 20
+
+_LEN_AFTER_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*(?:mm\s*)?(?:long|length|lang(?:e)?)\b", re.IGNORECASE
+)
+_LEN_BEFORE_RE = re.compile(
+    r"\b(?:length|länge|lang)\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*(?:mm\b)?", re.IGNORECASE
+)
+_DIA_PREFIX_RE = re.compile(r"[\u00d8\u2300]\s*(\d+(?:[.,]\d+)?)")
+
+
+def _prompt_x_extent_values(prompt: str) -> set[float]:
+    """Prompt numbers that pin the X extent specifically.
+
+    A generic "stated" value is not enough — 'Ø80 x 120 tall' puts the
+    120 on Z, and re-stating it as length_x would double the part's
+    length (observed failure mode). Only first triplet members ("L x W x H"),
+    first pair members ("L x W"), Ø-prefixed values (diameter spans X) and
+    explicit length keywords count as X evidence."""
+    text = prompt or ""
+    out: set[float] = set()
+    for t in _dimset_triplets(text):
+        out.add(t[0])
+    for m in _ENV_PAIR_RE.finditer(text):
+        out.add(float(m.group(1).replace(",", ".")))
+    for m in _DIA_PREFIX_RE.finditer(text):
+        out.add(float(m.group(1).replace(",", ".")))
+    for rx in (_LEN_AFTER_RE, _LEN_BEFORE_RE):
+        for m in rx.finditer(text):
+            out.add(float(m.group(1).replace(",", ".")))
+    return out
 
 
 def _dim_stated_in_prompt(value: float, prompt: str) -> bool:

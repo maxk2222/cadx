@@ -693,3 +693,38 @@ def test_sanitize_material_resolves_downstream() -> None:
         sanitize_material(s, prompt)
         assert resolve_material(s.material).name != "PLA" or want == "pla"
         assert resolve_material(s.material).name.lower() == resolve_material(want).name.lower()
+
+
+def test_sanitize_dims_restates_unitless_triplet_length() -> None:
+    """robot_arm r22: intake inferred length_x=108 (plate 100 + flange
+    overhang) while the prompt's '100 x 80 x 10' triplet states the
+    envelope — the unitless triplet must re-state length_x=100 so the
+    envelope check is real and the flange lands inside the footprint."""
+    from cadx.agent.steps.intake import sanitize_dims
+
+    s = _cube_spec()
+    s.length_x = s.length_x.model_copy(update={"value": 108.0, "source": "inferred"})
+    s.width_y = s.width_y.model_copy(update={"value": 80.0})
+    s.height_z = s.height_z.model_copy(update={"value": 40.0})
+    notes = sanitize_dims(
+        s,
+        "Base plate 100 x 80 x 10. Vertical flange at the +X edge on the "
+        "plate: 8 thick, 40 wide (y-centred), 30 tall.",
+    )
+    assert notes
+    assert s.length_x.value == 100.0
+    assert s.length_x.source == "stated"
+
+
+def test_sanitize_dims_never_restates_z_value_as_length() -> None:
+    """'Ø80 x 120 tall' — the largest stated number lives on Z, so it
+    must not be re-stated as length_x (that would double the tank's
+    length). Ø80 is X evidence but already covered by stated dims."""
+    from cadx.agent.steps.intake import sanitize_dims
+
+    s = _cube_spec()
+    s.length_x = s.length_x.model_copy(update={"value": 80.0, "source": "inferred"})
+    s.width_y = s.width_y.model_copy(update={"value": 80.0})
+    s.height_z = s.height_z.model_copy(update={"value": 120.0})
+    assert sanitize_dims(s, "sealed pressure tank Ø80 x 120 tall") == []
+    assert s.length_x.value == 80.0
