@@ -791,7 +791,12 @@ async def test_settings_get_contains_no_secrets():
     assert res["ok"]
     settings = res["settings"]
     # NEVER the key material itself — only the presence flags
-    presence_flags = {"llm_api_key_set", "tripo_api_key_set", "image_api_key_set"}
+    presence_flags = {
+        "llm_api_key_set",
+        "tripo_api_key_set",
+        "image_api_key_set",
+        "mesh_api_key_set",
+    }
     assert "llm_api_key" not in settings
     assert "llm_api_key_set" in settings
     forbidden = [
