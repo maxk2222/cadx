@@ -894,17 +894,25 @@ def default_load_case() -> LoadCase:
     )
 
 
+# a safety factor beyond this bound means the declared load barely stresses
+# the part — the solve verifies nothing (matches the evalkit sf_max bound)
+_FEM_DEGENERATE_SF = 300.0
+
+
 def fem_feedback_lines(
     report: FemReport, sf_min: float, *, lightweight_requested: bool = False
-) -> list[tuple[str, str]]:
-    """(severity, text) engineering feedback for the agent's issue list.
+) -> list[tuple[str, str, str]]:
+    """(severity, text, fix_hint) engineering feedback for the agent's issue list.
 
     ``sf < 1``/``sf < sf_min`` are majors — the part fails the declared load.
-    An over-built part (``sf > 3*sf_min``) only earns the "could be lightened"
-    advisory when the spec actually asked for lightweighting
-    (``lightweight_requested``) — being too strong is never a defect, and on
-    form-locked tasks the advice is unactionable anyway."""
-    lines: list[tuple[str, str]] = []
+    ``sf > _FEM_DEGENERATE_SF`` flags a degenerate LOAD CASE: the declared
+    load barely stresses the part, so the solve verifies nothing (a uniform
+    weak surface pressure is the usual signature). An over-built part
+    (``sf > 3*sf_min``) only earns the "could be lightened" advisory when
+    the spec actually asked for lightweighting (``lightweight_requested``) —
+    being too strong is never a defect, and on form-locked tasks the advice
+    is unactionable anyway."""
+    lines: list[tuple[str, str, str]] = []
     for c in report.cases:
         sf = c.safety_factor
         if sf is None:
@@ -918,6 +926,7 @@ def fem_feedback_lines(
                     f"fem[{c.name}]: no solvable result — {why}; check that the "
                     "region's hole_index/area actually matches material on the "
                     "current part",
+                    "re-point the region (hole_index/area) or declare a reachable one",
                 )
             )
             continue
@@ -928,6 +937,7 @@ def fem_feedback_lines(
                     f"fem[{c.name}]: safety factor {sf:.2f} < 1 — part fails under the "
                     f"declared load (max stress {c.max_vm_mpa:.1f} MPa); add material "
                     f"near the load/fix regions",
+                    "increase section sizes / add ribs on the load path",
                 )
             )
         elif sf < sf_min:
@@ -936,6 +946,18 @@ def fem_feedback_lines(
                     "major",
                     f"fem[{c.name}]: safety factor {sf:.2f} below target {sf_min:g} — "
                     f"strengthen the load path (walls, ribs, fillets near mounts)",
+                    "increase section sizes / add ribs on the load path",
+                )
+            )
+        elif sf > _FEM_DEGENERATE_SF:
+            lines.append(
+                (
+                    "minor",
+                    f"fem[{c.name}]: safety factor {sf:.2f} — the declared load barely "
+                    "stresses the part, so this case verifies nothing; declare the "
+                    "realistic worst-case load (peak thrust/torque/impact at rated "
+                    "conditions), not gentle nominal operation",
+                    "raise the load magnitude or concentrate it where service loads act",
                 )
             )
         elif lightweight_requested and sf > 3.0 * sf_min:
@@ -944,6 +966,7 @@ def fem_feedback_lines(
                     "minor",
                     f"fem[{c.name}]: safety factor {sf:.2f} well above target {sf_min:g} — "
                     f"part could be lightened (thinner walls or topology optimization)",
+                    "informational — only act if lightweighting was requested",
                 )
             )
         if not math.isfinite(c.max_disp_mm) or c.max_disp_mm <= 0:

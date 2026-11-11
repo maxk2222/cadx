@@ -45,7 +45,7 @@ from cadx.cad.allowlist import (
 )
 from cadx.cad.codemod import fix_api_misuse
 from cadx.cad.features import compare_features
-from cadx.cad.fem.analyze import FemReport, fem_feedback_lines
+from cadx.cad.fem.analyze import _FEM_DEGENERATE_SF, FemReport, fem_feedback_lines
 from cadx.cad.mesh_ops import (
     MESH_OPS_VERSION,
     MeshOp,
@@ -107,6 +107,20 @@ def _has_unsolvable_case(fem_res: dict[str, Any]) -> bool:
         return False
     cases = ((fem_res.get("fem") or {}).get("cases")) or []
     return any(c.get("safety_factor") is None for c in cases)
+
+
+def _has_degenerate_case(fem_res: dict[str, Any]) -> bool:
+    """A solved case reporting sf > _FEM_DEGENERATE_SF verifies nothing — the
+    declared load barely stresses the part (marine propeller r25: a 0.1 MPa
+    uniform pressure on a Ø140 hub returned sf≈1419 and the gate bound
+    sf_max=300 failed it). Same class of spec defect as an unsolvable case:
+    the declaration is wrong, not the solver, so it earns one re-extract."""
+    if not fem_res.get("ok"):
+        return False
+    cases = ((fem_res.get("fem") or {}).get("cases")) or []
+    return any(
+        (c.get("safety_factor") or 0.0) > _FEM_DEGENERATE_SF for c in cases
+    )
 
 
 # cross-agent contract kwargs: the concurrent changes that consume these
@@ -4024,7 +4038,11 @@ async def _run_cad(  # noqa: C901
             # no nodes) are a spec defect the loop cannot otherwise repair —
             # load_cases are not editable mid-loop. Re-extract them once and
             # re-verify: bounded by the ctx latch, audited via emit.
-            if _has_unsolvable_case(fem_res) and not ctx.load_repair_done and not await cancelled():
+            if (
+                (_has_unsolvable_case(fem_res) or _has_degenerate_case(fem_res))
+                and not ctx.load_repair_done
+                and not await cancelled()
+            ):
                 ctx.load_repair_done = True
                 cases, _opt = await intake_step.extract_load_cases(ctx, spec)
                 if cases:
@@ -4034,7 +4052,8 @@ async def _run_cad(  # noqa: C901
                     await ctx.emit(
                         "fem",
                         it,
-                        f"declared cases unsolvable — re-extracted {len(cases)} case(s), re-verifying",
+                        f"declared cases unsolvable/degenerate — re-extracted "
+                        f"{len(cases)} case(s), re-verifying",
                     )
                     fem_res = await _smoke()
             if fem_res.get("ok") and fem_res.get("fem"):
@@ -4048,17 +4067,13 @@ async def _run_cad(  # noqa: C901
                     _LIGHTWEIGHT_RE.search(ctx.prompt or "")
                 )
                 fb_kwargs = {"lightweight_requested": lw_requested} if _FEM_LIGHTWEIGHT_KW else {}
-                for severity, line in fem_feedback_lines(rep, sf_min, **fb_kwargs):
+                for severity, line, hint in fem_feedback_lines(rep, sf_min, **fb_kwargs):
                     fem_issues.append(
                         {
                             "source": "fem",
                             "severity": severity,
                             "what": line,
-                            "fix_hint": (
-                                "increase section sizes / add ribs on the load path"
-                                if severity == "major"
-                                else "informational — only act if lightweighting was requested"
-                            ),
+                            "fix_hint": hint,
                         }
                     )
                 await ctx.emit(

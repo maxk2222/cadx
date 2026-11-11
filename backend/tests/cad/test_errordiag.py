@@ -225,9 +225,26 @@ def test_fem_feedback_lightened_minor_gated_on_request():
             "minor",
             "fem[load]: safety factor 40.00 well above target 1.5 — "
             "part could be lightened (thinner walls or topology optimization)",
+            "informational — only act if lightweighting was requested",
         )
     ]
     # majors stay ungated: sf below target still reports regardless
     weak = FemReport(cases=[FemCaseResult(name="load", safety_factor=1.2)])
     lines = fem_feedback_lines(weak, 1.5)
     assert lines and lines[0][0] == "major" and "below target" in lines[0][1]
+
+
+def test_fem_feedback_degenerate_load_advisory():
+    """marine_propeller r25: SF≈1400 means the declared load barely
+    stresses the part — the solve verifies nothing and the eval gate
+    (sf_max=300) fails it. The improve loop must hear about it."""
+    from cadx.cad.fem.analyze import FemCaseResult, FemReport, fem_feedback_lines
+
+    rep = FemReport(cases=[FemCaseResult(name="thrust", safety_factor=1419.0)])
+    lines = fem_feedback_lines(rep, 1.5)
+    assert lines and lines[0][0] == "minor"
+    assert "verifies nothing" in lines[0][1]
+    assert "worst-case" in lines[0][1]
+    # a strong-but-plausible SF stays silent without lightweighting
+    ok = FemReport(cases=[FemCaseResult(name="load", safety_factor=250.0)])
+    assert fem_feedback_lines(ok, 1.5) == []
