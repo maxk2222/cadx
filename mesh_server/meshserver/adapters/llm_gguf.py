@@ -135,7 +135,12 @@ class LlamaCppAdapter(LlmAdapter):
             )
         prefix, flavor = resolved
         model = self._model_path()
-        ctx = int(getattr(self.cfg, "llm_ctx", 0) or self.context_len or 16384)
+        eff = getattr(self.cfg, "effective", None)
+        ctx = int(
+            (eff("llm_ctx") if callable(eff) else getattr(self.cfg, "llm_ctx", 0))
+            or self.context_len
+            or 16384
+        )
         if flavor == "bin":
             argv = prefix + [
                 "-m",

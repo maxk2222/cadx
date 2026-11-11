@@ -202,3 +202,96 @@ def test_gguf_parallel_flag(tmp_path):
     ):
         argv2 = inst2.server_argv(9999)
     assert "--parallel" not in argv2  # default 1 → flag omitted
+
+
+def _mlx_inst(cfg, *, vision: bool = False, repo: str = "org/m-4bit"):
+    from meshserver.adapters.llm_mlx import make_mlx_adapter
+
+    cls = make_mlx_adapter(repo, id="t-mlx" if not vision else "t-vlm", vision=vision)
+    return cls.create(cfg)
+
+
+def test_mlx_argv_tuning_flags(tmp_path):
+    cfg = ServerConfig(
+        model_dir=tmp_path / "models",
+        llm_kv_bits=8,
+        llm_prefill_step=8192,
+        llm_prompt_cache_mb=4096,
+    )
+    argv = _mlx_inst(cfg).server_argv(9999)
+    assert argv[argv.index("--kv-bits") + 1] == "8"
+    assert argv[argv.index("--prefill-step-size") + 1] == "8192"
+    assert argv[argv.index("--prompt-cache-bytes") + 1] == str(4096 * 1024 * 1024)
+    # lm-only knob must not leak vlm flags
+    assert "--max-kv-size" not in argv and "--max-num-seqs" not in argv
+
+    argv_off = _mlx_inst(ServerConfig(model_dir=tmp_path / "m2")).server_argv(9999)
+    for flag in ("--kv-bits", "--prefill-step-size", "--prompt-cache-bytes"):
+        assert flag not in argv_off
+
+
+def test_mlx_vlm_argv_ctx_seq_draft(tmp_path):
+    cfg = ServerConfig(
+        model_dir=tmp_path / "models",
+        llm_ctx=131072,
+        llm_max_num_seqs=2,
+        llm_draft="auto",
+    )
+    argv = _mlx_inst(cfg, vision=True).server_argv(9999)
+    assert argv[argv.index("--max-kv-size") + 1] == "131072"
+    assert argv[argv.index("--max-num-seqs") + 1] == "2"
+    assert argv[argv.index("--draft-model") + 1] == "org/m-4bit"
+    assert "--draft-kind" not in argv  # auto → server detects
+    # vlm instance must not emit the lm-only cache flags
+    assert "--prompt-cache-bytes" not in argv
+
+
+def test_mlx_draft_spec_parsing():
+    from meshserver.adapters.llm_mlx import _draft_spec
+
+    assert _draft_spec("", "r/x") == (None, None)
+    assert _draft_spec("auto", "r/x") == ("r/x", None)
+    assert _draft_spec("other/repo", "r/x") == ("other/repo", None)
+    assert _draft_spec("other/repo:mtp", "r/x") == ("other/repo", "mtp")
+    assert _draft_spec("mtp", "r/x") == ("r/x", "mtp")
+    assert _draft_spec(":eagle3", "r/x") == ("r/x", "eagle3")
+
+
+def test_config_new_knob_roundtrip(tmp_path):
+    """Overlay-driven argv: PUT-able keys reach server_argv via effective()."""
+    cfg = ServerConfig(model_dir=tmp_path / "models")
+    cfg.set_overlay({"llm_kv_bits": 4, "llm_ctx": 262144, "llm_draft": "repo/d:eagle3"})
+    argv = _mlx_inst(cfg, vision=True).server_argv(9999)
+    assert argv[argv.index("--kv-bits") + 1] == "4"
+    assert argv[argv.index("--max-kv-size") + 1] == "262144"
+    assert argv[argv.index("--draft-model") + 1] == "repo/d"
+    assert argv[argv.index("--draft-kind") + 1] == "eagle3"
+
+
+def test_config_draft_validation(tmp_path):
+    """apply_patch bounds: bad draft specs and out-of-range ints are
+    rejected with 422; valid forms round-trip through the overlay."""
+    import pytest
+    from fastapi import HTTPException
+
+    from meshserver.runtime_config import apply_patch, config_view
+
+    cfg = ServerConfig(model_dir=tmp_path / "models")
+    for ok in ("auto", "mtp", "hf/repo", "hf/repo:eagle3"):
+        view = apply_patch(cfg, {"llm_draft": ok})
+        assert view["config"]["llm_draft"]["value"] == ok
+    # 'repo:kind' with an unknown kind tail or a non-str value must die;
+    # 'dflash:mtp' parses as repo 'dflash' + kind 'mtp' — structurally valid
+    for bad in ("hf/repo:wrong", "hf/repo:nope", 123):
+        with pytest.raises(HTTPException):
+            apply_patch(cfg, {"llm_draft": bad})
+    for bad_kv in (-1, 12):
+        with pytest.raises(HTTPException):
+            apply_patch(cfg, {"llm_kv_bits": bad_kv})
+    with pytest.raises(HTTPException):
+        apply_patch(cfg, {"llm_ctx": 1024})  # below the 4096 floor
+    apply_patch(cfg, {"llm_ctx": 262144})
+    assert config_view(cfg)["config"]["llm_ctx"]["value"] == 262144
+    # null resets to env/default
+    apply_patch(cfg, {"llm_ctx": None})
+    assert config_view(cfg)["config"]["llm_ctx"]["value"] == cfg.llm_ctx

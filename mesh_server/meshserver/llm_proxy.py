@@ -428,8 +428,13 @@ async def llm_models(registry: Any) -> dict:
     if callable(models_fn):
         infos = {m.id: m for m in models_fn()}
     # effective served ctx — the sidecar config override (llm_ctx) beats the
-    # adapter's catalog max (same resolution as llm_gguf.server_argv)
-    cfg_ctx = int(getattr(getattr(registry, "cfg", None), "llm_ctx", 0) or 0)
+    # adapter's catalog max (same resolution as llm_gguf.server_argv); the
+    # runtime overlay can raise it between model loads
+    cfg = getattr(registry, "cfg", None)
+    eff = getattr(cfg, "effective", None)
+    cfg_ctx = int(
+        (eff("llm_ctx") if callable(eff) else getattr(cfg, "llm_ctx", 0) if cfg else 0) or 0
+    )
     data: list[dict[str, Any]] = []
     for cls in _llm_classes(registry):
         info = infos.get(getattr(cls, "id", ""))

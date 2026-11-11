@@ -38,6 +38,10 @@ def _coerce(key: str, value: Any) -> Any:
         if isinstance(value, (int, float)):
             return float(value)
         raise ValueError(f"'{key}' expects a number")
+    if typ is str:
+        if not isinstance(value, str):
+            raise ValueError(f"'{key}' expects a string")
+        return value.strip()
     return value
 
 
@@ -53,6 +57,12 @@ def config_view(cfg: ServerConfig) -> dict:
         "unload_idle_s": "MESH_UNLOAD_IDLE_S",
         "job_min_free_mb": "MESH_JOB_MIN_FREE_MB",
         "mem_headroom_mb": "MESH_MEM_HEADROOM_MB",
+        "llm_ctx": "MESH_LLM_CTX",
+        "llm_kv_bits": "MESH_LLM_KV_BITS",
+        "llm_prefill_step": "MESH_LLM_PREFILL_STEP",
+        "llm_draft": "MESH_LLM_DRAFT",
+        "llm_max_num_seqs": "MESH_LLM_MAX_NUM_SEQS",
+        "llm_prompt_cache_mb": "MESH_LLM_PROMPT_CACHE_MB",
     }
     out: dict[str, Any] = {}
     for key, (_typ, applies) in RUNTIME_MUTABLE.items():
@@ -94,6 +104,17 @@ def apply_patch(cfg: ServerConfig, patch: dict) -> dict:
             v = _coerce(key, value)
             if isinstance(v, (int, float)) and v < 0:
                 raise ValueError(f"'{key}' must be >= 0")
+            if key == "llm_ctx" and v and v < 4096:
+                raise ValueError("'llm_ctx' must be 0 (catalog default) or >= 4096")
+            if key == "llm_kv_bits" and v and not 2 <= v <= 8:
+                raise ValueError("'llm_kv_bits' must be 0 (off) or in 2..8")
+            if key == "llm_draft" and v:
+                kinds = ("dflash", "eagle3", "mtp")
+                tail = v.rsplit(":", 1)[-1] if ":" in v else ""
+                if v != "auto" and v not in kinds and tail and tail not in kinds:
+                    raise ValueError(
+                        "'llm_draft' must be '', 'auto', a kind, or 'hf/repo[:dflash|eagle3|mtp]'"
+                    )
             validated[key] = v
         except ValueError as e:
             errors.append(str(e))

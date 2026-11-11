@@ -105,6 +105,23 @@ def _module_importable(python: str, module: str) -> bool:
     return ok
 
 
+def _draft_spec(raw: str, fallback_repo: str) -> tuple[str | None, str | None]:
+    """Parse ``llm_draft`` → (draft_repo, draft_kind|None).
+
+    "" → off; "auto" → same repo, kind auto-detected by the server;
+    "hf/repo[:kind]" → explicit drafter (+family for mlx_vlm); a bare
+    "mtp"/"dflash"/"eagle3" means same repo with that family."""
+    s = raw.strip()
+    if not s:
+        return None, None
+    if s == "auto":
+        return fallback_repo, None
+    repo, sep, kind = s.partition(":")
+    if not sep and repo in ("mtp", "dflash", "eagle3"):
+        return fallback_repo, repo
+    return (repo or fallback_repo), (kind or None)
+
+
 class MlxLmAdapter(LlmAdapter):
     """mlx_lm.server / mlx_vlm.server subprocess serving one HF repo."""
 
@@ -171,8 +188,10 @@ class MlxLmAdapter(LlmAdapter):
     def server_argv(self, port: int) -> list[str]:
         # minimal flags — the server applies the repo's chat template and
         # picks sensible sampling defaults; context is bound by the model.
-        # mlx_vlm.server is CLI-compatible (--model/--host/--port).
-        return [
+        # mlx_vlm.server is CLI-compatible (--model/--host/--port); the
+        # optional tuning knobs below are emitted only for the module that
+        # supports them (both CLIs share kv/prefill/draft, the rest differs).
+        argv = [
             _resolve_python(self.cfg),
             "-m",
             f"{self.required_module}.server",
@@ -183,6 +202,38 @@ class MlxLmAdapter(LlmAdapter):
             "--port",
             str(port),
         ]
+        cfg = self.cfg
+        kv_bits = int(cfg.effective("llm_kv_bits") or 0)
+        if kv_bits:
+            argv += ["--kv-bits", str(kv_bits)]
+        prefill = int(cfg.effective("llm_prefill_step") or 0)
+        if prefill:
+            argv += ["--prefill-step-size", str(prefill)]
+        draft_repo, draft_kind = _draft_spec(str(cfg.effective("llm_draft") or ""), self.hf_repo)
+        if draft_repo:
+            argv += ["--draft-model", draft_repo]
+            if draft_kind and self.required_module == "mlx_vlm":
+                argv += ["--draft-kind", draft_kind]
+        if self.required_module == "mlx_vlm":
+            # honest server-side bound: the reported ctx (llm_ctx) is also
+            # the real KV window cap — without it the model's catalog max
+            # would allow unbounded KV growth beyond what we advertise
+            ctx = int(cfg.effective("llm_ctx") or 0)
+            if ctx:
+                argv += ["--max-kv-size", str(ctx)]
+            seqs = int(cfg.effective("llm_max_num_seqs") or 0)
+            if seqs:
+                argv += ["--max-num-seqs", str(seqs)]
+        else:
+            cache_mb = int(cfg.effective("llm_prompt_cache_mb") or 0)
+            if cache_mb:
+                argv += [
+                    "--prompt-cache-size",
+                    "8",
+                    "--prompt-cache-bytes",
+                    str(cache_mb * 1024 * 1024),
+                ]
+        return argv
 
 
 def make_mlx_adapter(

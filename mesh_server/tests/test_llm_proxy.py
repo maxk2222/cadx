@@ -295,3 +295,22 @@ async def test_llm_models_split_registry_attrs(upstream):
     assert r.status_code == 200
     data = r.json()["data"]
     assert [m["id"] for m in data] == ["my-llm"]
+
+
+async def test_llm_models_ctx_overlay_wins(upstream):
+    """The runtime overlay (PUT /v1/config llm_ctx=…) must beat both the
+    env value and the catalog max in the served listing — CADX budgets
+    prompts from exactly this number."""
+    from types import SimpleNamespace
+
+    reg = _Reg(_Adapter(upstream))
+    reg.cfg = SimpleNamespace(effective=lambda key: 262144 if key == "llm_ctx" else 0)
+    async with _client(_app(reg)) as c:
+        r = await c.get("/v1/llm-models")
+    assert r.status_code == 200
+    assert r.json()["data"][0]["context_len"] == 262144
+
+    reg.cfg = None  # no cfg → falls back to the class catalog value
+    async with _client(_app(reg)) as c:
+        r = await c.get("/v1/llm-models")
+    assert r.json()["data"][0]["context_len"] is None

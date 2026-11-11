@@ -45,6 +45,14 @@ RUNTIME_MUTABLE: dict[str, tuple[type, str]] = {
     "unload_idle_s": (int, "immediate"),
     "job_min_free_mb": (int, "immediate"),
     "mem_headroom_mb": (int, "immediate"),
+    # managed-server argv knobs — baked into the subprocess at spawn, so the
+    # overlay value applies at the next model load
+    "llm_ctx": (int, "next_model_load"),
+    "llm_kv_bits": (int, "next_model_load"),
+    "llm_prefill_step": (int, "next_model_load"),
+    "llm_draft": (str, "next_model_load"),
+    "llm_max_num_seqs": (int, "next_model_load"),
+    "llm_prompt_cache_mb": (int, "next_model_load"),
 }
 
 
@@ -215,6 +223,33 @@ class ServerConfig:
     # sync-wait bound for OpenAI-style /v1/images/* wrappers
     openai_image_wait_s: float = field(
         default_factory=lambda: float(os.environ.get("MESH_OPENAI_IMAGE_WAIT_S", "600"))
+    )
+
+    # --- managed-server argv tuning (mlx_lm / mlx_vlm / llama.cpp) ----------
+    # KV-cache quantization bits (0 = server default/unquantized). Shrinks
+    # resident KV memory ~4x at 8 bits → larger ctx/concurrency fits RAM.
+    llm_kv_bits: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_KV_BITS", "0"))
+    )
+    # prefill step size in tokens (0 = server default 2048)
+    llm_prefill_step: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_PREFILL_STEP", "0"))
+    )
+    # speculative decoding drafter: "" = off, "auto" = same repo (kind
+    # auto-detected — Qwen3.5/3.6/3.8 bundle MTP weights), or
+    # "hf/repo[:dflash|eagle3|mtp]" for an explicit drafter+family
+    llm_draft: str = field(
+        default_factory=lambda: os.environ.get("MESH_LLM_DRAFT", "")
+    )
+    # mlx_vlm continuous-batch bound (0 = unbounded) — backpressure instead
+    # of unbounded peak memory when several requests queue upstream-side
+    llm_max_num_seqs: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_MAX_NUM_SEQS", "0"))
+    )
+    # mlx_lm prompt KV-cache budget in MB (0 = off) — repeated long prefixes
+    # (system+spec) served from cache instead of re-prefilled per call
+    llm_prompt_cache_mb: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_PROMPT_CACHE_MB", "0"))
     )
 
     def __post_init__(self) -> None:
