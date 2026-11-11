@@ -77,6 +77,13 @@ Rules:
   strong part. Order of magnitude guidance: hand-held/tool parts see
   hundreds of N, engine/shaft interfaces their torque reaction, rotating
   parts m·r·ω² at maximum rated speed.
+- Rotating/flow machinery (propeller, impeller, fan, turbine): the
+  working load is peak thrust + drive torque at rated speed, placed
+  where the fluid actually pushes — `normal_force_n` of several hundred
+  N on a `rim`/outer `area` region over the blades, plus `moment_nm`
+  reacted at the shaft bore. A gentle uniform `pressure_mpa` smeared
+  over the whole skin under-states the load by an order of magnitude —
+  the same SF>300 degenerate signature as forgetting the load.
 - ATTACH/MECHANISM SUGAR (preferred for named interfaces): instead of
   hand-picking region kind + geometry, put `attach` on the region and let
   the resolver pick the standard application surface:
