@@ -2797,7 +2797,7 @@ class ToolSession:
         chk = check_code(code, sigcheck=self._sigcheck_enabled())
         errs = list(chk.errors) + list(chk.sig_errors)
         if not chk.errors:
-            errs += check_standard_part_calls(code)
+            errs += check_standard_part_calls(chk.code or code)
         return errs
 
     def _contract_warnings(self, code: str) -> list[str]:

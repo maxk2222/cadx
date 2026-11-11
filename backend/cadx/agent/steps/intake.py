@@ -516,6 +516,186 @@ def lint_region_semantics(spec: PartSpec) -> list[str]:
 
 _MAX_ASSUMPTION_NOTES = 6
 
+_HOLE_REGION_KINDS = ("hole", "anchor", "bore")
+
+
+def _anchor_plane_coord(a: Any, letter: str) -> float | None:
+    """In-plane coordinate of an anchor on one axis — the AXIAL coordinate
+    of a bore is not envelope evidence (a side bore may sit on the face)."""
+    ax = str(getattr(a, "axis", "+z") or "+z").lstrip("+-")[-1:]
+    if ax == letter:
+        return None
+    pos = getattr(a, "pos", None) or []
+    idx = {"x": 0, "y": 1, "z": 2}[letter]
+    if len(pos) > idx and pos[idx] is not None:
+        return float(pos[idx])
+    if letter == "x":
+        return float(getattr(a, "x", 0.0) or 0.0)
+    if letter == "y":
+        return float(getattr(a, "y", 0.0) or 0.0)
+    return None  # z without pos is not resolvable
+
+
+def _expand_envelope_dim(spec: PartSpec, field: str, letter: str, req: float) -> str | None:
+    """Expand one envelope dim to `req` — or emit the honest warning when
+    the implied size is absurd (parse error) instead of trusting it."""
+    dim = getattr(spec, field, None)
+    try:
+        declared = float(getattr(dim, "value", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if declared <= 0 or req <= declared:
+        return None
+    req += 2.0 if letter == "z" else 4.0  # headroom / edge margin
+    if req > 2000.0:
+        return (
+            f"spec envelope {field}={declared} cannot contain declared anchors "
+            f"(positions imply ≥{req:.0f} mm) — envelope/positions need review"
+        )
+    if req > declared * 10.0:
+        return (
+            f"spec envelope {field}={declared} vs anchors imply ≥{req:.0f} mm "
+            "(>10x — likely a parse error, kept as declared)"
+        )
+    try:
+        dim.value = round(req, 2)
+    except (AttributeError, TypeError):
+        return None
+    return (
+        f"spec envelope {field} expanded {declared:g}→{dim.value:g} mm — declared "
+        "anchors don't fit otherwise (self-contradictory spec reconciled)"
+    )
+
+
+def lint_envelope_fit(spec: PartSpec) -> list[str]:
+    """Declared envelope must contain the declared anchors.
+
+    A weak model occasionally lets a catalog-part dimension bleed into the
+    top-level envelope (observed: SocketHeadCapScrew 18.27 mm governing
+    `length_x` while its own holes sat at x=±42) — the spec is then
+    self-contradictory and any honest part fails `envelope_*` regardless of
+    code quality. Positions are resolved on the IN-PLANE axes of each bore
+    (a side-face bore legitimately sits AT the envelope face on its own
+    axis, so its axial coordinate is not evidence). Only ever EXPANDS the
+    envelope to fit declared intent — shrinking would silently cut
+    declared geometry; expansions >10x are almost certainly a parse error,
+    so those only warn."""
+    from cadx.agent.anchors import _spec_anchors, _spec_bounds
+
+    anchors = _spec_anchors(spec)
+    bounds = _spec_bounds(spec)
+    if not anchors or bounds is None:
+        return []
+
+    need: dict[str, float] = {"x": 0.0, "y": 0.0, "z": 0.0}
+    for a in anchors:
+        r = max(float(getattr(a, "dia", 0.0) or 0.0) / 2.0, 0.0)
+        for letter in ("x", "y", "z"):
+            c = _anchor_plane_coord(a, letter)
+            if c is not None:
+                need[letter] = max(need[letter], abs(c) + r)
+
+    notes: list[str] = []
+    for field, letter in (("length_x", "x"), ("width_y", "y"), ("height_z", "z")):
+        req = 2.0 * need[letter] if letter != "z" else need[letter]
+        if req > 0 and (note := _expand_envelope_dim(spec, field, letter, req)):
+            notes.append(note)
+    return notes
+
+
+def _anchor_hint_update(r: Any, anchors: list[Any]) -> dict[str, Any] | None:
+    """Region-update dict materializing a `hole_index` ref into a geometric
+    (axis, diameter_mm, center) hint — and unbinding the index once the
+    effective hint is complete. Returns None when the region can't be
+    safely re-pointed (unresolvable anchor position, estimated coords)."""
+    idx = int(getattr(r, "hole_index", 0) or 0)
+    if str(getattr(r, "kind", "") or "") not in _HOLE_REGION_KINDS:
+        return None
+    if not (1 <= idx <= len(anchors)):
+        return None
+    a = anchors[idx - 1]
+    if str(getattr(a, "source", "") or "") == "spec-est":
+        return None  # estimated position is weaker evidence than the index
+    letter = str(getattr(a, "axis", "+z") or "+z").lstrip("+-")[-1:]
+    ax_idx = {"x": 0, "y": 1, "z": 2}[letter]
+    plane_idx = [i for i in range(3) if i != ax_idx]
+    pos = getattr(a, "pos", None) or []
+    center: list[float] | None = None
+    if len(pos) == 3 and all(pos[i] is not None for i in plane_idx):
+        # in-plane slots resolve — the axial slot may stay None
+        center = [float(v) if v is not None else 0.0 for v in pos]
+    elif letter == "z":
+        # a declared (0,0) bore is a real position — the source check
+        # above already filtered mere estimates
+        center = [float(a.x or 0.0), float(a.y or 0.0), 0.0]
+    if center is None:
+        return None  # no resolvable in-plane position — index is all we have
+    upd: dict[str, Any] = {}
+    if not getattr(r, "axis", None):
+        upd["axis"] = a.axis
+    if not getattr(r, "diameter_mm", None) and getattr(a, "dia", 0.0):
+        upd["diameter_mm"] = float(a.dia)
+    if not getattr(r, "center", None):
+        upd["center"] = center
+    # unbind the index once the effective region carries a complete hint
+    # (centre + axis letter agreeing with the anchor) — whether the fields
+    # came from the model or were just materialized. A conflicting
+    # model-set axis keeps the index: the two candidates disagree and
+    # neither is clearly authoritative.
+    final_axis = upd.get("axis") or getattr(r, "axis", None)
+    final_center = upd.get("center") or getattr(r, "center", None)
+    if final_center and str(final_axis or "").lstrip("+-")[-1:] == letter:
+        upd["hole_index"] = None
+    return upd or None
+
+
+def materialize_anchor_hints(spec: PartSpec) -> list[str]:
+    """Fill empty axis/diameter_mm/center on `hole_index` regions from the
+    spec anchor table, then unbind the index.
+
+    `hole_index` binds 1-based into the MEASURED anchor list at FEM time,
+    but intake writes it spec-order — when measured count/order diverges
+    (extra holes found, blind bores missed) the index pins the WRONG bore
+    or a phantom anchor whose ring has no nodes ("matched no nodes" →
+    unsolvable case). Writing the intended anchor's (axis, dia, in-plane
+    centre) into the region and clearing the index routes binding through
+    the deterministic (axis+dia+centre) hint match instead — strictly more
+    robust under count/order drift. Regions whose spec anchor has no
+    resolvable position keep their index (measured order is the only
+    remaining evidence)."""
+    from cadx.agent.anchors import _spec_anchors
+
+    anchors = _spec_anchors(spec)
+    if not anchors:
+        return []
+    notes: list[str] = []
+
+    def _repoint(r: Any, where: str) -> Any:
+        idx = int(getattr(r, "hole_index", 0) or 0)
+        upd = _anchor_hint_update(r, anchors)
+        if upd is None:
+            return r
+        if "hole_index" in upd and idx:
+            notes.append(
+                f"{where}: hole_index {idx} → anchor hint "
+                f"(axis={upd.get('axis') or r.axis}, pos={upd.get('center') or r.center}) — "
+                "spec-order index would bind the wrong measured bore"
+            )
+        return r.model_copy(update=upd)
+
+    for case in spec.load_cases or []:
+        where = f"case '{case.name}'"
+        case.fixed = [_repoint(r, where) for r in (case.fixed or [])]
+        for ld in case.loads or []:
+            r = getattr(ld, "region", None)
+            if r is not None:
+                ld.region = _repoint(r, where)
+    if spec.optimize is not None:
+        spec.optimize.keep_regions = [
+            _repoint(r, "keep_regions") for r in (spec.optimize.keep_regions or [])
+        ]
+    return notes
+
 
 def sanitize_load_cases(spec: PartSpec) -> None:
     """Drop degenerate cases (no supports and no loads) a weak model emits as
@@ -526,7 +706,9 @@ def sanitize_load_cases(spec: PartSpec) -> None:
     `fix_mode 'normal'` on hole-kind supports in under-constrained cases —
     a bore 'normal' pins only the axial DOF and is never a real support."""
     lint_notes = (
-        rebind_case_anchors(spec)
+        lint_envelope_fit(spec)
+        + rebind_case_anchors(spec)
+        + materialize_anchor_hints(spec)
         + normalize_support_modes(spec)
         + lint_support_modes(spec)
         + lint_region_semantics(spec)

@@ -9,7 +9,12 @@ splits plural loads ("flange holes") across the matching anchors.
 
 from __future__ import annotations
 
-from cadx.agent.steps.intake import rebind_case_anchors, sanitize_load_cases
+from cadx.agent.steps.intake import (
+    lint_envelope_fit,
+    materialize_anchor_hints,
+    rebind_case_anchors,
+    sanitize_load_cases,
+)
 from cadx.llm.schemas import (
     Feature,
     LoadCase,
@@ -280,7 +285,12 @@ def test_sanitize_drops_degenerate_clamps_weight_records_notes():
     assert len(spec.load_cases) == 1
     assert spec.load_cases[0].name == "arm load on flange holes"
     assert spec.load_cases[0].weight == 1.0
-    assert {ld.region.hole_index for ld in spec.load_cases[0].loads} == {6, 7}
+    # the rebound #6/#7 then materialize into geometric hints — the measured
+    # anchor list at FEM time binds by (axis, dia, centre), not spec order
+    centers = sorted(tuple(ld.region.center) for ld in spec.load_cases[0].loads)
+    assert centers == [(0.0, -12.0, 25.0), (0.0, 12.0, 25.0)]
+    assert all(ld.region.hole_index is None for ld in spec.load_cases[0].loads)
+    assert all(ld.region.diameter_mm == 6.5 for ld in spec.load_cases[0].loads)
     assert any("rebound" in a for a in spec.assumptions)
 
 
@@ -319,9 +329,13 @@ def test_rebind_face_encastre_replaced_by_mount_holes():
     sanitize_load_cases(spec)
     fixed = spec.load_cases[0].fixed
     kinds = {r.kind for r in fixed}
-    idxs = {r.hole_index for r in fixed}
     assert kinds == {"hole"}
-    assert idxs == {1, 2, 3, 4}  # corner bolts, not the M12 thread seat
+    # corner bolts materialize into (axis +z, dia 8.5, x/y) hints — indexes
+    # are cleared so measured-anchor drift can't rebind them
+    centers = sorted(tuple(r.center)[:2] for r in fixed)
+    assert centers == [(-42.0, -32.0), (-42.0, 32.0), (42.0, -32.0), (42.0, 32.0)]
+    assert all(r.hole_index is None for r in fixed)
+    assert all(r.diameter_mm == 8.5 for r in fixed)
     assert any("encastre" in a for a in spec.assumptions)
 
 
@@ -359,7 +373,10 @@ def test_rebind_moment_on_clearance_hole_moves_to_thread():
     ]
     sanitize_load_cases(spec)
     ld = spec.load_cases[0].loads[0]
-    assert ld.region.hole_index == 5  # M12 thread seat
+    # rebound to the M12 seat, then materialized as a geometric hint
+    assert ld.region.hole_index is None
+    assert ld.region.diameter_mm == 10.2
+    assert list(ld.region.center) == [0.0, 0.0, 0.0]
     assert any("torque" in a or "thread" in a for a in spec.assumptions)
 
 
@@ -378,4 +395,180 @@ def test_rebind_moment_on_thread_seat_untouched():
         )
     ]
     sanitize_load_cases(spec)
-    assert spec.load_cases[0].loads[0].region.hole_index == 5
+    r = spec.load_cases[0].loads[0].region
+    assert r.hole_index is None
+    assert r.diameter_mm == 10.2
+
+
+def _polluted_envelope_spec() -> PartSpec:
+    """The r16 arm-mount failure shape: a SocketHeadCapScrew catalog dim
+    (18.27) bled into `length_x` while the declared holes sit at x=±42 —
+    the spec is self-contradictory before codegen ever runs."""
+    return PartSpec(
+        name="robot arm mount",
+        summary="",
+        length_x={"value": 18.27},
+        width_y={"value": 80},
+        height_z={"value": 40},
+        features=[
+            _hole("mounting hole +x +y", 8.5, "x=42 y=32"),
+            _hole("mounting hole -x -y", 8.5, "x=-42 y=-32"),
+        ],
+        standard_parts=[],
+        image_roles=[],
+        verification_questions=[],
+    )
+
+
+def test_lint_envelope_fit_expands_undersized_envelope():
+    spec = _polluted_envelope_spec()
+    notes = lint_envelope_fit(spec)
+    assert spec.length_x.value > 90.0  # 2*(42+4.25)+4 ≈ 96.5
+    assert spec.width_y.value == 80  # 32+4.25 fits inside 80/2
+    assert notes and "expanded" in notes[0]
+
+
+def test_lint_envelope_fit_is_idempotent():
+    spec = _polluted_envelope_spec()
+    lint_envelope_fit(spec)
+    grown = spec.length_x.value
+    notes = lint_envelope_fit(spec)
+    assert spec.length_x.value == grown
+    assert notes == []
+
+
+def test_lint_envelope_fit_never_shrinks():
+    spec = _mount_spec()  # 100x80x40, holes at ±42/±32 — fits already
+    notes = lint_envelope_fit(spec)
+    assert spec.length_x.value == 100
+    assert notes == []
+
+
+def test_lint_envelope_fit_absurd_positions_only_warn():
+    spec = _polluted_envelope_spec()
+    spec.features[0].position = "x=800 y=0"  # implies ≥1.6 m — a parse error
+    notes = lint_envelope_fit(spec)
+    assert spec.length_x.value == 18.27  # kept as declared
+    assert notes and ("review" in notes[0] or "kept as declared" in notes[0])
+
+
+def test_materialize_clears_index_into_geometric_hint():
+    """Spec-order `hole_index` binds the MEASURED list at FEM — materialize
+    replaces it with the (axis, dia, centre) hint the spec anchor carries."""
+    spec = _mount_spec()
+    spec.load_cases = [
+        LoadCase(
+            name="arm load",
+            fixed=[RegionSpec(kind="hole", hole_index=1)],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(kind="bore", hole_index=6),
+                    bearing_n=120.0,
+                )
+            ],
+        )
+    ]
+    notes = materialize_anchor_hints(spec)
+    fx = spec.load_cases[0].fixed[0]
+    assert fx.hole_index is None
+    assert list(fx.center) == [42.0, 32.0, 0.0]
+    assert fx.diameter_mm == 8.5
+    assert str(fx.axis).endswith("z")
+    ld = spec.load_cases[0].loads[0].region
+    assert ld.hole_index is None
+    # +x side bore: in-plane evidence is (y,z), the axial slot stays 0
+    assert list(ld.center) == [0.0, -12.0, 25.0]
+    assert ld.diameter_mm == 6.5
+    assert notes
+
+
+def test_materialize_respects_existing_region_fields():
+    """Region fields the model already set win — only the index is dropped
+    once a usable centre exists."""
+    spec = _mount_spec()
+    spec.load_cases = [
+        LoadCase(
+            name="arm load",
+            fixed=[],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(
+                        kind="bore",
+                        hole_index=6,
+                        axis="x",
+                        diameter_mm=7.0,  # model's own estimate — kept
+                        center=[],
+                    ),
+                    bearing_n=120.0,
+                )
+            ],
+        )
+    ]
+    materialize_anchor_hints(spec)
+    r = spec.load_cases[0].loads[0].region
+    assert r.hole_index is None  # centre materialized → index cleared
+    assert r.diameter_mm == 7.0
+    assert r.axis == "x"
+
+
+def test_materialize_keeps_index_on_estimated_anchor(monkeypatch):
+    """An anchor whose position was estimated (no declared coordinates) is
+    weaker evidence than the index itself — keep the index for the
+    measured-order fallback."""
+    import cadx.agent.anchors as anchors_mod
+    from cadx.agent.anchors import Anchor
+
+    est = Anchor(
+        index=0,
+        x=0.0,
+        y=0.0,
+        dia=8.5,
+        axis="+z",
+        pos=None,
+        source="spec-est",
+    )
+    monkeypatch.setattr(anchors_mod, "_spec_anchors", lambda spec: [est])
+    spec = _mount_spec()
+    spec.load_cases = [
+        LoadCase(
+            name="arm load",
+            fixed=[RegionSpec(kind="hole", hole_index=1)],
+            loads=[LoadSpec(region=RegionSpec(kind="all"), g_load=[0.0, 0.0, -1.0])],
+        )
+    ]
+    materialize_anchor_hints(spec)
+    assert spec.load_cases[0].fixed[0].hole_index == 1
+
+
+def test_materialize_leaves_out_of_range_for_drop_dead():
+    spec = _mount_spec()
+    spec.load_cases = [
+        LoadCase(
+            name="arm load",
+            fixed=[RegionSpec(kind="hole", hole_index=99)],
+            loads=[LoadSpec(region=RegionSpec(kind="all"), g_load=[0.0, 0.0, -1.0])],
+        )
+    ]
+    sanitize_load_cases(spec)
+    assert spec.load_cases[0].fixed == []  # dead ref dropped, honestly noted
+    assert any("dropped" in a for a in spec.assumptions)
+
+
+def test_sanitize_load_cases_is_idempotent():
+    spec = _mount_spec()
+    spec.load_cases = [
+        LoadCase(
+            name="arm load on flange holes",
+            fixed=[RegionSpec(kind="hole", hole_index=i) for i in (1, 2, 3, 4)],
+            loads=[
+                LoadSpec(
+                    region=RegionSpec(kind="bore", hole_index=8),
+                    bearing_n=200.0,
+                )
+            ],
+        )
+    ]
+    sanitize_load_cases(spec)
+    first = spec.model_dump_json()
+    sanitize_load_cases(spec)
+    assert spec.model_dump_json() == first

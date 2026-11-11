@@ -749,3 +749,85 @@ def test_declared_cad_fallback():
     assert declared_cad_fallback(GOOD + "cad_fallback = 5\n") is None
     assert declared_cad_fallback(GOOD + "cad_fallback = PARAMS\n") is None
     assert declared_cad_fallback("def broken(:\n") is None
+
+
+# -- JSON-escape normalization (weak models double-encode the code blob) ---- #
+
+
+def test_check_code_unescapes_escaped_model_output():
+    """The r16 failure shape: the submitted `code` string arrives with
+    literal \\n sequences and \\" escapes (the model ran its answer through
+    an extra JSON-encode). It must decode, parse, and be handed back on
+    CheckResult.code so the execution path runs the decoded source."""
+    raw = (
+        'from build123d import *\n'
+        'PARAMS = {"length": 10.0}\n'
+        'body = Box(PARAMS["length"], 10, 10)\n'
+        'result = body\n'
+    )
+    escaped = raw.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    r = check_code(escaped)
+    assert r.ok, r.errors
+    assert r.code == raw
+    assert any("escape" in w or "decoded" in w for w in r.warnings)
+
+
+def test_check_code_unescape_truncated_blob_still_fails():
+    """A completion-truncated blob must stay a repairable failure — decoding
+    is not a license to accept half a JSON blob."""
+    raw = 'from build123d import *\nresult = Box(10, 10, 10)\npart2 = Box(5, 5, 5)\n'
+    escaped = raw.replace("\n", "\\n")[:40]  # cut mid-statement
+    r = check_code(escaped)
+    assert not r.ok
+    assert r.code is None
+
+
+def test_check_code_unescape_garbage_stays_failure():
+    r = check_code('{"code": "\\"def broken(:\\n')  # never valid either way
+    assert not r.ok
+    assert r.code is None
+
+
+def test_check_code_clean_input_carries_no_replacement():
+    r = check_code(GOOD)
+    assert r.ok
+    assert r.code is None  # verbatim input — nothing to adopt
+
+
+def test_check_code_literal_escapes_in_strings_survive():
+    """Legitimate `\\n` INSIDE a string literal parses fine already — the
+    normalization pass must never rewrite working code."""
+    code = GOOD + 'label = "a\\nb"\n'
+    r = check_code(code)
+    assert r.ok
+    assert r.code is None
+
+
+def test_check_code_escaped_preserves_inner_string_escapes():
+    """Escaped output whose strings contain real escapes (`"a\\nb"` in the
+    original source) must round-trip — the \\\\ sentinel keeps the inner
+    backslash instead of turning it into a mid-literal newline."""
+    raw = (
+        'from build123d import *\n'
+        'PARAMS = {"length": 1.0}\n'
+        'label = "a\\nb"\n'
+        'body = Box(PARAMS["length"], 1, 1)\n'
+        'result = body\n'
+    )
+    escaped = raw.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    r = check_code(escaped)
+    assert r.ok, r.errors
+    assert r.code == raw
+
+
+def test_check_code_escaped_still_enforces_result_contract():
+    raw = (
+        'from build123d import *\n'
+        'PARAMS = {"length": 10.0}\n'
+        'Box(10, 10, 10)\n'  # parses, but no `result`
+    )
+    escaped = raw.replace("\n", "\\n").replace('"', '\\"')
+    r = check_code(escaped)
+    assert not r.ok
+    assert r.code == raw  # decoded — usable for the repair loop's context
+    assert any("`result`" in e for e in r.errors)

@@ -67,6 +67,37 @@ class CheckResult:
     # check_code(sigcheck=True); sig_errors count towards `ok`
     sig_errors: list[str] = field(default_factory=list)
     sig_warnings: list[str] = field(default_factory=list)
+    # normalized source when the input needed JSON-escape decoding to parse
+    # (None = input used verbatim). Callers on the execution path should
+    # adopt this over the raw model output.
+    code: str | None = None
+
+
+def _unescape_model_code(code: str) -> str | None:
+    """Decode JSON-escaped model output back into source text.
+
+    Weak models occasionally hand the code blob through an extra JSON-encode
+    pass (observed: `\"code\": \"from build123d import *\\n\\nPARAMS = ...\"`
+    reaching the submit tool with literal \\n / \\" sequences). Only runs
+    when the input already failed to parse AND carries the escape
+    signature — `\\"` pairs or ≥3 literal `\\n`. `\\\\` runs are decoded
+    first via a sentinel so embedded string escapes (`"a\\nb"`) survive
+    the pass instead of becoming real newlines mid-literal. Truncated or
+    malformed blobs still fail the re-parse and are rejected."""
+    if '\\"' not in code and code.count("\\n") < 3:
+        return None
+    sentinel = "\x00"
+    if sentinel in code:
+        return None
+    return (
+        code.replace("\\\\", sentinel)
+        .replace('\\"', '"')
+        .replace("\\'", "'")
+        .replace("\\n", "\n")
+        .replace("\\t", "\t")
+        .replace("\\r", "\r")
+        .replace(sentinel, "\\")
+    )
 
 
 # transforms that RETURN a new object — a bare expression statement discards
@@ -981,10 +1012,19 @@ def check_code(code: str, *, sigcheck: bool = False) -> CheckResult:
     ``sig_warnings``. Off by default so the executor-side contract check
     keeps its existing behaviour — the agent worker opts in via
     ``runtime_settings.agent_sigcheck``."""
+    normalized: str | None = None
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
-        return CheckResult(ok=False, errors=[f"syntax error line {e.lineno}: {e.msg}"])
+        normalized = _unescape_model_code(code)
+        if normalized is not None:
+            try:
+                tree = ast.parse(normalized)
+            except Exception:
+                normalized = None  # still malformed after decoding — report the original error
+        if normalized is None:
+            return CheckResult(ok=False, errors=[f"syntax error line {e.lineno}: {e.msg}"])
+        code = normalized  # text-level checks below run on the decoded source
     except Exception as e:
         # e.g. UnicodeEncodeError from lone surrogates in model output —
         # must surface as a repairable contract failure, not a crash
@@ -1019,6 +1059,11 @@ def check_code(code: str, *, sigcheck: bool = False) -> CheckResult:
             # the signature gate must never break the contract check —
             # sigcheck.check_tree already logs + swallows internal failures
             sig_errors, sig_warnings = [], []
+    if normalized is not None:
+        checker.warnings.append(
+            "code contained JSON escape sequences (\\n, \\\") — decoded before "
+            "validation; prefer emitting raw source"
+        )
     return CheckResult(
         ok=not errors and not sig_errors,
         errors=errors,
@@ -1026,6 +1071,7 @@ def check_code(code: str, *, sigcheck: bool = False) -> CheckResult:
         warnings=checker.warnings,
         sig_errors=sig_errors,
         sig_warnings=sig_warnings,
+        code=normalized,
     )
 
 

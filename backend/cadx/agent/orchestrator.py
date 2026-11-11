@@ -634,7 +634,7 @@ def _resolve_patch(
     if resp.full_code:
         check = check_code(resp.full_code)
         if check.ok:
-            return resp.full_code, errors
+            return check.code or resp.full_code, errors
         errors = [*errors, "full_code also fails contract: " + "; ".join(check.errors[:4])]
     return None, errors
 
@@ -3545,6 +3545,8 @@ async def _run_cad(  # noqa: C901
             if best is not None and await finish_early():
                 break
             chk = check_code(code)
+            if chk.code:
+                code = chk.code  # escape-decoded — the tree the contract validated
             part_errors = check_standard_part_calls(code) if chk.ok else []
             if chk.ok and not part_errors:
                 await ctx.emit(

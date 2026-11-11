@@ -239,7 +239,7 @@ async def run(
 
             code = build_standard_part_code(spec.standard_parts)
             checked = check_code(code)
-            part_errors = check_standard_part_calls(code) if checked.ok else []
+            part_errors = check_standard_part_calls(checked.code or code) if checked.ok else []
             if checked.ok and not part_errors:
                 params = [
                     ParamDef(
@@ -707,6 +707,8 @@ async def _codegen_session(
     ):
         code = str(res.submitted["code"])
         chk = check_code(code)
+        if chk.code:
+            code = chk.code  # JSON-escape-decoded variant — the tree that passed the contract
         # PARAMS literals in the code are authoritative; the model's `params`
         # arg only supplies metadata (unit/min/max/description)
         meta = {
@@ -851,7 +853,7 @@ def _candidate_contract_errors(ctx: AgentCtx, code: str) -> list[str]:
     chk = check_code(code, sigcheck=bool(ctx.runtime_settings.agent_sigcheck))
     errs = list(chk.errors) + list(chk.sig_errors)
     if not chk.errors:
-        errs += check_standard_part_calls(code)
+        errs += check_standard_part_calls(chk.code or code)
     return errs
 
 
