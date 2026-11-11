@@ -42,6 +42,55 @@ from cadx.runtime_config import RuntimeSettings
 
 log = get_logger(__name__)
 
+# Consecutive pipeline hangs poison a lane: a timed-out pipeline thread
+# cannot be killed and keeps grinding OCC in the background, so each hang
+# leaves a zombie that starves every later job on this lane (observed: one
+# hung export cascaded into hours of step=None 480 s timeouts on both cad
+# lanes — the whole executor became a zombie farm). After this many
+# consecutive hangs the lane exits itself; the compose supervisor respawns
+# it fresh. The counter lives per lane process and resets on any completed
+# call, so a single slow-but-finite export costs one job, not the lane.
+_PIPELINE_HANG_LANE_EXIT = 2
+_consecutive_pipeline_hangs = 0
+
+
+def _register_pipeline_hang(reason: str) -> None:
+    global _consecutive_pipeline_hangs
+    _consecutive_pipeline_hangs += 1
+    if _consecutive_pipeline_hangs < _PIPELINE_HANG_LANE_EXIT:
+        return
+    log.error(
+        "pipeline_hang.lane_poisoned",
+        hangs=_consecutive_pipeline_hangs,
+        reason=reason,
+    )
+    # exit AFTER the current result flushes to redis — call_later fires once
+    # this task returns; the per-lane supervisor respawns a zombie-free lane
+    asyncio.get_event_loop().call_later(5.0, os._exit, 75)
+
+
+def _reset_pipeline_hangs() -> None:
+    global _consecutive_pipeline_hangs
+    _consecutive_pipeline_hangs = 0
+
+
+# post-optimizer tail allowance — extraction, export verification,
+# finishing, serialize. Mirrors _OPT_TAIL_S in agent/executor_client.py
+# (kept local: the cad layer must not import the agent layer).
+_OPT_TAIL_S = 900.0
+
+
+async def _task_cancel_flag(ctx: dict[str, Any], cancel_keys: list[str], job_id: Any) -> None:
+    """Set the TASK-level cancel key so a surviving pipeline thread exits
+    its OCC grind at the next cooperative poll (never the job key — that
+    would cancel every later task of the job)."""
+    try:
+        keys = [k for k in cancel_keys if k != f"cancel:{job_id}"]
+        if keys:
+            await ctx["redis"].setex(keys[0], 3600, b"1")
+    except Exception:
+        pass
+
 
 def _runtime(payload: dict[str, Any]) -> RuntimeSettings:
     """Runtime snapshot attached by the worker; defaults when absent."""
@@ -233,17 +282,15 @@ async def execute_version(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         # OCC grind instead of starving every later call in this container
         # (observed: a zombie thread left a 1.5 s analyze band stretched to
         # the full 480 s deadline on a concurrent job for ~8 min per call)
-        try:
-            keys = [k for k in cancel_keys if k != f"cancel:{payload.get('job_id')}"]
-            if keys:
-                await ctx["redis"].setex(keys[0], 3600, b"1")
-        except Exception:
-            pass
+        await _task_cancel_flag(ctx, cancel_keys, payload.get("job_id"))
+        _register_pipeline_hang("execute_version")
         r = ExecResult()
         r.error = f"executor pipeline exceeded {deadline}s — worker thread may be stuck"
         if hb:
             r.error += f" (last step: {hb[0]})"
         return r.to_dict()
+
+    _reset_pipeline_hangs()
 
     scope = await _cancelled_scope(ctx, payload)
     if scope == "job":
@@ -331,12 +378,14 @@ async def audit_params(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str
         )
     except TimeoutError:
         log.error("audit_params.pipeline_hang", version=payload.get("version_id"))
+        _register_pipeline_hang("audit_params")
         return {
             "ok": False,
             "status": "fails",
             "error": f"audit pipeline exceeded {deadline}s — worker thread may be stuck",
         }
 
+    _reset_pipeline_hangs()
     scope = await _cancelled_scope(ctx, payload)
     if scope == "job":
         d["ok"] = False
@@ -367,21 +416,44 @@ async def export_all(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
     out_dir = storage.export_dir(project_id, version_id)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if brep.exists():
-        exports = await asyncio.to_thread(
-            export_from_brep, brep, out_dir, name=name, flat_brep=flat if flat.exists() else None
-        )
-    elif (it_dir / "_run" / "model.stl").exists():
-        # mesh-mode version: export from the stored STL
-        exports = await asyncio.to_thread(
-            export_from_mesh,
-            it_dir / "_run" / "model.stl",
-            out_dir,
-            name=name,
-            max_faces=_runtime(payload).mesh_max_faces_for_cad,
-        )
-    else:
-        return {"ok": False, "error": "no model.brep or model.stl found for this iteration"}
+    # same deadline envelope as execute_version: a wedged OCC export leaves
+    # an unkillable thread — the wait_for releases the arq slot and the
+    # hang counter lets the lane exit before zombies starve it
+    deadline = _runtime(payload).exec_timeout_s * 2 + 120
+    try:
+        if brep.exists():
+            exports = await asyncio.wait_for(
+                asyncio.to_thread(
+                    export_from_brep,
+                    brep,
+                    out_dir,
+                    name=name,
+                    flat_brep=flat if flat.exists() else None,
+                ),
+                deadline,
+            )
+        elif (it_dir / "_run" / "model.stl").exists():
+            # mesh-mode version: export from the stored STL
+            exports = await asyncio.wait_for(
+                asyncio.to_thread(
+                    export_from_mesh,
+                    it_dir / "_run" / "model.stl",
+                    out_dir,
+                    name=name,
+                    max_faces=_runtime(payload).mesh_max_faces_for_cad,
+                ),
+                deadline,
+            )
+        else:
+            return {"ok": False, "error": "no model.brep or model.stl found for this iteration"}
+    except TimeoutError:
+        log.error("export_all.pipeline_hang", version=payload.get("version_id"))
+        _register_pipeline_hang("export_all")
+        return {
+            "ok": False,
+            "error": f"export pipeline exceeded {deadline}s — worker thread may be stuck",
+        }
+    _reset_pipeline_hangs()
     rel = storage.relpath(out_dir)
     return {"ok": True, "exports": {k: (f"{rel}/{v}" if v else None) for k, v in exports.items()}}
 
@@ -807,11 +879,13 @@ async def parametrize_mesh(ctx: dict[str, Any], payload: dict[str, Any]) -> dict
         )
     except TimeoutError:
         log.error("parametrize_mesh.pipeline_hang", version=payload.get("version_id"))
+        _register_pipeline_hang("parametrize_mesh")
         return {
             "ok": False,
             "error": f"parametrize pipeline exceeded {deadline}s — worker thread may be stuck",
         }
 
+    _reset_pipeline_hangs()
     scope = await _cancelled_scope(ctx, payload)
     if scope == "job":
         d["ok"] = False
@@ -884,9 +958,21 @@ async def fem_analyze(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str,
     cancel_keys = _cancel_keys(payload)
     if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
-    d = await asyncio.to_thread(
-        run_fem_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
-    )
+    # caller-side timeout is fem_timeout_s + 120 — beyond that the result
+    # is worthless anyway and the surviving thread would zombie the lane
+    deadline = _runtime(payload).fem_timeout_s + 120
+    try:
+        d = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_fem_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
+            ),
+            deadline,
+        )
+    except TimeoutError:
+        log.error("fem_analyze.pipeline_hang", version=payload.get("version_id"))
+        _register_pipeline_hang("fem_analyze")
+        return {"ok": False, "error": f"fem pipeline exceeded {deadline}s — worker thread may be stuck"}
+    _reset_pipeline_hangs()
     fem = d.get("fem") or {}
     log.info(
         "fem_analyze",
@@ -1022,9 +1108,26 @@ async def optimize(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, An
         r = ExecResult()
         r.error = "cancelled"
         return r.to_dict()
-    d = await asyncio.to_thread(
-        run_optimize_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
-    )
+    # mirror the caller envelope (executor_client.optimize): optimizer wall
+    # clock + the post-SIMP verification/finishing tail. The arq job_timeout
+    # is only a catastrophic outer cap — without this deadline an arq kill
+    # would orphan the SIMP thread into an unkillable zombie.
+    deadline = _runtime(payload).topopt_timeout_s + _OPT_TAIL_S + 120
+    try:
+        d = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_optimize_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
+            ),
+            deadline,
+        )
+    except TimeoutError:
+        log.error("optimize.pipeline_hang", version=payload.get("version_id"))
+        await _task_cancel_flag(ctx, cancel_keys, payload.get("job_id"))
+        _register_pipeline_hang("optimize")
+        r = ExecResult()
+        r.error = f"optimize pipeline exceeded {deadline}s — worker thread may be stuck"
+        return r.to_dict()
+    _reset_pipeline_hangs()
     scope = await _cancelled_scope(ctx, payload)
     if scope == "job":
         d["ok"] = False
@@ -1081,9 +1184,26 @@ async def topopt_resample(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
     cancel_keys = _cancel_keys(payload)
     if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
-    return await asyncio.to_thread(
-        run_topopt_resample_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
-    )
+    deadline = _runtime(payload).fem_timeout_s + 120
+    try:
+        d = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_topopt_resample_payload,
+                payload,
+                cancelled=_sync_cancel_checker(cancel_keys),
+            ),
+            deadline,
+        )
+    except TimeoutError:
+        log.error("topopt_resample.pipeline_hang", version=payload.get("version_id"))
+        await _task_cancel_flag(ctx, cancel_keys, payload.get("job_id"))
+        _register_pipeline_hang("topopt_resample")
+        return {
+            "ok": False,
+            "error": f"resample pipeline exceeded {deadline}s — worker thread may be stuck",
+        }
+    _reset_pipeline_hangs()
+    return d
 
 
 def run_refine_payload(
@@ -1138,9 +1258,25 @@ async def refine(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]
     cancel_keys = _cancel_keys(payload)
     if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
-    return await asyncio.to_thread(
-        run_refine_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
-    )
+    rt = _runtime(payload)
+    deadline = rt.exec_timeout_s + rt.fem_timeout_s + rt.analytic_step_timeout_s + 120
+    try:
+        d = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_refine_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
+            ),
+            deadline,
+        )
+    except TimeoutError:
+        log.error("refine.pipeline_hang", version=payload.get("version_id"))
+        await _task_cancel_flag(ctx, cancel_keys, payload.get("job_id"))
+        _register_pipeline_hang("refine")
+        return {
+            "ok": False,
+            "error": f"refine pipeline exceeded {deadline}s — worker thread may be stuck",
+        }
+    _reset_pipeline_hangs()
+    return d
 
 
 def run_organic_payload(
@@ -1186,9 +1322,24 @@ async def organic(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any
     cancel_keys = _cancel_keys(payload)
     if await _cancelled(ctx, cancel_keys):
         return {"ok": False, "error": "cancelled"}
-    return await asyncio.to_thread(
-        run_organic_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
-    )
+    deadline = _runtime(payload).fem_timeout_s + 120
+    try:
+        d = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_organic_payload, payload, cancelled=_sync_cancel_checker(cancel_keys)
+            ),
+            deadline,
+        )
+    except TimeoutError:
+        log.error("organic.pipeline_hang", version=payload.get("version_id"))
+        await _task_cancel_flag(ctx, cancel_keys, payload.get("job_id"))
+        _register_pipeline_hang("organic")
+        return {
+            "ok": False,
+            "error": f"organic pipeline exceeded {deadline}s — worker thread may be stuck",
+        }
+    _reset_pipeline_hangs()
+    return d
 
 
 def run_edit_feature_payload(  # noqa: C901

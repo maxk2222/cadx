@@ -464,6 +464,14 @@ def build_recognition_evidence(
     """
     if quiddity is None:
         return {}
+    # a cancelled request pays no warm-up or budget work — the advisory
+    # pass must return promptly (the warm call is a real quiddity run and
+    # would otherwise execute inside the cancelled window)
+    try:
+        if cancelled is not None and cancelled():
+            return {}
+    except Exception:
+        pass
     try:
         if len(shape.faces()) > _MAX_RECOGNITION_FACES:
             return {}

@@ -478,9 +478,13 @@ class CadWorkerSettings:
     # budget; ~1 job per 4 cores, at least the historical 2. Override via
     # CADX_CAD_MAX_JOBS.
     max_jobs = int(os.environ.get("CADX_CAD_MAX_JOBS") or max(2, resources.detect_cpus() // 4))
-    # generous outer cap — per-job limits come from RuntimeSettings payload
-    # (topopt_timeout_s up to 2700s+); QueueExecutor enforces the real timeout
-    job_timeout = 7200
+    # generous outer cap — per-job limits come from the RuntimeSettings
+    # payload and are enforced INSIDE the task via wait_for deadlines (an
+    # arq kill here would orphan the pipeline thread into an unkillable
+    # zombie). The cap must still exceed the largest legitimate envelope:
+    # optimize runs topopt_timeout_s + 900 s tail + 120 s — 14400 covers
+    # topopt_timeout_s=13000 for eval-scale studies.
+    job_timeout = int(os.environ.get("CADX_CAD_JOB_TIMEOUT_S") or 14400)
     # like the agent queue: never auto-retry. An in-flight job whose worker was
     # killed (cgroup OOM, restart) stays "in-progress" until job_timeout (2h),
     # then arq would requeue it as a zombie that re-runs the same heavy task on
