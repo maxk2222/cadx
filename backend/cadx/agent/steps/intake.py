@@ -1077,6 +1077,18 @@ def _feature_axis_extents(spec: PartSpec) -> dict[str, float]:
     return ext
 
 
+def _dim_envelope_evidenced(ax: str, v: float, prompt: str) -> bool:
+    """Is ``v`` an explicitly stated envelope number for axis ``ax`` in the
+    prompt? Only ``L x W x H`` triplet positions count — pairs/Ø values are
+    local feature dims ("boss dia 25 x 15"), never envelope claims. A kept
+    'stated' that turns out wrong still fails verify_spec loudly, which is
+    the intended outcome over a silent UNVERIFIED."""
+    if not (prompt or "").strip():
+        return False
+    idx = {"x": 0, "y": 1, "z": 2}[ax]
+    return any(len(t) > idx and t[idx] == v for t in _dimset_triplets(prompt))
+
+
 def sanitize_stated_dims(spec: PartSpec, prompt: str) -> list[str]:
     """Downgrade ``source="stated"`` envelope dims the spec cannot honour.
 
@@ -1105,6 +1117,20 @@ def sanitize_stated_dims(spec: PartSpec, prompt: str) -> list[str]:
             continue
         need = 2.0 * ext[ax] if ax in "xy" else ext[ax]
         if need > v + max(0.5, 0.02 * v):
+            # the dim contradicts the spec's own feature extents. Normally the
+            # dim is the wrong-axis guess — downgrade it. But when the value is
+            # an explicitly prompt-stated envelope number, the FEATURE is the
+            # offender (arm r24: flange authored at x=50..58 against stated 100
+            # — downgrading hid the contradiction: envelope_x went UNVERIFIED
+            # and the loop shipped the 108 mm part). Keep 'stated' so
+            # verify_spec fails loudly and the improve loop repairs the feature.
+            if _dim_envelope_evidenced(ax, v, prompt):
+                notes.append(
+                    f"{ax} dim {v:g} stated but own features reach "
+                    f"{ax}={ext[ax]:g} (need ≥{need:g}) — prompt-stated "
+                    f"envelope kept; features must obey it"
+                )
+                continue
             notes.append(
                 f"{ax} dim {v:g} stated but own features reach "
                 f"{ax}={ext[ax]:g} (need ≥{need:g}) — wrong-axis value, "

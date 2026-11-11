@@ -203,6 +203,37 @@ def test_stated_dim_kept_from_triplet_and_diameter():
     assert sanitize_stated_dims(spec2, "bracket 120 x 70 x 90 steel") == []
 
 
+def test_stated_dim_kept_despite_feature_overreach_when_envelope_evidenced():
+    """robot_arm r24: the model authored the +X flange at position
+    'x=50 to x=58' — OUTSIDE the stated 100 mm base-plate envelope. The old
+    audit downgraded length_x to inferred, which sent envelope_x to
+    UNVERIFIED and let the 108 mm part ship silently. When the stated
+    value is the prompt's own L x W x H triplet member, keep it: the
+    feature is the offender and verify_spec must fail loudly."""
+    from cadx.agent.steps.intake import sanitize_stated_dims
+
+    spec = PartSpec(
+        name="arm mount",
+        length_x={"value": 100, "source": "stated"},
+        width_y={"value": 80, "source": "stated"},
+        height_z={"value": 40, "source": "stated"},
+        features=[
+            {
+                "name": "vertical_flange",
+                "type": "plate",
+                "position": "x=50 to x=58, y=-20 to y=+20, z=10 to z=40",
+            }
+        ],
+    )
+    notes = sanitize_stated_dims(spec, "Base plate 100 x 80 x 10.")
+    assert spec.length_x.source == "stated"
+    assert notes and "kept" in notes[0]
+    # a non-evidenced contradiction still downgrades (audit preserved)
+    spec.length_x = spec.length_x.model_copy(update={"value": 42})
+    notes = sanitize_stated_dims(spec, "Base plate 100 x 80 x 10.")
+    assert spec.length_x.source == "inferred"
+
+
 def test_stated_dim_untouched_without_prompt():
     from cadx.agent.steps.intake import sanitize_stated_dims
 
