@@ -809,7 +809,7 @@ def _setup_session(
             ops.base["spec"] = spec.model_dump(mode="json")
         return result
 
-    return ToolSession(
+    session = ToolSession(
         ctx,
         kind="optimize",
         fem_fn=_make_fem_fn(ops),
@@ -826,6 +826,21 @@ def _setup_session(
         spec_drop_fn=spec_drop_fn,
         target_volfrac=target_volfrac,
     )
+
+    def _decline_possible() -> str | None:
+        """Why a fresh run cannot be attempted — None when one still fits."""
+        if _budget_exceeded(
+            ops, ctx.runtime_settings.topopt_timeout_s + _OPT_TAIL_S + 120
+        ):
+            return "stage deadline too close for a full optimize run"
+        if session.struct_budget_left is not None and session.struct_budget_left <= 0:
+            return "structural wall-clock budget exhausted"
+        if session.topopt_left <= 0:
+            return "optimize run count budget exhausted"
+        return None
+
+    session._decline_guard = _decline_possible
+    return session
 
 
 def _opt_messages(

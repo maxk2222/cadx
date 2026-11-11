@@ -1978,6 +1978,10 @@ class ToolSession:
         )
         # topopt run results (index, metrics, stored executor result/iteration)
         self.struct_runs: list[dict[str, Any]] = []
+        # executor-run invocations (incl. errored ones) — done(-1) without any
+        # attempt is only valid when the decline guard proves a run impossible
+        self.struct_attempts = 0
+        self._decline_guard: Any = None
         self.edits_applied = 0
         self.submitted: dict[str, Any] | None = None
         self.tool_log: list[dict[str, Any]] = []
@@ -3277,6 +3281,7 @@ class ToolSession:
         if (over := self._struct_budget_check("topopt_run")) is not None:
             return over
         self.topopt_left -= 1
+        self.struct_attempts += 1
         t0 = time.monotonic()
         try:
             res = await self.topopt_fn(
@@ -3455,6 +3460,7 @@ class ToolSession:
         if (over := self._struct_budget_check("infill_run")) is not None:
             return over
         self.topopt_left -= 1
+        self.struct_attempts += 1
         t0 = time.monotonic()
         try:
             res = await self.infill_fn(
@@ -3670,6 +3676,25 @@ class ToolSession:
                             "unverified or below the target safety factor."
                         ),
                     }
+                if (
+                    not self.struct_runs
+                    and self.struct_attempts == 0
+                    and self.topopt_left > 0
+                ):
+                    why = self._decline_guard() if self._decline_guard else None
+                    if why is None:
+                        return {
+                            "ok": False,
+                            "error": (
+                                "run_index -1 declined: no optimization run was "
+                                "attempted — a comfortable base safety factor is "
+                                "removal headroom, not a reason to skip. Call "
+                                "topopt_run (or infill_run) at least once; -1 is "
+                                "only valid after an attempted run failed, was "
+                                "proven infeasible, or can no longer finish in "
+                                "the remaining time budget."
+                            ),
+                        }
             self.submitted = {
                 "chosen_run": idx,
                 "reasoning": str(a.get("reasoning", "")),

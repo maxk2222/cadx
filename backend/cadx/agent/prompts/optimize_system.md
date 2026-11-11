@@ -339,7 +339,9 @@ Each `topopt_run` reports:
    Only decline when NO run is connected (n_bodies_export == 1 AND
    `load_path_ok` not false), verified (`verified` true), printable and
    feature-complete — an SF below target also justifies -1, a comfortable
-   SF does not.
+   SF does not. `done(-1)` before ANY topopt_run/infill_run attempt is
+   rejected outright — try a run first; it is only accepted once a run
+   failed, proved infeasible, or no longer fits the time budget.
 
 - Check the SECTION view for internal hotspots the surface view hides.
 - In region previews confirm the orange force arrows land where intended and

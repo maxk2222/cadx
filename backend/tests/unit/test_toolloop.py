@@ -1015,6 +1015,40 @@ async def test_optimize_done_minus1_allowed_when_no_run_qualifies():
     assert res["ok"] and session.submitted["chosen_run"] == -1
 
 
+async def test_optimize_done_minus1_rejected_without_any_attempt():
+    """r27 regression: the agent probed the base FEM, saw a comfortable SF,
+    and called done(-1) without ever running topopt — burning the stage for
+    zero artifacts. -1 now requires an attempt (or a proven impossibility)."""
+
+    async def top_fn(a):
+        return _TOP_RES_QUALIFIED
+
+    session = ToolSession(_ctx(FakeLLM([])), kind="optimize", topopt_fn=top_fn)
+    res = await session.execute("done", {"run_index": -1})
+    assert res["ok"] is False
+    assert "no optimization run was attempted" in res["error"]
+    # an errored attempt still unlocks -1
+    async def bad_fn(a):
+        return {"ok": False, "error": "infeasible_target"}
+
+    session2 = ToolSession(_ctx(FakeLLM([])), kind="optimize", topopt_fn=bad_fn)
+    await session2.execute("topopt_run", {})
+    res = await session2.execute("done", {"run_index": -1})
+    assert res["ok"] and session2.submitted["chosen_run"] == -1
+
+
+async def test_optimize_done_minus1_allowed_when_decline_guard_says_impossible():
+    """No attempts + a proven impossibility (deadline/budget) → -1 allowed."""
+
+    async def top_fn(a):
+        return _TOP_RES_QUALIFIED
+
+    session = ToolSession(_ctx(FakeLLM([])), kind="optimize", topopt_fn=top_fn)
+    session._decline_guard = lambda: "stage deadline too close for a full optimize run"
+    res = await session.execute("done", {"run_index": -1})
+    assert res["ok"] and session.submitted["chosen_run"] == -1
+
+
 async def test_optimize_budget_drops_tools():
     """Exhausted budgets remove the tools from the schema."""
     from cadx.runtime_config import RuntimeSettings
