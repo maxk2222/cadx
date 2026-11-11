@@ -68,6 +68,15 @@ Rules:
   `g_load` in g.
 - Prefer `bearing_n` on `bore` regions for screw/pin attachments — rim
   point loads badly overstate stress.
+- Magnitudes must stress the structure, not just touch it: when the
+  request gives no number, pick the realistic WORST-CASE service load —
+  a spinning part gets its centrifugal/peak-thrust load, a mount the
+  stall or impact load, not the gentle cruise condition. A safety factor
+  in the hundreds (SF > ~300) means the declared load is so weak the
+  analysis proves nothing — that reads as a degenerate load case, not a
+  strong part. Order of magnitude guidance: hand-held/tool parts see
+  hundreds of N, engine/shaft interfaces their torque reaction, rotating
+  parts m·r·ω² at maximum rated speed.
 - ATTACH/MECHANISM SUGAR (preferred for named interfaces): instead of
   hand-picking region kind + geometry, put `attach` on the region and let
   the resolver pick the standard application surface:
