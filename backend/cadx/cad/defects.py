@@ -27,6 +27,12 @@ MAX_DEFECTS = 20
 STEP_GATE_MAX_FACES = 20_000
 # warn when the re-imported volume differs from the in-memory solid
 STEP_GATE_VOLUME_TOL = 0.005  # 0.5%
+# tolerance scales with face count above this baseline — every curved face
+# exports/imports with its own linearization error, so a twisted-blade
+# propeller legitimately drifts more than a prismatic bracket while a
+# catastrophic export (invalid re-import, missing faces) still fails
+_STEP_GATE_TOL_FACES = 50
+_STEP_GATE_TOL_CAP = 0.02  # 2%
 
 # BRepCheck sub-shape walk order, most actionable first
 _SUBSHAPE_KINDS = (
@@ -305,11 +311,15 @@ def step_roundtrip_check(
             if defects and not all("error" in d for d in defects):
                 report["reimported_defects"] = defects[:5]
                 problems.append(summarize_defects(defects))
-        if delta > volume_tol:
+        eff_tol = min(
+            volume_tol * max(1.0, face_count / _STEP_GATE_TOL_FACES),
+            _STEP_GATE_TOL_CAP,
+        )
+        if delta > eff_tol:
             problems.append(
                 f"volume drifted {delta * 100:.2f}% "
                 f"({original_volume:.1f} -> {reimported_volume:.1f} mm^3, "
-                f"tolerance {volume_tol * 100:.1f}%)"
+                f"tolerance {eff_tol * 100:.1f}% for {face_count} faces)"
             )
         if problems:
             report["ok"] = False

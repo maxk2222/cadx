@@ -1937,3 +1937,73 @@ def test_entry_face_range_miss_still_fails():
     )
     c = _by_name(verify_spec(spec, res, feature_findings=[]))["feat_0_position"]
     assert c["status"] == "FAIL"
+
+
+def test_unrequested_voids_open_channels_not_counted():
+    """marine_propeller r22: a propeller's five inter-blade gaps measure
+    as Ø49 voids whose rims reach past the silhouette (r=50 + 24.7 >
+    radial_extent 70.75) — open channels between protrusions, not voids
+    drilled in material. They must be skipped before counting."""
+    spec = _spec(
+        features=[
+            _feat(name="shaft bore", type="through_bore", dims={"diameter": 10.0}),
+            _feat(name="keyway", type="keyway_slot", dims={"width": 3.0}),
+        ]
+    )
+    res = _res_bbox90(
+        analysis={
+            "bbox_size": [140.0, 140.0, 28.0],
+            "bbox_min": [-70.0, -70.0, 0.0],
+            "bbox_max": [70.0, 70.0, 28.0],
+            "radial_extent_mm": 70.75,
+            "solid_count": 1,
+            "is_valid": True,
+        },
+        features={
+            "hole_groups": [
+                {
+                    "id": f"h{i}",
+                    "diameter": 49.4,
+                    "count": 1,
+                    "through_axis": "+z",
+                    "centers_xyz": [[x, y, None]],
+                }
+                for i, (x, y) in enumerate(
+                    [(-34.94, 35.5), (-44.54, -22.27), (7.35, -49.29), (23.04, 44.21), (49.14, -8.18)]
+                )
+            ]
+        },
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    c = _by_name(report)["unrequested_voids"]
+    assert c["status"] == "PASS"
+    assert c["evidence"]["open_channels_skipped"] == 5
+
+
+def test_unrequested_voids_interior_still_flagged():
+    """A real undeclared bore keeps material around its full rim — its
+    reach stays inside radial_extent and it is still counted."""
+    spec = _spec(features=[_feat(name="shaft bore", type="through_bore", dims={"diameter": 10.0})])
+    res = _res_bbox90(
+        analysis={
+            "bbox_size": [140.0, 140.0, 28.0],
+            "bbox_min": [-70.0, -70.0, 0.0],
+            "bbox_max": [70.0, 70.0, 28.0],
+            "radial_extent_mm": 70.75,
+            "solid_count": 1,
+            "is_valid": True,
+        },
+        features={
+            "hole_groups": [
+                {
+                    "id": "hx",
+                    "diameter": 25.0,
+                    "count": 1,
+                    "through_axis": "+z",
+                    "centers_xyz": [[20.0, 20.0, None]],
+                }
+            ]
+        },
+    )
+    report = verify_spec(spec, res, feature_findings=[])
+    assert _by_name(report)["unrequested_voids"]["status"] == "FAIL"

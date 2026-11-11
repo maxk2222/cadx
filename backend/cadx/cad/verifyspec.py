@@ -1332,6 +1332,7 @@ def _feature_placement(
     checks: list[dict[str, Any]],
     *,
     optimized: bool = False,
+    radial_extent_mm: Any = None,
 ) -> None:
     """Per-feature placement checks — the l_bracket trap class: a part can
     satisfy the overall envelope while a slot is bored through the wrong
@@ -1458,6 +1459,7 @@ def _feature_placement(
             round_groups + slot_groups + hole_pats,
             _bbox_bounds(bbox_min, bbox_max),
             checks,
+            radial_extent_mm=radial_extent_mm,
         )
 
 
@@ -1610,6 +1612,8 @@ def _unrequested_voids_check(  # noqa: C901
     voids: list[dict[str, Any]],
     bounds: dict[str, tuple[float, float]],
     checks: list[dict[str, Any]],
+    *,
+    radial_extent_mm: Any = None,
 ) -> None:
     """Extra-void check: a measured void no spec feature asked for (a
     duplicate bore codegen forgot to suppress) is a placement failure even
@@ -1623,7 +1627,11 @@ def _unrequested_voids_check(  # noqa: C901
     never unrequested) and anything ambiguous counts as matched. An
     elongated void whose measured ``width_mm``/``length_mm`` spans match a
     slot feature's declared dims counts as matched too — its
-    equivalent-area ``diameter`` never equals the declared width."""
+    equivalent-area ``diameter`` never equals the declared width. A void
+    whose rim reaches past the part's outer silhouette is not a void at
+    all — it is an open channel between protrusions (a propeller's
+    inter-blade gaps measure exactly like this) and is skipped before
+    counting."""
     void_types = _HOLE_KIND_TYPES | {"pocket", "cutout"}
     feats = [
         f
@@ -1660,10 +1668,26 @@ def _unrequested_voids_check(  # noqa: C901
     wildcard = any(i["dia"] is None and not i["wants"] for i in info)
     unmatched: list[dict[str, Any]] = []
     n_voids = 0
+    n_open = 0
     for e in voids:
         dia = _void_dia(e)
         if dia is None or dia < 3.0:
             continue  # pseudo-void — never unrequested
+        if isinstance(radial_extent_mm, int | float) and radial_extent_mm > 0:
+            # rim reach beyond the silhouette = open channel, not a void —
+            # a real bore keeps material around its full rim so its outer
+            # reach stays inside the part's radial extent
+            reach = max(
+                (
+                    (float(c["x"]) ** 2 + float(c["y"]) ** 2) ** 0.5 + dia / 2.0
+                    for c in _void_center_maps(e)
+                    if "x" in c and "y" in c
+                ),
+                default=0.0,
+            )
+            if reach > float(radial_extent_mm) + 0.25:
+                n_open += 1
+                continue
         n_voids += 1
         if wildcard:
             continue
@@ -1712,6 +1736,8 @@ def _unrequested_voids_check(  # noqa: C901
                 entry["reason"] = f"{len(centers)} voids exceed the declared count of {sum(counts)}"
                 unmatched.append(entry)
     ev: dict[str, Any] = {"measured_voids": n_voids, "spec_void_features": len(feats)}
+    if n_open:
+        ev["open_channels_skipped"] = n_open
     if unmatched:
         ev["unmatched_ids"] = [u["id"] for u in unmatched]
         ev["unmatched"] = unmatched[:_MAX_EVIDENCE]
@@ -2364,6 +2390,7 @@ def verify_spec(
             dim_tolerance_mm,
             checks,
             optimized=envelope_bound_only,
+            radial_extent_mm=analysis.get("radial_extent_mm"),
         )
     _robustness(spec, res, checks)
 
