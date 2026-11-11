@@ -40,7 +40,7 @@ except Exception:
     print(0)
 PY
 }
-for name in mesh-server api worker executor web updater; do
+for name in mesh-server api worker executor executor-light executor-fem web updater; do
   if [ "$name" = updater ] && update_in_progress; then
     info "update in progress — leaving the updater daemon running"
     continue

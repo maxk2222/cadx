@@ -409,6 +409,13 @@ async def cadlight_startup(ctx: dict[str, Any]) -> None:
     )
 
 
+async def cadfem_startup(ctx: dict[str, Any]) -> None:
+    """CadFemWorkerSettings (queue ``cad-fem``) startup — sweeps fem orphans."""
+    await _cad_startup(
+        ctx, frozenset(f.__name__ for f in CadFemWorkerSettings.functions)
+    )
+
+
 async def worker_shutdown(ctx: dict[str, Any]) -> None:
     tasks = ctx.get("bg_tasks") or []
     for t in tasks:
@@ -458,7 +465,6 @@ class CadWorkerSettings:
     functions = [  # noqa: RUF012
         process_mesh,
         parametrize_mesh,
-        fem_analyze,
         optimize,
         topopt_resample,
         refine,
@@ -481,6 +487,31 @@ class CadWorkerSettings:
     # a fresh worker — often killing it again and confusing callers that already
     # timed out. Callers (QueueExecutor) own the real timeout and resubmit
     # deliberately.
+    max_tries = 1
+
+
+class CadFemWorkerSettings:
+    """Run with: uv run arq cadx.queue.CadFemWorkerSettings
+
+    The FEM lane: a fem solve is ~1 min of work but was starving behind
+    45-min optimize runs and exec churn on the shared 'cad' lane — eval fem
+    stages timed out waiting for a slot. One dedicated slot beside the cad
+    lane's max_jobs: the added worst-case concurrency equals what the cad
+    lane already permits (its slots can run fem+optimize concurrently
+    today), so the OOM contract is unchanged.
+    """
+
+    functions = [  # noqa: RUF012
+        fem_analyze,
+    ]
+    on_startup = cadfem_startup
+    on_shutdown = worker_shutdown
+    redis_settings = _redis()
+    queue_name = "cad-fem"
+    # one FEM at a time — the point is skipping the heavy lane, not
+    # parallelizing solves against it.
+    max_jobs = int(os.environ.get("CADX_CADFEM_MAX_JOBS") or 1)
+    job_timeout = 7200
     max_tries = 1
 
 

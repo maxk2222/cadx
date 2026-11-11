@@ -108,8 +108,11 @@ dev-api: ## FastAPI on :8000 with reload
 dev-worker: ## Agent queue worker
 	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.AgentWorkerSettings
 
-dev-executor: ## CAD queue worker
-	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.CadWorkerSettings
+dev-executor: ## CAD queue workers (cad + cad-light + cad-fem lanes)
+	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.CadWorkerSettings & \
+	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.CadLightWorkerSettings & \
+	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.CadFemWorkerSettings & \
+	wait
 
 dev-web: ## Vite dev server on :5173
 	cd $(FRONTEND) && npm run dev

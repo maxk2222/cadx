@@ -1,12 +1,19 @@
-"""Two-lane cad queue: light codegen-loop tasks must never queue behind a
-heavy solve on the serial 'cad' lane."""
+"""Three-lane cad queue: light codegen-loop tasks must never queue behind a
+heavy solve on the serial 'cad' lane; fem gets its own single-slot lane so a
+~1 min solve never starves behind a 45-min optimize."""
 
 from __future__ import annotations
 
 import asyncio
 
-from cadx.agent.executor_client import _LIGHT_FUNCS, CAD_LIGHT_QUEUE, CAD_QUEUE, QueueExecutor
-from cadx.queue import CadLightWorkerSettings, CadWorkerSettings
+from cadx.agent.executor_client import (
+    _LIGHT_FUNCS,
+    CAD_FEM_QUEUE,
+    CAD_LIGHT_QUEUE,
+    CAD_QUEUE,
+    QueueExecutor,
+)
+from cadx.queue import CadFemWorkerSettings, CadLightWorkerSettings, CadWorkerSettings
 
 
 def _names(settings) -> set[str]:
@@ -16,11 +23,15 @@ def _names(settings) -> set[str]:
 def test_lanes_are_disjoint_and_cover_all_cad_funcs() -> None:
     light = _names(CadLightWorkerSettings)
     heavy = _names(CadWorkerSettings)
-    assert not light & heavy, "a func must live on exactly one lane"
+    fem = _names(CadFemWorkerSettings)
+    assert not light & heavy and not light & fem and not heavy & fem, (
+        "a func must live on exactly one lane"
+    )
     assert light == set(_LIGHT_FUNCS)
-    # the heavy lane keeps every CPU/mem-bound task
-    assert {"optimize", "topopt_resample", "fem_analyze", "organic", "refine"} <= heavy
-    assert light | heavy == {
+    assert fem == {"fem_analyze"}
+    # the heavy lane keeps every CPU/mem-bound task except fem
+    assert {"optimize", "topopt_resample", "organic", "refine"} <= heavy
+    assert light | heavy | fem == {
         "execute_version",
         "audit_params",
         "edit_feature",
@@ -35,7 +46,9 @@ def test_lanes_are_disjoint_and_cover_all_cad_funcs() -> None:
     }
     assert CadWorkerSettings.queue_name == CAD_QUEUE
     assert CadLightWorkerSettings.queue_name == CAD_LIGHT_QUEUE
+    assert CadFemWorkerSettings.queue_name == CAD_FEM_QUEUE
     assert CadLightWorkerSettings.max_jobs >= 1
+    assert CadFemWorkerSettings.max_jobs == 1
 
 
 def test_run_task_routes_light_funcs_to_light_lane() -> None:
@@ -51,11 +64,13 @@ def test_run_task_routes_light_funcs_to_light_lane() -> None:
     async def run() -> None:
         await ex._run_task("execute_version", {}, 60)
         await ex._run_task("optimize", {}, 60)
+        await ex._run_task("fem_analyze", {}, 60)
 
     asyncio.run(run())
     assert enqueued == [
         ("execute_version", "cad-light"),
         ("optimize", "cad"),
+        ("fem_analyze", "cad-fem"),
     ]
 
 
@@ -95,7 +110,7 @@ def test_run_task_polls_status_on_the_enqueue_lane(monkeypatch) -> None:
 
     out = asyncio.run(run())
     assert out["ok"] is True
-    assert seen["queue"] == "cad" == seen["status_queue"]
+    assert seen["queue"] == "cad-fem" == seen["status_queue"]
 
 
 def test_run_task_resubmits_once_on_inflight_crash(monkeypatch) -> None:

@@ -59,7 +59,7 @@ render() {
 
   say "native processes"
   local found=0 name st
-  for name in api worker executor web mesh-server updater; do
+  for name in api worker executor executor-light executor-fem web mesh-server updater; do
     st=$(proc_status "$name")
     [ "$st" = "-" ] && continue
     found=1
@@ -182,7 +182,8 @@ out = {
         ["bash", "-c", "source scripts/lib/gpu_detect.sh && gpu_detect_tier"],
         capture_output=True, text=True).stdout.strip(),
     "processes": {n: proc(n) for n in
-                  ("api", "worker", "executor", "web", "mesh-server")},
+                  ("api", "worker", "executor", "executor-light",
+                   "executor-fem", "web", "mesh-server")},
     "http": {
         "app": http("http://localhost:8080/api/health"),
         "api": http("http://localhost:8000/api/health"),

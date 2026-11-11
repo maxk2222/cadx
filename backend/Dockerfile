@@ -81,7 +81,7 @@ USER cad
 ENV PYTHONFAULTHANDLER=1
 # diag wrapper: logs incoming signals and arq's exit code so silent
 # clean-exit restarts reveal whether docker or the process ended it
-CMD ["sh", "-c", "trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; kill -TERM $C1 $C2 2>/dev/null' TERM; trap 'echo \"[diag] got SIGINT, forwarding\" >&2; kill -INT $C1 $C2 2>/dev/null' INT; arq cadx.queue.CadWorkerSettings & C1=$!; arq cadx.queue.CadLightWorkerSettings & C2=$!; rc=0; while kill -0 $C1 2>/dev/null && kill -0 $C2 2>/dev/null; do sleep 2; done; D=$C1; kill -0 $C1 2>/dev/null && D=$C2; echo \"[diag] worker pid=$D exited — restarting both\" >&2; kill -TERM $C1 $C2 2>/dev/null; wait $C1 $C2; exit 1"]
+CMD ["sh", "-c", "trap 'echo \"[diag] got SIGTERM, forwarding\" >&2; kill -TERM $C1 $C2 $C3 2>/dev/null' TERM; trap 'echo \"[diag] got SIGINT, forwarding\" >&2; kill -INT $C1 $C2 $C3 2>/dev/null' INT; arq cadx.queue.CadWorkerSettings & C1=$!; arq cadx.queue.CadLightWorkerSettings & C2=$!; arq cadx.queue.CadFemWorkerSettings & C3=$!; while kill -0 $C1 2>/dev/null && kill -0 $C2 2>/dev/null && kill -0 $C3 2>/dev/null; do sleep 2; done; D=unknown; kill -0 $C1 2>/dev/null || D=$C1; kill -0 $C2 2>/dev/null || D=$C2; kill -0 $C3 2>/dev/null || D=$C3; echo \"[diag] worker pid=$D exited — restarting all\" >&2; kill -TERM $C1 $C2 $C3 2>/dev/null; wait $C1 $C2 $C3; exit 1"]
 
 # test variant of the executor image: same env + dev deps, for
 # `docker build --target executor-test` then run pytest tests/cad inside it.

@@ -29,6 +29,12 @@ log = get_logger(__name__)
 
 CAD_QUEUE = "cad"
 CAD_LIGHT_QUEUE = "cad-light"
+# dedicated FEM lane: a fem solve (~1 min) must never starve behind a 45-min
+# optimize/SIMP or exec churn on the shared 'cad' lane — observed real eval
+# stage timeouts waiting out exactly that. max_jobs=1 keeps the OOM contract
+# (at most one extra solve beside the cad lane's slots). Keep in sync with
+# CadFemWorkerSettings.functions.
+CAD_FEM_QUEUE = "cad-fem"
 # codegen-loop latency lane — these funcs are short rlimit-bounded tasks and
 # must not queue behind a long heavy solve (optimize/topopt/fem) on the
 # serial 'cad' lane. Keep in sync with CadLightWorkerSettings.functions.
@@ -331,7 +337,13 @@ class QueueExecutor:
         # kill THIS task only, never the whole cadx job (a job-level flag
         # silently cancelled every later execute for an hour)
         payload["_task_id"] = job_id
-        queue = CAD_LIGHT_QUEUE if func in _LIGHT_FUNCS else CAD_QUEUE
+        queue = (
+            CAD_FEM_QUEUE
+            if func == "fem_analyze"
+            else CAD_LIGHT_QUEUE
+            if func in _LIGHT_FUNCS
+            else CAD_QUEUE
+        )
         enqueued_at = time.monotonic()
         try:
             await pool.enqueue_job(func, payload, _queue_name=queue, _job_id=job_id)

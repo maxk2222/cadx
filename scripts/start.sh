@@ -203,6 +203,8 @@ if [ "$DEV" = 1 ]; then
   pidfile_start api      backend  ../.venv/bin/uv run uvicorn cadx.main:app --port 8000
   pidfile_start worker   backend  ../.venv/bin/uv run arq cadx.queue.AgentWorkerSettings
   pidfile_start executor backend  ../.venv/bin/uv run arq cadx.queue.CadWorkerSettings
+  pidfile_start executor-light backend ../.venv/bin/uv run arq cadx.queue.CadLightWorkerSettings
+  pidfile_start executor-fem backend   ../.venv/bin/uv run arq cadx.queue.CadFemWorkerSettings
   pidfile_start web      frontend npm run dev -- --port 5173
   step_done
   APP_URL="http://localhost:5173"
@@ -214,7 +216,7 @@ if [ "$DEV" = 1 ]; then
   # arq workers have no HTTP port — verify they are still alive after boot
   if [ "$DRY" = 0 ]; then
     sleep 2
-    for w in worker executor; do
+    for w in worker executor executor-light executor-fem; do
       if pidfile_alive "$w"; then
         ok "$w alive (pid $(pidfile_pid "$w"))"
       else

@@ -294,7 +294,7 @@ async def test_cad_orphan_sweep_drops_only_own_lane_markers():
     redis = FakeRedis(
         {
             "arq:in-progress:optimize-aaaa-1111",  # cad orphan → drop
-            "arq:in-progress:fem_analyze-bbbb-2222",  # cad orphan → drop
+            "arq:in-progress:fem_analyze-bbbb-2222",  # cad-fem lane → keep (its own worker sweeps it)
             "arq:in-progress:execute_version-cccc-3333",  # cad-light → keep
             "arq:in-progress:edit_feature-dddd-4444",  # cad-light → keep
             "arq:in-progress:aa9991bc-efb6-4f45",  # agent job uuid → keep
@@ -307,13 +307,32 @@ async def test_cad_orphan_sweep_drops_only_own_lane_markers():
         frozenset(f.__name__ for f in q.CadWorkerSettings.functions),
     )
     assert "arq:in-progress:optimize-aaaa-1111" in redis.deleted
-    assert "arq:in-progress:fem_analyze-bbbb-2222" in redis.deleted
-    # sibling lane + agent + chat markers survive
+    assert "arq:in-progress:fem_analyze-bbbb-2222" not in redis.deleted
+    # sibling lanes + agent + chat markers survive
     assert "arq:in-progress:execute_version-cccc-3333" in redis.keys
     assert "arq:in-progress:edit_feature-dddd-4444" in redis.keys
     assert "arq:in-progress:aa9991bc-efb6-4f45" in redis.keys
     assert "arq:in-progress:chat:c1:m1" in redis.keys
     assert "arq:result:optimize-eeee-5555" in redis.keys
+
+
+async def test_cadfem_orphan_sweep_scoped_to_fem():
+    """The cad-fem worker sweeps only fem_analyze markers — never the cad
+    or cad-light lanes'."""
+    redis = FakeRedis(
+        {
+            "arq:in-progress:fem_analyze-aaaa-1111",  # fem orphan → drop
+            "arq:in-progress:optimize-bbbb-2222",  # cad lane → keep
+            "arq:in-progress:execute_version-cccc-3333",  # cad-light → keep
+        }
+    )
+    await q._sweep_orphaned_executor_tasks(
+        {"arq_redis": redis},
+        frozenset(f.__name__ for f in q.CadFemWorkerSettings.functions),
+    )
+    assert "arq:in-progress:fem_analyze-aaaa-1111" in redis.deleted
+    assert "arq:in-progress:optimize-bbbb-2222" in redis.keys
+    assert "arq:in-progress:execute_version-cccc-3333" in redis.keys
 
 
 async def test_cad_orphan_sweep_light_lane_scoped():
