@@ -628,6 +628,20 @@ def _axial_depth(
             return float(declared)
     except (TypeError, ValueError):
         pass
+    if _is_blind(f):
+        # a BLIND feature's depth is its own bound — the host span is the
+        # through-material thickness, not the bore depth: handing the host
+        # span down as depth_mm let the deterministic re-cut drive a
+        # "blind 20 mm" tap clean through a 40 mm cube (block_sidewall_tap).
+        m = re.search(
+            r"(\d+(?:[.,]\d+)?)\s*(?:mm\s+)?(?:deep|tief|depth)\b", text, re.I
+        )
+        if m:
+            try:
+                return float(m.group(1).replace(",", "."))
+            except ValueError:
+                pass
+        return None
     for e in ends:
         if str(e["axis"]) == bore_ax:
             return min(2.0 * float(e["offset_mm"]), bounds[bore_ax][1] - bounds[bore_ax][0])

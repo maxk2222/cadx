@@ -444,6 +444,43 @@ def _material_intervals(shape: Any, u: float, v: float, axis: str) -> list[tuple
     return edges
 
 
+def _probe_span(
+    h: dict[str, Any], idx: int, axis: str, shape: Any
+) -> tuple[float, float] | None:
+    """Axial interval a re-cut anchor must keep open: the declared bore
+    interval, else the mouth region for a depth-less blind anchor."""
+    span = _declared_axial_span(h, idx)
+    if span is None and h.get("blind"):
+        span = _blind_probe_span(h, idx, axis, shape)
+    return span
+
+
+def _blind_probe_span(
+    h: dict[str, Any], idx: int, axis: str, shape: Any
+) -> tuple[float, float] | None:
+    """Axial interval a BLIND anchor with no declared depth must keep open —
+    a full-span tunnel check would mark every real blind bore "blocked" by
+    the material behind its bottom and the re-cut would pierce it through
+    (block_sidewall_tap). Probe only the mouth region (~1.5 dia or 6 mm):
+    centred on the declared axial centre when present, else from the
+    axis-sign entry face into the part."""
+    dia = float(h.get("dia") or 0.0)
+    mouth = max(1.5 * dia, 6.0)
+    pos = h.get("pos")
+    if isinstance(pos, (list, tuple)) and len(pos) == 3:
+        try:
+            ax_c = float(pos[idx])
+            return (ax_c - mouth / 2.0, ax_c + mouth / 2.0)
+        except (TypeError, ValueError):
+            pass
+    bb = shape.bounding_box()
+    lo_f = float([bb.min.X, bb.min.Y, bb.min.Z][idx])
+    hi_f = float([bb.max.X, bb.max.Y, bb.max.Z][idx])
+    if axis[0] == "-":
+        return (lo_f, lo_f + mouth)
+    return (hi_f - mouth, hi_f)
+
+
 def _cut_span(
     hole: dict[str, Any],
     idx: int,
@@ -490,6 +527,14 @@ def _bore_cutter(
     mins = [bb.min.X, bb.min.Y, bb.min.Z]
     maxs = [bb.max.X, bb.max.Y, bb.max.Z]
     depth = hole.get("depth_mm")
+    if depth is None and hole.get("blind"):
+        # a blind bore with no declared depth must still not become a
+        # full-span cutter — the missing-depth fallback below would pierce
+        # the part (a "blind" spec anchor once drove a tap clean through a
+        # 40 mm cube). Conservative stub depth: deep enough to register a
+        # real bore, never long enough to exit the far face.
+        dia = float(hole.get("dia") or 0.0)
+        depth = min(2.0 * dia, 0.4 * (maxs[idx] - mins[idx])) if dia > 0 else None
     pos = hole.get("pos")
     axial = (
         pos[idx]
@@ -614,7 +659,7 @@ def recut_missing_holes(
             # a bounded anchor only owes an open tunnel across its declared
             # bore interval — a body further along the same ray is not a
             # blockage and must not trigger a re-cut that pierces it
-            if tunnel_open(shape, uv[0], uv[1], axis, _declared_axial_span(h, idx)):
+            if tunnel_open(shape, uv[0], uv[1], axis, _probe_span(h, idx, axis, shape)):
                 continue
             blocked.append((h, idx, uv[0], uv[1]))
         except Exception as e:

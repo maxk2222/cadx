@@ -1465,3 +1465,39 @@ def test_spec_anchors_untyped_feature_keeps_description_detection():
     anchors = _spec_anchors(spec)
     assert len(anchors) == 1
     assert anchors[0].dia == 6.0
+
+
+def test_spec_anchors_blind_text_depth_beats_host_span():
+    """block_sidewall_tap regression: a blind tap declaring its depth only in
+    prose ("20 mm deep into the part", no dims.depth) must anchor
+    depth_mm=20 — the host-body x span (40) used to fall through as the
+    depth hint and the deterministic re-cut then pierced the cube."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="cube",
+        summary="",
+        units="mm",
+        length_x=d(40),
+        width_y=d(40),
+        height_z=d(40),
+        features=[
+            Feature(
+                name="M8x1.25 tapped blind bore",
+                type="tapped_blind_bore",
+                description="Internal metric thread M8x1.25, blind, 20 mm deep.",
+                dims={"thread_pitch": 1.25, "tolerance": 6.8},
+                position=(
+                    "Centred on the -X face (x = -20) at y = 0, z = 20; "
+                    "axis along +X; 20 mm deep into the part"
+                ),
+                count=1,
+                source="stated",
+            ),
+        ],
+        image_roles=[],
+    )
+    anchors = _spec_anchors(spec)
+    assert len(anchors) == 1
+    a = anchors[0]
+    assert a.blind is True
+    assert a.depth_mm == 20.0

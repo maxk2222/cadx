@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 import trimesh
-from build123d import Box, Cylinder, Pos
+from build123d import Box, Cylinder, Pos, Rot
 
 from cadx.cad import mesh_boolean as mb
 from cadx.cad.mesh_ops import mesh_to_solid
@@ -340,3 +340,35 @@ def test_tunnel_open_elevated_part():
     off = Pos(40, 0, 5) * Box(10, 10, 10)  # x in [35, 45]
     assert not mb.tunnel_open(off, 40, 0, "+z")
     assert mb.tunnel_open(off, 0, 0, "+z")  # ray at x=0 misses the part
+
+
+def test_recut_blind_anchor_without_depth_never_pierces():
+    """block_sidewall_tap regression: a blind spec anchor that carries no
+    depth_mm (depth only in prose) must (a) not mark an existing blind bore
+    'blocked' — material behind its bottom is not a blockage — and (b) never
+    receive a full-span cutter when the bore is genuinely missing."""
+    # (a) an existing blind bore (-x mouth, ends mid-part) is not "blocked"
+    cube = Pos(0, 0, 20) * Box(40, 40, 40)
+    blind = cube - Pos(-20, 0, 20) * Rot(0, -90, 0) * Pos(0, 0, -10.5) * Cylinder(
+        radius=3.4, height=21
+    )
+    anchor = {
+        "x": 0.0,
+        "y": 0.0,
+        "dia": 6.8,
+        "axis": "-x",
+        "kind": "tap",
+        "source": "spec",
+        "blind": True,
+        "pos": [None, 0.0, 20.0],
+    }
+    out, applied = mb.recut_missing_holes(blind, [anchor])
+    assert applied == [] and out is blind
+
+    # (b) no bore at all → stub cutter, MUST NOT exit the far face
+    out2, applied2 = mb.recut_missing_holes(cube, [anchor])
+    assert applied2
+    # still closed at +x: a through-tunnel would mean the bug pierced it
+    assert not mb.tunnel_open(out2, 0.0, 20.0, "-x")
+    # but a real blind channel was opened at the -x mouth
+    assert mb.tunnel_open(out2, 0.0, 20.0, "-x", (-20.0, -8.0))
