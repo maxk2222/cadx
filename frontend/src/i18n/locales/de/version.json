@@ -310,5 +310,10 @@
   "guide_audience_beginner": "Anfänger",
   "guide_audience_pro": "Profi",
   "guide_rewrite": "Umschreiben",
-  "guide_rewrite_hint": "LLM schreibt alle Schritttexte für die Zielgruppe um"
+  "guide_rewrite_hint": "LLM schreibt alle Schritttexte für die Zielgruppe um",
+  "guide_move": "Verschieben",
+  "guide_rot": "Drehen",
+  "guide_step_n": "Schritt {{n}}",
+  "guide_step_scrub": "Schrittansicht",
+  "guide_no_meshes": "Keine Teil-Modelle vorhanden"
 }

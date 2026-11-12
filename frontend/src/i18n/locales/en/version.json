@@ -310,5 +310,10 @@
   "guide_audience_beginner": "Beginner",
   "guide_audience_pro": "Professional",
   "guide_rewrite": "Rewrite",
-  "guide_rewrite_hint": "LLM-rewrites all step texts for the chosen audience"
+  "guide_rewrite_hint": "LLM-rewrites all step texts for the chosen audience",
+  "guide_move": "Move",
+  "guide_rot": "Rotate",
+  "guide_step_n": "Step {{n}}",
+  "guide_step_scrub": "Step scrubber",
+  "guide_no_meshes": "No part meshes available"
 }

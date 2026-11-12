@@ -209,7 +209,12 @@ async def assign_media(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
             if page_no not in step.source_pages:
                 step.source_pages = sorted([*step.source_pages, page_no])
             return {"ok": True, "step": step.number, "media_image": step.media_image}
-    return {"ok": False, "error": f"figure {idx} not found on page {page_no}"}
+    avail = [f.get("index") for f in p.figures if f.get("image_path")]
+    return {
+        "ok": False,
+        "error": f"figure {idx} not found on page {page_no}",
+        "available_figure_indices": avail,
+    }
 
 
 async def reorder_steps(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:

@@ -320,5 +320,10 @@
   "guide_audience_beginner": "Новичок",
   "guide_audience_pro": "Профессионал",
   "guide_rewrite": "Переписать",
-  "guide_rewrite_hint": "LLM перепишет все тексты шагов для выбранной аудитории"
+  "guide_rewrite_hint": "LLM перепишет все тексты шагов для выбранной аудитории",
+  "guide_move": "Переместить",
+  "guide_rot": "Повернуть",
+  "guide_step_n": "Шаг {{n}}",
+  "guide_step_scrub": "Пошаговый вид",
+  "guide_no_meshes": "Нет мешей деталей"
 }

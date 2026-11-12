@@ -104,12 +104,99 @@ async def get_guide(version_id: uuid.UUID, db: AsyncSession = Depends(get_sessio
             "findings": [f.model_dump() for f in state.review.findings],
         },
         "parts": [
-            {"id": p.id, "name": p.name, "source": p.source, "status": p.status}
+            {
+                "id": p.id,
+                "name": p.name,
+                "source": p.source,
+                "status": p.status,
+                "has_mesh": bool(p.mesh_path),
+            }
             for p in state.parts
         ],
         "instances": len(state.assembly.instances),
         "joints": len(state.assembly.joints),
+        "instance_list": [
+            {
+                "id": i.instance_id or i.part_id,
+                "part_id": i.part_id,
+                "placed_in_step": i.placed_in_step,
+                "transform": i.transform,
+            }
+            for i in state.assembly.instances
+        ],
     }
+
+
+@router.get("/versions/{version_id}/guide/parts/{part_id}/mesh")
+async def guide_part_mesh(
+    version_id: uuid.UUID, part_id: str, db: AsyncSession = Depends(get_session)
+):
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    part = state.part_by_id(part_id)
+    p = Path(part.mesh_path).resolve() if part and part.mesh_path else None
+    if p is None or guide_dir.resolve() not in p.parents or not p.is_file():
+        raise HTTPException(404, "part mesh not found")
+    return FileResponse(str(p), media_type="model/gltf-binary")
+
+
+class InstancePatch(BaseModel):
+    transform: list[list[float]] | None = None
+
+
+@router.patch("/versions/{version_id}/guide/instances/{iid}")
+async def patch_instance(
+    version_id: uuid.UUID,
+    iid: str,
+    body: InstancePatch,
+    db: AsyncSession = Depends(get_session),
+):
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    inst = next(
+        (i for i in state.assembly.instances if (i.instance_id or i.part_id) == iid), None
+    )
+    if inst is None:
+        raise HTTPException(404, "instance not found")
+    if body.transform is not None:
+        t = body.transform
+        if (
+            len(t) != 4
+            or any(len(r) != 4 for r in t)
+            or not all(isinstance(x, (int, float)) for r in t for x in r)
+        ):
+            raise HTTPException(400, "transform must be a 4x4 matrix")
+        inst.transform = [[float(x) for x in r] for r in t]
+    state.save(guide_dir)
+    _regen_unity(state, guide_dir)
+    _regen_glb(state, guide_dir)
+    return {
+        "ok": True,
+        "id": iid,
+        "placed_in_step": inst.placed_in_step,
+        "transform": inst.transform,
+    }
+
+
+def _regen_glb(state: Any, guide_dir: Path) -> None:
+    """Rewrite the merged assembly GLB in place so the artifact file stays
+    valid after instance edits."""
+    from cadx.guide.scene import merged_glb
+
+    by_id = {p.id: p for p in state.parts}
+    placements = [
+        (i.instance_id or i.part_id, by_id[i.part_id].mesh_path, i.transform)
+        for i in state.assembly.instances
+        if i.part_id in by_id and by_id[i.part_id].mesh_path
+    ]
+    try:
+        merged_glb(placements, guide_dir / "output" / "assembly.glb")
+    except Exception as exc:
+        log.warning("guide.glb_regen_failed", error=str(exc)[:200])
 
 
 @router.get("/versions/{version_id}/guide/media/{name}")

@@ -320,5 +320,10 @@
   "guide_audience_beginner": "Początkujący",
   "guide_audience_pro": "Profesjonalista",
   "guide_rewrite": "Przepisz",
-  "guide_rewrite_hint": "LLM przepisuje wszystkie teksty dla wybranych odbiorców"
+  "guide_rewrite_hint": "LLM przepisuje wszystkie teksty dla wybranych odbiorców",
+  "guide_move": "Przesuń",
+  "guide_rot": "Obróć",
+  "guide_step_n": "Krok {{n}}",
+  "guide_step_scrub": "Widok kroków",
+  "guide_no_meshes": "Brak siatek części"
 }

@@ -305,5 +305,10 @@
   "guide_audience_beginner": "初学者",
   "guide_audience_pro": "专业版",
   "guide_rewrite": "改写",
-  "guide_rewrite_hint": "LLM 将所有步骤文本改写为所选受众版本"
+  "guide_rewrite_hint": "LLM 将所有步骤文本改写为所选受众版本",
+  "guide_move": "",
+  "guide_rot": "",
+  "guide_step_n": " {{n}}",
+  "guide_step_scrub": "",
+  "guide_no_meshes": ""
 }

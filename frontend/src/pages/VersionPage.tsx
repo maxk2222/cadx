@@ -398,7 +398,7 @@ export default function VersionPage() {
         )}
 
         {tab === "guide" && (
-          <GuideTab versionId={v.id} glbUrl={glb?.url ?? null} />
+          <GuideTab versionId={v.id} />
         )}
 
         {tab === "files" && (

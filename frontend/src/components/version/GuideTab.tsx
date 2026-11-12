@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { api, errMsg } from "../../lib/api";
 import type { GuideDetail, GuideStepDetail } from "../../lib/types";
 import SafeImg from "../SafeImg";
-import Viewer3D from "../Viewer3D";
+import GuideScene from "./GuideScene";
 import { Btn, Card, Chip, Modal, Spinner } from "../ui";
 
 const mediaUrl = (vid: string, name: string) =>
@@ -12,13 +12,7 @@ const mediaUrl = (vid: string, name: string) =>
 
 /** Guide tab: interactive assembly view (same 3D editor as the model tab)
  *  plus step text/image editing and one-click LLM rewrites per audience. */
-export default function GuideTab({
-  versionId,
-  glbUrl,
-}: {
-  versionId: string;
-  glbUrl: string | null;
-}) {
+export default function GuideTab({ versionId }: { versionId: string }) {
   const { t } = useTranslation("version");
   const [guide, setGuide] = useState<GuideDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -45,7 +39,24 @@ export default function GuideTab({
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       <div>
         <div className="h-[420px] overflow-hidden rounded-lg border border-edge bg-bg">
-          <Viewer3D url={glbUrl} />
+          <GuideScene
+            versionId={versionId}
+            parts={guide.parts}
+            instances={guide.instance_list ?? []}
+            onTransformed={(iid, m) => {
+              api
+                .patchGuideInstance(versionId, iid, m)
+                .then((r) =>
+                  setGuide({
+                    ...guide,
+                    instance_list: guide.instance_list.map((i) =>
+                      i.id === iid ? { ...i, transform: r.transform } : i,
+                    ),
+                  }),
+                )
+                .catch((e) => setErr(errMsg(e)));
+            }}
+          />
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted">
           <Chip tone="zinc">{t("guide_instances", { n: guide.instances })}</Chip>

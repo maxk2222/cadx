@@ -1490,6 +1490,21 @@ export interface GuideStepDetail {
   sub_steps: GuideSubStep[];
 }
 
+export interface GuidePartInfo {
+  id: string;
+  name: string;
+  source: string;
+  status: string;
+  has_mesh: boolean;
+}
+
+export interface GuideInstance {
+  id: string;
+  part_id: string;
+  placed_in_step: number;
+  transform: number[][];
+}
+
 export interface GuideDetail {
   steps: GuideStepDetail[];
   media: string[];
@@ -1500,9 +1515,10 @@ export interface GuideDetail {
     iteration: number;
     findings: { severity: string; text: string; mission: string }[];
   };
-  parts: { id: string; name: string; source: string; status: string }[];
+  parts: GuidePartInfo[];
   instances: number;
   joints: number;
+  instance_list: GuideInstance[];
 }
 
 export interface GuideStepPatch {

@@ -310,5 +310,10 @@
   "guide_audience_beginner": "Principiante",
   "guide_audience_pro": "Profesional",
   "guide_rewrite": "Reescribir",
-  "guide_rewrite_hint": "El LLM reescribe todos los textos para el público elegido"
+  "guide_rewrite_hint": "El LLM reescribe todos los textos para el público elegido",
+  "guide_move": "Mover",
+  "guide_rot": "Rotar",
+  "guide_step_n": "Paso {{n}}",
+  "guide_step_scrub": "Vista por pasos",
+  "guide_no_meshes": "Sin mallas de piezas"
 }

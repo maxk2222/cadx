@@ -305,5 +305,10 @@
   "guide_audience_beginner": "初心者",
   "guide_audience_pro": "プロ",
   "guide_rewrite": "書き換え",
-  "guide_rewrite_hint": "LLMが全ステップを対象者向けに書き換えます"
+  "guide_rewrite_hint": "LLMが全ステップを対象者向けに書き換えます",
+  "guide_move": "",
+  "guide_rot": "",
+  "guide_step_n": "ステップ {{n}}",
+  "guide_step_scrub": "ステップ",
+  "guide_no_meshes": "パーツメッシュがありません"
 }
