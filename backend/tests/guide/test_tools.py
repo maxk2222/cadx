@@ -240,7 +240,7 @@ def test_preassembly_places_deterministically() -> None:
             text="Plug einstecken",
             display_text="d",
             required_parts=["Plug"],
-            sub_steps=[GuideSubStep(action="attach", part="Plug", target="Base")],
+            sub_steps=[GuideSubStep(action="attach", part="Plug", target="Base, linke obere Seite")],
         ),
     ]
     sess = GuideToolSession(

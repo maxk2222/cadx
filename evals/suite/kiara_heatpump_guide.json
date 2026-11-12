@@ -57,7 +57,7 @@
     },
     {
      "type": "guide_score",
-     "min": 60
+     "min": 6.0
     }
    ]
   }

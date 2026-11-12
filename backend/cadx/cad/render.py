@@ -42,7 +42,11 @@ def _load_for_render(src: Any) -> Any:
     if isinstance(src, trimesh.Trimesh):
         faces = np.column_stack([np.full(len(src.faces), 3), src.faces]).ravel()
         return pv.PolyData(np.asarray(src.vertices), faces).clean()
-    return pv.read(str(src)).clean()
+    data = pv.read(str(src))
+    if isinstance(data, pv.MultiBlock):
+        # glTF/GLB scenes load as block hierarchies — merge into one mesh
+        data = data.combine()
+    return data.clean() if hasattr(data, "clean") else None
 
 
 def _ghost_opacity() -> float:

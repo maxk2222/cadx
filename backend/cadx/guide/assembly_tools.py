@@ -174,7 +174,22 @@ def _name_index(s: GuideToolSession) -> dict[str, str]:
 
 
 def _resolve_name(s: GuideToolSession, name: str) -> str | None:
-    return s._aliases_store.get(_norm2(name)) or _name_index(s).get(_norm2(name))
+    """Resolve a manual label to a part id: alias → exact name/id →
+    containment. Manuals attach qualifiers to part names ("Gehäuse, linker
+    oberer Anschluss", "Adapter links oben") — containment on the LONGEST
+    matching alias/name keeps that usable instead of collapsing to free
+    placement."""
+    n = _norm2(name)
+    hit = s._aliases_store.get(n) or _name_index(s).get(n)
+    if hit:
+        return hit
+    cands = list(s._aliases_store.items()) + list(_name_index(s).items())
+    # keys shorter than 3 chars would containment-match almost anything
+    hits = [(k, pid) for k, pid in cands if len(k) >= 3 and (k in n or n in k)]
+    if not hits:
+        return None
+    # longest containing/contained key wins — "rohrbogen dn22 muffe" beats "rohr"
+    return max(hits, key=lambda kv: len(kv[0]))[1]
 
 
 # sub_step actions that consume a NEW part occurrence — orient/check inspect
