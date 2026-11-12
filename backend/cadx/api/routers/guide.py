@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -121,6 +122,8 @@ async def get_guide(version_id: uuid.UUID, db: AsyncSession = Depends(get_sessio
                 "part_id": i.part_id,
                 "placed_in_step": i.placed_in_step,
                 "transform": i.transform,
+                "color": i.color,
+                "opacity": i.opacity,
             }
             for i in state.assembly.instances
         ],
@@ -136,14 +139,24 @@ async def guide_part_mesh(
         raise HTTPException(404, "version not found")
     state, guide_dir = _guide_ctx(v)
     part = state.part_by_id(part_id)
-    p = Path(part.mesh_path).resolve() if part and part.mesh_path else None
-    if p is None or guide_dir.resolve() not in p.parents or not p.is_file():
+
+    def _resolve() -> Path | None:
+        p = Path(part.mesh_path).resolve() if part and part.mesh_path else None
+        if p is None or guide_dir.resolve() not in p.parents or not p.is_file():
+            return None
+        return p
+
+    p = await anyio.to_thread.run_sync(_resolve)
+    if p is None:
         raise HTTPException(404, "part mesh not found")
     return FileResponse(str(p), media_type="model/gltf-binary")
 
 
 class InstancePatch(BaseModel):
     transform: list[list[float]] | None = None
+    placed_in_step: int | None = None
+    color: str | None = None  # "" clears the override
+    opacity: float | None = None
 
 
 @router.patch("/versions/{version_id}/guide/instances/{iid}")
@@ -171,6 +184,96 @@ async def patch_instance(
         ):
             raise HTTPException(400, "transform must be a 4x4 matrix")
         inst.transform = [[float(x) for x in r] for r in t]
+    if body.placed_in_step is not None:
+        if body.placed_in_step < 0 or (
+            state.steps and body.placed_in_step > state.steps[-1].number
+        ):
+            raise HTTPException(400, "placed_in_step out of range")
+        inst.placed_in_step = body.placed_in_step
+    if body.color is not None:
+        inst.color = body.color or None
+    if body.opacity is not None:
+        inst.opacity = min(1.0, max(0.05, body.opacity))
+    state.save(guide_dir)
+    _regen_unity(state, guide_dir)
+    _regen_glb(state, guide_dir)
+    return {
+        "ok": True,
+        "id": iid,
+        "placed_in_step": inst.placed_in_step,
+        "transform": inst.transform,
+        "color": inst.color,
+        "opacity": inst.opacity,
+    }
+
+
+def _world_bbox(local_min: list[float], local_max: list[float], t: list[list[float]]):
+    """8-corner world bbox of a local-axis-aligned box under a 4x4."""
+    import numpy as np
+
+    m = np.asarray(t, dtype=float).reshape(4, 4)
+    corners = np.array(
+        [
+            [x, y, z, 1.0]
+            for x in (local_min[0], local_max[0])
+            for y in (local_min[1], local_max[1])
+            for z in (local_min[2], local_max[2])
+        ]
+    )
+    w = (m @ corners.T).T[:, :3]
+    return w.min(axis=0), w.max(axis=0)
+
+
+class InstanceCreate(BaseModel):
+    part_id: str
+    step_no: int = 0
+
+
+@router.post("/versions/{version_id}/guide/instances")
+async def add_instance(
+    version_id: uuid.UUID,
+    body: InstanceCreate,
+    db: AsyncSession = Depends(get_session),
+):
+    """Insert a new occurrence of a registered part — the asset-library
+    "drop" action. Placed beside the current union bbox (same free-slot
+    rule the solver uses) so it never lands inside existing geometry."""
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    part = state.part_by_id(body.part_id)
+    if part is None:
+        raise HTTPException(404, f"part '{body.part_id}' not found")
+
+    from cadx.guide.solver import solve_free_placement
+    from cadx.guide.state import AssemblyInstance
+
+    by_id = {p.id: p for p in state.parts}
+    placed = []
+    for i in state.assembly.instances:
+        src = by_id.get(i.part_id)
+        if src is None or not i.transform:
+            continue
+        mn, mx = _world_bbox(src.bbox_min, src.bbox_max, i.transform)
+        placed.append({"bbox_min_world": mn.tolist(), "bbox_max_world": mx.tolist()})
+    transform = solve_free_placement(part, placed, "")
+
+    seq = [
+        int((i.instance_id or "").rsplit("#", 1)[-1])
+        for i in state.assembly.instances
+        if i.part_id == part.id and "#" in (i.instance_id or "")
+    ]
+    iid = f"{part.id}#{(max(seq) + 1) if seq else 1}"
+    inst = AssemblyInstance(
+        part_id=part.id,
+        instance_id=iid,
+        transform=transform,
+        placed_in_step=max(0, body.step_no),
+    )
+    state.assembly.instances.append(inst)
+    if state.assembly.status == "empty":
+        state.assembly.status = "partial"
     state.save(guide_dir)
     _regen_unity(state, guide_dir)
     _regen_glb(state, guide_dir)
@@ -180,6 +283,40 @@ async def patch_instance(
         "placed_in_step": inst.placed_in_step,
         "transform": inst.transform,
     }
+
+
+@router.delete("/versions/{version_id}/guide/instances/{iid}")
+async def delete_instance(
+    version_id: uuid.UUID,
+    iid: str,
+    db: AsyncSession = Depends(get_session),
+):
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    asm = state.assembly
+    before = len(asm.instances)
+    asm.instances = [i for i in asm.instances if (i.instance_id or i.part_id) != iid]
+    if len(asm.instances) == before:
+        raise HTTPException(404, "instance not found")
+    # drop joints bound to this exact instance; legacy part-level joints
+    # stay — they remain valid while any instance of that part exists
+    asm.joints = [
+        j
+        for j in asm.joints
+        if iid not in (j.get("moving_instance"), j.get("fixed_instance"))
+        and j.get("moving_part") != iid
+    ]
+    for ids in asm.step_instances.values():
+        while iid in ids:
+            ids.remove(iid)
+    if not asm.instances:
+        asm.status = "empty"
+    state.save(guide_dir)
+    _regen_unity(state, guide_dir)
+    _regen_glb(state, guide_dir)
+    return {"ok": True, "id": iid, "instances": len(asm.instances)}
 
 
 def _regen_glb(state: Any, guide_dir: Path) -> None:

@@ -85,6 +85,7 @@ export default function GuideScene({
   sel,
   onSelect,
   onTransformed,
+  readonly,
 }: {
   versionId: string;
   parts: GuidePartInfo[];
@@ -93,6 +94,7 @@ export default function GuideScene({
   sel: string | null;
   onSelect: (iid: string | null) => void;
   onTransformed: (iid: string, m: number[][]) => void;
+  readonly?: boolean;
 }) {
   const { t } = useTranslation("version");
   const meshParts = useMemo(() => parts.filter((p) => p.has_mesh), [parts]);
@@ -117,6 +119,7 @@ export default function GuideScene({
       sel={sel}
       onSelect={onSelect}
       onTransformed={onTransformed}
+      readonly={readonly}
       t={t}
     />
   );
@@ -130,6 +133,7 @@ function SceneInner({
   sel,
   onSelect,
   onTransformed,
+  readonly,
   t,
 }: {
   urls: string[];
@@ -139,6 +143,7 @@ function SceneInner({
   sel: string | null;
   onSelect: (iid: string | null) => void;
   onTransformed: (iid: string, m: number[][]) => void;
+  readonly?: boolean;
   t: (k: string, o?: Record<string, unknown>) => string;
 }) {
   const gltfs = useLoader(GLTFLoader, urls);
@@ -187,12 +192,13 @@ function SceneInner({
             onSelect={() => onSelect(i.id)}
           />
         ))}
-        {selObj && (
+        {selObj && !readonly && (
           <TransformControls object={selObj} mode={mode} onMouseUp={commit} />
         )}
         <OrbitControls makeDefault />
       </Canvas>
 
+      {!readonly && (
       <div className="absolute right-2 top-2 flex gap-1">
         <IconBtn
           title={t("guide_move")}
@@ -209,6 +215,7 @@ function SceneInner({
           <Rotate3d className="h-4 w-4" />
         </IconBtn>
       </div>
+      )}
     </div>
   );
 }

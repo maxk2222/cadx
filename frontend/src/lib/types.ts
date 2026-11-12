@@ -1503,6 +1503,15 @@ export interface GuideInstance {
   part_id: string;
   placed_in_step: number;
   transform: number[][];
+  color?: string | null;
+  opacity?: number | null;
+}
+
+export interface GuideInstancePatch {
+  transform?: number[][];
+  placed_in_step?: number;
+  color?: string;
+  opacity?: number;
 }
 
 export interface GuideDetail {

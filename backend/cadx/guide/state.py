@@ -118,6 +118,9 @@ class AssemblyInstance(BaseModel):
     transform: list[list[float]] = Field(default_factory=list)  # 4x4, mm, CAD frame
     placed_in_step: int = 0
     substep_idx: int = 0
+    # editor overrides — rendering-only, keep pipeline palette semantics
+    color: str | None = None
+    opacity: float | None = None
 
 
 class AssemblyState(BaseModel):

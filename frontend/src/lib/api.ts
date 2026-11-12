@@ -13,6 +13,7 @@ import type {
   FemPreviewResult,
   GenMode,
   GuideDetail,
+  GuideInstancePatch,
   GuideRewriteResult,
   GuideStepDetail,
   GuideStepPatch,
@@ -229,10 +230,20 @@ export const api = {
       `/versions/${vid}/guide/rewrite`,
       json({ audience, language })
     ),
-  patchGuideInstance: (vid: string, iid: string, transform: number[][]) =>
+  patchGuideInstance: (vid: string, iid: string, body: GuideInstancePatch) =>
     req<{ ok: boolean; id: string; transform: number[][] }>(
       `/versions/${vid}/guide/instances/${encodeURIComponent(iid)}`,
-      patch({ transform })
+      patch(body)
+    ),
+  addGuideInstance: (vid: string, part_id: string, step_no: number) =>
+    req<{ ok: boolean; id: string; placed_in_step: number; transform: number[][] }>(
+      `/versions/${vid}/guide/instances`,
+      json({ part_id, step_no })
+    ),
+  deleteGuideInstance: (vid: string, iid: string) =>
+    req<{ ok: boolean }>(
+      `/versions/${vid}/guide/instances/${encodeURIComponent(iid)}`,
+      { method: "DELETE" }
     ),
   updateVersion: (id: string, body: { name?: string; accepted?: boolean }) =>
     req<VersionDetail>(`/versions/${id}`, patch(body)),
