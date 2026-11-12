@@ -363,7 +363,7 @@ def solve_free_placement(
     center = (mn + mx) / 2.0
     t = np.eye(4)
     h = (hint or "").strip().lower()
-    if not placed or h in ("", "on table", "table", "ground", "base", "first"):
+    if not placed or h in ("on table", "table", "ground", "base", "first"):
         t[0:3, 3] = [-center[0], -center[1], -mn[2] + table_z]
         return [[float(v) for v in row] for row in t.tolist()]
 
@@ -382,7 +382,14 @@ def solve_free_placement(
         off[axis_i] = pctr[axis_i] + sign * extent - center[axis_i]
         off[2] = -mn[2] + max(table_z, pmn[2])  # rest on the same level
     else:
-        off = np.array([pctr[0] - center[0], pctr[1] - center[1], pmx[2] + gap_mm - mn[2]])
+        # no hint: spread out BESIDE the placed parts (+X row, same base
+        # level) — never stack vertically. A tower of coincident parts
+        # reads as a broken pile in renders and defeats collision/gap
+        # checks; a row is a sane bill-of-materials-style starting layout
+        # the refine pass can rearrange.
+        off = np.array([pmx[0] + size[0] / 2 + gap_mm - center[0],
+                        pctr[1] - center[1],
+                        -mn[2] + max(table_z, pmn[2])])
     t[0:3, 3] = off
     return [[float(v) for v in row] for row in t.tolist()]
 

@@ -77,11 +77,18 @@ def _already_satisfied(sess: GuideToolSession, step_no: int, pid: str) -> bool:
     return have >= need
 
 
-def _pick_target_instance(sess: GuideToolSession, target_name: str) -> str | None:
-    """Resolve a sub-step target label to an instance_id — newest placed
-    instance of that part first, skipping instances with no free
-    compatible… actually: any free PORT is enough here, compatibility
-    is checked by find_matching_ports against the real moving part."""
+def _pick_target_instance(
+    sess: GuideToolSession, target_name: str, moving_pid: str = ""
+) -> str | None:
+    """Resolve a sub-step target label to an instance_id.
+
+    Oldest-first pairing: prefer the EARLIEST placed instance of the
+    target part that has not yet received a joint from this moving part
+    type. Symmetric manuals (left/right adapter each taking a pipe) then
+    pair 1:1 by order instead of every connection piling onto the newest
+    instance — which produced star topologies and coincident part heaps.
+    Chains still continue correctly because a different moving part type
+    is a different pair."""
     tid = _resolve_name(sess, target_name) if target_name else None
     if not tid:
         return None
@@ -89,19 +96,28 @@ def _pick_target_instance(sess: GuideToolSession, target_name: str) -> str | Non
     if not insts:
         return None
     used_ports: dict[str, set[str]] = {}
+    used_types: dict[str, set[str]] = {}
     for j in sess.state.assembly.joints:
         fi = str(j.get("fixed_instance") or "")
         if fi:
             used_ports.setdefault(fi, set()).add(str(j.get("fixed_port")))
-    # newest first — assembly chains continue from the last-mounted piece
-    for inst in reversed(insts):
+            used_types.setdefault(fi, set()).add(str(j.get("moving_part") or ""))
+
+    def _free(inst: Any) -> bool:
         part = sess.state.part_by_id(inst.part_id)
-        free = {p.name for p in (part.ports if part else [])} - used_ports.get(
+        if not (part and part.ports):
+            return True
+        free = {p.name for p in part.ports} - used_ports.get(
             inst.instance_id or inst.part_id, set()
         )
-        if free or not (part and part.ports):
-            return inst.instance_id or inst.part_id
-    return insts[-1].instance_id or insts[-1].part_id
+        return bool(free)
+
+    candidates = [i for i in insts if _free(i)]
+    for inst in candidates:
+        iid = inst.instance_id or inst.part_id
+        if moving_pid and moving_pid not in used_types.get(iid, set()):
+            return iid
+    return (candidates or insts)[-1].instance_id or (candidates or insts)[-1].part_id
 
 
 async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
@@ -141,7 +157,7 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
 async def _try_attach(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
     """Port-driven attach onto a resolved target instance; None if it
     cannot work (no target / no pairs / all candidates collide)."""
-    target_iid = _pick_target_instance(sess, task["target"])
+    target_iid = _pick_target_instance(sess, task["target"], moving_pid=pid)
     if not target_iid:
         return None
     ports = await find_matching_ports(sess, {"part_id": pid, "target_part_id": target_iid})

@@ -311,3 +311,52 @@ def test_emit_assembly_artifacts_empty(tmp_path) -> None:
     assert asyncio.run(
         _emit_assembly_artifacts(GuideState(), storage.data_root() / "tmp_test_emit2", executor=None)
     ) == {}
+
+
+def test_preassembly_pairs_symmetric_targets_1to1() -> None:
+    """Two placed adapters + two pipe attach-tasks must pair adapter#1↔pipe#1
+    and adapter#2↔pipe#2 — never both pipes onto the newest adapter."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from cadx.guide.preassembly import _pick_target_instance
+    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState
+
+    state = GuideState()
+    state.parts.append(GuidePart(id="adapter", name="Adapter"))
+    state.parts.append(GuidePart(id="pipe", name="Rohr"))
+    for i in (1, 2):
+        state.assembly.instances.append(
+            AssemblyInstance(
+                part_id="adapter",
+                instance_id=f"adapter#{i}",
+                placed_in_step=i,
+                transform=np.eye(4).tolist(),
+            )
+        )
+    # pipe#1 already joined adapter#1 — the next pipe must take adapter#2
+    state.assembly.joints.append(
+        {
+            "moving_instance": "pipe#1",
+            "moving_part": "pipe",
+            "fixed_instance": "adapter#1",
+            "fixed_port": "rim_0",
+        }
+    )
+    sess = SimpleNamespace(state=state, _aliases_store={})
+    assert _pick_target_instance(sess, "Adapter", moving_pid="pipe") == "adapter#2"
+
+
+def test_free_placement_spreads_beside() -> None:
+    """No-hint env placement lays parts out in a row — never a tower."""
+    import numpy as np
+
+    from cadx.guide.solver import solve_free_placement
+    from cadx.guide.state import GuidePart
+
+    p = GuidePart(id="p", name="P", bbox_min=[0, 0, 0], bbox_max=[10, 10, 10])
+    placed = [{"bbox_min_world": [0, 0, 0], "bbox_max_world": [10, 10, 10]}]
+    t = np.asarray(solve_free_placement(p, placed, ""), dtype=float).reshape(4, 4)
+    assert t[0, 3] > 5.0  # pushed +X beside the placed part
+    assert t[2, 3] == 0.0  # resting on the same level — not on top
