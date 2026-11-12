@@ -636,7 +636,12 @@ class HttpDriver:
         cad_ids = [by_name[p.name] for p in cad_paths if p.name in by_name]
         enq = await self._post(
             f"/projects/{ctx.project_id}/guide",
-            json={"pdf_asset_id": pdf_id, "cad_asset_ids": cad_ids, "prompt": stage.prompt},
+            json={
+                "pdf_asset_id": pdf_id,
+                "cad_asset_ids": cad_ids,
+                "prompt": stage.prompt,
+                "allow_generation": stage.allow_generation,
+            },
         )
         vid, jid = str(enq.get("version_id")), str(enq.get("job_id"))
         job = await self.wait_guide(jid, stage.timeout_s, stage)

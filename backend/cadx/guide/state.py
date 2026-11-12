@@ -148,6 +148,9 @@ class GuideState(BaseModel):
     # user) — emitted as a project "note" asset at job end
     master_notes: list[str] = Field(default_factory=list)
     pending_answers: list[str] = Field(default_factory=list)
+    # spawn-time flag: False = all parts must come from uploads
+    # (generate_missing_part refuses; the agent may only alias)
+    allow_part_generation: bool = True
     document: DocumentIndex | None = None
     steps: list[GuideStep] = Field(default_factory=list)
     parts: list[GuidePart] = Field(default_factory=list)

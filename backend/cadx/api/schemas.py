@@ -161,6 +161,9 @@ class GuideRequest(BaseModel):
     pdf_asset_id: uuid.UUID
     cad_asset_ids: list[uuid.UUID] = Field(default_factory=list)
     prompt: str = ""
+    # False = every needed part must come from the uploads; the parts
+    # mission may only alias/register, never spawn a generation job
+    allow_generation: bool = True
 
 
 # --------------------------------------------------------------------------- #

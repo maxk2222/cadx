@@ -46,6 +46,14 @@ def _mission_prompt(mission: str, state: GuideState, repair_notes: str = "") -> 
         f"Guide language: {state.language}",
         f"User notes ({len(state.user_notes)}): {'; '.join(state.user_notes[:6]) or 'none'}",
     ]
+    if mission == "parts" and not state.allow_part_generation:
+        ctx_lines.append(
+            "PART GENERATION IS DISABLED for this run: every required name "
+            "must resolve to an UPLOADED part via register_uploaded_part + "
+            "alias_part. Manuals often name the same fitting differently "
+            "in the parts list vs. step text — alias those variants onto "
+            "the same part instead of treating them as missing."
+        )
     if state.pending_answers:
         ctx_lines.append(
             "ANSWERS from the user (read them now via list_user_notes, they "
@@ -93,13 +101,16 @@ async def _emit_artifacts(state: GuideState, state_dir: Path) -> dict[str, str]:
     return artifacts
 
 
-def _load_or_init_state(ctx: AgentCtx, state_dir: Path, resume_state: dict[str, Any]) -> GuideState:
+def _load_or_init_state(
+    ctx: AgentCtx, state_dir: Path, resume_state: dict[str, Any], allow_generation: bool
+) -> GuideState:
     state = GuideState.load(state_dir)
     if state is None:
         state = GuideState(
             project_id=str(ctx.project_id or ""),
             guide_version_id=str(ctx.version_id),
             output_dir=str(state_dir),
+            allow_part_generation=allow_generation,
         )
         state.save(state_dir)
     # resume: fold the answered clarification into pending_answers
@@ -209,12 +220,13 @@ async def run_guide(
     *,
     state_dir: Path,
     resume_state: dict[str, Any],
+    allow_generation: bool = True,
     park_job: Any = None,
 ) -> RunOutcome:
     """Mission loop. ``park_job`` (optional) is invoked with the question
     payload when a mission calls ask_user — it persists job.questions etc;
     either way the runner returns waiting_for_input."""
-    state = _load_or_init_state(ctx, state_dir, resume_state)
+    state = _load_or_init_state(ctx, state_dir, resume_state, allow_generation)
     assets = _guide_assets(ctx)
     rt = ctx.runtime_settings
     score_target = float(getattr(rt, "guide_review_score_target", 8.0))

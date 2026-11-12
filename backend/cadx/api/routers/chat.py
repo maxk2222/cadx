@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
@@ -168,9 +169,10 @@ async def delete_chat(chat_id: uuid.UUID, db: AsyncSession = Depends(get_session
     chat = await _chat_or_404(db, chat_id)
     if chat.turn_running:
         chat.cancel_requested = True
-    rows = await db.execute(select(ChatMessage).where(ChatMessage.chat_id == chat_id))
-    for m in rows.scalars().all():
-        await db.delete(m)
+    # bulk-DELETE the messages first — without a declared ORM relationship
+    # the unit of work doesn't order per-row deletes before the parent,
+    # so the chat delete hit chatmessage_chat_id_fkey (FK violation 500)
+    await db.execute(delete(ChatMessage).where(ChatMessage.chat_id == chat_id))
     await db.delete(chat)
     await db.commit()
     return {"ok": True}

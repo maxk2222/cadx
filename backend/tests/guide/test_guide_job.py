@@ -78,7 +78,7 @@ async def test_run_guide_job_waiting_then_resume(_db, monkeypatch):
     # stub the mission loop: first call → parked with a question; second → done
     calls = {"n": 0}
 
-    async def fake_run_guide(actx, *, state_dir, resume_state, park_job=None):
+    async def fake_run_guide(actx, *, state_dir, resume_state, allow_generation=True, park_job=None):
         calls["n"] += 1
         if calls["n"] == 1:
             assert "guide_dir" in resume_state

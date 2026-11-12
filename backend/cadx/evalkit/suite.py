@@ -101,6 +101,8 @@ class EvalStage(BaseModel):
     pdf: str = ""
     cad_parts: list[str] = Field(default_factory=list)
     answers: list[str] = Field(default_factory=list)
+    # False = uploads must cover every required part (no agent generation)
+    allow_generation: bool = True
     max_resumes: int = 3  # parked-question rounds before the stage cancels
     # execution
     timeout_s: float = 7200.0

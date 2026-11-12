@@ -795,7 +795,12 @@ async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         from cadx.guide.guide_runner import run_guide
 
         try:
-            outcome = await run_guide(actx, state_dir=guide_dir, resume_state=resume_state)
+            outcome = await run_guide(
+                actx,
+                state_dir=guide_dir,
+                resume_state=resume_state,
+                allow_generation=bool((version.options or {}).get("guide_allow_generation", True)),
+            )
         except Exception as e:
             log.exception("guide.job_crashed", job=str(job_id))
             outcome = RunOutcome(

@@ -195,6 +195,14 @@ async def alias_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
 
 
 async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    if not s.state.allow_part_generation:
+        return {
+            "ok": False,
+            "error": "part generation is DISABLED for this guide run — every "
+            "required part must come from the uploads. Alias the missing "
+            "name onto the closest registered part (manuals rename the same "
+            "fitting between parts list and step text) or ask_user.",
+        }
     pid = _slug(str(a.get("part_id", "")))
     if not pid:
         return {"ok": False, "error": "part_id must be a non-empty slug"}
