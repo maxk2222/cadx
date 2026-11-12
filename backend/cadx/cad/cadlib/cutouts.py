@@ -245,6 +245,15 @@ def tapped_hole(
         raise ValueError("tapped_hole: pass length=hole depth (part span + margin for through)")
     length = float(length)
     drill = float(drill_dia) if drill_dia is not None else major_d - pitch
+    if drill >= major_d:
+        # a tap drill at/above the major diameter swallows the whole groove
+        # ridge — the helical cutter falls inside the bore void and subtracts
+        # nothing (a Ø9 "M8" hole ships smooth). Reject so the caller fixes
+        # the parameter instead of silently exporting an unthreaded bore.
+        raise ValueError(
+            f"tapped_hole: drill_dia {drill} must be < major_d {major_d} "
+            f"(ISO tap drill ~= major_d - pitch = {major_d - pitch:g})"
+        )
     bore = Pos(0, 0, -length / 2) * Cylinder(drill / 2, length + 1)
     if _mode() != "export":
         return bore

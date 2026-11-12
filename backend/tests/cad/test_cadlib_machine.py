@@ -169,6 +169,20 @@ def test_tap_export_mode_builds_real_helix() -> None:
     assert out.volume < out_prev.volume
 
 
+def test_tapped_hole_rejects_drill_at_or_above_major() -> None:
+    """drill_dia >= major_d puts the whole groove ridge inside the bore void —
+    the helical cutter subtracts nothing and the export ships a smooth hole
+    with a phantom thread declaration (block_sidewall_tap drill=9/M8)."""
+    from cadx.cad.cadlib.cutouts import tapped_hole
+
+    with pytest.raises(ValueError, match="drill_dia 9.0 must be < major_d"):
+        tapped_hole(8.0, 1.25, 20.0, drill_dia=9.0)
+    with pytest.raises(ValueError, match="must be < major_d"):
+        tapped_hole(8.0, 1.25, 20.0, drill_dia=8.0)
+    # a sane tap drill still builds
+    assert tapped_hole(8.0, 1.25, 20.0, drill_dia=6.8) is not None
+
+
 def test_resolve_face_rejects_unknown_descriptor() -> None:
     box = Box(60, 40, 20)
     with pytest.raises(ValueError, match="unknown face descriptor"):
