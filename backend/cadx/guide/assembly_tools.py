@@ -378,7 +378,11 @@ async def rotate_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
         fixed = _inst(s, str(joint.get("fixed_part", "")))
         fixed_part = s.state.part_by_id(str(joint.get("fixed_part", "")))
         fixed_port = next(
-            (p for p in (fixed_part.ports if fixed_part else []) if p.name == joint.get("fixed_port")),
+            (
+                p
+                for p in (fixed_part.ports if fixed_part else [])
+                if p.name == joint.get("fixed_port")
+            ),
             None,
         )
         axis_local = np.asarray(joint.get("approach_axis") or [0, 0, 1], dtype=float)
@@ -391,9 +395,7 @@ async def rotate_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
                 pivot = fp[0:3, 3]
             inst.transform = (solver.delta_about_pivot(axis_w, deg, pivot) @ m).tolist()
         else:
-            inst.transform = (
-                solver.delta_about_pivot(axis_local, deg, m[0:3, 3]) @ m
-            ).tolist()
+            inst.transform = (solver.delta_about_pivot(axis_local, deg, m[0:3, 3]) @ m).tolist()
     else:
         # free parts: rotate about own bbox center
         c = (np.asarray(part.bbox_min) + np.asarray(part.bbox_max)) / 2.0
@@ -559,8 +561,34 @@ async def validate_assembly_completeness(s: GuideToolSession, a: dict[str, Any])
 def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
     if not s.state.assembly.instances:
         return {"ok": False, "error": "nothing placed — run solve_*_preview + place_instance"}
+    # completeness gate: every assembly step's required parts must be placed
+    # — the review mission can't repair coverage the mission never attempted
+    placed = s.state.placed_part_ids()
+    index = {_norm2(p.name): p.id for p in s.state.parts}
+    index.update({_norm2(p.id): p.id for p in s.state.parts})
+    missing: list[str] = []
+    for step in s.state.steps:
+        if step.action_type != "assembly":
+            continue
+        for n in step.required_parts:
+            pid = s._aliases_store.get(_norm2(n)) or index.get(_norm2(n))
+            if pid is None:
+                missing.append(f"{n} (unresolved)")
+            elif pid not in placed:
+                missing.append(pid)
+    if missing:
+        return {
+            "ok": False,
+            "error": "unplaced required parts: " + ", ".join(sorted(set(missing))[:8]),
+        }
     s.state.assembly.status = "complete"
     return None
+
+
+def _norm2(x: str) -> str:
+    import re
+
+    return re.sub(r"[^a-z0-9äöüß]+", " ", x.lower()).strip()
 
 
 from cadx.guide.tools import DONE_GUARDS  # noqa: E402

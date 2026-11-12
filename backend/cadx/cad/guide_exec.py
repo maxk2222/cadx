@@ -1,9 +1,9 @@
 """Guide-builder executor tasks — run on the cad-light lane (arq).
 
-- ``extract_ports``: STEP/BRep → deterministic attachment ports (cylinder +
+- ``extract_ports``: STEP/BRep -> deterministic attachment ports (cylinder +
   planar faces, radius/axis/gender) + a GLB tessellation for scene
   collision checks and rendering. OCC work is executor-only.
-- ``render_assembly``: multi-mesh scene → off-screen PNG via
+- ``render_assembly``: multi-mesh scene -> off-screen PNG via
   ``cad.render.render_scene``.
 
 Worker calls these through ``QueueExecutor.run_task`` (same facade as
@@ -26,19 +26,24 @@ _MIN_PLANAR_AREA_FRAC = 0.01
 def _face_ports(shape) -> list[dict[str, Any]]:
     """Exact attachment ports from BRep faces (build123d/OCP).
 
-    Cylinder faces → {pos on axis, axis dir, radius, gender male/female};
-    planar faces → {pos center, axis normal, gender flat}. Gender by
+    Cylinder faces -> {pos on axis, axis dir, radius, gender male/female};
+    planar faces -> {pos center, axis normal, gender flat}. Gender by
     whether the face normal points away from the cylinder axis (boss) or
     toward it (bore).
     """
     import numpy as np
     from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.GeomAbs import GeomAbs_SurfaceType
+    from OCP.gp import gp_Pnt
+    from OCP.TopAbs import TopAbs_IN
+
+    def _inside(p: np.ndarray) -> bool:
+        cl = BRepClass3d_SolidClassifier(shape.wrapped, gp_Pnt(*p), 1e-6)
+        return bool(cl.State() == TopAbs_IN)
 
     faces = list(shape.faces())
     total_area = sum(float(f.area) for f in faces) or 1.0
-    bb = shape.bounding_box()
-    part_ctr = np.array([bb.center.X, bb.center.Y, bb.center.Z], dtype=float)
     ports: list[dict[str, Any]] = []
 
     for idx, face in enumerate(faces):
@@ -58,8 +63,35 @@ def _face_ports(shape) -> list[dict[str, Any]]:
                 axis /= max(float(np.linalg.norm(axis)), 1e-9)
                 c_arr = np.array([center.X, center.Y, center.Z], dtype=float)
                 # outward convention: the port axis points AWAY from the part
-                # body — OCC's canonical cylinder direction is arbitrary
-                if float(np.dot(axis, c_arr - part_ctr)) < 0:
+                # body toward the OPEN end — OCC's canonical direction is
+                # arbitrary and a face-center heuristic coin-flips on
+                # centerline features (blind bores). Classify a sample point
+                # just past each cylinder end against the solid: the buried
+                # end is IN, the open end is OUT.
+                # true axial extent: project the face's own bbox along the
+                # axis (area/2πr underestimates partial cylinders)
+                fbb = face.bounding_box()
+                h = abs(
+                    float(
+                        np.dot(
+                            np.array(
+                                [
+                                    fbb.max.X - fbb.min.X,
+                                    fbb.max.Y - fbb.min.Y,
+                                    fbb.max.Z - fbb.min.Z,
+                                ]
+                            ),
+                            axis,
+                        )
+                    )
+                )
+                eps = max(float(cyl.Radius()) * 0.05, 0.05)
+                try:
+                    inside_pos = _inside(c_arr + axis * (h * 0.5 + eps))
+                    inside_neg = _inside(c_arr - axis * (h * 0.5 + eps))
+                except Exception:
+                    inside_pos = inside_neg = False
+                if inside_pos and not inside_neg:
                     axis = -axis
                 origin = np.array([loc.X(), loc.Y(), loc.Z()], dtype=float)
                 # pos = face center projected onto the cylinder axis
@@ -67,14 +99,18 @@ def _face_ports(shape) -> list[dict[str, Any]]:
                 radial = c_arr - pos
                 rn = float(np.linalg.norm(radial))
                 outward = float(np.dot(n, radial / rn)) > 0.0 if rn > 1e-9 else True
+                # pos = the mate's contact point: male ports expose their
+                # tip (open end), female ports their bottom (insertion
+                # target, mouth - axis·depth); axis points at the open end
+                contact = pos + axis * (h * 0.5) * (1.0 if outward else -1.0)
                 ports.append(
                     {
                         "name": f"cyl_{idx}",
                         "kind": "cylinder",
-                        "pos": [round(float(v), 4) for v in pos],
+                        "pos": [round(float(v), 4) for v in contact],
                         "axis": [round(float(v), 4) for v in axis],
                         "radius": round(float(cyl.Radius()), 4),
-                        "depth": round(float(face.area / max(2 * 3.14159 * cyl.Radius(), 1e-9)), 4),
+                        "depth": round(h, 4),
                         "gender": "male" if outward else "female",
                         "area": round(float(face.area), 2),
                     }
@@ -101,7 +137,7 @@ def _face_ports(shape) -> list[dict[str, Any]]:
 
 
 def extract_ports(ctx: dict, payload: dict[str, Any]) -> dict[str, Any]:
-    """arq task — {step_path} → {ports, bbox, mesh_path (GLB/STL)}."""
+    """arq task — {step_path} -> {ports, bbox, mesh_path (GLB/STL)}."""
     import build123d as bd
 
     step = Path(str(payload["step_path"]))
@@ -136,7 +172,7 @@ def extract_ports(ctx: dict, payload: dict[str, Any]) -> dict[str, Any]:
 
 def render_assembly(ctx: dict, payload: dict[str, Any]) -> dict[str, Any]:
     """arq task — {entries:[{mesh_path, transform, color, opacity}], view,
-    out_path} → {image_path}."""
+    out_path} -> {image_path}."""
     from cadx.cad.render import render_available, render_scene
 
     if not render_available():

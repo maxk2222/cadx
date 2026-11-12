@@ -235,12 +235,16 @@ class ChatToolSession(ProjectToolSession):
             j = await db.get(Job, jid)
             if j is None:
                 return {"ok": False, "error": "job not found"}
-            gdir = (j.resume_state or {}).get("guide_dir")
-            if not gdir:
-                v = await db.get(Version, j.version_id)
-                if v is None:
-                    return {"ok": False, "error": "version not found"}
-                gdir = str(_storage.version_dir(v.project_id, v.id) / "guide")
+            v = await db.get(Version, j.version_id)
+            if v is None:
+                return {"ok": False, "error": "version not found"}
+            # the note targets THIS chat's project — a guessed job_id from
+            # another project must not get a writable path back
+            if v.project_id != (await self._project(db)).id:
+                return {"ok": False, "error": "job is not in this project"}
+            gdir = (j.resume_state or {}).get("guide_dir") or str(
+                _storage.version_dir(v.project_id, v.id) / "guide"
+            )
             p = Path(gdir) / "user_notes.jsonl"
             p.parent.mkdir(parents=True, exist_ok=True)
             with p.open("a", encoding="utf-8") as fh:

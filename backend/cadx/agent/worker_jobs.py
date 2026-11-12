@@ -381,12 +381,24 @@ def register_artifacts(
                     size=size,
                 )
             )
-        elif key.startswith("guide:"):
+        elif key == "guide:unity_guide":
             session.add(
                 Artifact(
                     version_id=version_id,
                     kind=ArtifactKind.unity_guide,
-                    view=key.split(":", 1)[1],
+                    view="guide",
+                    path=rel,
+                    size=size,
+                )
+            )
+        elif key.startswith("guide:media:"):
+            # step media images shipped next to unity_guide.json — plain
+            # renders for the artifact endpoint, not guide documents
+            session.add(
+                Artifact(
+                    version_id=version_id,
+                    kind=ArtifactKind.render,
+                    view=key.rsplit(":", 1)[1],
                     path=rel,
                     size=size,
                 )

@@ -251,11 +251,23 @@ async def finalize_steps(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
 
 
 def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
+    # must match finalize_steps' validation — otherwise done_mission closes
+    # the mission on a step list finalize would have rejected
+    res_errors: list[str] = []
     if not s.state.steps:
         return {"ok": False, "error": "no steps — create steps and call finalize_steps first"}
     for st in s.state.steps:
         if err := _validate_dual_text(st.text, st.display_text):
-            return {"ok": False, "error": f"step {st.number}: {err} — fix then finalize_steps"}
+            res_errors.append(f"step {st.number}: {err}")
+        if not st.source_pages:
+            res_errors.append(f"step {st.number}: source_pages missing")
+        if st.action_type == "assembly" and not st.sub_steps:
+            res_errors.append(f"step {st.number}: assembly step without sub_steps")
+    if res_errors:
+        return {
+            "ok": False,
+            "error": "; ".join(res_errors[:6]) + " — fix then finalize_steps",
+        }
     return None
 
 

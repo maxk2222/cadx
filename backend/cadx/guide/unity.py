@@ -95,6 +95,63 @@ def _mat_to_quat(r: np.ndarray) -> list[float]:
 _GUIDE_VERSION = "1.0"
 
 
+def _joint_arrows(joints: list[dict], inst_by_part: dict, parts: dict) -> list[dict]:
+    """Approach-direction arrows from this step's recorded joints — anchored
+    at the fixed port's world position (the mate surface, not the part
+    origin which can sit at a bbox corner)."""
+    arrows = []
+    for j in joints:
+        to_inst = inst_by_part.get(j.get("fixed_part", ""))
+        if to_inst is None:
+            continue
+        m = np.asarray(to_inst.transform, dtype=float).reshape(4, 4)
+        axis_local = np.asarray(j.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float)
+        axis_world = _unit(m[0:3, 0:3] @ axis_local)
+        anchor = m[0:3, 3].copy()
+        fixed_part = parts.get(str(j.get("fixed_part", "")))
+        if fixed_part is not None:
+            port = next((p for p in fixed_part.ports if p.name == j.get("fixed_port")), None)
+            if port is not None:
+                anchor = m[0:3, 0:3] @ np.asarray(port.pos, dtype=float) + m[0:3, 3]
+        arrows.append(
+            {
+                "instance_id": j.get("moving_part", ""),
+                "origin": to_unity_position((anchor - axis_world * 30.0).tolist()),
+                "direction": to_unity_position((axis_world * 1000.0).tolist()),
+            }
+        )
+    return arrows
+
+
+def _annotation_arrows(
+    annotations: list[dict], step_no: int, inst_by_part: dict, parts: dict
+) -> list[dict]:
+    """User-authored annotation arrows: WORLD-frame direction hints anchored
+    at the annotated part's world bbox center — never rotated."""
+    from cadx.guide import solver as _solver
+
+    arrows = []
+    for an in annotations:
+        if an.get("kind") != "arrow" or int(an.get("step", -1)) != step_no:
+            continue
+        tgt = inst_by_part.get(str(an.get("part_id", "")))
+        part = parts.get(str(an.get("part_id", "")))
+        if tgt is None or part is None:
+            continue
+        mn, mx = _solver.transform_bbox(part, tgt.transform)
+        anchor = (np.asarray(mn) + np.asarray(mx)) / 2.0
+        axis = _unit(np.asarray(an.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float))
+        arrows.append(
+            {
+                "instance_id": str(an.get("part_id", "")),
+                "origin": to_unity_position((anchor - axis * 30.0).tolist()),
+                "direction": to_unity_position((axis * 1000.0).tolist()),
+                "label": str(an.get("label", "")),
+            }
+        )
+    return arrows
+
+
 def build_unity_guide(state) -> dict[str, Any]:
     """GuideState → unity_guide.json payload.
 
@@ -114,7 +171,6 @@ def build_unity_guide(state) -> dict[str, Any]:
     for step in state.steps:
         placed = state.assembly.step_instances.get(str(step.number), [])
         placements = []
-        arrows = []
         for pid in placed:
             inst = inst_by_part.get(pid)
             part = parts.get(pid)
@@ -124,59 +180,32 @@ def build_unity_guide(state) -> dict[str, Any]:
                 {
                     "instance_id": pid,
                     "part_id": pid,
-                    "model_ref": (part.step_path or part.mesh_path or "") if part else "",
+                    "model_ref": _model_ref(part),
                     "transform": transform_to_unity(inst.transform),
                 }
             )
             if pid not in visible:
                 visible.append(pid)
-        for j in joint_by_step.get(step.number, []):
-            to_inst = inst_by_part.get(j.get("fixed_part", ""))
-            if to_inst is None:
-                continue
-            m = np.asarray(to_inst.transform, dtype=float).reshape(4, 4)
-            axis_local = np.asarray(j.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float)
-            axis_world = _unit(m[0:3, 0:3] @ axis_local)
-            arrows.append(
-                {
-                    "instance_id": j.get("moving_part", ""),
-                    "origin": to_unity_position((m[0:3, 3] - axis_world * 30.0).tolist()),
-                    "direction": to_unity_position((axis_world * 1000.0).tolist()),
-                }
-            )
-        # user-authored annotations: WORLD-frame direction hints (down/up/…)
-        # anchored at the annotated part's world position — never rotated
-        for an in state.annotations:
-            if an.get("kind") != "arrow" or int(an.get("step", -1)) != step.number:
-                continue
-            tgt = inst_by_part.get(str(an.get("part_id", "")))
-            part = parts.get(str(an.get("part_id", "")))
-            if tgt is None or part is None:
-                continue
-            from cadx.guide import solver as _solver
-
-            mn, mx = _solver.transform_bbox(part, tgt.transform)
-            anchor = (np.asarray(mn) + np.asarray(mx)) / 2.0
-            axis = _unit(np.asarray(an.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float))
-            arrows.append(
-                {
-                    "instance_id": str(an.get("part_id", "")),
-                    "origin": to_unity_position((anchor - axis * 30.0).tolist()),
-                    "direction": to_unity_position((axis * 1000.0).tolist()),
-                    "label": str(an.get("label", "")),
-                }
-            )
-        steps_out.append(
-            {
-                "index": step.number,
-                "display_text": step.display_text or step.text,
-                "internal_text": step.text,
-                "placements": placements,
-                "highlights": list(placed),
-                "arrows": arrows,
-                "visible_instance_ids": list(visible),
-            }
-        )
+        arrows = _joint_arrows(joint_by_step.get(step.number, []), inst_by_part, parts)
+        arrows += _annotation_arrows(state.annotations, step.number, inst_by_part, parts)
+        row: dict[str, Any] = {
+            "index": step.number,
+            "display_text": step.display_text or step.text,
+            "internal_text": step.text,
+            "placements": placements,
+            "highlights": list(placed),
+            "arrows": arrows,
+            "visible_instance_ids": list(visible),
+        }
+        # media_image is copied into output/media/ by _emit_artifacts —
+        # reference it by file name so the JSON stays portable
+        if step.media_image:
+            row["media_image"] = step.media_image.rsplit("/", 1)[-1]
+        if step.safety_hint:
+            row["safety_hint"] = step.safety_hint
+        if step.tools:
+            row["tools"] = list(step.tools)
+        steps_out.append(row)
     doc_name = ""
     if state.document is not None and state.document.pdf_path:
         doc_name = state.document.pdf_path.rsplit("/", 1)[-1]
@@ -191,7 +220,7 @@ def build_unity_guide(state) -> dict[str, Any]:
                 "part_id": p.id,
                 "name": p.name,
                 "source": p.source,
-                "model_ref": p.step_path or p.mesh_path or "",
+                "model_ref": _model_ref(p),
                 "missing_generated": p.source == "generated",
             }
             for p in state.parts
@@ -204,3 +233,12 @@ def build_unity_guide(state) -> dict[str, Any]:
 def _unit(v: np.ndarray) -> np.ndarray:
     n = float(np.linalg.norm(v))
     return v / n if n > 1e-12 else v
+
+
+def _model_ref(part: Any) -> str:
+    """Basename of the part's best Unity-loadable model: prefer the GLB
+    tessellation (STEP/BRep can't be rendered by Unity)."""
+    if part is None:
+        return ""
+    src = part.mesh_path or part.step_path or ""
+    return src.rsplit("/", 1)[-1] if src else ""

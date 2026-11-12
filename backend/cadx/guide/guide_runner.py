@@ -70,15 +70,27 @@ def _guide_assets(ctx: AgentCtx) -> list[dict[str, Any]]:
 
 
 async def _emit_artifacts(state: GuideState, state_dir: Path) -> dict[str, str]:
-    """Deterministic emit mission — write unity_guide.json + diagnostics."""
+    """Deterministic emit mission — write unity_guide.json + media."""
     out_dir = state_dir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
     guide = unity.build_unity_guide(state)
     guide_path = out_dir / "unity_guide.json"
     guide_path.write_text(json.dumps(guide, indent=1), encoding="utf-8")
     state.unity_guide_path = str(guide_path)
+    artifacts = {"guide:unity_guide": storage.relpath(guide_path)}
+    # ship each step's media_image alongside the JSON — registered as
+    # render artifacts so the app can download them by artifact endpoint
+    media_dir = out_dir / "media"
+    for step in state.steps:
+        src = Path(step.media_image) if step.media_image else None
+        if src is None or not src.exists():
+            continue
+        media_dir.mkdir(exist_ok=True)
+        dst = media_dir / src.name
+        dst.write_bytes(src.read_bytes())
+        artifacts[f"guide:media:{src.name}"] = storage.relpath(dst)
     state.save(state_dir)
-    return {"guide:unity_guide": storage.relpath(guide_path)}
+    return artifacts
 
 
 def _load_or_init_state(ctx: AgentCtx, state_dir: Path, resume_state: dict[str, Any]) -> GuideState:

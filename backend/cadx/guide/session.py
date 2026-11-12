@@ -268,6 +268,9 @@ class GuideToolSession(ToolSession):
     # -- lifecycle tools ------------------------------------------------------ #
 
     def _tool_done_mission(self, a: dict[str, Any]) -> dict[str, Any]:
+        # ensure tool modules (and their DONE_GUARDS registrations) are
+        # loaded — otherwise done_mission as the FIRST call skips the guard
+        gtools.merged_handlers()
         guard = gtools.DONE_GUARDS.get(self.mission)
         if guard is not None and (err := guard(self)):
             return err
@@ -279,9 +282,12 @@ class GuideToolSession(ToolSession):
     async def _tool_ask_user(self, a: dict[str, Any]) -> dict[str, Any]:
         if self._park_fn is None:
             return {"ok": False, "error": "asking the user is not available here"}
+        # OpenQuestion contract (llm/schemas.py): the frontend renders
+        # q.question — "text"/"context" keys would show as empty bullets
         question = {
-            "text": str(a.get("question", "")).strip() or "Question from guide builder",
-            "context": str(a.get("context", "")).strip(),
+            "question": str(a.get("question", "")).strip() or "Question from guide builder",
+            "why_it_matters": str(a.get("context", "")).strip(),
+            "blocking": True,
         }
         self.parked = True
         self.parked_questions = [question]

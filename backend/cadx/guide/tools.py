@@ -78,6 +78,7 @@ MISSION_TOOLS: dict[str, list[str]] = {
         "detect_language",
         "classify_pages",
         "set_detected_part_names",
+        "ask_user",
         *SHARED_PAGE_TOOLS,
         *SHARED_PLAN_TOOLS,
         "done_mission",
@@ -93,6 +94,7 @@ MISSION_TOOLS: dict[str, list[str]] = {
         *SHARED_STATE_TOOLS,
         *SHARED_PLAN_TOOLS,
         "list_user_notes",
+        "ask_user",
         "done_mission",
     ],
     "parts": [
@@ -124,6 +126,7 @@ MISSION_TOOLS: dict[str, list[str]] = {
         "get_page_image",
         "get_page_text",
         "list_user_notes",
+        "ask_user",
         "done_mission",
     ],
     "review": [
@@ -142,6 +145,7 @@ MISSION_TOOLS: dict[str, list[str]] = {
         "list_arrows",
         "remove_arrow",
         "render_assembly",
+        "ask_user",
         *SHARED_STATE_TOOLS,
         "done_mission",
     ],

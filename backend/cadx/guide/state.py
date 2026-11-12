@@ -15,6 +15,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
+
 STATE_FILENAME = "state.json"
 
 
@@ -177,7 +181,10 @@ class GuideState(BaseModel):
             return None
         try:
             return cls.model_validate_json(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            # silent None would reset a half-built guide to scratch with no
+            # trace — keep the corrupt file for diagnosis
+            log.warning("guide.state_load_failed", dir=str(state_dir), err=str(e)[:300])
             return None
 
     # -- mission bookkeeping ------------------------------------------------- #
