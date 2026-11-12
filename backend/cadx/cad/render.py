@@ -377,6 +377,8 @@ def render_scene(
         n = 0
         for e in entries:
             mesh = _load_for_render(e["mesh_path"])
+            if mesh is None:
+                continue  # unreadable/empty mesh must not kill the whole render
             t = np.asarray(e.get("transform") or np.eye(4), dtype=float).reshape(4, 4)
             if t.shape == (4, 4) and not np.allclose(t, np.eye(4)):
                 mesh = mesh.transform(t, inplace=False)

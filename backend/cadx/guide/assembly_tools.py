@@ -36,7 +36,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "to pick the right ports.",
         {
             "part_id": _s("part to place"),
-            "target_part_id": _s("already-placed part it mates with"),
+            "target_part_id": _s("placed target — part_id or instance_id (adapter#1)"),
         },
         ["part_id", "target_part_id"],
     ),
@@ -48,7 +48,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "part_id": _s("part to place"),
             "moving_port": _s("port name on the moving part"),
-            "target_part_id": _s("placed target part"),
+            "target_part_id": _s("placed target — part_id or instance_id (adapter#1)"),
             "target_port": _s("port name on the target part"),
         },
         ["part_id", "moving_port", "target_part_id", "target_port"],
@@ -91,7 +91,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "Apply an additional roll rotation (deg) about the placed part's "
         "attachment axis — only for placed instances.",
         {
-            "part_id": _s("placed part"),
+            "part_id": _s("placed part_id or instance_id (adapter#1)"),
             "degrees": _num("roll degrees"),
         },
         ["part_id", "degrees"],
@@ -99,7 +99,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "unplace_instance": _fn(
         "unplace_instance",
         "Remove a part's placement (and its joints) so it can be re-placed.",
-        {"part_id": _s("part to unplace")},
+        {"part_id": _s("part_id or instance_id to unplace")},
         ["part_id"],
     ),
     "reset_step": _fn(
@@ -143,11 +143,86 @@ SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
-def _inst(s: GuideToolSession, pid: str) -> AssemblyInstance | None:
-    for i in s.state.assembly.instances:
-        if i.part_id == pid:
-            return i
-    return None
+def _inst_by_id(s: GuideToolSession, inst_id: str) -> AssemblyInstance | None:
+    return next((i for i in s.state.assembly.instances if i.instance_id == inst_id), None)
+
+
+def _insts_of(s: GuideToolSession, pid: str) -> list[AssemblyInstance]:
+    return [i for i in s.state.assembly.instances if i.part_id == pid]
+
+
+def _resolve_inst(s: GuideToolSession, x: str) -> tuple[AssemblyInstance | None, str | None]:
+    """Resolve a placed instance by instance_id ("adapter#1") or part_id
+    (shortcut when exactly one instance of that part is placed — ambiguous
+    ids fail loudly and name the valid instance ids)."""
+    inst = _inst_by_id(s, x)
+    if inst is not None:
+        return inst, None
+    insts = _insts_of(s, x)
+    if len(insts) == 1:
+        return insts[0], None
+    if insts:
+        ids = [i.instance_id for i in insts]
+        return None, f"'{x}' has {len(insts)} placed instances — pass instance_id: {ids}"
+    return None, f"no placed instance '{x}'"
+
+
+def _name_index(s: GuideToolSession) -> dict[str, str]:
+    index = {_norm2(p.name): p.id for p in s.state.parts}
+    index.update({_norm2(p.id): p.id for p in s.state.parts})
+    return index
+
+
+def _resolve_name(s: GuideToolSession, name: str) -> str | None:
+    return s._aliases_store.get(_norm2(name)) or _name_index(s).get(_norm2(name))
+
+
+# sub_step actions that consume a NEW part occurrence — orient/check inspect
+# or adjust an already-placed instance and must not inflate the count
+_PLACE_ACTIONS = {"place", "attach", "insert", "fasten", "mount"}
+
+
+def _step_requirements(s: GuideToolSession) -> dict[int, dict[str, int]]:
+    """Per-step required instance counts: {step_no: {part_id: n}}. Each
+    placement sub-step names one occurrence of a part; steps without
+    sub-steps fall back to required_parts occurrences (1 per name)."""
+    reqs: dict[int, dict[str, int]] = {}
+    for st in s.state.steps:
+        if st.action_type != "assembly":
+            continue
+        counts: dict[str, int] = {}
+        for ss in st.sub_steps:
+            if ss.action not in _PLACE_ACTIONS:
+                continue
+            pid = _resolve_name(s, ss.part)
+            if pid:
+                counts[pid] = counts.get(pid, 0) + 1
+        if not counts:
+            for n in st.required_parts:
+                pid = _resolve_name(s, n)
+                counts[pid or _norm2(n) + " (unresolved)"] = (
+                    counts.get(pid or _norm2(n) + " (unresolved)", 0) + 1
+                )
+        reqs[st.number] = counts
+    return reqs
+
+
+def _completeness_issues(s: GuideToolSession) -> list[str]:
+    """Every instance a step requires must exist — per-step counting, a part
+    placed once does NOT satisfy later steps that need their own copy."""
+    issues: list[str] = []
+    for st_no, counts in _step_requirements(s).items():
+        for pid, need in counts.items():
+            have = sum(
+                1
+                for i in s.state.assembly.instances
+                if i.placed_in_step == st_no and i.part_id == pid
+            )
+            if have < need:
+                issues.append(f"step {st_no}: '{pid}' needs {need} instance(s), has {have}")
+    if not s.state.assembly.instances:
+        issues.append("no parts placed at all")
+    return issues
 
 
 def _named_port(s: GuideToolSession, part_id: str, name: Any) -> Any:
@@ -164,7 +239,14 @@ def _placed_bboxes(s: GuideToolSession) -> list[dict[str, Any]]:
         if part is None:
             continue
         mn, mx = solver.transform_bbox(part, inst.transform)
-        out.append({"part_id": inst.part_id, "bbox_min_world": mn, "bbox_max_world": mx})
+        out.append(
+            {
+                "instance_id": inst.instance_id,
+                "part_id": inst.part_id,
+                "bbox_min_world": mn,
+                "bbox_max_world": mx,
+            }
+        )
     return out
 
 
@@ -175,7 +257,7 @@ def _scene(s: GuideToolSession) -> gscene.Scene:
         for inst in s.state.assembly.instances:
             part = s.state.part_by_id(inst.part_id)
             if part is not None and part.mesh_path:
-                sc.add(inst.part_id, part.mesh_path, inst.transform)
+                sc.add(inst.instance_id or inst.part_id, part.mesh_path, inst.transform)
         s._scene_cache = sc
     return sc
 
@@ -196,13 +278,17 @@ def _cache_candidates(s: GuideToolSession, cands: list[dict[str, Any]]) -> list[
 
 async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     moving = s.state.part_by_id(str(a.get("part_id", "")))
-    fixed = s.state.part_by_id(str(a.get("target_part_id", "")))
-    if moving is None or fixed is None:
+    fixed_inst, err = _resolve_inst(s, str(a.get("target_part_id", "")))
+    if moving is None or fixed_inst is None:
+        return {"ok": False, "error": err or "part not found — check list_parts"}
+    fixed = s.state.part_by_id(fixed_inst.part_id)
+    if fixed is None:
         return {"ok": False, "error": "part not found — check list_parts"}
-    if _inst(s, fixed.id) is None:
-        return {"ok": False, "error": f"target '{fixed.id}' is not placed yet"}
     used = {
-        str(j.get("fixed_port")) for j in s.state.assembly.joints if j.get("fixed_part") == fixed.id
+        str(j.get("fixed_port"))
+        for j in s.state.assembly.joints
+        if j.get("fixed_instance") == fixed_inst.instance_id
+        or (not j.get("fixed_instance") and j.get("fixed_part") == fixed_inst.part_id)
     }
     cands = solver.find_matching_ports(moving, fixed, used_fixed_ports=used)
     if not cands:
@@ -221,12 +307,12 @@ async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[st
 
 async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     moving = s.state.part_by_id(str(a.get("part_id", "")))
-    fixed = s.state.part_by_id(str(a.get("target_part_id", "")))
-    if moving is None or fixed is None:
+    fixed_inst, err = _resolve_inst(s, str(a.get("target_part_id", "")))
+    if moving is None or fixed_inst is None:
+        return {"ok": False, "error": err or "part not found — check list_parts"}
+    fixed = s.state.part_by_id(fixed_inst.part_id)
+    if fixed is None:
         return {"ok": False, "error": "part not found — check list_parts"}
-    fixed_inst = _inst(s, fixed.id)
-    if fixed_inst is None:
-        return {"ok": False, "error": f"target '{fixed.id}' is not placed yet"}
     cands = solver.solve_attachment(
         moving,
         str(a.get("moving_port", "")),
@@ -240,6 +326,7 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
     sc = _scene(s)
     for c in cands:
         c["fixed_part"] = fixed.id
+        c["fixed_instance"] = fixed_inst.instance_id
         if moving.mesh_path:
             rep = sc.collision_report(moving.id, moving.mesh_path, c["transform"])
             c["collision_free"] = rep["ok"]
@@ -314,9 +401,15 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     step = s.state.step_by_number(step_no)
     if step is None:
         return {"ok": False, "error": f"step {step_no} not found"}
-    existing = _inst(s, pid)
-    if existing is not None:
-        return {"ok": False, "error": f"'{pid}' already placed — unplace_instance first"}
+    existing = _insts_of(s, pid)
+    need = sum(req.get(pid, 0) for req in _step_requirements(s).values())
+    cap = max(need, 2) + 4  # repeated fittings need >1 instance; bound runaway
+    if len(existing) >= cap:
+        return {
+            "ok": False,
+            "error": f"'{pid}' already has {len(existing)} instances (required {need}) — "
+            "unplace_instance one first or ask_user",
+        }
     if not cand.get("collision_free", True):
         return {
             "ok": False,
@@ -326,12 +419,13 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     transform = cand["transform"]
     inst = AssemblyInstance(
         part_id=pid,
+        instance_id=f"{pid}#{len(existing) + 1}",
         transform=[[float(v) for v in row] for row in transform],
         placed_in_step=step_no,
         substep_idx=int(a.get("substep_idx", 0)),
     )
     s.state.assembly.instances.append(inst)
-    s.state.assembly.step_instances.setdefault(str(step_no), []).append(pid)
+    s.state.assembly.step_instances.setdefault(str(step_no), []).append(inst.instance_id)
     if cand.get("moving_port") and cand.get("fixed_port"):
         fixed_part = s.state.part_by_id(str(cand.get("fixed_part") or ""))
         fixed_port = next(
@@ -343,6 +437,8 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
                 "step": step_no,
                 "moving_part": pid,
                 "fixed_part": str(cand.get("fixed_part") or ""),
+                "moving_instance": inst.instance_id,
+                "fixed_instance": str(cand.get("fixed_instance") or ""),
                 "moving_port": cand["moving_port"],
                 "fixed_port": cand["fixed_port"],
                 # FIXED port's axis in the FIXED part's local frame — unity.py
@@ -363,19 +459,29 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
 
 
 async def rotate_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
-    inst = _inst(s, str(a.get("part_id", "")))
+    inst, err = _resolve_inst(s, str(a.get("part_id", "")))
     if inst is None:
-        return {"ok": False, "error": "part not placed"}
+        return {"ok": False, "error": err}
     part = s.state.part_by_id(inst.part_id)
     deg = float(a.get("degrees", 0.0))
     if abs(deg) < 1e-6 or part is None:
         return {"ok": False, "error": "degrees must be non-zero"}
-    joint = next((j for j in s.state.assembly.joints if j.get("moving_part") == inst.part_id), None)
+    joint = next(
+        (
+            j
+            for j in s.state.assembly.joints
+            if (j.get("moving_instance") or j.get("moving_part")) == inst.instance_id
+            or (not j.get("moving_instance") and j.get("moving_part") == inst.part_id)
+        ),
+        None,
+    )
     m = np.asarray(inst.transform, dtype=float).reshape(4, 4)
     if joint is not None:
         # roll about the mate axis at the FIXED port's world position —
         # approach_axis is stored in the fixed part's local frame
-        fixed = _inst(s, str(joint.get("fixed_part", "")))
+        fixed = _inst_by_id(s, str(joint.get("fixed_instance", ""))) or next(
+            iter(_insts_of(s, str(joint.get("fixed_part", "")))), None
+        )
         fixed_part = s.state.part_by_id(str(joint.get("fixed_part", "")))
         fixed_port = next(
             (
@@ -402,31 +508,42 @@ async def rotate_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
         pivot = m[0:3, 0:3] @ c + m[0:3, 3]
         inst.transform = (solver.delta_about_pivot(np.array([0, 0, 1.0]), deg, pivot) @ m).tolist()
     s._scene_cache = None
-    return {"ok": True, "part_id": inst.part_id, "rolled_deg": deg}
+    return {"ok": True, "instance_id": inst.instance_id, "rolled_deg": deg}
 
 
 async def unplace_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
-    pid = str(a.get("part_id", ""))
-    inst = _inst(s, pid)
+    inst, err = _resolve_inst(s, str(a.get("part_id", "")))
     if inst is None:
-        return {"ok": False, "error": "part not placed"}
-    s.state.assembly.instances = [i for i in s.state.assembly.instances if i.part_id != pid]
+        return {"ok": False, "error": err}
+    iid = inst.instance_id
+    s.state.assembly.instances = [i for i in s.state.assembly.instances if i.instance_id != iid]
     for k, ids in list(s.state.assembly.step_instances.items()):
-        s.state.assembly.step_instances[k] = [x for x in ids if x != pid]
+        s.state.assembly.step_instances[k] = [x for x in ids if x != iid]
     s.state.assembly.joints = [
         j
         for j in s.state.assembly.joints
-        if j.get("moving_part") != pid and j.get("fixed_part") != pid
+        if (j.get("moving_instance") or j.get("moving_part")) != iid
+        and (j.get("fixed_instance") or j.get("fixed_part")) != iid
+        and j.get("moving_instance") is not None  # legacy part_id joints stay part-scoped
+    ]
+    # legacy joints (no instance ids) belong to the removed instance too
+    s.state.assembly.joints = [
+        j
+        for j in s.state.assembly.joints
+        if j.get("moving_instance") is not None
+        or (j.get("moving_part") != inst.part_id and j.get("fixed_part") != inst.part_id)
     ]
     s._scene_cache = None
-    return {"ok": True, "unplaced": pid}
+    return {"ok": True, "unplaced": iid}
 
 
 async def reset_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     step_no = str(int(a.get("step", 0)))
     ids = list(s.state.assembly.step_instances.get(step_no, []))
-    for pid in ids:
-        inst = _inst(s, pid)
+    for iid in ids:
+        inst = _inst_by_id(s, iid)
+        if inst is None:  # legacy rows stored part_id, not instance_id
+            inst = next(iter(_insts_of(s, iid)), None)
         if inst is not None:
             s.state.assembly.instances.remove(inst)
     s.state.assembly.step_instances[step_no] = []
@@ -474,27 +591,29 @@ async def check_collisions(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
     pid = str(a.get("part_id", "") or "")
     sc = _scene(s)
     if pid:
-        inst = _inst(s, pid)
-        part = s.state.part_by_id(pid)
+        inst, err = _resolve_inst(s, pid)
+        part = s.state.part_by_id(inst.part_id) if inst else None
         if inst is None or part is None or not part.mesh_path:
-            return {"ok": False, "error": "part not placed or no mesh"}
+            return {"ok": False, "error": err or "instance not placed or no mesh"}
+        key = inst.instance_id or inst.part_id
         # check against all OTHERS — temporarily drop self
-        sc.remove(pid)
+        sc.remove(key)
         try:
-            rep = sc.collision_report(pid, part.mesh_path, inst.transform)
+            rep = sc.collision_report(key, part.mesh_path, inst.transform)
         finally:
-            sc.add(pid, part.mesh_path, inst.transform)
-        return {"ok": True, "part_id": pid, **rep}
+            sc.add(key, part.mesh_path, inst.transform)
+        return {"ok": True, "instance_id": key, **rep}
     return {"ok": True, **sc.all_pairs_collision_report()}
 
 
 async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
-    insts = {i.part_id: i for i in s.state.assembly.instances}
+    insts = {i.instance_id: i for i in s.state.assembly.instances}
+    insts.update({i.part_id: i for i in s.state.assembly.instances})  # legacy joints
     rows = []
     bad = []
     for j in s.state.assembly.joints:
-        mv = insts.get(str(j.get("moving_part", "")))
-        fx = insts.get(str(j.get("fixed_part", "")))
+        mv = insts.get(str(j.get("moving_instance") or j.get("moving_part") or ""))
+        fx = insts.get(str(j.get("fixed_instance") or j.get("fixed_part") or ""))
         if mv is None or fx is None:
             continue
         mp = _named_port(s, mv.part_id, j.get("moving_port"))
@@ -510,7 +629,7 @@ async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> 
         ok = gap < solver.GAP_GATE_MM * 20 and ndot <= -0.95  # post-hoc tolerance wider than gate
         rows.append(
             {
-                "joint": f"{mv.part_id}→{fx.part_id}",
+                "joint": f"{mv.instance_id or mv.part_id}→{fx.instance_id or fx.part_id}",
                 "gap_mm": round(gap, 4),
                 "normal_dot": round(ndot, 4),
                 "ok": ok,
@@ -528,59 +647,19 @@ async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> 
 
 
 async def validate_assembly_completeness(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
-    issues = []
-    placed = s.state.placed_part_ids()
-    for step in s.state.steps:
-        if step.action_type != "assembly":
-            continue
-        need = set(step.required_parts)
-        got = set(s.state.assembly.step_instances.get(str(step.number), []))
-        # required_parts holds manual names — resolve via aliases + name/id
-        # index, same matching as match_required_parts (norm-keyed)
-        import re as _re
-
-        def _norm(x: str) -> str:
-            return _re.sub(r"[^a-z0-9äöüß]+", " ", x.lower()).strip()
-
-        index = {_norm(p.name): p.id for p in s.state.parts}
-        index.update({_norm(p.id): p.id for p in s.state.parts})
-        missing = set()
-        for n in need:
-            pid = s._aliases_store.get(_norm(n)) or index.get(_norm(n))
-            if pid is None:
-                missing.add(f"{n} (unresolved)")
-            elif pid not in got:
-                missing.add(pid)
-        if missing:
-            issues.append(f"step {step.number}: unplaced parts {sorted(missing)}")
-    if not s.state.assembly.instances:
-        issues.append("no parts placed at all")
-    return {"ok": not issues, "issues": issues, "placed": sorted(placed)}
+    issues = _completeness_issues(s)
+    placed = sorted(i.instance_id or i.part_id for i in s.state.assembly.instances)
+    return {"ok": not issues, "issues": issues, "placed": placed}
 
 
 def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
     if not s.state.assembly.instances:
         return {"ok": False, "error": "nothing placed — run solve_*_preview + place_instance"}
-    # completeness gate: every assembly step's required parts must be placed
-    # — the review mission can't repair coverage the mission never attempted
-    placed = s.state.placed_part_ids()
-    index = {_norm2(p.name): p.id for p in s.state.parts}
-    index.update({_norm2(p.id): p.id for p in s.state.parts})
-    missing: list[str] = []
-    for step in s.state.steps:
-        if step.action_type != "assembly":
-            continue
-        for n in step.required_parts:
-            pid = s._aliases_store.get(_norm2(n)) or index.get(_norm2(n))
-            if pid is None:
-                missing.append(f"{n} (unresolved)")
-            elif pid not in placed:
-                missing.append(pid)
-    if missing:
-        return {
-            "ok": False,
-            "error": "unplaced required parts: " + ", ".join(sorted(set(missing))[:8]),
-        }
+    # completeness gate: every required INSTANCE per step must be placed —
+    # a part placed once does not satisfy later steps needing their own copy
+    issues = _completeness_issues(s)
+    if issues:
+        return {"ok": False, "error": "incomplete assembly: " + "; ".join(issues[:6])}
     s.state.assembly.status = "complete"
     return None
 

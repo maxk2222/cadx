@@ -392,7 +392,9 @@ class GuideToolSession(ToolSession):
         return {"ok": True, "step": s.model_dump()}
 
     def _tool_list_parts(self, a: dict[str, Any]) -> dict[str, Any]:
-        placed = self.state.placed_part_ids()
+        insts_by_part: dict[str, list[str]] = {}
+        for i in self.state.assembly.instances:
+            insts_by_part.setdefault(i.part_id, []).append(i.instance_id or i.part_id)
         return {
             "ok": True,
             "parts": [
@@ -402,7 +404,8 @@ class GuideToolSession(ToolSession):
                     "source": p.source,
                     "ports": len(p.ports),
                     "bbox": [p.bbox_min, p.bbox_max],
-                    "placed": p.id in placed,
+                    "placed": p.id in insts_by_part,
+                    "instances": insts_by_part.get(p.id, []),
                 }
                 for p in self.state.parts
             ],

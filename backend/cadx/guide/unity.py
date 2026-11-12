@@ -95,13 +95,13 @@ def _mat_to_quat(r: np.ndarray) -> list[float]:
 _GUIDE_VERSION = "1.0"
 
 
-def _joint_arrows(joints: list[dict], inst_by_part: dict, parts: dict) -> list[dict]:
+def _joint_arrows(joints: list[dict], inst_by_id: dict, parts: dict) -> list[dict]:
     """Approach-direction arrows from this step's recorded joints — anchored
     at the fixed port's world position (the mate surface, not the part
     origin which can sit at a bbox corner)."""
     arrows = []
     for j in joints:
-        to_inst = inst_by_part.get(j.get("fixed_part", ""))
+        to_inst = inst_by_id.get(j.get("fixed_instance") or j.get("fixed_part", ""))
         if to_inst is None:
             continue
         m = np.asarray(to_inst.transform, dtype=float).reshape(4, 4)
@@ -115,7 +115,7 @@ def _joint_arrows(joints: list[dict], inst_by_part: dict, parts: dict) -> list[d
                 anchor = m[0:3, 0:3] @ np.asarray(port.pos, dtype=float) + m[0:3, 3]
         arrows.append(
             {
-                "instance_id": j.get("moving_part", ""),
+                "instance_id": j.get("moving_instance") or j.get("moving_part", ""),
                 "origin": to_unity_position((anchor - axis_world * 30.0).tolist()),
                 "direction": to_unity_position((axis_world * 1000.0).tolist()),
             }
@@ -124,7 +124,7 @@ def _joint_arrows(joints: list[dict], inst_by_part: dict, parts: dict) -> list[d
 
 
 def _annotation_arrows(
-    annotations: list[dict], step_no: int, inst_by_part: dict, parts: dict
+    annotations: list[dict], step_no: int, inst_by_id: dict, parts: dict
 ) -> list[dict]:
     """User-authored annotation arrows: WORLD-frame direction hints anchored
     at the annotated part's world bbox center — never rotated."""
@@ -134,7 +134,7 @@ def _annotation_arrows(
     for an in annotations:
         if an.get("kind") != "arrow" or int(an.get("step", -1)) != step_no:
             continue
-        tgt = inst_by_part.get(str(an.get("part_id", "")))
+        tgt = inst_by_id.get(str(an.get("part_id", "")))
         part = parts.get(str(an.get("part_id", "")))
         if tgt is None or part is None:
             continue
@@ -162,7 +162,9 @@ def build_unity_guide(state) -> dict[str, Any]:
     visible set.
     """
     parts = {p.id: p for p in state.parts}
-    inst_by_part = {i.part_id: i for i in state.assembly.instances}
+    inst_by_id = {i.instance_id or i.part_id: i for i in state.assembly.instances}
+    for i in state.assembly.instances:  # annotations address parts by id — map to first instance
+        inst_by_id.setdefault(i.part_id, i)
     joint_by_step: dict[int, list[dict]] = {}
     for j in state.assembly.joints:
         joint_by_step.setdefault(int(j.get("step", 0)), []).append(j)
@@ -171,23 +173,23 @@ def build_unity_guide(state) -> dict[str, Any]:
     for step in state.steps:
         placed = state.assembly.step_instances.get(str(step.number), [])
         placements = []
-        for pid in placed:
-            inst = inst_by_part.get(pid)
-            part = parts.get(pid)
+        for iid in placed:
+            inst = inst_by_id.get(iid)
             if inst is None:
                 continue
+            part = parts.get(inst.part_id)
             placements.append(
                 {
-                    "instance_id": pid,
-                    "part_id": pid,
+                    "instance_id": inst.instance_id or iid,
+                    "part_id": inst.part_id,
                     "model_ref": _model_ref(part),
                     "transform": transform_to_unity(inst.transform),
                 }
             )
-            if pid not in visible:
-                visible.append(pid)
-        arrows = _joint_arrows(joint_by_step.get(step.number, []), inst_by_part, parts)
-        arrows += _annotation_arrows(state.annotations, step.number, inst_by_part, parts)
+            if (inst.instance_id or iid) not in visible:
+                visible.append(inst.instance_id or iid)
+        arrows = _joint_arrows(joint_by_step.get(step.number, []), inst_by_id, parts)
+        arrows += _annotation_arrows(state.annotations, step.number, inst_by_id, parts)
         row: dict[str, Any] = {
             "index": step.number,
             "display_text": step.display_text or step.text,

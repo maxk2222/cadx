@@ -107,9 +107,14 @@ class DocumentIndex(BaseModel):
 
 
 class AssemblyInstance(BaseModel):
-    """One placed part (KIARA AssemblyInstance)."""
+    """One placed occurrence of a part (KIARA AssemblyInstance).
+
+    A registered part may be placed several times (left/right sides,
+    repeated fittings) — each placement is its own instance keyed by
+    ``instance_id`` ("<part_id>#<n>")."""
 
     part_id: str
+    instance_id: str = ""  # "<part_id>#<n>", unique among live instances
     transform: list[list[float]] = Field(default_factory=list)  # 4x4, mm, CAD frame
     placed_in_step: int = 0
     substep_idx: int = 0
@@ -118,7 +123,7 @@ class AssemblyInstance(BaseModel):
 class AssemblyState(BaseModel):
     instances: list[AssemblyInstance] = Field(default_factory=list)
     joints: list[dict] = Field(default_factory=list)
-    step_instances: dict[str, list[str]] = Field(default_factory=dict)
+    step_instances: dict[str, list[str]] = Field(default_factory=dict)  # step -> instance_ids
     status: str = "empty"  # empty | partial | complete
 
 

@@ -10,7 +10,8 @@ For each assembly step's sub_steps, in order:
 
 Hard rules:
 - You place parts ONLY via candidate_id from a preview call — you cannot compute transforms.
-- Every part in the step's required_parts must end up placed in that step.
+- INSTANCES: one registered part can be placed MULTIPLE times — left/right sides and repeated fittings are separate instances (adapter#1, adapter#2, …). Every occurrence the manual describes gets its own place_instance call. When a target is ambiguous the tools tell you the valid instance_ids — pass e.g. "adapter#1" as target_part_id.
+- Every part occurrence in the step's required_parts must end up placed in that step.
 - Keep sub_steps order; a part may target an already-placed part only.
 - Ports named male→female mate best; matching radii matter.
 - Finish with `validate_assembly_geometry` + `validate_assembly_completeness`; fix every reported issue, then `done_mission`.

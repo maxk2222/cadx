@@ -152,3 +152,57 @@ def test_match_required_suggests_renamed_fittings() -> None:
     )
     assert res2["ok"] is False
     assert set(res2["suggested_part_ids"]) == {"elbow-ss", "elbow-ff"}
+
+
+def test_same_part_placed_twice_creates_instances() -> None:
+    """Left/right sides and repeated fittings: one registered part must be
+    placeable multiple times — each placement is its own instance."""
+    from cadx.guide.assembly_tools import _completeness_issues, place_instance
+    from cadx.guide.state import DocumentIndex, GuidePart, GuideStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.document = DocumentIndex(detected_part_names=["Adapter"])
+    state.parts.append(GuidePart(id="adapter", name="Adapter DN20"))
+    # two assembly steps each needing one adapter instance
+    for n in (1, 2):
+        state.steps.append(
+            GuideStep(
+                number=n,
+                text="t",
+                display_text="d",
+                required_parts=["Adapter"],
+                sub_steps=[{"action": "attach", "part": "Adapter", "target": "Gehäuse"}],
+            )
+        )
+    sess = GuideToolSession(
+        ctx,
+        mission="assembly",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    import asyncio
+
+    cand = {"transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]}
+    sess._preview_cache["c1"] = dict(cand)
+    sess._preview_cache["c2"] = dict(cand)
+    r1 = asyncio.run(
+        place_instance(sess, {"part_id": "adapter", "candidate_id": "c1", "step": 1})
+    )
+    assert r1["ok"], r1
+    r2 = asyncio.run(
+        place_instance(sess, {"part_id": "adapter", "candidate_id": "c2", "step": 2})
+    )
+    assert r2["ok"], r2  # second placement of the SAME part must succeed
+    ids = [i.instance_id for i in state.assembly.instances]
+    assert ids == ["adapter#1", "adapter#2"]
+    assert _completeness_issues(sess) == []
+    # and removing only step 2 leaves step 1's instance untouched
+    from cadx.guide.assembly_tools import reset_step
+
+    asyncio.run(reset_step(sess, {"step": 2}))
+    assert [i.instance_id for i in state.assembly.instances] == ["adapter#1"]
