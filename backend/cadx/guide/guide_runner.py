@@ -101,6 +101,12 @@ def _mission_prompt(
                     "Do NOT re-read steps/pages."
                 )
             )
+    if mission == "parts" and state.parts:
+        ctx_lines.append(
+            "Already registered (persisted — do NOT register again; "
+            "register_uploaded_part on a covered asset errors): "
+            + ", ".join(f"{p.id} ({p.name})" for p in state.parts[:30])
+        )
     if mission == "parts" and not state.allow_part_generation:
         ctx_lines.append(
             "PART GENERATION IS DISABLED for this run: every required name "

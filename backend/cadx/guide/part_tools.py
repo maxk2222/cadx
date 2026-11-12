@@ -102,6 +102,17 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
             f"from list_assets. available_asset_ids={avail[:20]}",
         }
     path = Path(str(asset.get("path") or ""))
+    existing = next(
+        (p for p in s.state.parts if p.asset_id and p.asset_id == aid), None
+    )
+    if existing is not None:
+        return {
+            "ok": False,
+            "error": f"asset already registered as part '{existing.id}' "
+            f"({existing.name}) — a second registration duplicates the same "
+            "physical file. Use alias_part to map more manual names onto it.",
+            "existing_part_id": existing.id,
+        }
     if not path.exists():  # noqa: ASYNC240
         return {"ok": False, "error": f"asset file missing: {path}"}
     ext = path.suffix.lower()

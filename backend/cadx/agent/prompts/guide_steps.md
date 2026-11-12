@@ -15,6 +15,8 @@ HARD RULE — one sequence, not variants: manuals for symmetric assemblies alter
 
 Then for EVERY assembly step provide `sub_steps` (in the batch item, or `add_sub_step` for single fixes) — one entry per atomic action (one per part placed: action=place/attach/insert/fasten, with `part` and `target` named, plus spatial `side` hints from the text/figures). RE-SEAT RULE: re-attaching an already-placed part to another target ("pull the pipe back and push the free elbow side onto the upper pipe") is action=orient on that same part — it adds NO new instance. Only a place/attach/insert/fasten on a part that is not yet in the scene consumes a new part occurrence.
 
+HOST-ENVIRONMENT RULE: sub_step `part` values must be kit parts (from detected_part_names/step required_parts). Elements that exist before the build — the host device itself, walls, existing mounts/brackets, floors — are TARGETS or context, never a place part. A step that only positions/connects TO such an element uses the kit part as `part` and the element name as `target` (e.g. part="casing", target="Gerät"); if a step has no kit part at all, use action=check with the element as `part`.
+
 Also:
 - `assign_media` — pick the best figure crop per step (list_figures first).
 - Read `list_user_notes` at the start — the user may have added info (e.g. "ignore page 7", "step order differs").
