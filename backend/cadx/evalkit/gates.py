@@ -281,12 +281,20 @@ def _gate_mesh(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
         # bore depth (a helix rotates through all sectors; a mouth chamfer or
         # a neighbouring offset channel cannot produce that signature).
         found = _thread_grooves(mesh)
+        external = _external_threads(mesh)
         want = int(g.get("min", 1))
-        n = sum(1 for t in found if t["groove"])
+        n = sum(1 for t in found if t["groove"]) + sum(
+            1 for t in external if t["thread"]
+        )
         return GateResult(
             name,
             n >= want,
-            measured={"grooves": n, "bores": len(found), "detail": found},
+            measured={
+                "grooves": n,
+                "bores": len(found),
+                "detail": found,
+                "external": external,
+            },
             expected={"min": want},
         )
 
@@ -359,6 +367,96 @@ def _thread_grooves(mesh: Any) -> list[dict[str, Any]]:
                 reach=round(reach, 2),
             )
         out.append(entry)
+    return out
+
+
+def _external_threads(mesh: Any) -> list[dict[str, Any]]:
+    """External-thread evidence: a screw shank carries no bore anchor, so the
+    bore probe can never see it. A helix shows as a contiguous axial run of
+    slices whose radial spread sits in thread-depth range (0.25-2.5 mm) while
+    the azimuth of the crest verts rotates along the axis. A smooth or
+    stepped shaft has ~0 spread; straight flutes/lobes don't rotate."""
+    import numpy as np
+
+    verts = np.asarray(mesh.vertices, dtype=float)
+    if len(verts) < 50:
+        return []
+    out: list[dict[str, Any]] = []
+    for ax in range(3):
+        iu, iv = (i for i in range(3) if i != ax)
+        cu = (verts[:, iu].min() + verts[:, iu].max()) / 2.0
+        cv = (verts[:, iv].min() + verts[:, iv].max()) / 2.0
+        r = np.hypot(verts[:, iu] - cu, verts[:, iv] - cv)
+        az = np.arctan2(verts[:, iv] - cv, verts[:, iu] - cu)
+        axial = verts[:, ax]
+        lo, hi = float(axial.min()), float(axial.max())
+        span = hi - lo
+        if span < 3.0:
+            continue
+        step = 1.5
+        edges = np.arange(lo, hi + step * 0.5, step)
+        spreads: list[float] = []
+        z_at: list[float] = []
+        sector_of = ((az + np.pi) / (2 * np.pi) * 8).astype(int) % 8
+        for a, b in itertools.pairwise(edges):
+            sel = (axial >= a) & (axial < b)
+            if int(sel.sum()) < 8:
+                spreads.append(0.0)
+                z_at.append((a + b) / 2.0)
+                continue
+            rr = r[sel]
+            spreads.append(float(np.percentile(rr, 90) - np.percentile(rr, 10)))
+            z_at.append((a + b) / 2.0)
+        if len(spreads) < 3:
+            continue
+        # longest contiguous run of thread-depth spreads
+        best: list[int] = []
+        run: list[int] = []
+        for i, s in enumerate(spreads):
+            if 0.25 <= s <= 2.5:
+                run.append(i)
+            else:
+                if len(run) > len(best):
+                    best = run
+                run = []
+        if len(run) > len(best):
+            best = run
+        run_mm = len(best) * step
+        if run_mm < 4.0:
+            continue
+        # helix phase test: the thread's extreme-radius verts sit at a
+        # different height in each 45° azimuth sector — mean crest/valley-z
+        # spans ~one pitch across sectors. A sphere belly, box corner or
+        # smooth shaft holds the same z in every sector. The crest is used
+        # when the land is narrow (cut threads) and the valley when the
+        # groove floor is the thin helix (ground threads) — either proves it.
+        z_lo = min(z_at[i] for i in best) - step / 2
+        z_hi = max(z_at[i] for i in best) + step / 2
+        sel = (axial >= z_lo) & (axial < z_hi)
+        r_run = r[sel]
+        phase = 0.0
+        for pct in (80, 20):
+            band = (
+                r_run >= np.percentile(r_run, pct)
+                if pct == 80
+                else r_run <= np.percentile(r_run, pct)
+            )
+            z_mean = [
+                float(axial[sel][band & (sector_of[sel] == s)].mean())
+                for s in range(8)
+                if int((band & (sector_of[sel] == s)).sum()) >= 3
+            ]
+            if len(z_mean) >= 6:
+                phase = max(phase, float(max(z_mean) - min(z_mean)))
+        out.append(
+            {
+                "axis": "xyz"[ax],
+                "span_mm": round(run_mm, 1),
+                "median_spread_mm": round(float(np.median([spreads[i] for i in best])), 2),
+                "crest_phase_mm": round(phase, 2),
+                "thread": run_mm >= 4.0 and phase >= 0.5,
+            }
+        )
     return out
 
 

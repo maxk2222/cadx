@@ -1087,3 +1087,26 @@ def test_threads_gate_tolerates_lattice_void_strays(tmp_path):
     g_void = run_gates([{"type": "threads", "min": 1}], _out(artifact_files=[str(p_void)]), 0)[0]
     assert not g_void.ok
     assert all(not d["groove"] for d in g_void.measured["detail"])
+
+
+def test_threads_gate_detects_external_thread(tmp_path):
+    """m8_hex regression: a screw shank has no bore anchor — the threads gate
+    must also probe radial spread + crest phase. A smooth stepped shaft must
+    NOT pass."""
+    from cadx.cad.fem.refine import _thread_groove_solid
+
+    shaft = trimesh.creation.cylinder(radius=4.0, height=30, sections=64).apply_translation(
+        (0, 0, 15)
+    )
+    p_plain = tmp_path / "shaft.stl"
+    shaft.export(p_plain)
+    g_plain = run_gates([{"type": "threads", "min": 1}], _out(artifact_files=[str(p_plain)]), 0)[0]
+    assert not g_plain.ok, g_plain.measured
+
+    groove = _thread_groove_solid(r_in=3.3, r_out=4.2, pitch=1.25, depth=11.0)
+    groove.apply_translation([0.0, 0.0, 28.0])
+    threaded = shaft.difference(groove, engine="manifold")
+    p_thr = tmp_path / "threaded.stl"
+    threaded.export(p_thr)
+    g_thr = run_gates([{"type": "threads", "min": 1}], _out(artifact_files=[str(p_thr)]), 0)[0]
+    assert g_thr.ok, g_thr.measured
