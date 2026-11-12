@@ -1110,3 +1110,70 @@ def test_threads_gate_detects_external_thread(tmp_path):
     threaded.export(p_thr)
     g_thr = run_gates([{"type": "threads", "min": 1}], _out(artifact_files=[str(p_thr)]), 0)[0]
     assert g_thr.ok, g_thr.measured
+
+
+def _guide_doc() -> dict:
+    return {
+        "guide_version": 1,
+        "title": "demo",
+        "parts": [
+            {"part_id": "casing", "name": "Casing"},
+            {"part_id": "adapter_a", "name": "Adapter DN22"},
+            {"part_id": "adapter_b", "name": "Adapter DN22"},
+            {"part_id": "pipe_l70_a", "name": "Pipe DN22 L70"},
+            {"part_id": "pipe_l70_b", "name": "Pipe DN22 L70"},
+            {"part_id": "pipe_l500_a", "name": "Pipe DN22 L500"},
+            {"part_id": "pipe_l500_b", "name": "Pipe DN22 L500"},
+            {"part_id": "elbow_a", "name": "Elbow 90"},
+            {"part_id": "elbow_b", "name": "Elbow 90"},
+            {"part_id": "elbow_c", "name": "Elbow"},
+            {"part_id": "elbow_d", "name": "Elbow"},
+        ],
+        "steps": [
+            {
+                "index": i,
+                "display_text": f"Montiere Teil {i}",
+                "internal_text": f"adapter rohr bogen step {i}",
+                "placements": [{"instance_id": f"p{i}"}],
+            }
+            for i in range(10)
+        ],
+        "review": {"score": 85, "iterations": 1},
+    }
+
+
+def test_guide_gates():
+    o = _out()
+    o.extras["guide"] = _guide_doc()
+    gates = run_gates(
+        [
+            {"type": "guide_steps", "min": 10, "all": ["adapter", "rohr"]},
+            {"type": "guide_parts", "min": 6, "all": ["casing", "adapter", "pipe", "elbow"]},
+            {"type": "guide_placed", "min": 10},
+            {"type": "guide_score", "min": 60},
+        ],
+        o,
+        wall_s=10.0,
+    )
+    assert all(g.ok is True for g in gates)
+
+
+def test_guide_gates_fail_on_missing_evidence():
+    # absent unity_guide.json -> inconclusive (None), never a silent pass
+    gates = run_gates([{"type": "guide_steps", "min": 1}], _out(), wall_s=1.0)
+    assert gates[0].ok is None
+
+    o = _out()
+    o.extras["guide"] = _guide_doc()
+    gates = run_gates(
+        [
+            {"type": "guide_steps", "min": 11},
+            {"type": "guide_parts", "all": ["nonexistent_part"]},
+            {"type": "guide_placed", "min": 99},
+            {"type": "guide_score", "min": 90},
+        ],
+        o,
+        wall_s=1.0,
+    )
+    assert [g.ok for g in gates] == [False, False, False, False]
+    assert gates[1].measured["missing"] == ["nonexistent_part"]

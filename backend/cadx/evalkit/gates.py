@@ -283,9 +283,7 @@ def _gate_mesh(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
         found = _thread_grooves(mesh)
         external = _external_threads(mesh)
         want = int(g.get("min", 1))
-        n = sum(1 for t in found if t["groove"]) + sum(
-            1 for t in external if t["thread"]
-        )
+        n = sum(1 for t in found if t["groove"]) + sum(1 for t in external if t["thread"])
         return GateResult(
             name,
             n >= want,
@@ -1196,6 +1194,60 @@ def _gate_outcome(  # noqa: C901
     if name == "asset_image":
         want = int(g.get("min") or 1)
         return GateResult(name, len(outcome.asset_ids) >= want, measured=len(outcome.asset_ids))
+
+    if name in ("guide_steps", "guide_parts", "guide_placed", "guide_score"):
+        # anleitungsbuilder evidence — parsed unity_guide.json the driver
+        # stored on extras["guide"]; absent → inconclusive, never silently ok
+        doc = outcome.extras.get("guide")
+        if not isinstance(doc, dict):
+            return GateResult(
+                name,
+                None,
+                detail="no unity_guide.json on the outcome — guide emit never ran",
+            )
+        steps = [s for s in doc.get("steps") or [] if isinstance(s, dict)]
+        if name == "guide_steps":
+            n = len(steps)
+            expected = {k: g.get(k) for k in ("count", "min", "max") if g.get(k) is not None}
+            ok = True
+            if g.get("count") is not None:
+                ok = ok and n == int(g["count"])
+            if g.get("min") is not None:
+                ok = ok and n >= int(g["min"])
+            if g.get("max") is not None:
+                ok = ok and n <= int(g["max"])
+            needles = [str(x).lower() for x in g.get("all") or []]
+            texts = [
+                f"{s.get('display_text', '')} {s.get('internal_text', '')}".lower() for s in steps
+            ]
+            missing = [x for x in needles if not any(x in t for t in texts)]
+            ok = ok and not missing
+            measured: dict[str, Any] = {"n_steps": n}
+            if missing:
+                measured["missing_text"] = missing
+            return GateResult(name, ok, measured=measured, expected={**expected, "all": needles})
+        if name == "guide_parts":
+            parts = [p for p in doc.get("parts") or [] if isinstance(p, dict)]
+            hay = [f"{p.get('part_id', '')} {p.get('name', '')}".lower() for p in parts]
+            needles = [str(x).lower() for x in g.get("all") or []]
+            missing = [x for x in needles if not any(x in h for h in hay)]
+            n_min = int(g.get("min") or 0)
+            ok = not missing and len(parts) >= n_min
+            return GateResult(
+                name,
+                ok,
+                measured={"n_parts": len(parts), "missing": missing or None},
+                expected={"all": needles, "min": n_min},
+            )
+        if name == "guide_placed":
+            total = sum(len(s.get("placements") or []) for s in steps)
+            want = int(g.get("min") or 1)
+            return GateResult(name, total >= want, measured=total, expected={"min": want})
+        review = doc.get("review") or {}
+        val = review.get("score")
+        want = float(g.get("min") or 0)
+        ok = val is not None and float(val) >= want
+        return GateResult(name, ok, measured=val, expected={"min": want})
 
     return GateResult(name, True, detail=f"unknown gate type {name!r} (skipped)")
 

@@ -396,10 +396,65 @@ class HttpDriver:
                 return ids
         return []
 
+    async def wait_guide(self, job_id: str, timeout_s: float, stage: EvalStage) -> dict[str, Any]:
+        """wait_job variant that answers parked clarification rounds — the
+        guide pipeline legitimately parks on ask_user (premounted-adapter
+        positioning, …). Canned ``stage.answers`` are resent positionally on
+        every park; the job follows resume ids (answer spawns a NEW job row).
+        Bounded by ``stage.max_resumes`` — exhausting the budget cancels."""
+        t0 = time.monotonic()
+        delay = 1.0
+        transient = 0
+        resumes = 0
+        jid = job_id
+        while time.monotonic() - t0 < timeout_s:
+            try:
+                j = await self.job(jid)
+                transient = 0
+            except httpx.RequestError:
+                transient += 1
+                if transient >= 10:
+                    raise
+                await asyncio.sleep(2.0)
+                continue
+            status = str(j.get("status"))
+            if status in _TERMINAL:
+                return j
+            if status == "waiting_for_input":
+                if not stage.answers or resumes >= stage.max_resumes:
+                    await self._post(f"/jobs/{jid}/cancel")
+                    j["status"] = "cancelled"
+                    j["error"] = "cancelled: guide parked for input — " + (
+                        "no canned answers declared" if not stage.answers else "max_resumes hit"
+                    )
+                    return j
+                questions = [q for q in (j.get("questions") or []) if isinstance(q, dict)]
+                answers = [
+                    {"id": str(q.get("id") or f"q{i + 1}"), "answer": a}
+                    for i, (q, a) in enumerate(zip(questions, stage.answers, strict=False))
+                ] or [{"answer": a} for a in stage.answers]
+                enq = await self._post(f"/jobs/{jid}/answer", json={"answers": answers})
+                jid = str(enq.get("job_id") or jid)
+                resumes += 1
+                await asyncio.sleep(delay)
+                continue
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.4, 10.0)
+        import contextlib
+
+        with contextlib.suppress(EvalApiError):
+            await self._post(f"/jobs/{jid}/cancel")
+        j = await self.job(jid)
+        j["status"] = "timeout"
+        j["error"] = f"eval timeout after {timeout_s}s"
+        return j
+
     async def dispatch(self, stage: EvalStage, ctx: DriverCtx) -> StageOutcome:
         t0 = time.monotonic()
         if stage.type in ASSET_STAGES:
             return await self._dispatch_image(stage, ctx, t0)
+        if stage.type == "guide":
+            return await self._dispatch_guide(stage, ctx, t0)
 
         path, body, meta = await self._spawn_body(stage, ctx)
         if ctx.parent_version_id is None and "/versions/" in path:
@@ -545,3 +600,93 @@ class HttpDriver:
             wall_s=time.monotonic() - t0,
             error=None if ids else "image stage returned no assets",
         )
+
+    async def _dispatch_guide(self, stage: EvalStage, ctx: DriverCtx, t0: float) -> StageOutcome:
+        """Guide stage: upload the instruction pdf + cad parts as project
+        assets (kind sniffed by extension in the assets router), then spawn
+        via ``POST /projects/{id}/guide`` — the same ``spawn_guide`` entry
+        the chat tool uses."""
+        from cadx.evalkit.paths import REPO_ROOT
+
+        def _resolve(rel: str) -> Path | None:
+            p = (REPO_ROOT / rel).resolve()
+            return p if p.exists() else None
+
+        pdf_path = _resolve(stage.pdf)
+        if pdf_path is None:
+            return StageOutcome(
+                status="failed",
+                wall_s=time.monotonic() - t0,
+                error=f"guide pdf not found: {stage.pdf}",
+            )
+        cad_paths = [p for p in (_resolve(c) for c in stage.cad_parts) if p is not None]
+        missing = [c for c in stage.cad_parts if _resolve(c) is None]
+        if missing:
+            log.warning("eval.guide.cad_missing", stage=stage.id, paths=missing)
+
+        uploads = await self.upload_assets(ctx.project_id, [pdf_path, *cad_paths])
+        by_name = {str(a.get("filename")): str(a.get("id")) for a in uploads or []}
+        pdf_id = by_name.get(pdf_path.name)
+        if pdf_id is None:
+            return StageOutcome(
+                status="failed",
+                wall_s=time.monotonic() - t0,
+                error="pdf upload did not return an asset id",
+            )
+        cad_ids = [by_name[p.name] for p in cad_paths if p.name in by_name]
+        enq = await self._post(
+            f"/projects/{ctx.project_id}/guide",
+            json={"pdf_asset_id": pdf_id, "cad_asset_ids": cad_ids, "prompt": stage.prompt},
+        )
+        vid, jid = str(enq.get("version_id")), str(enq.get("job_id"))
+        job = await self.wait_guide(jid, stage.timeout_s, stage)
+        wall = time.monotonic() - t0
+        detail = await self.version(vid)
+        records = await self.trace(jid)
+
+        artifact_files: list[str] = []
+        guide_doc: dict[str, Any] | None = None
+        if ctx.out_dir:
+            adir = ctx.out_dir / "artifacts" / stage.id
+            for a in detail.get("artifacts") or []:
+                if a.get("kind") not in ("unity_guide", "render", "pdf"):
+                    continue
+                fname = f"{a.get('kind')}_{Path(str(a.get('path') or 'f')).name}"
+                p = await self.download_artifact(str(a.get("url") or ""), adir, fname)
+                if p:
+                    artifact_files.append(str(p))
+                    if a.get("kind") == "unity_guide" and guide_doc is None:
+                        import json as _json
+
+                        try:
+                            guide_doc = _json.loads(
+                                await asyncio.to_thread(Path(p).read_text, encoding="utf-8")
+                            )
+                        except Exception:
+                            guide_doc = None
+
+        status = str(job.get("status") or detail.get("status") or "failed")
+        if status == "queued":
+            status = "running"
+        out = StageOutcome(
+            status=status,
+            version_id=vid,
+            job_id=jid,
+            score=detail.get("score"),
+            issues=detail.get("issues") or [],
+            usage=detail.get("usage") or {},
+            artifacts={
+                f"{a.get('kind')}|{a.get('view') or ''}": a.get("path")
+                for a in detail.get("artifacts") or []
+            },
+            artifact_files=artifact_files,
+            trace_records=records if isinstance(records, list) else [],
+            live=job.get("live"),
+            asset_ids=[str(x) for x in detail.get("asset_ids") or []],
+            wall_s=wall,
+            error=job.get("error") or detail.get("error"),
+        )
+        if guide_doc is not None:
+            out.extras["guide"] = guide_doc
+        ctx.parent_version_id = vid
+        return out

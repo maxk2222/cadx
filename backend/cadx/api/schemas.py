@@ -152,6 +152,17 @@ class EditRequest(BaseModel):
     options: RunOptions | None = None  # None inherits the parent's options
 
 
+class GuideRequest(BaseModel):
+    """Spawn an anleitungsbuilder run — same entry point the chat tool
+    ``start_guide_builder`` uses (``spawn_guide``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pdf_asset_id: uuid.UUID
+    cad_asset_ids: list[uuid.UUID] = Field(default_factory=list)
+    prompt: str = ""
+
+
 # --------------------------------------------------------------------------- #
 # chat                                                                        #
 # --------------------------------------------------------------------------- #

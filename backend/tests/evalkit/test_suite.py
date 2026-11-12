@@ -33,6 +33,7 @@ def test_shipped_suite_loads_and_validates():
         "sprocket_520_45t",
         "aircraft_wing",
         "bearing_bracket_topopt",
+        "kiara_heatpump_guide",
         "marine_propeller",
         "marine_propeller_autonomous",
         "pressure_tank_autonomous",
@@ -41,10 +42,12 @@ def test_shipped_suite_loads_and_validates():
         "robot_arm_mount",
         "robot_arm_mount_autonomous",
     ]
-    assert [c.difficulty for c in cases] == [1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+    assert [c.difficulty for c in cases] == [
+        1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3
+    ]
     for c in cases:
         assert c.project.startswith("eval:")
-        assert c.stages[0].type in ("generate", "meshgen")
+        assert c.stages[0].type in ("generate", "meshgen", "guide")
         for s in c.stages:
             assert s.type in CHILD_VERSION_STAGES | SAME_VERSION_STAGES | ASSET_STAGES
             for g in s.gates:
@@ -133,6 +136,7 @@ def test_suite_files_present():
         "bearing_bracket_topopt.json",
         "block_sidewall_tap.json",
         "helical_pinion_shaft.json",
+        "kiara_heatpump_guide.json",
         "l_bracket_rib.json",
         "m10_csk_screw.json",
         "m8_hex_screw_threadlen.json",
@@ -149,3 +153,17 @@ def test_suite_files_present():
     ]
     for p in SUITE_DIR.glob("*.json"):
         json.loads(p.read_text(encoding="utf-8"))  # valid JSON
+
+
+def test_guide_stage_validation():
+    # guide is a legal first stage and needs a pdf path
+    ok = EvalStage(id="g", type="guide", pdf="evals/assets/x.pdf")
+    assert ok.type == "guide" and ok.max_resumes == 3
+    with pytest.raises(ValueError, match="needs `pdf`"):
+        EvalStage(id="g", type="guide", pdf="")
+    case = EvalCase(
+        name="g_case",
+        stages=[EvalStage(id="g", type="guide", pdf="x.pdf")],
+    )
+    assert case.stages[0].type == "guide"
+    assert "guide" in CHILD_VERSION_STAGES

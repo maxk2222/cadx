@@ -33,6 +33,7 @@ STAGE_TYPES = {
     "meshgen",
     "imagegen",
     "imageedit",
+    "guide",
 }
 
 # stages that produce a child Version+Job (vs same-version jobs / assets)
@@ -47,6 +48,7 @@ CHILD_VERSION_STAGES = {
     "organic",
     "mesh_edit",
     "meshgen",
+    "guide",
 }
 SAME_VERSION_STAGES = {"fem", "reexport"}
 ASSET_STAGES = {"imagegen", "imageedit"}
@@ -94,6 +96,12 @@ class EvalStage(BaseModel):
     subject: str = ""  # meshgen subject hint
     model: str = ""  # mesh/image model override
     assets_from: str | None = None  # stage id whose image assets feed this stage
+    # guide stage (anleitungsbuilder): repo-relative pdf + cad part paths,
+    # canned clarification answers (positional, resent on every park)
+    pdf: str = ""
+    cad_parts: list[str] = Field(default_factory=list)
+    answers: list[str] = Field(default_factory=list)
+    max_resumes: int = 3  # parked-question rounds before the stage cancels
     # execution
     timeout_s: float = 7200.0
     use_parent_fallbacks: bool = True  # empty load_cases -> fall back to parent spec
@@ -115,6 +123,8 @@ class EvalStage(BaseModel):
             raise ValueError(f"stage {self.id}: imageedit needs `reference` or `assets_from`")
         if self.type == "edit_feature" and not self.feature:
             raise ValueError(f"stage {self.id}: edit_feature needs `feature`")
+        if self.type == "guide" and not self.pdf.strip():
+            raise ValueError(f"stage {self.id}: guide stage needs `pdf`")
         return self
 
 
@@ -152,10 +162,10 @@ class EvalCase(BaseModel):
                     "must reference an earlier stage"
                 )
             seen.add(s.id)
-        if self.stages and self.stages[0].type not in ("generate", "meshgen"):
+        if self.stages and self.stages[0].type not in ("generate", "meshgen", "guide"):
             raise ValueError(
-                f"case {self.name}: first stage must be 'generate' or 'meshgen' "
-                f"(got {self.stages[0].type})"
+                f"case {self.name}: first stage must be 'generate', 'meshgen' or "
+                f"'guide' (got {self.stages[0].type})"
             )
         return self
 

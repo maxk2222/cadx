@@ -356,7 +356,56 @@ _JOB_FNS = {
     "reexport": "run_reexport_job",
     "mesh_edit": "run_mesh_edit_job",
     "meshgen": "run_meshgen_job",
+    "guide": "run_guide_job",
 }
+
+
+_GUIDE_ASSET_KINDS = {
+    ".pdf": ("pdf", "application/pdf"),
+    ".glb": ("cad_glb", "model/gltf-binary"),
+    ".gltf": ("cad_glb", "model/gltf-binary"),
+    ".step": ("reference_step", "application/step"),
+    ".stp": ("reference_step", "application/step"),
+    ".stl": ("reference_stl", "model/stl"),
+    ".dxf": ("reference_dxf", "image/vnd.dxf"),
+}
+
+
+async def guide_assets(
+    ctx: LocalCtx, pdf_path: Path, cad_paths: list[Path]
+) -> tuple[str, list[str]]:
+    """Scratch Asset rows for a guide stage — kinds must sniff by extension
+    because ``spawn_guide`` validates ``AssetKind.pdf`` (the http driver
+    gets this from the assets router's own detection)."""
+    from cadx import storage
+    from cadx.db.models import Asset, AssetKind
+    from cadx.db.session import session_scope
+
+    pdf_id = ""
+    cad_ids: list[str] = []
+    async with session_scope() as db:
+        for p in [pdf_path, *cad_paths]:
+            kind_name, mime = _GUIDE_ASSET_KINDS.get(p.suffix.lower(), ("reference_stl", ""))
+            aid = uuid.uuid4()
+            dest = storage.asset_path(ctx.project_id, aid, p.name)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(p, dest)
+            db.add(
+                Asset(
+                    id=aid,
+                    project_id=ctx.project_id,
+                    kind=AssetKind(kind_name),
+                    filename=p.name,
+                    path=storage.relpath(dest),
+                    mime=mime,
+                )
+            )
+            if p == pdf_path:
+                pdf_id = str(aid)
+            else:
+                cad_ids.append(str(aid))
+        await db.commit()
+    return pdf_id, cad_ids
 
 
 async def _spawn(  # noqa: C901 — one branch per stage type, like _spawn_body
@@ -699,6 +748,8 @@ class LocalDriver:
         t0 = time.monotonic()
         if stage.type in ASSET_STAGES:
             return await self._dispatch_image(stage, ctx, t0)
+        if stage.type == "guide":
+            return await self._dispatch_guide(stage, ctx, t0)
         vid, jid, meta = await _spawn(stage, ctx)
         func = _JOB_FNS[stage.type]
         import cadx.agent.worker_jobs as wj
@@ -831,3 +882,106 @@ class LocalDriver:
             wall_s=time.monotonic() - t0,
             error=None if paths else "image stage produced no files",
         )
+
+    async def _dispatch_guide(self, stage: EvalStage, ctx: LocalCtx, t0: float) -> StageOutcome:
+        """Guide stage in scratch mode — same spawn path (spawn_guide) +
+        the parked-question resume loop the http driver implements against
+        ``/jobs/{id}/answer``."""
+        from cadx.db.models import Job, JobStatus, Project, Version, VersionStatus
+        from cadx.db.session import session_scope
+        from cadx.evalkit.paths import REPO_ROOT
+        from cadx.spawn import enqueue_resume, spawn_guide
+
+        def _resolve(rel: str) -> Path | None:
+            p = (REPO_ROOT / rel).resolve()
+            return p if p.exists() else None
+
+        pdf_path = _resolve(stage.pdf)
+        if pdf_path is None:
+            return StageOutcome(
+                status="failed",
+                wall_s=time.monotonic() - t0,
+                error=f"guide pdf not found: {stage.pdf}",
+            )
+        cad_paths = [p for p in (_resolve(c) for c in stage.cad_parts) if p is not None]
+        pdf_id, cad_ids = await guide_assets(ctx, pdf_path, cad_paths)
+
+        async with session_scope() as db:
+            project = await db.get(Project, ctx.project_id)
+            v, j = await spawn_guide(
+                db,
+                project,
+                pdf_asset_id=pdf_id,
+                cad_asset_ids=cad_ids,
+                prompt=stage.prompt,
+                enqueue_fn=_noop_enqueue,
+            )
+        vid, jid = v.id, j.id
+
+        import cadx.agent.worker_jobs as wj
+
+        deadline = t0 + stage.timeout_s
+        resumes = 0
+        while True:
+            async with session_scope() as db:
+                env = await db.get(Job, jid)
+                run_args = (env.payload or {}).get("args") or {
+                    "job_id": str(jid),
+                    "version_id": str(vid),
+                }
+            try:
+                await asyncio.wait_for(
+                    wj.run_guide_job({"arq_redis": None}, run_args),
+                    timeout=max(0.1, deadline - time.monotonic()),
+                )
+            except TimeoutError:
+                async with session_scope() as db:
+                    jj = await db.get(Job, jid)
+                    vv = await db.get(Version, vid)
+                    if jj:
+                        jj.status = JobStatus.failed
+                    if vv:
+                        vv.status = VersionStatus.failed
+                        vv.error = f"eval local timeout after {stage.timeout_s}s"
+                    await db.commit()
+                break
+            async with session_scope() as db:
+                j = await db.get(Job, jid)
+                parked = j is not None and j.status == JobStatus.waiting_for_input
+                questions = list((j.questions if j else None) or [])
+            if not parked or not stage.answers or resumes >= stage.max_resumes:
+                break
+            resumes += 1
+            qa = [
+                f"Q: {questions[i]['question'] if i < len(questions) else f'q{i + 1}'}\nA: {a}"
+                for i, a in enumerate(stage.answers)
+            ]
+            async with session_scope() as db:
+                j = await db.get(Job, jid)
+                _, j2 = await enqueue_resume(db, j, "\n".join(qa), enqueue_fn=_noop_enqueue)
+                jid = j2.id
+
+        wall = time.monotonic() - t0
+        out = await _read_outcome(vid, jid, wall, same_version=False)
+        out.extras["execs"] = self.exec_stats["n"]
+        out.extras["exec_s"] = self.exec_stats["s"]
+        # surface the emitted unity_guide.json for the guide_* gates — the
+        # artifact row's storage path resolves inside the scratch DATA_DIR
+        rel = (out.artifacts or {}).get("unity_guide|")
+        if rel:
+            try:
+                from cadx import storage
+
+                p = storage.resolve(rel)
+                if p.exists():
+                    out.extras["guide"] = json.loads(p.read_text(encoding="utf-8"))
+                    out.artifact_files.append(str(p))
+            except Exception:
+                pass
+        ctx.parent_version_id = vid
+        if out.trace_records and ctx.out_dir:
+            tpath = ctx.out_dir / f"trace.{str(vid)[:8]}.jsonl"
+            with tpath.open("a", encoding="utf-8") as fh:
+                for r in out.trace_records:
+                    fh.write(json.dumps(r, default=str) + "\n")
+        return out

@@ -24,6 +24,7 @@ from cadx.api.schemas import (
     EditRequest,
     EnqueueResponse,
     GenerateRequest,
+    GuideRequest,
     MeshgenRequest,
     OptimizeRequest,
     OrganicRequest,
@@ -52,6 +53,7 @@ from cadx.spawn import (
     spawn_edit,
     spawn_edit_feature,
     spawn_generate,
+    spawn_guide,
     spawn_meshgen,
     spawn_optimize,
     spawn_organic,
@@ -181,6 +183,25 @@ async def generate(
             asset_ids=list(body.asset_ids or []),
             library_part_ids=list(body.library_part_ids or []),
             options=opts,
+        )
+    except SpawnError as e:
+        raise HTTPException(e.status, str(e)) from e
+    return EnqueueResponse(version_id=v.id, job_id=job.id)
+
+
+@router.post("/projects/{project_id}/guide", response_model=EnqueueResponse)
+async def guide(project_id: uuid.UUID, body: GuideRequest, db: AsyncSession = Depends(get_session)):
+    """Anleitungsbuilder over REST — identical spawn path as the chat tool."""
+    project = await db.get(Project, project_id)
+    if not project:
+        raise HTTPException(404, "project not found")
+    try:
+        v, job = await spawn_guide(
+            db,
+            project,
+            pdf_asset_id=body.pdf_asset_id,
+            cad_asset_ids=list(body.cad_asset_ids or []),
+            prompt=body.prompt,
         )
     except SpawnError as e:
         raise HTTPException(e.status, str(e)) from e

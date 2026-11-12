@@ -1,0 +1,35 @@
+{
+ "name": "kiara_heatpump_guide",
+ "project": "eval:kiara-heatpump-guide",
+ "difficulty": 3,
+ "description": "Anleitungsbuilder — KIARA heat-pump demonstrator. PDF instruction + 6 uploaded GLB parts (no part generation): casing anchor, 4x adapters (2 premounted lower + 2 upper), 2x Pipe_l70, 2x Pipe_l500, 2x elbow socket-to-spigot, 2x elbow socket-to-socket → 10-step Unity AR guide.",
+ "stages": [
+  {
+   "id": "guide",
+   "type": "guide",
+   "timeout_s": 5400,
+   "pdf": "evals/assets/kiara_heatpump/Montageanleitung_Demonstrator_KIARA_v2.pdf",
+   "cad_parts": [
+    "evals/assets/kiara_heatpump/Casing.glb",
+    "evals/assets/kiara_heatpump/Adapter_rn22_internal_thread_to_plain.glb",
+    "evals/assets/kiara_heatpump/Pipe_l70.glb",
+    "evals/assets/kiara_heatpump/Pipe_l500.glb",
+    "evals/assets/kiara_heatpump/Elbow_90deg_RN22_socket_to_spigot.glb",
+    "evals/assets/kiara_heatpump/Elbow_90deg_RN22_soket_to_socket.glb"
+   ],
+   "prompt": "AR-Montageanleitung fuer den KIARA-Waermepumpen-Demonstrator.\n\nAUSGANGSZUSTAND:\n- Das Gehaeuse sitzt auf der Waermepumpe und ist das Ankerbauteil — positioniere es in einer plausiblen, stabilen Lage auf einer geeigneten Ebene.\n- Die Waermepumpe selbst ist NICHT als CAD-Bauteil vorhanden — erfinde keine Geometrie dafuer.\n- An der hinteren Seite der Waermepumpe sind bereits zwei Adapter DN22 (Innengewinde/Muffe) VORMONTIERT, unterhalb des Gehaeuses links und rechts. Sie gehoeren zum Ausgangszustand (Schritt 0), NICHT zu Schritt 1/2. Ermittle ihre Position anhand der PDF-Abbildungen und der Anschlussgeometrie; falls keine reale Platzierung moeglich ist, nutze virtuelle Anschlussreferenzen und dokumentiere die Annahme.\n\nVERBINDLICHE SCHRITTE 1-10:\n1. Ein Adapter DN22 (Innengewinde/Muffe) am oberen LINKEN Anschluss des Gehaeuses montieren.\n2. Ein zweiter Adapter DN22 am oberen RECHTEN Anschluss des Gehaeuses montieren.\n3. Ein Rohr DN22, Laenge 70 mm, in den linken oberen Adapter (Schritt 1) einsetzen.\n4. Ein Rohr DN22, Laenge 70 mm, in den rechten oberen Adapter (Schritt 2) einsetzen.\n5. Ein Rohrbogen DN22 (Muffe auf Spitzende) auf den vormontierten unteren LINKEN Adapter montieren — die freie Oeffnung zeigt nach oben.\n6. Ein zweiter Rohrbogen DN22 (Muffe auf Spitzende) auf den vormontierten unteren RECHTEN Adapter montieren — freie Oeffnung nach oben.\n7. Ein Rohr DN22, Laenge 500 mm, in den linken unteren Rohrbogen (Schritt 5) einsetzen.\n8. Ein Rohrbogen DN22 (Muffe auf Muffe) auf das linke lange Rohr (Schritt 7) montieren und so ausrichten, dass er die untere linke Baugruppe mit dem oberen linken kurzen Rohr (Schritt 3) verbindet.\n9. Ein Rohr DN22, Laenge 500 mm, in den rechten unteren Rohrbogen (Schritt 6) einsetzen.\n10. Ein Rohrbogen DN22 (Muffe auf Muffe) auf das rechte lange Rohr (Schritt 9) montieren und so ausrichten, dass er die untere rechte Baugruppe mit dem oberen rechten kurzen Rohr (Schritt 4) verbindet.\n\nAlle 6 CAD-Bauteile sind hochgeladen — KEINE Teile generieren.",
+   "answers": [
+    "Die zwei unteren Adapter sind vormontiert (Ausgangszustand) — positioniere sie plausibel unterhalb des Gehaeuses, links und rechts, und dokumentiere die Annahme.",
+    "Nutze die PDF-Abbildungen als Referenz; bei Unsicherheit waehle die geometrisch konsistenteste Loesung und dokumentiere sie."
+   ],
+   "max_resumes": 3,
+   "gates": [
+    {"type": "status", "expect": ["succeeded", "needs_review"]},
+    {"type": "guide_steps", "min": 10, "all": ["adapter", "rohr", "bogen"]},
+    {"type": "guide_parts", "min": 6, "all": ["casing", "adapter", "pipe", "elbow"]},
+    {"type": "guide_placed", "min": 12},
+    {"type": "guide_score", "min": 60}
+   ]
+  }
+ ]
+}
