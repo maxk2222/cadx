@@ -39,6 +39,17 @@ MISSION_ORDER = ["doc", "steps", "parts", "assembly", "review", "annotate"]
 _MAX_CALLS = {"doc": 24, "steps": 60, "parts": 40, "assembly": 80, "review": 24, "annotate": 24}
 
 
+def _calls_budget(mission: str, state: GuideState) -> int:
+    """Tool-call budget per mission. Assembly scales with the number of
+    sub-steps — each placement needs ~5 calls (ports/preview/place/render/
+    collide), a fixed cap would break longer manuals."""
+    base = _MAX_CALLS.get(mission, 40)
+    if mission == "assembly":
+        n = sum(max(1, len(s.sub_steps)) for s in state.steps) or len(state.steps)
+        base = max(base, 10 + 6 * n)
+    return base
+
+
 def _mission_prompt(mission: str, state: GuideState, repair_notes: str = "") -> str:
     sys_p = system_prompt(f"guide_{mission}.md")
     parts = [{"role": "system", "content": sys_p}]
@@ -189,12 +200,14 @@ async def _run_mission(
                 "and no tool calls — the mission is NOT complete. Resume "
                 "the remaining work now and finish with done_mission."
             )
+        calls_budget = _calls_budget(mission, state)
         result = await run_session(
             ctx,
             role="vision",
             messages=_mission_prompt(mission, state, nudge),
             session=sess,
-            max_calls=_MAX_CALLS.get(mission, 40),
+            max_calls=calls_budget,
+            turn_budget=calls_budget,  # ~1 tool call per turn — the call cap is the real bound
             step=f"guide_{mission}",
         )
         early = await _mission_early(sess, ctx, state, state_dir)

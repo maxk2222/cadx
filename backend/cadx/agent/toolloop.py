@@ -658,6 +658,9 @@ async def run_session(  # noqa: C901
     session: ToolSession,
     json_schema: type[BaseModel] | None = None,
     max_calls: int,
+    # explicit turn budget for long deterministic pipelines (guide missions
+    # legitimately need one turn per tool call); None = runtime default
+    turn_budget: int | None = None,
     step: str,
     iteration: int = 0,
     temperature: float | None = None,
@@ -699,7 +702,9 @@ async def run_session(  # noqa: C901
     # edit/codegen sessions pay the full sandbox pipeline per verify — they
     # get a tighter turn cap than read-only info/inspect sessions
     max_turns = (
-        ctx.runtime_settings.agent_tool_max_turns_edit
+        turn_budget
+        if turn_budget is not None
+        else ctx.runtime_settings.agent_tool_max_turns_edit
         if session.kind in ("edit", "codegen")
         else ctx.runtime_settings.agent_tool_max_turns
     )
