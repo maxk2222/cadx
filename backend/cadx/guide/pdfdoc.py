@@ -59,7 +59,7 @@ def render_pdf(
 
     # --- 2) PyMuPDF (fitz) ---
     try:
-        import fitz  # type: ignore  # PyMuPDF
+        import pymupdf as fitz  # type: ignore
 
         doc = fitz.open(str(pdf_path))
         limit = doc.page_count if max_pages <= 0 else min(doc.page_count, max_pages)
@@ -127,7 +127,7 @@ def extract_page_texts(pdf_path: Path, max_pages: int = 0) -> dict[int, str]:
 
     # 2) PyMuPDF
     try:
-        import fitz  # type: ignore
+        import pymupdf as fitz  # type: ignore
 
         doc = fitz.open(str(pdf_path))
         limit = doc.page_count if max_pages <= 0 else min(doc.page_count, max_pages)
@@ -170,7 +170,7 @@ def extract_figures(
     empty list when fitz is unavailable or no figures exist.
     """
     try:
-        import fitz  # type: ignore  # PyMuPDF
+        import pymupdf as fitz  # type: ignore
     except ImportError:
         log.info("guide.figures_no_fitz")
         return []
