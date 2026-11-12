@@ -28,7 +28,7 @@ from cadx.agent.context import system_prompt
 from cadx.agent.orchestrator import RunOutcome
 from cadx.agent.toolloop import run_session
 from cadx.agent.types import AgentCtx
-from cadx.guide import unity
+from cadx.guide import scene, unity
 from cadx.guide.session import GuideToolSession
 from cadx.guide.state import GuideState
 from cadx.logging import get_logger
@@ -117,7 +117,9 @@ def _guide_assets(ctx: AgentCtx) -> list[dict[str, Any]]:
     ]
 
 
-async def _emit_artifacts(state: GuideState, state_dir: Path) -> dict[str, str]:
+async def _emit_artifacts(
+    state: GuideState, state_dir: Path, executor: Any = None
+) -> dict[str, str]:
     """Deterministic emit mission — write unity_guide.json + media."""
     out_dir = state_dir / "output"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -137,7 +139,56 @@ async def _emit_artifacts(state: GuideState, state_dir: Path) -> dict[str, str]:
         dst = media_dir / src.name
         dst.write_bytes(src.read_bytes())
         artifacts[f"guide:media:{src.name}"] = storage.relpath(dst)
+    artifacts.update(await _emit_assembly_artifacts(state, out_dir, executor))
     state.save(state_dir)
+    return artifacts
+
+
+_FINAL_VIEWS = ("iso", "front", "top")
+
+
+async def _emit_assembly_artifacts(
+    state: GuideState, out_dir: Path, executor: Any
+) -> dict[str, str]:
+    """Finished-assembly deliverables: one merged GLB (drives the version
+    page's interactive 3D viewer) plus a fixed set of render views so the
+    gallery always shows the final build — independent of which renders the
+    agent happened to request mid-mission."""
+    artifacts: dict[str, str] = {}
+    placements: list[tuple[str, str, list]] = []
+    entries: list[dict[str, Any]] = []
+    for i, inst in enumerate(state.assembly.instances):
+        part = state.part_by_id(inst.part_id)
+        mesh_path = getattr(part, "mesh_path", None)
+        if not part or not mesh_path:
+            continue
+        placements.append((inst.instance_id, mesh_path, inst.transform))
+        entries.append(
+            {
+                "mesh_path": mesh_path,
+                "transform": inst.transform,
+                "color": scene.PALETTE[i % len(scene.PALETTE)],
+                "opacity": 1.0,
+            }
+        )
+    if not placements:
+        return artifacts
+    glb = scene.merged_glb(placements, out_dir / "assembly.glb")
+    if glb is not None:
+        artifacts["export:glb"] = storage.relpath(glb)
+    if executor is not None:
+        render_dir = out_dir / "renders"
+        for view in _FINAL_VIEWS:
+            out = render_dir / f"assembly_{view}.png"
+            try:
+                res = await executor.render_assembly(
+                    {"entries": entries, "view": view, "out_path": str(out)}
+                )
+            except Exception as exc:
+                log.warning("guide.emit_render_failed", view=view, error=str(exc)[:200])
+                continue
+            if res.get("ok") and res.get("image_path"):
+                artifacts[f"render:assembly_{view}"] = storage.relpath(Path(str(res["image_path"])))
     return artifacts
 
 
@@ -327,7 +378,7 @@ async def run_guide(
             log.warning("guide.repair_loop_cap", max_iter=max_iter)
             break
 
-    artifacts = await _emit_artifacts(state, state_dir)
+    artifacts = await _emit_artifacts(state, state_dir, ctx.executor)
     outcome = RunOutcome(
         status="succeeded",
         score=round(state.review.score),

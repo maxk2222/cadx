@@ -18,12 +18,42 @@ log = get_logger(__name__)
 
 _EPS_VOL_MM3 = 1.0  # collision verdict threshold
 
+# deterministic per-instance colors — shared by mission renders and the
+# final emit pass so a part looks the same in both
+PALETTE = ["#7aa2f7", "#9ece6a", "#e0af68", "#f7768e", "#bb9af7", "#4dc3ff", "#ff9e64"]
+
 
 def _load_mesh(path: str | Path):
     import trimesh  # local — heavy dep, worker-side only when needed
 
     scene = trimesh.load(str(path))
     return scene.to_geometry() if hasattr(scene, "to_geometry") else scene
+
+
+def merged_glb(
+    placements: list[tuple[str, str | Path, list]],
+    out_path: str | Path,
+) -> Path | None:
+    """Combine placed instances into one GLB — ``placements`` is
+    [(name, mesh_path, transform_4x4)]. Deterministic: geometry order and
+    node names follow the placement order. Returns None when nothing
+    loadable remains."""
+    import trimesh
+
+    scene = trimesh.Scene()
+    for name, mesh_path, transform in placements:
+        p = Path(mesh_path)
+        if not p.exists():
+            continue
+        mesh = _load_mesh(p)
+        mesh.apply_transform(np.asarray(transform, dtype=float).reshape(4, 4))
+        scene.add_geometry(mesh, node_name=name, geom_name=name)
+    if not scene.geometry:
+        return None
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    scene.export(str(out))
+    return out
 
 
 def _manifold(mesh):
@@ -44,6 +74,7 @@ def _intersection_volume(a, b) -> float:
 
     inter = Manifold.batch_boolean([_manifold(a), _manifold(b)], OpType.Intersect)
     return float(inter.volume()) if inter is not None else 0.0
+
 
 class _PlacedMesh:
     __slots__ = ("iid", "mesh")

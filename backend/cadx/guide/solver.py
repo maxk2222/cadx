@@ -70,6 +70,7 @@ def delta_about_pivot(
     d[0:3, 3] = pivot - r @ pivot
     return d
 
+
 def _frame_matrix(pos: np.ndarray, normal: np.ndarray) -> np.ndarray:
     """4x4 orthonormal frame at ``pos`` with +Z = ``normal``.
 

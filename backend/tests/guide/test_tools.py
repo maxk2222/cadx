@@ -264,3 +264,50 @@ def test_preassembly_places_deterministically() -> None:
     report2 = asyncio.run(run_preassembly(sess))
     assert len(state.assembly.instances) == 2
     assert all(r["reason"] == "already satisfied" for r in report2["skipped"])
+
+
+def test_emit_assembly_artifacts_merges_glb(tmp_path) -> None:
+    """The finished assembly ships as one glb artifact — the version page
+    viewer keys off kind=glb, so a guide with placed instances must produce
+    exactly that."""
+    import asyncio
+
+    import numpy as np
+    import trimesh
+
+    from cadx.guide.guide_runner import _emit_assembly_artifacts
+    from cadx.guide.state import AssemblyInstance, GuidePart
+
+    mesh = tmp_path / "part.glb"
+    trimesh.creation.box(extents=(10, 10, 10)).export(str(mesh))
+    state = GuideState()
+    state.parts.append(GuidePart(id="cube", name="Cube", mesh_path=str(mesh)))
+    t = np.eye(4)
+    t[0, 3] = 50.0
+    state.assembly.instances.append(
+        AssemblyInstance(
+            part_id="cube", instance_id="cube#1", placed_in_step=1, transform=t.tolist()
+        )
+    )
+    from cadx import storage
+
+    arts = asyncio.run(
+        _emit_assembly_artifacts(state, storage.data_root() / "tmp_test_emit", executor=None)
+    )
+    glb_rel = arts.get("export:glb")
+    assert glb_rel, arts
+
+    sc = trimesh.load(str(storage.resolve(glb_rel)))
+    assert "cube#1" in sc.geometry
+    assert sc.bounds[0][0] > 40.0  # transform applied
+
+
+def test_emit_assembly_artifacts_empty(tmp_path) -> None:
+    import asyncio
+
+    from cadx import storage
+    from cadx.guide.guide_runner import _emit_assembly_artifacts
+
+    assert asyncio.run(
+        _emit_assembly_artifacts(GuideState(), storage.data_root() / "tmp_test_emit2", executor=None)
+    ) == {}

@@ -569,9 +569,6 @@ async def reset_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "unplaced": ids}
 
 
-_PALETTE = ["#7aa2f7", "#9ece6a", "#e0af68", "#f7768e", "#bb9af7", "#4dc3ff", "#ff9e64"]
-
-
 async def render_assembly(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     if s.executor is None:
         return {"ok": False, "error": "executor unavailable"}
@@ -587,7 +584,7 @@ async def render_assembly(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
             {
                 "mesh_path": part.mesh_path,
                 "transform": inst.transform,
-                "color": _PALETTE[i % len(_PALETTE)],
+                "color": gscene.PALETTE[i % len(gscene.PALETTE)],
                 "opacity": 1.0,
             }
         )

@@ -83,6 +83,37 @@ def _camera_for(view: str) -> tuple[str, tuple[float, float, float] | None]:
     return view, up
 
 
+# named-view camera directions — (position offset unit vector, view-up)
+_VIEW_DIRS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
+    "front": ((0, 1, 0), (0, 0, 1)),
+    "back": ((0, -1, 0), (0, 0, 1)),
+    "left": ((-1, 0, 0), (0, 0, 1)),
+    "right": ((1, 0, 0), (0, 0, 1)),
+    "top": ((0, 0, 1), (0, 1, 0)),
+    "bottom": ((0, 0, -1), (0, -1, 0)),
+}
+
+
+def _set_view_camera(pl: Any, view: str, center: tuple[float, float, float], diag: float) -> None:
+    """Point a pyvista plotter camera along a named view at ``center``.
+
+    Shared by render_views + render_scene — before, render_scene ignored
+    every view but "iso", so a requested "top" render silently produced the
+    default orientation."""
+    if view == "iso" or view not in _VIEW_DIRS:
+        pl.camera_position = "iso"
+        return
+    pos, up = _VIEW_DIRS[view]
+    pl.camera.position = (
+        center[0] + pos[0] * diag,
+        center[1] + pos[1] * diag,
+        center[2] + pos[2] * diag,
+    )
+    pl.camera.focal_point = center
+    pl.camera.up = up
+    pl.camera.parallel_projection = True
+
+
 def _thread_preview_lines(pv: Any, features: list[dict[str, Any]]) -> list[Any]:
     import numpy as np
 
@@ -188,17 +219,6 @@ def render_views(
     x, y, z = bbox_size
     title = f"L {x:.1f} x W {y:.1f} x H {z:.1f} mm"
 
-    # one VTK render window for all seven views — creating/closing a Plotter
-    # per view paid a fresh GL context + window init each time (most of the
-    # per-view cost); only the camera + label change between shots
-    positions = {
-        "front": ((0, 1, 0), (0, 0, 1)),
-        "back": ((0, -1, 0), (0, 0, 1)),
-        "left": ((-1, 0, 0), (0, 0, 1)),
-        "right": ((1, 0, 0), (0, 0, 1)),
-        "top": ((0, 0, 1), (0, 1, 0)),
-        "bottom": ((0, 0, -1), (0, -1, 0)),
-    }
     diag = math.sqrt(x * x + y * y + z * z)
     c = mesh.center
     results: dict[str, Path] = {}
@@ -220,18 +240,7 @@ def render_views(
             shots += [(v, ghost, GHOST_SUFFIX) for v in GHOST_VIEWS]
         for view, opacity, suffix in shots:
             actor.prop.opacity = opacity
-            if view == "iso":
-                pl.camera_position = "iso"
-            else:
-                pos, up = positions[view]
-                pl.camera.position = (
-                    c[0] + pos[0] * diag,
-                    c[1] + pos[1] * diag,
-                    c[2] + pos[2] * diag,
-                )
-                pl.camera.focal_point = c
-                pl.camera.up = up
-                pl.camera.parallel_projection = True
+            _set_view_camera(pl, view, tuple(float(v) for v in c), diag)
             pl.reset_camera()
             pl.camera.zoom(1.15)
             tag = " (xray)" if suffix else ""
@@ -377,8 +386,8 @@ def render_scene(
     pl = pv.Plotter(off_screen=True, window_size=(size, size))
     try:
         pl.set_background("white")
-        center = np.zeros(3)
-        n = 0
+        bmin = np.full(3, np.inf)
+        bmax = np.full(3, -np.inf)
         for e in entries:
             mesh = _load_for_render(e["mesh_path"])
             if mesh is None:
@@ -393,16 +402,14 @@ def render_scene(
                 smooth_shading=True,
                 split_sharp_edges=True,
             )
-            center += np.asarray(mesh.center, dtype=float)
-            n += 1
-        if not n:
+            bmin = np.minimum(bmin, mesh.bounds[0::2])
+            bmax = np.maximum(bmax, mesh.bounds[1::2])
+        if not np.isfinite(bmin).all():
             return None
-        center /= n
+        center = (bmin + bmax) / 2
+        diag = float(np.linalg.norm(bmax - bmin)) or 1.0
         pl.add_axes(color="black")
-        if view == "iso":
-            pl.camera_position = "iso"
-        else:
-            pl.reset_camera()
+        _set_view_camera(pl, view, tuple(float(v) for v in center), diag)
         pl.reset_camera()
         pl.camera.zoom(1.15)
         out_path.parent.mkdir(parents=True, exist_ok=True)
