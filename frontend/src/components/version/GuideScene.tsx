@@ -11,28 +11,50 @@ import { IconBtn } from "../ui";
 const meshUrl = (vid: string, pid: string) =>
   `/api/versions/${vid}/guide/parts/${encodeURIComponent(pid)}/mesh`;
 
+const HIGHLIGHT = new THREE.Color(0x2f9e44);
+
+function cloneForStep(scene: THREE.Group, isNew: boolean): THREE.Group {
+  const obj = scene.clone(true);
+  if (!isNew) return obj;
+  // parts introduced by the CURRENT step get a green emissive tint so the
+  // editor reads "what changed here" at a glance — clone materials first,
+  // otherwise the tint leaks into earlier steps' clones.
+  obj.traverse((c) => {
+    const m = c as THREE.Mesh;
+    if (m.isMesh && m.material) {
+      const src = m.material as THREE.MeshStandardMaterial;
+      const mat = src.clone();
+      mat.emissive = HIGHLIGHT;
+      mat.emissiveIntensity = 0.35;
+      m.material = mat;
+    }
+  });
+  return obj;
+}
+
 /** A placed instance: cloned part GLB under its 4x4 world transform. The
  *  outer group's local matrix IS the instance transform, so the gizmo can
  *  edit it directly and commit reads it back. */
 function Instance({
   scene,
   inst,
+  isNew,
   innerRef,
   onSelect,
 }: {
   scene: THREE.Group;
   inst: GuideInstance;
+  isNew: boolean;
   innerRef?: Ref<THREE.Group>;
   onSelect: () => void;
 }) {
-  const obj = useMemo(() => scene.clone(true), [scene]);
+  const obj = useMemo(() => cloneForStep(scene, isNew), [scene, isNew]);
   const { pos, quat, scl } = useMemo(() => {
     const p = new THREE.Vector3();
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
     const m = new THREE.Matrix4();
-    if (inst.transform?.length === 4)
-      m.set(...(inst.transform.flat() as Parameters<THREE.Matrix4["set"]>));
+    if (inst.transform?.length === 4) m.set(...(inst.transform.flat() as Parameters<THREE.Matrix4["set"]>));
     m.decompose(p, q, s);
     return { pos: p, quat: q, scl: s };
   }, [inst.transform]);
@@ -52,18 +74,24 @@ function Instance({
   );
 }
 
-/** Interactive guide editor (Kiara-style): per-part GLBs placed by instance
- *  transforms, a step scrubber that reveals the build order, click-to-select
- *  instances and a translate/rotate gizmo whose result persists via PATCH. */
+/** Kiara-style editor canvas: cumulative assembly up to `step`, parts added
+ *  by that step highlighted, click-to-select + translate/rotate gizmo whose
+ *  result persists via the parent's onTransformed (PATCH). */
 export default function GuideScene({
   versionId,
   parts,
   instances,
+  step,
+  sel,
+  onSelect,
   onTransformed,
 }: {
   versionId: string;
   parts: GuidePartInfo[];
   instances: GuideInstance[];
+  step: number;
+  sel: string | null;
+  onSelect: (iid: string | null) => void;
   onTransformed: (iid: string, m: number[][]) => void;
 }) {
   const { t } = useTranslation("version");
@@ -85,6 +113,9 @@ export default function GuideScene({
       urls={urls}
       meshParts={meshParts}
       instances={instances}
+      step={step}
+      sel={sel}
+      onSelect={onSelect}
       onTransformed={onTransformed}
       t={t}
     />
@@ -95,12 +126,18 @@ function SceneInner({
   urls,
   meshParts,
   instances,
+  step,
+  sel,
+  onSelect,
   onTransformed,
   t,
 }: {
   urls: string[];
   meshParts: GuidePartInfo[];
   instances: GuideInstance[];
+  step: number;
+  sel: string | null;
+  onSelect: (iid: string | null) => void;
   onTransformed: (iid: string, m: number[][]) => void;
   t: (k: string, o?: Record<string, unknown>) => string;
 }) {
@@ -112,18 +149,10 @@ function SceneInner({
       ),
     [meshParts, gltfs],
   );
-  const maxStep = useMemo(
-    () => Math.max(0, ...instances.map((i) => i.placed_in_step ?? 0)),
-    [instances],
-  );
-  const [step, setStep] = useState(maxStep);
-  const [sel, setSel] = useState<string | null>(null);
   const [selObj, setSelObj] = useState<THREE.Group | null>(null);
   const [mode, setMode] = useState<"translate" | "rotate">("translate");
-  const partName = (pid: string) => meshParts.find((p) => p.id === pid)?.name ?? pid;
 
   const visible = instances.filter((i) => (i.placed_in_step ?? 0) <= step);
-  const selInst = instances.find((i) => i.id === sel);
 
   const commit = () => {
     if (!selObj || !sel) return;
@@ -141,10 +170,7 @@ function SceneInner({
     <div className="relative h-full w-full">
       <Canvas
         camera={{ position: [220, 180, 260], fov: 40 }}
-        onPointerMissed={() => {
-          setSel(null);
-          setSelObj(null);
-        }}
+        onPointerMissed={() => onSelect(null)}
       >
         <color attach="background" args={["#0b0d12"]} />
         <ambientLight intensity={0.6} />
@@ -156,8 +182,9 @@ function SceneInner({
             key={i.id}
             scene={scenes[i.part_id] ?? new THREE.Group()}
             inst={i}
+            isNew={(i.placed_in_step ?? 0) === step}
             innerRef={i.id === sel ? setSelObj : undefined}
-            onSelect={() => setSel(i.id)}
+            onSelect={() => onSelect(i.id)}
           />
         ))}
         {selObj && (
@@ -181,36 +208,6 @@ function SceneInner({
         >
           <Rotate3d className="h-4 w-4" />
         </IconBtn>
-      </div>
-
-      {selInst && (
-        <div className="absolute left-2 top-2 rounded-md border border-edge bg-bg/90 px-2 py-1 text-[11px] text-fg backdrop-blur">
-          <span className="font-medium">{selInst.id}</span>
-          <span className="text-muted"> · {partName(selInst.part_id)}</span>
-          <span className="text-faint">
-            {" "}
-            · {t("guide_step_n", { n: selInst.placed_in_step })}
-          </span>
-        </div>
-      )}
-
-      <div className="absolute inset-x-3 bottom-2 flex items-center gap-2 rounded-md border border-edge bg-bg/90 px-2.5 py-1.5 backdrop-blur">
-        <span className="text-[10px] font-medium uppercase tracking-wider text-faint">
-          {t("guide_step_n", { n: step })}
-        </span>
-        <input
-          type="range"
-          min={0}
-          max={maxStep}
-          step={1}
-          value={step}
-          onChange={(e) => setStep(Number(e.target.value))}
-          className="flex-1 accent-brand-500"
-          aria-label={t("guide_step_scrub")}
-        />
-        <span className="text-[10px] text-muted">
-          {visible.length}/{instances.length}
-        </span>
       </div>
     </div>
   );

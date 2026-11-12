@@ -327,5 +327,11 @@
   "guide_step_scrub": "Пошаговый вид",
   "guide_no_meshes": "Нет мешей деталей",
   "guide_audience_intermediate": "Средний",
-  "guide_language_ph": "Язык (своб.)"
+  "guide_language_ph": "Язык (своб.)",
+  "guide_steps": "Шаги",
+  "guide_step_of": "Шаг {{n}} / {{m}}",
+  "guide_inspector": "Инспектор",
+  "guide_pick_instance": "Кликните деталь в 3D",
+  "guide_pos": "Позиция",
+  "guide_apply": "Применить"
 }

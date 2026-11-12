@@ -317,5 +317,11 @@
   "guide_step_scrub": "Step scrubber",
   "guide_no_meshes": "No part meshes available",
   "guide_audience_intermediate": "Intermediate",
-  "guide_language_ph": "Language (free)"
+  "guide_language_ph": "Language (free)",
+  "guide_steps": "Steps",
+  "guide_step_of": "Step {{n}} / {{m}}",
+  "guide_inspector": "Inspector",
+  "guide_pick_instance": "Click a part in the 3D view",
+  "guide_pos": "Position",
+  "guide_apply": "Apply"
 }

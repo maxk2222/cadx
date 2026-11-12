@@ -322,5 +322,11 @@
   "guide_step_scrub": "Vista por passos",
   "guide_no_meshes": "Sem malhas de peças",
   "guide_audience_intermediate": "Intermediário",
-  "guide_language_ph": "Idioma (livre)"
+  "guide_language_ph": "Idioma (livre)",
+  "guide_steps": "Passos",
+  "guide_step_of": "Passo {{n}} / {{m}}",
+  "guide_inspector": "Inspetor",
+  "guide_pick_instance": "Clique numa peça",
+  "guide_pos": "Posição",
+  "guide_apply": "Aplicar"
 }

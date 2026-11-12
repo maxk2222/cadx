@@ -312,5 +312,11 @@
   "guide_step_scrub": "",
   "guide_no_meshes": "",
   "guide_audience_intermediate": "",
-  "guide_language_ph": "（）"
+  "guide_language_ph": "（）",
+  "guide_steps": "",
+  "guide_step_of": " {{n}} / {{m}}",
+  "guide_inspector": "",
+  "guide_pick_instance": "3D",
+  "guide_pos": "",
+  "guide_apply": ""
 }

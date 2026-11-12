@@ -51,6 +51,11 @@ def _calls_budget(mission: str, state: GuideState) -> int:
         # the reviewer legitimately renders a preview per step — a fixed cap
         # starves longer manuals before findings are written
         base = max(base, 8 + 2 * len(state.steps) + n)
+    elif mission == "steps":
+        # every manual step costs ~4-6 calls (add_step + sub_steps +
+        # assign_media); scale by page count — the steps do not exist yet
+        pages = len((state.document.pages if state.document else []) or [])
+        base = max(base, 30 + 10 * pages)
     return base
 
 

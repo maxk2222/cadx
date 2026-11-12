@@ -327,5 +327,11 @@
   "guide_step_scrub": "Widok kroków",
   "guide_no_meshes": "Brak siatek części",
   "guide_audience_intermediate": "Średniozaawansowany",
-  "guide_language_ph": "Język (dowolny)"
+  "guide_language_ph": "Język (dowolny)",
+  "guide_steps": "Kroki",
+  "guide_step_of": "Krok {{n}} / {{m}}",
+  "guide_inspector": "Inspektor",
+  "guide_pick_instance": "Kliknij część w widoku 3D",
+  "guide_pos": "Pozycja",
+  "guide_apply": "Zastosuj"
 }

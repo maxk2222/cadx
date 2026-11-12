@@ -312,5 +312,11 @@
   "guide_step_scrub": "ステップ",
   "guide_no_meshes": "パーツメッシュがありません",
   "guide_audience_intermediate": "",
-  "guide_language_ph": "（）"
+  "guide_language_ph": "（）",
+  "guide_steps": "ステップ",
+  "guide_step_of": "ステップ {{n}} / {{m}}",
+  "guide_inspector": "インスペクター",
+  "guide_pick_instance": "3Dビューでパーツをクリック",
+  "guide_pos": "",
+  "guide_apply": ""
 }
