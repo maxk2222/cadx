@@ -827,7 +827,12 @@ def expected_thread_count(spec: Any) -> int:
     covered: set[str] = set()
     for part in getattr(spec, "standard_parts", []) or []:
         covered.update(part.covers_features)
-        cls, values, _schema = _part_values(part)
+        try:
+            cls, values, _schema = _part_values(part)
+        except Exception:
+            # informational `parameters` (ISO dim names like s/e/k/d) must not
+            # zero the count — _thread_data only needs size/threaded/length
+            cls, values = None, {}
         if part.threaded is not False and _thread_data(part, cls, values) is not None:
             expected += int(part.quantity)
     for feature in getattr(spec, "features", []) or []:

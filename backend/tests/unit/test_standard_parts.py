@@ -278,6 +278,50 @@ def test_expected_thread_count_ignores_clearance_fit_notes() -> None:
     assert expected_thread_count(spec) == 1
 
 
+def test_expected_thread_count_survives_informational_parameters() -> None:
+    """m8_hex regression: intake may copy ISO dim names (s/e/k/d/P/L) into
+    `parameters` — constructor_kwargs rejects them, and the ValueError used
+    to zero the whole count so the export-thread probe never ran and a
+    smooth stepped shaft shipped unchallenged."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    part = StandardPartSpec(
+        class_name="HexHeadScrew",
+        fastener_type="iso4014",
+        size="M8\u00d71.25",
+        parameters={
+            "s": 13.0,
+            "e": 14.38,
+            "k": 5.3,
+            "d": 8.0,
+            "P": 1.25,
+            "L": 50.0,
+            "L_thread": 30.0,
+            "L_shank": 20.0,
+        },
+        quantity=1,
+        length_mm=50.0,
+        axis="+z",
+        threaded=True,
+        thread_length_mm=30.0,
+        covers_features=["hex head", "unthreaded shank", "threaded portion"],
+    )
+    spec = PartSpec(
+        name="M8 hex screw",
+        summary="",
+        units="mm",
+        length_x=d(15.0),
+        width_y=d(13.0),
+        height_z=d(55.3),
+        features=[
+            Feature(name="hex head", type="head"),
+            Feature(name="unthreaded shank", type="shank"),
+            Feature(name="threaded portion", type="thread"),
+        ],
+        standard_parts=[part],
+    )
+    assert expected_thread_count(spec) == 1
+
+
 def test_expected_thread_count_clearance_dia_disambiguates_m_spec() -> None:
     """Intake may write a valid-looking thread_spec ("M8x1.25-6H") onto a
     hole whose declared diameter is the M8 CLEARANCE size (8.5), not the
