@@ -125,6 +125,7 @@ class AssemblyState(BaseModel):
     joints: list[dict] = Field(default_factory=list)
     step_instances: dict[str, list[str]] = Field(default_factory=dict)  # step -> instance_ids
     status: str = "empty"  # empty | partial | complete
+    planner: dict = Field(default_factory=dict)  # deterministic pre-assembly report
 
 
 class ReviewFinding(BaseModel):

@@ -190,13 +190,9 @@ def test_same_part_placed_twice_creates_instances() -> None:
     cand = {"transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]}
     sess._preview_cache["c1"] = dict(cand)
     sess._preview_cache["c2"] = dict(cand)
-    r1 = asyncio.run(
-        place_instance(sess, {"part_id": "adapter", "candidate_id": "c1", "step": 1})
-    )
+    r1 = asyncio.run(place_instance(sess, {"part_id": "adapter", "candidate_id": "c1", "step": 1}))
     assert r1["ok"], r1
-    r2 = asyncio.run(
-        place_instance(sess, {"part_id": "adapter", "candidate_id": "c2", "step": 2})
-    )
+    r2 = asyncio.run(place_instance(sess, {"part_id": "adapter", "candidate_id": "c2", "step": 2}))
     assert r2["ok"], r2  # second placement of the SAME part must succeed
     ids = [i.instance_id for i in state.assembly.instances]
     assert ids == ["adapter#1", "adapter#2"]
@@ -206,3 +202,65 @@ def test_same_part_placed_twice_creates_instances() -> None:
 
     asyncio.run(reset_step(sess, {"step": 2}))
     assert [i.instance_id for i in state.assembly.instances] == ["adapter#1"]
+
+
+def test_preassembly_places_deterministically() -> None:
+    """The planner resolves the step plan without any LLM: base part via
+    env fallback, then the mating part attached onto its port."""
+    import asyncio
+
+    from cadx.guide.preassembly import run_preassembly
+    from cadx.guide.state import GuidePart, GuideStep, GuideSubStep, PortInfo
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts += [
+        GuidePart(
+            id="base",
+            name="Base",
+            ports=[PortInfo(name="p0", pos=[0, 0, 10], axis=[0, 0, 1], radius=10, gender="female")],
+        ),
+        GuidePart(
+            id="plug",
+            name="Plug",
+            ports=[PortInfo(name="m0", pos=[0, 0, 0], axis=[0, 0, -1], radius=10, gender="male")],
+        ),
+    ]
+    state.steps += [
+        GuideStep(
+            number=1,
+            text="Base aufstellen",
+            display_text="d",
+            required_parts=["Base"],
+            sub_steps=[GuideSubStep(action="place", part="Base")],
+        ),
+        GuideStep(
+            number=2,
+            text="Plug einstecken",
+            display_text="d",
+            required_parts=["Plug"],
+            sub_steps=[GuideSubStep(action="attach", part="Plug", target="Base")],
+        ),
+    ]
+    sess = GuideToolSession(
+        ctx,
+        mission="assembly",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,
+        guide_assets=[],
+        executor=None,
+    )
+    report = asyncio.run(run_preassembly(sess))
+    insts = {i.instance_id for i in state.assembly.instances}
+    assert insts == {"base#1", "plug#1"}, (insts, report)
+    plug = next(i for i in state.assembly.instances if i.part_id == "plug")
+    assert plug.transform[2][3] != 0.0  # attached ABOVE the base, not at origin
+    assert state.assembly.joints[0]["moving_instance"] == "plug#1"
+    assert state.assembly.planner["placed"] == 2
+
+    # resume-safe: a second run skips the satisfied requirements
+    report2 = asyncio.run(run_preassembly(sess))
+    assert len(state.assembly.instances) == 2
+    assert all(r["reason"] == "already satisfied" for r in report2["skipped"])

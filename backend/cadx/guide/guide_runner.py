@@ -50,13 +50,42 @@ def _calls_budget(mission: str, state: GuideState) -> int:
     return base
 
 
-def _mission_prompt(mission: str, state: GuideState, repair_notes: str = "") -> str:
+def _mission_prompt(
+    mission: str, state: GuideState, repair_notes: str = "", sess: Any = None
+) -> str:
     sys_p = system_prompt(f"guide_{mission}.md")
     parts = [{"role": "system", "content": sys_p}]
     ctx_lines = [
         f"Guide language: {state.language}",
         f"User notes ({len(state.user_notes)}): {'; '.join(state.user_notes[:6]) or 'none'}",
     ]
+    if mission == "assembly" and sess is not None:
+        # After a truncation/retry or context condensation the agent must
+        # see WHERE the assembly stands — otherwise it re-explores steps
+        # and burns the call budget before finishing.
+        from cadx.guide.assembly_tools import _completeness_issues
+
+        plan_fail = (state.assembly.planner or {}).get("failed") or []
+        if plan_fail:
+            ctx_lines.append(
+                "Deterministic pre-assembly could NOT place these — solve "
+                "them yourself: "
+                + "; ".join(
+                    f"step {f['step']} '{f['part']}' ({f.get('reason', '')})" for f in plan_fail[:6]
+                )
+            )
+        if state.assembly.instances:
+            issues = _completeness_issues(sess)
+            ctx_lines.append(
+                f"Assembly progress: {len(state.assembly.instances)} instance(s) placed."
+                + (
+                    f" Still missing: {'; '.join(issues[:8])}"
+                    if issues
+                    else " All required instances are present — verify with "
+                    "validate_assembly_completeness, then call done_mission. "
+                    "Do NOT re-read steps/pages."
+                )
+            )
     if mission == "parts" and not state.allow_part_generation:
         ctx_lines.append(
             "PART GENERATION IS DISABLED for this run: every required name "
@@ -193,6 +222,16 @@ async def _run_mission(
         return None
     for attempt in (0, 1):
         sess = mk_session(mission)
+        if mission == "assembly" and not state.assembly.planner.get("ran"):
+            # deterministic pre-assembly: place everything the step plan
+            # resolves unambiguously — the LLM session below only refines
+            from cadx.guide.preassembly import run_preassembly
+
+            try:
+                await run_preassembly(sess)
+            except Exception:
+                log.exception("guide.preassembly.failed")
+                state.assembly.planner = {"ran": True, "error": "planner crashed — LLM assembles"}
         nudge = notes
         if attempt:
             nudge = (f"{notes}\n\n" if notes else "") + (
@@ -204,7 +243,7 @@ async def _run_mission(
         result = await run_session(
             ctx,
             role="vision",
-            messages=_mission_prompt(mission, state, nudge),
+            messages=_mission_prompt(mission, state, nudge, sess),
             session=sess,
             max_calls=calls_budget,
             turn_budget=calls_budget,  # ~1 tool call per turn — the call cap is the real bound
