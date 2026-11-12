@@ -18,7 +18,7 @@ import numpy as np
 from cadx.guide import scene as gscene
 from cadx.guide import solver
 from cadx.guide.state import AssemblyInstance
-from cadx.guide.tools import _fn, _i, _num, _s
+from cadx.guide.tools import _b, _fn, _i, _num, _s
 from cadx.logging import get_logger
 
 if TYPE_CHECKING:
@@ -116,6 +116,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "view": _s("camera: iso|front|top|right (default iso)"),
             "step": _i("limit to parts placed up to this step (0 = all)"),
+            "each_step": _b(
+                "render EVERY step state in one call (per-step build "
+                "progression) — preferred for reviews over looping step renders"
+            ),
         },
         [],
     ),
@@ -573,30 +577,44 @@ async def render_assembly(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
     if s.executor is None:
         return {"ok": False, "error": "executor unavailable"}
     upto = int(a.get("step", 0) or 0)
-    entries = []
-    for i, inst in enumerate(s.state.assembly.instances):
-        if upto and inst.placed_in_step > upto:
-            continue
-        part = s.state.part_by_id(inst.part_id)
-        if part is None or not part.mesh_path or not Path(part.mesh_path).exists():  # noqa: ASYNC240
-            continue
-        entries.append(
-            {
-                "mesh_path": part.mesh_path,
-                "transform": inst.transform,
-                "color": gscene.PALETTE[i % len(gscene.PALETTE)],
-                "opacity": 1.0,
-            }
-        )
-    if not entries:
-        return {"ok": False, "error": "nothing placed (or no meshes) yet"}
-    out = s.state_dir / "renders" / f"assembly_{uuid.uuid4().hex[:8]}.png"
-    res = await s.executor.render_assembly(
-        {"entries": entries, "view": str(a.get("view") or "iso"), "out_path": str(out)}
+    each = bool(a.get("each_step"))
+    step_nos = (
+        sorted({i.placed_in_step for i in s.state.assembly.instances} | {0})
+        if each
+        else [upto]
     )
-    if not res.get("ok"):
-        return {"ok": False, "error": str(res.get("error") or "render failed")}
-    return s._images_result([str(res["image_path"])], rendered=len(entries))
+    images: list[str] = []
+    rendered_total = 0
+    for sn in step_nos:
+        entries = []
+        for i, inst in enumerate(s.state.assembly.instances):
+            if sn and inst.placed_in_step > sn:
+                continue
+            part = s.state.part_by_id(inst.part_id)
+            if part is None or not part.mesh_path or not Path(part.mesh_path).exists():  # noqa: ASYNC240
+                continue
+            entries.append(
+                {
+                    "mesh_path": part.mesh_path,
+                    "transform": inst.transform,
+                    "color": gscene.PALETTE[i % len(gscene.PALETTE)],
+                    "opacity": 1.0,
+                }
+            )
+        if not entries:
+            continue
+        out = (
+            s.state_dir / "renders" / f"assembly_s{sn}_{uuid.uuid4().hex[:8]}.png"
+        )
+        res = await s.executor.render_assembly(
+            {"entries": entries, "view": str(a.get("view") or "iso"), "out_path": str(out)}
+        )
+        if res.get("ok"):
+            images.append(str(res["image_path"]))
+            rendered_total += len(entries)
+    if not images:
+        return {"ok": False, "error": "nothing placed (or no meshes) yet"}
+    return s._images_result(images, rendered=rendered_total, steps=len(images))
 
 
 async def check_collisions(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:

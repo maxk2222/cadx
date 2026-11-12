@@ -76,8 +76,9 @@ SESSION_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "list_steps": gtools._fn(
         "list_steps",
-        "List current guide steps: number, title, action_type, required_parts, source_pages.",
-        {},
+        "List current guide steps: number, title, action_type, required_parts, "
+        "source_pages. full=true adds text/display_text/sub_steps/media per step.",
+        {"full": gtools._b("include full step text + sub_steps + media")},
         [],
     ),
     "get_step": gtools._fn(
@@ -369,21 +370,30 @@ class GuideToolSession(ToolSession):
     # -- state read tools -------------------------------------------------------- #
 
     def _tool_list_steps(self, a: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "ok": True,
-            "steps": [
-                {
-                    "number": s.number,
-                    "title": s.title,
-                    "action_type": s.action_type,
-                    "required_parts": s.required_parts,
-                    "tools": s.tools,
-                    "source_pages": s.source_pages,
-                    "sub_steps": len(s.sub_steps),
-                }
-                for s in sorted(self.state.steps, key=lambda s: s.number)
-            ],
-        }
+        full = bool(a.get("full"))
+        rows = []
+        for s in sorted(self.state.steps, key=lambda s: s.number):
+            row: dict[str, Any] = {
+                "number": s.number,
+                "title": s.title,
+                "action_type": s.action_type,
+                "required_parts": s.required_parts,
+                "tools": s.tools,
+                "source_pages": s.source_pages,
+                "sub_steps": len(s.sub_steps),
+            }
+            if full:
+                row.update(
+                    {
+                        "text": s.text,
+                        "display_text": s.display_text,
+                        "safety_hint": s.safety_hint,
+                        "media_image": s.media_image,
+                        "sub_steps_detail": [x.model_dump() for x in s.sub_steps],
+                    }
+                )
+            rows.append(row)
+        return {"ok": True, "steps": rows}
 
     def _tool_get_step(self, a: dict[str, Any]) -> dict[str, Any]:
         s = self.state.step_by_number(int(a.get("number", 0)))
