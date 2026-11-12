@@ -691,6 +691,11 @@ async def run_session(  # noqa: C901
     # find_replace/verify ping-pong 24 turns on one fillet error)
     verify_fails: dict[str, int] = {}
     verify_nudged = False
+    # finish_reason="length" without tool calls = the model burned the whole
+    # completion budget mid-thought (reasoning models that ignore the
+    # disable flag do this). That is truncation, not a final answer — one
+    # hard re-prompt, then end the session marked "truncated".
+    trunc_retries = 0
     # edit/codegen sessions pay the full sandbox pipeline per verify — they
     # get a tighter turn cap than read-only info/inspect sessions
     max_turns = (
@@ -755,6 +760,7 @@ async def run_session(  # noqa: C901
                 "tool_calls": [f"{tc.name}({_short(tc.raw_arguments)})" for tc in tool_calls],
                 "has_final": not tool_calls,
                 "thinking": thinking_on(ctx, step),
+                **({"finish": resp.finish_reason} if resp.finish_reason == "length" else {}),
                 # vLLM APC: how much of the prompt prefix was already cached —
                 # only recorded on a hit so trace rows stay clean
                 **({"cached_tokens": resp.cached_tokens} if resp.cached_tokens else {}),
@@ -765,6 +771,20 @@ async def run_session(  # noqa: C901
         )
 
         if not tool_calls:
+            if resp.finish_reason == "length" and trunc_retries < 1:
+                trunc_retries += 1
+                log.info("tool_session.truncated", step=step, tokens=resp.completion_tokens)
+                msgs.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Your previous response was cut off at the token "
+                            "limit. Do NOT write any more explanation — call "
+                            "the next tool now."
+                        ),
+                    }
+                )
+                continue
             return SessionResult(
                 response=resp,
                 submitted=session.submitted,
@@ -773,6 +793,7 @@ async def run_session(  # noqa: C901
                 tool_calls_made=calls,
                 tool_log=session.tool_log,
                 messages_out=msgs,
+                end_reason="truncated" if resp.finish_reason == "length" else "",
             )
 
         native = not all(tc.via_content for tc in tool_calls)
@@ -795,6 +816,9 @@ async def run_session(  # noqa: C901
                     tool=tc.name,
                     args=_short(tc.raw_arguments, 400),
                 )
+                with contextlib.suppress(Exception):
+                    act = f"{tc.name}({_short(tc.raw_arguments, 140)})"
+                    await ctx.emit(step, iteration, act, activity=act)
                 result = await session.execute(tc.name, tc.arguments)
             msgs.extend(_result_messages(tc, result, native, session._sent_image_hashes))
             error_streak = error_streak + 1 if not result.get("ok", True) else 0

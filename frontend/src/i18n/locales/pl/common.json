@@ -231,7 +231,8 @@
       "edited_n_many": "edytowano {{count}} obrazów",
       "edited_n_other": "edytowano {{count}} obrazu",
       "seed_ph": "np. 42"
-    }
+    },
+    "note": "notatka"
   },
   "err_unreachable": "serwer nieosiągalny — czy stos działa? (make status)",
   "health": {

@@ -30,6 +30,7 @@ export default function PartCard({
   forceOpen,
   startEditing,
   readonly = false,
+  guideIndex,
 }: {
   group: PartGroup;
   projectId: string;
@@ -41,6 +42,8 @@ export default function PartCard({
   startEditing?: boolean;
   /** hide rename/delete admin actions (inspector view on the version page) */
   readonly?: boolean;
+  /** 1-based AR-guide sequence (G{n}) when this group holds guide versions */
+  guideIndex?: number;
 }) {
   const { t } = useTranslation("projects");
   const qc = useQueryClient();
@@ -113,6 +116,12 @@ export default function PartCard({
   // user-verified master version of this part (max one) — resolve its number
   // from the grouped versions; missing entry = fetch skew, hide the chip
   const master = versions.find((v) => v.id === part.accepted_version_id);
+  // auto-named guide parts ("AR-Guide <pdf-stem>") display as "Guide {n}"
+  // — a user-renamed title wins over the generated label
+  const displayName =
+    guideIndex && part.name.startsWith("AR-Guide")
+      ? t("guide_n", { n: guideIndex })
+      : part.name;
 
   return (
     <div ref={ref}>
@@ -130,8 +139,8 @@ export default function PartCard({
               }`}
             />
           </button>
-          <Chip tone={synthetic ? "zinc" : "blue"} className="shrink-0">
-            {synthetic ? "P?" : `P${part.number}`}
+          <Chip tone={synthetic ? "zinc" : guideIndex ? "purple" : "blue"} className="shrink-0">
+            {synthetic ? "P?" : guideIndex ? `G${guideIndex}` : `P${part.number}`}
           </Chip>
           {nameEdit ? (
             <input
@@ -154,7 +163,7 @@ export default function PartCard({
               title={part.name || t("part_untitled")}
             >
               <span className="min-w-0 truncate text-sm font-medium text-fg">
-                {part.name || (
+                {displayName || (
                   <span className="italic text-faint">{t("part_untitled")}</span>
                 )}
               </span>

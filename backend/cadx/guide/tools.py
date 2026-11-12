@@ -71,7 +71,14 @@ SHARED_PAGE_TOOLS = [
     "get_figure_image",
 ]
 SHARED_PLAN_TOOLS = ["read_plan", "append_plan", "write_plan", "clear_plan"]
-SHARED_STATE_TOOLS = ["list_steps", "get_step", "list_parts", "get_part_features", "list_assets"]
+SHARED_STATE_TOOLS = [
+    "list_steps",
+    "get_step",
+    "list_parts",
+    "get_part_features",
+    "list_assets",
+    "add_master_note",
+]
 MISSION_TOOLS: dict[str, list[str]] = {
     "doc": [
         "prepare_pdf",
@@ -79,6 +86,7 @@ MISSION_TOOLS: dict[str, list[str]] = {
         "classify_pages",
         "set_detected_part_names",
         "ask_user",
+        "add_master_note",
         *SHARED_PAGE_TOOLS,
         *SHARED_PLAN_TOOLS,
         "done_mission",

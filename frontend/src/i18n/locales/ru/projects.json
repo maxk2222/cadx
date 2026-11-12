@@ -77,5 +77,6 @@
   "parts_count_few": "{{count}} детали",
   "parts_count_many": "{{count}} деталей",
   "parts_count_other": "{{count}} детали",
-  "parts_ungrouped": "Без группы"
+  "parts_ungrouped": "Без группы",
+  "guide_n": "Руководство {{n}}"
 }

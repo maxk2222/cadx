@@ -37,7 +37,7 @@ from cadx.agent.project_tools import (
     ProjectToolSession,
 )
 from cadx.agent.types import AgentCtx
-from cadx.db.models import Chat, Job, Project, Version
+from cadx.db.models import Asset, AssetKind, Chat, Job, Project, Version
 from cadx.db.session import session_scope
 from cadx.logging import get_logger
 from cadx.spawn import SpawnError, enqueue_resume, spawn_edit, spawn_generate, spawn_guide
@@ -250,3 +250,31 @@ class ChatToolSession(ProjectToolSession):
             with p.open("a", encoding="utf-8") as fh:
                 fh.write(_json.dumps({"note": note[:2000]}) + "\n")
         return {"ok": True, "noted": "saved — running missions pick it up via list_user_notes"}
+
+    async def _tool_save_master_note(self, a: dict[str, Any]) -> dict[str, Any]:
+        title = str(a.get("title", "")).strip() or "Masternote"
+        text = str(a.get("text", "")).strip()
+        if not text:
+            return {"ok": False, "error": "text required"}
+        from cadx import storage as _storage
+        from cadx.db.session import session_scope as _scope
+
+        async with _scope() as db:
+            project = await self._project(db)
+            asset = Asset(
+                project_id=project.id,
+                kind=AssetKind.note,
+                filename=_storage.safe_filename(f"{title[:80]}.md"),
+                path="",
+                mime="text/markdown",
+                caption=title[:200],
+                gen_params={"source": "chat"},
+            )
+            path = _storage.asset_path(project.id, asset.id, asset.filename)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# {title}\n\n{text}\n", encoding="utf-8")
+            asset.path = _storage.relpath(path)
+            db.add(asset)
+            await db.commit()
+            asset_id = str(asset.id)
+        return {"ok": True, "asset_id": asset_id, "saved": f"{title}.md"}

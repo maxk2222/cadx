@@ -56,5 +56,6 @@
   "part_delete_body_other": "{{name}} とその {{count}} 件のバージョンを削除します。実行中のジョブはキャンセルされます。",
   "part_deleted_other": "パーツを削除しました — {{count}} 件のバージョンを削除。",
   "parts_count_other": "{{count}} 個のパーツ",
-  "parts_ungrouped": "未分類"
+  "parts_ungrouped": "未分類",
+  "guide_n": "ガイド{{n}}"
 }

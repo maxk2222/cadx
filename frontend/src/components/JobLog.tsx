@@ -417,6 +417,24 @@ export default function JobLog({
         </div>
       )}
 
+      {live.activity && live.activity.length > 0 && (
+        <div className="rounded-md border border-edge bg-panel/60 px-2 py-1.5">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint">
+            {t("log_activity")}
+          </div>
+          <div className="max-h-24 overflow-y-auto font-mono text-[10px] leading-4 text-muted">
+            {live.activity.slice(-12).map((a, i) => (
+              <div key={i} className="truncate" title={a.text}>
+                <span className="text-faint/60">
+                  {new Date(a.ts).toLocaleTimeString(locale())}
+                </span>{" "}
+                {a.text}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div
         ref={logBoxRef}
         onScroll={onScroll}

@@ -226,7 +226,8 @@
       "edited_n_other": "{{count}} imagens editadas",
       "edited_n_many": "{{count}} imagens editadas",
       "seed_ph": "ex.: 42"
-    }
+    },
+    "note": "nota"
   },
   "err_unreachable": "servidor inacessível — a stack está rodando? (make status)",
   "health": {

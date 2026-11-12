@@ -107,5 +107,6 @@
   "log_default_ph": "domyślnie: {{v}}",
   "log_submit": "Wyślij odpowiedzi",
   "log_use_defaults": "użyj wartości domyślnych",
-  "queued_pos": "w kolejce · poz {{n}}/{{m}}"
+  "queued_pos": "w kolejce · poz {{n}}/{{m}}",
+  "log_activity": "Aktywność agenta"
 }

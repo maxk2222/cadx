@@ -144,6 +144,9 @@ class GuideState(BaseModel):
     guide_version_id: str = ""  # state-dir key — stable across job resumes
     language: str = "de"
     user_notes: list[str] = Field(default_factory=list)
+    # agent-authored masternotes (tips/assumptions/extra info for the guide
+    # user) — emitted as a project "note" asset at job end
+    master_notes: list[str] = Field(default_factory=list)
     pending_answers: list[str] = Field(default_factory=list)
     document: DocumentIndex | None = None
     steps: list[GuideStep] = Field(default_factory=list)

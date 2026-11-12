@@ -63,5 +63,6 @@
   "part_deleted_other": "Pieza eliminada — {{count}} versiones eliminadas.",
   "parts_count_one": "{{count}} pieza",
   "parts_count_other": "{{count}} piezas",
-  "parts_ungrouped": "Sin agrupar"
+  "parts_ungrouped": "Sin agrupar",
+  "guide_n": "Guía {{n}}"
 }

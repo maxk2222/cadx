@@ -458,6 +458,20 @@ CHAT_ACTION_TOOLS = [
         },
         ["job_id", "note"],
     ),
+    _fn(
+        "save_master_note",
+        "Save a masternode — a durable markdown note for the person who "
+        "will follow the guide (tips, extra info from the user, assembly "
+        "hints, warnings). Derived from this conversation: call it when "
+        "the user gives supplementary info about an assembly guide, or "
+        "when you derive a note worth keeping. Shows up as a project "
+        "asset on the project page.",
+        {
+            "title": _s("short note title (used as filename)"),
+            "text": _s("the note body in the conversation's language"),
+        },
+        ["title", "text"],
+    ),
 ]
 
 # Tools that trigger the WebGUI's LLM (generation/edit jobs, or relay user

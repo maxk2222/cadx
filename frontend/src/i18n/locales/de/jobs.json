@@ -101,5 +101,6 @@
   "log_default_ph": "Standard: {{v}}",
   "log_submit": "Antworten absenden",
   "log_use_defaults": "Defaults verwenden",
-  "queued_pos": "in Warteschlange · Pos. {{n}}/{{m}}"
+  "queued_pos": "in Warteschlange · Pos. {{n}}/{{m}}",
+  "log_activity": "Agenten-Aktivität"
 }

@@ -4,6 +4,7 @@ import {
   FileBox,
   FileText,
   ImageIcon,
+  NotebookPen,
   Package,
   Pencil,
   PenLine,
@@ -26,6 +27,7 @@ const KIND_ICON: Record<string, React.ReactNode> = {
   generated_image: <Sparkles className="h-5 w-5" />,
   pdf: <FileText className="h-5 w-5" />,
   cad_glb: <Package className="h-5 w-5" />,
+  note: <NotebookPen className="h-5 w-5" />,
 };
 
 const KIND_LABEL: Record<string, string> = {
@@ -175,9 +177,11 @@ export default function AssetManager({
               >
                 <button
                   className="block w-full"
-                  onClick={() =>
-                    onToggle ? onToggle(a.id) : isImage(a.kind) && setLightbox(a.url)
-                  }
+                  onClick={() => {
+                    if (onToggle) onToggle(a.id);
+                    else if (isImage(a.kind)) setLightbox(a.url);
+                    else if (a.kind === "note") window.open(a.url, "_blank");
+                  }}
                   onDoubleClick={() => isImage(a.kind) && setLightbox(a.url)}
                   title={`${a.filename}${a.caption ? ` — ${a.caption}` : ""}`}
                 >
@@ -209,7 +213,9 @@ export default function AssetManager({
                 >
                   {a.kind === "generated_image"
                     ? t("asset.ai")
-                    : (KIND_LABEL[a.kind] ?? a.kind.replace("reference_", ""))}
+                    : a.kind === "note"
+                      ? t("asset.note")
+                      : (KIND_LABEL[a.kind] ?? a.kind.replace("reference_", ""))}
                 </span>
                 {a.gen_params?.role_hint === "sketch" && (
                   <span

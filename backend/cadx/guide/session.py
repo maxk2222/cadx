@@ -104,6 +104,15 @@ SESSION_SCHEMAS: dict[str, dict[str, Any]] = {
         {},
         [],
     ),
+    "add_master_note": gtools._fn(
+        "add_master_note",
+        "Write a masternode — a durable tip/assumption/extra hint for the "
+        "person who will follow this guide (e.g. a documented placement "
+        "assumption, a torque/crimping note, a warning). Masternotes are "
+        "emitted as a project asset at job end; they are NOT step text.",
+        {"text": gtools._s("the note text in the guide's language")},
+        ["text"],
+    ),
     "list_user_notes": gtools._fn(
         "list_user_notes",
         "Read supplemental instructions/answers the user provided via chat.",
@@ -407,6 +416,15 @@ class GuideToolSession(ToolSession):
 
     def _tool_list_assets(self, a: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "assets": self.guide_assets}
+
+    def _tool_add_master_note(self, a: dict[str, Any]) -> dict[str, Any]:
+        text = str(a.get("text", "")).strip()
+        if not text:
+            return {"ok": False, "error": "text required"}
+        if text not in self.state.master_notes:
+            self.state.master_notes.append(text[:2000])
+        self._save()
+        return {"ok": True, "count": len(self.state.master_notes)}
 
     def _tool_list_user_notes(self, a: dict[str, Any]) -> dict[str, Any]:
         # drain answers that arrived via resume into the notes list once

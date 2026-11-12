@@ -25,6 +25,7 @@ class AssetKind(enum.StrEnum):
     reference_dxf = "reference_dxf"
     pdf = "pdf"  # instruction manual (anleitungsbuilder)
     cad_glb = "cad_glb"  # GLB/glTF CAD part (anleitungsbuilder)
+    note = "note"  # markdown masternode written by the guide agent/user
 
 
 # Kinds that can serve as image inputs (LLM context, mesh source images).

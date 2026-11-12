@@ -63,5 +63,6 @@
   "part_deleted_other": "Part deleted — {{count}} versions removed.",
   "parts_count_one": "{{count}} part",
   "parts_count_other": "{{count}} parts",
-  "parts_ungrouped": "Ungrouped"
+  "parts_ungrouped": "Ungrouped",
+  "guide_n": "Guide {{n}}"
 }

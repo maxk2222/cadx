@@ -39,6 +39,16 @@ export default function PartsSection({
     () => groupVersionsByPart(versions, parts),
     [versions, parts],
   );
+  // AR guides get their own G-sequence instead of a P-number — numbered
+  // chronologically (first guide built = Guide 1)
+  const guideNums = useMemo(() => {
+    const m = new Map<string, number>();
+    groups
+      .filter((g) => g.versions.some((v) => v.kind === "guide"))
+      .sort((a, b) => a.part.number - b.part.number)
+      .forEach((g, i) => m.set(g.part.id, i + 1));
+    return m;
+  }, [groups]);
 
   const needle = vq.trim().toLowerCase();
   const match = (v: VersionSummary) =>
@@ -108,6 +118,7 @@ export default function PartsSection({
           group={g}
           projectId={projectId}
           activeId={activeId}
+          guideIndex={guideNums.get(g.part.id)}
           forceOpen={focusPart === g.part.id}
           startEditing={newPartId === g.part.id}
         />

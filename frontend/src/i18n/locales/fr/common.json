@@ -221,7 +221,8 @@
       "edited_n_one": "{{count}} image modifiée",
       "edited_n_other": "{{count}} images modifiées",
       "seed_ph": "p. ex. 42"
-    }
+    },
+    "note": "note"
   },
   "err_unreachable": "serveur injoignable — la pile est-elle lancée ? (make status)",
   "health": {

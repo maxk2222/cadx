@@ -221,7 +221,8 @@
       "edited_n_one": "{{count}} Bild bearbeitet",
       "edited_n_other": "{{count}} Bilder bearbeitet",
       "seed_ph": "z. B. 42"
-    }
+    },
+    "note": "Notiz"
   },
   "err_unreachable": "Server nicht erreichbar — läuft der Stack? (make status)",
   "health": {

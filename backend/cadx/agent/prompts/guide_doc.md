@@ -12,4 +12,5 @@ Rules:
 - Read ALL pages. Do not stop after the parts list — step pages also name parts.
 - If page text looks garbled/empty, the page is scanned → use get_page_image and read visually.
 - When genuinely uncertain (missing part list, unreadable page), you may `ask_user` ONCE with a concrete question.
+- General notes/warnings the manual states outside the step sequence (safety notes, "do not overtighten", tools required) → `add_master_note` so they survive as masternotes for the guide user.
 - Finish with `done_mission` — a one-line summary of what you indexed.

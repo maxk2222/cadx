@@ -104,5 +104,6 @@
   "log_default_ph": "padrão: {{v}}",
   "log_submit": "Enviar respostas",
   "log_use_defaults": "usar padrões",
-  "queued_pos": "na fila · pos {{n}}/{{m}}"
+  "queued_pos": "na fila · pos {{n}}/{{m}}",
+  "log_activity": "Atividade do agente"
 }

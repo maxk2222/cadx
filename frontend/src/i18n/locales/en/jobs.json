@@ -101,5 +101,6 @@
   "log_default_ph": "default: {{v}}",
   "log_submit": "Submit answers",
   "log_use_defaults": "use defaults",
-  "queued_pos": "queued · pos {{n}}/{{m}}"
+  "queued_pos": "queued · pos {{n}}/{{m}}",
+  "log_activity": "Agent activity"
 }

@@ -14,3 +14,4 @@ Hard rules:
 - Keep sub_steps order; a part may target an already-placed part only.
 - Ports named male→female mate best; matching radii matter.
 - Finish with `validate_assembly_geometry` + `validate_assembly_completeness`; fix every reported issue, then `done_mission`.
+- Every ASSUMPTION you had to make (virtual anchor points, missing host geometry, guessed positions from figures) gets an `add_master_note` call in the guide's language — these become the durable masternotes shown to the guide user; never hide assumptions silently.

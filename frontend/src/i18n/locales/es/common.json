@@ -221,7 +221,8 @@
       "edited_n_one": "{{count}} imagen editada",
       "edited_n_other": "{{count}} imágenes editadas",
       "seed_ph": "p. ej. 42"
-    }
+    },
+    "note": "nota"
   },
   "err_unreachable": "servidor inalcanzable — ¿está el stack en marcha? (make status)",
   "health": {

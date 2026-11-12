@@ -77,5 +77,6 @@
   "parts_count_few": "{{count}} części",
   "parts_count_many": "{{count}} części",
   "parts_count_other": "{{count}} części",
-  "parts_ungrouped": "Bez grupy"
+  "parts_ungrouped": "Bez grupy",
+  "guide_n": "Instrukcja {{n}}"
 }

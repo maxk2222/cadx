@@ -231,7 +231,8 @@
       "edited_n_many": "отредактировано {{count}} изображений",
       "edited_n_other": "отредактировано {{count}} изображения",
       "seed_ph": "напр. 42"
-    }
+    },
+    "note": "заметка"
   },
   "err_unreachable": "сервер недоступен — стек запущен? (make status)",
   "health": {

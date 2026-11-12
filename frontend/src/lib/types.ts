@@ -30,7 +30,7 @@ export interface Part {
 export interface Asset {
   id: string;
   project_id: string;
-  kind: "image" | "generated_image" | "reference_step" | "reference_stl" | "reference_dxf" | "pdf" | "cad_glb";
+  kind: "image" | "generated_image" | "reference_step" | "reference_stl" | "reference_dxf" | "pdf" | "cad_glb" | "note";
   filename: string;
   mime: string;
   width: number | null;
@@ -835,6 +835,8 @@ export interface JobLive {
   tokens?: Record<string, number>;
   /** Flat live metrics published by the worker (job-type specific keys). */
   metrics?: Record<string, number>;
+  /** Rolling agent-activity feed (recent tool calls), newest last. */
+  activity?: { ts: string; text: string }[];
   /** Per-run stats for multi-run jobs (topopt / refine sweeps). */
   runs?: {
     index?: number;

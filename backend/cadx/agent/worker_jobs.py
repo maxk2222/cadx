@@ -162,6 +162,11 @@ def make_emit(
             runs = live.setdefault("runs", [])
             runs.append(run)
             del runs[:-40]
+        if (act := fields.get("activity")) is not None:
+            # rolling agent-activity feed (tool calls) for the job page
+            feed = live.setdefault("activity", [])
+            feed.append({"ts": datetime.now(UTC).isoformat(), "text": str(act)[:300]})
+            del feed[:-30]
         if tokens_fn is not None:
             with contextlib.suppress(Exception):
                 live["tokens"] = tokens_fn()
@@ -650,6 +655,60 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         return {"ok": outcome.status in ("succeeded", "needs_review"), "status": outcome.status}
 
 
+async def _emit_masternotes_asset(db: Any, version: Version, guide_dir: Path) -> None:
+    """Persist the guide's masternotes + user notes as a project ``note``
+    asset (markdown) so they show up on the project page. Runs at every
+    job end — parked resumes rewrite the same file rather than duplicating
+    asset rows (one row per guide version, keyed via ``derived_from`` =
+    first note asset is unnecessary — just skip if nothing to say)."""
+    from cadx.guide.state import GuideState
+
+    state = GuideState.load(guide_dir)
+    if state is None or (not state.master_notes and not state.user_notes):
+        return
+    lines = [f"# Masternotes — {version.name or 'AR-Guide'}", ""]
+    if state.master_notes:
+        for n in state.master_notes:
+            lines.append(f"- {n}")
+        lines.append("")
+    if state.user_notes:
+        lines.append("## Zusatzinfos aus dem Erstellungs-Chat")
+        lines.append("")
+        for n in state.user_notes:
+            lines.append(f"- {n}")
+        lines.append("")
+    text = "\n".join(lines)
+    # resumes re-emit — update the existing note asset for this version
+    # instead of stacking duplicate rows in the asset grid
+    rows = await db.execute(
+        select(Asset).where(Asset.project_id == version.project_id, Asset.kind == AssetKind.note)
+    )
+    existing = next(
+        (
+            a
+            for a in rows.scalars().all()
+            if (a.gen_params or {}).get("version_id") == str(version.id)
+        ),
+        None,
+    )
+    asset = existing or Asset(
+        project_id=version.project_id,
+        kind=AssetKind.note,
+        filename=storage.safe_filename(f"masternotes-{version.number}.md"),
+        path="",
+        mime="text/markdown",
+        gen_params={"source": "guide", "version_id": str(version.id)},
+    )
+    asset.caption = "Masternotes der Anleitung"
+    path = storage.asset_path(version.project_id, asset.id, asset.filename)
+    await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(path.write_text, text, "utf-8")
+    asset.path = storage.relpath(path)
+    db.add(asset)
+    await db.commit()
+    log.info("guide.masternotes_asset", version=str(version.id), notes=len(state.master_notes))
+
+
 @_guarded
 async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """arq function on queue 'agent' — anleitungsbuilder pipeline.
@@ -750,6 +809,7 @@ async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         else:
             outcome.resume_state = {"guide_dir": str(guide_dir)}
         await _persist_outcome(db, job, version, outcome, emit)
+        await _emit_masternotes_asset(db, version, guide_dir)
         return {"ok": outcome.status in ("succeeded", "needs_review"), "status": outcome.status}
 
 

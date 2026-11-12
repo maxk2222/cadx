@@ -101,5 +101,6 @@
   "log_default_ph": "por defecto: {{v}}",
   "log_submit": "Enviar respuestas",
   "log_use_defaults": "usar defaults",
-  "queued_pos": "en cola · pos {{n}}/{{m}}"
+  "queued_pos": "en cola · pos {{n}}/{{m}}",
+  "log_activity": "Actividad del agente"
 }

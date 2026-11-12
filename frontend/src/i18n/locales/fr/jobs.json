@@ -101,5 +101,6 @@
   "log_default_ph": "défaut : {{v}}",
   "log_submit": "Envoyer les réponses",
   "log_use_defaults": "utiliser les défauts",
-  "queued_pos": "en file · pos {{n}}/{{m}}"
+  "queued_pos": "en file · pos {{n}}/{{m}}",
+  "log_activity": "Activité de l'agent"
 }

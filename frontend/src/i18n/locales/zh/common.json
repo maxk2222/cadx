@@ -216,7 +216,8 @@
       "generated_n_other": "已生成 {{count}} 张图片",
       "edited_n_other": "已编辑 {{count}} 张图片",
       "seed_ph": "例如 42"
-    }
+    },
+    "note": "备注"
   },
   "err_unreachable": "服务器不可达 — 栈是否在运行？（make status）",
   "health": {
