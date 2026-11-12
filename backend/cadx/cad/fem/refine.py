@@ -133,6 +133,27 @@ class RefineFeature:
     # its measured centre and the drill cuts at (u, v)
     plug_uv: tuple[float, float] | None = None
 
+    def __post_init__(self) -> None:
+        # natural threaded-bore spellings ('tapped_bore', 'threaded_hole', …)
+        # must land on 'tap' everywhere a feature kind is consumed — a plain
+        # 'hole' kind silently bypasses the whole helical chain (groove
+        # cutter, helical default, export groove guard, threads gate)
+        self.kind = _KIND_ALIASES.get(self.kind, self.kind)
+
+
+# declared-type spellings → canonical RefineFeature.kind
+_KIND_ALIASES = {
+    "tapped_bore": "tap",
+    "tapped_hole": "tap",
+    "tap_hole": "tap",
+    "threaded_bore": "tap",
+    "threaded_hole": "tap",
+    "thread_hole": "tap",
+    "bore": "hole",
+    "tunnel": "hole",
+    "bearing": "bearing_seat",
+}
+
 
 # --------------------------------------------------------------------------- #
 # feature resolution                                                            #
@@ -655,8 +676,10 @@ def resolve_refine_features(  # noqa: C901
         # declared-type spellings of cuttable features — normalize so the
         # feature is re-cut instead of silently dropped (a dropped 'bore'
         # once left an optimized web sealing the Ø30 seat). 'bearing_seat'
-        # stays the explicit seated variant.
-        stype = {"bore": "hole", "tunnel": "hole", "bearing": "bearing_seat"}.get(stype, stype)
+        # stays the explicit seated variant. Threaded-bore spellings land on
+        # 'tap' — otherwise kind='hole' silently bypasses the whole helical
+        # chain (groove cutter, helical default, export groove guard).
+        stype = _KIND_ALIASES.get(stype, stype)
         if stype != str(sf.get("type") or "").lower():
             warnings.append(
                 f"refine feature '{sf.get('name')}': spec type "

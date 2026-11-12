@@ -153,6 +153,34 @@ def test_resolve_spec_upgrades_anchor_kind():
     assert thr[0].source == "spec"
 
 
+@pytest.mark.parametrize(
+    "spelling", ["tapped_bore", "tapped_hole", "threaded_bore", "threaded_hole"]
+)
+def test_resolve_threaded_bore_spellings_become_tap(spelling):
+    """Natural LLM spellings for a threaded bore must resolve to kind 'tap' —
+    kind 'hole' silently bypasses the whole helical chain (groove cutter,
+    helical default, export groove guard). Observed: the robot-arm M12
+    'tapped_bore' shipped a smooth tap-drill bore."""
+    feats, warns = resolve_refine_features(
+        [],
+        [
+            {
+                "name": "m12 seat",
+                "type": spelling,
+                "dims": {"diameter": 10.2},
+                "position": "x=0, y=0, z: 0..10 (through)",
+                "thread_spec": "M12x1.75",
+            }
+        ],
+        None,
+        base_mesh=_box(),
+    )
+    taps = [f for f in feats if f.name == "m12 seat" and f.kind == "tap"]
+    assert len(taps) == 1
+    assert taps[0].thread_spec == "M12-1.75"
+    assert any("normalized to 'tap'" in w for w in warns)
+
+
 def test_resolve_request_anchor_index():
     feats, _ = resolve_refine_features(
         _anchors(), None, [{"anchor_index": 2, "kind": "counterbore", "cbore_dia": 8.0}]
