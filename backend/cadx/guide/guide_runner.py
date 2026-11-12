@@ -44,9 +44,13 @@ def _calls_budget(mission: str, state: GuideState) -> int:
     sub-steps — each placement needs ~5 calls (ports/preview/place/render/
     collide), a fixed cap would break longer manuals."""
     base = _MAX_CALLS.get(mission, 40)
+    n = sum(max(1, len(s.sub_steps)) for s in state.steps) or len(state.steps)
     if mission == "assembly":
-        n = sum(max(1, len(s.sub_steps)) for s in state.steps) or len(state.steps)
         base = max(base, 10 + 6 * n)
+    elif mission == "review":
+        # the reviewer legitimately renders a preview per step — a fixed cap
+        # starves longer manuals before findings are written
+        base = max(base, 8 + 2 * len(state.steps) + n)
     return base
 
 
