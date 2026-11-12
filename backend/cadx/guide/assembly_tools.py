@@ -178,6 +178,11 @@ def _name_index(s: GuideToolSession) -> dict[str, str]:
     return index
 
 
+def _part_err(s: GuideToolSession) -> str:
+    ids = [p.id for p in s.state.parts][:15]
+    return f"part not found — valid part_ids: {ids}"
+
+
 def _resolve_name(s: GuideToolSession, name: str) -> str | None:
     """Resolve a manual label to a part id: alias → exact name/id →
     containment. Manuals attach qualifiers to part names ("Gehäuse, linker
@@ -321,10 +326,10 @@ async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[st
     moving = s.state.part_by_id(str(a.get("part_id", "")))
     fixed_inst, err = _resolve_inst(s, str(a.get("target_part_id", "")))
     if moving is None or fixed_inst is None:
-        return {"ok": False, "error": err or "part not found — check list_parts"}
+        return {"ok": False, "error": err or _part_err(s)}
     fixed = s.state.part_by_id(fixed_inst.part_id)
     if fixed is None:
-        return {"ok": False, "error": "part not found — check list_parts"}
+        return {"ok": False, "error": _part_err(s)}
     used = {
         str(j.get("fixed_port"))
         for j in s.state.assembly.joints
@@ -354,10 +359,10 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
     moving = s.state.part_by_id(str(a.get("part_id", "")))
     fixed_inst, err = _resolve_inst(s, str(a.get("target_part_id", "")))
     if moving is None or fixed_inst is None:
-        return {"ok": False, "error": err or "part not found — check list_parts"}
+        return {"ok": False, "error": err or _part_err(s)}
     fixed = s.state.part_by_id(fixed_inst.part_id)
     if fixed is None:
-        return {"ok": False, "error": "part not found — check list_parts"}
+        return {"ok": False, "error": _part_err(s)}
     cands = solver.solve_attachment(
         moving,
         str(a.get("moving_port", "")),
@@ -400,7 +405,7 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
 async def solve_free_preview(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     part = s.state.part_by_id(str(a.get("part_id", "")))
     if part is None:
-        return {"ok": False, "error": "part not found — check list_parts"}
+        return {"ok": False, "error": _part_err(s)}
     t = solver.solve_free_placement(part, _placed_bboxes(s), str(a.get("hint", "")))
     sc = _scene(s)
     rep = (
@@ -425,7 +430,7 @@ async def solve_free_preview(s: GuideToolSession, a: dict[str, Any]) -> dict[str
 async def solve_env_preview(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     part = s.state.part_by_id(str(a.get("part_id", "")))
     if part is None:
-        return {"ok": False, "error": "part not found — check list_parts"}
+        return {"ok": False, "error": _part_err(s)}
     step = s.state.step_by_number(int(a.get("step", 0)))
     text = step.text if step else ""
     t = solver.solve_env_placement(part, _placed_bboxes(s), text)
@@ -451,7 +456,7 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     pid = str(a.get("part_id", ""))
     part = s.state.part_by_id(pid)
     if part is None:
-        return {"ok": False, "error": "part not found — check list_parts"}
+        return {"ok": False, "error": _part_err(s)}
     cid = str(a.get("candidate_id", ""))
     cand = s._preview_cache.get(cid)
     if cand is None:

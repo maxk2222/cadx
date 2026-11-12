@@ -55,7 +55,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "every manual step with its full dual text plus its sub_steps and "
         "optional media assignment in a single batch. Each item is "
         "validated independently; per-item errors come back indexed while "
-        "valid items still apply.",
+        "valid items still apply. If emitting the whole guide at once is "
+        "too large, send 2-3 steps per call — NEVER call with empty args.",
         {
             "steps": _arr(
                 {

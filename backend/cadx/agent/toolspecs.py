@@ -2125,9 +2125,13 @@ class ToolSession:
         req = spec.get("parameters", {}).get("required") or []
         missing = [k for k in req if not isinstance(args, dict) or k not in args]
         if missing:
+            props = list(spec.get("parameters", {}).get("properties", {}).keys())
             result = {
                 "ok": False,
-                "error": f"missing required argument(s): {', '.join(missing)}",
+                "error": (
+                    f"missing required argument(s): {', '.join(missing)} — "
+                    f"call {name} with args {{{', '.join(props)}}}"
+                ),
             }
             self.tool_log.append({"name": name, "args": _truncate_args(args), "result": result})
             return result

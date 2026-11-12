@@ -35,7 +35,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "part_id": _s("short unique slug, e.g. 'base_plate'"),
             "name": _s("display name — prefer the manual's term"),
-            "asset_id": _s("asset_id from list_assets"),
+            "asset_id": _s("asset UUID or uploaded filename from list_assets"),
         },
         ["part_id", "name", "asset_id"],
     ),
@@ -89,17 +89,36 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
         return {"ok": False, "error": f"part_id '{pid}' already registered"}
     aid = str(a.get("asset_id", ""))
     asset = next((x for x in s.guide_assets if str(x.get("id")) == aid), None)
+    if asset is None and aid:
+        # models know upload FILE names, not UUIDs — a hallucinated id is
+        # often a real filename; accept basename/filename as the reference
+        norm = aid.lower().rsplit("/", 1)[-1]
+        asset = next(
+            (
+                x
+                for x in s.guide_assets
+                if norm
+                and norm
+                in {
+                    str(x.get("filename") or "").lower(),
+                    Path(str(x.get("path") or "")).name.lower(),
+                }
+            ),
+            None,
+        )
+        if asset is not None:
+            aid = str(asset.get("id"))
     if asset is None:
         avail = [
-            str(x.get("id"))
+            str(x.get("filename") or x.get("id"))
             for x in s.guide_assets
             if Path(str(x.get("path") or "")).suffix.lower()
             in cadmeta._BREP_EXTS | cadmeta._MESH_EXTS
         ]
         return {
             "ok": False,
-            "error": f"asset '{aid or '<missing>'}' not found — pass asset_id "
-            f"from list_assets. available_asset_ids={avail[:20]}",
+            "error": f"asset '{aid or '<missing>'}' not found — pass the "
+            f"filename or asset_id from list_assets. available={avail[:20]}",
         }
     path = Path(str(asset.get("path") or ""))
     existing = next(
