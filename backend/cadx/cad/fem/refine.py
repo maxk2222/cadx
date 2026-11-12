@@ -2665,7 +2665,14 @@ def _groove_present(mesh: trimesh.Trimesh, feat: RefineFeature) -> bool | None:
     # high-radius verts only on its far side, so sector coverage separates
     # a real groove from stray wall material a few mm off-centre.
     bins = np.floor((np.arctan2(dv[hi], du[hi]) + np.pi) / (2 * np.pi) * 8).astype(int)
-    return bool(len(np.unique(bins)) >= 4)
+    if len(np.unique(bins)) < 4:
+        return False
+    # … and it must persist over the reach — a single reskin remnant ring at
+    # the bore mouth hits every sector from one z plane (observed: postpass
+    # alpha-wrap leaves exactly that false-positive signature)
+    span = v[in_ax, ax][hi]
+    ax_cov = float(span.max() - span.min()) / max(float(a_hi - a_lo), 1e-6)
+    return bool(ax_cov >= 0.35)
 
 
 def _light_watertight_repair(out: trimesh.Trimesh, report: RefineReport) -> trimesh.Trimesh:
@@ -2766,7 +2773,9 @@ def _postpass_recut(
     try:
         scanned: list[dict[str, Any]] | None = anchors3d.scan_mesh_anchors(out)
     except Exception:
-        return out
+        # a failed scan must not silence the groove probe — bore checks are
+        # skipped inside _postpass_degraded when scanned is None
+        scanned = None
     applied_names = {str(e.get("name") or "") for e in report.applied}
     for round_no in (1, 2):
         degraded = _postpass_degraded(out, features, applied_names, scanned)
