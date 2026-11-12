@@ -115,7 +115,8 @@ function RewriteBar({
   onDone: (steps: GuideStepDetail[]) => void;
 }) {
   const { t } = useTranslation("version");
-  const [audience, setAudience] = useState<"beginner" | "pro">("beginner");
+  const [audience, setAudience] = useState("beginner");
+  const [lang, setLang] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   return (
@@ -123,12 +124,20 @@ function RewriteBar({
       <select
         className="input py-0.5 text-[11px]"
         value={audience}
-        onChange={(e) => setAudience(e.target.value as "beginner" | "pro")}
+        onChange={(e) => setAudience(e.target.value)}
         aria-label={t("guide_audience")}
       >
         <option value="beginner">{t("guide_audience_beginner")}</option>
+        <option value="intermediate">{t("guide_audience_intermediate")}</option>
         <option value="pro">{t("guide_audience_pro")}</option>
       </select>
+      <input
+        className="input w-24 py-0.5 text-[11px]"
+        value={lang}
+        onChange={(e) => setLang(e.target.value)}
+        placeholder={t("guide_language_ph")}
+        aria-label={t("guide_language_ph")}
+      />
       <Btn
         size="sm"
         busy={busy}
@@ -137,7 +146,7 @@ function RewriteBar({
           setBusy(true);
           setErr(null);
           api
-            .rewriteGuide(versionId, audience)
+            .rewriteGuide(versionId, audience, lang)
             .then((r) => onDone(r.steps))
             .catch((e) => setErr(errMsg(e)))
             .finally(() => setBusy(false));

@@ -320,5 +320,7 @@
   "guide_rot": "Rodar",
   "guide_step_n": "Passo {{n}}",
   "guide_step_scrub": "Vista por passos",
-  "guide_no_meshes": "Sem malhas de peças"
+  "guide_no_meshes": "Sem malhas de peças",
+  "guide_audience_intermediate": "Intermediário",
+  "guide_language_ph": "Idioma (livre)"
 }

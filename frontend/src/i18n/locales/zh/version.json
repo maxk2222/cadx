@@ -310,5 +310,7 @@
   "guide_rot": "",
   "guide_step_n": " {{n}}",
   "guide_step_scrub": "",
-  "guide_no_meshes": ""
+  "guide_no_meshes": "",
+  "guide_audience_intermediate": "",
+  "guide_language_ph": "（）"
 }

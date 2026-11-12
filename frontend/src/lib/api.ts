@@ -224,8 +224,11 @@ export const api = {
   getGuide: (vid: string) => req<GuideDetail>(`/versions/${vid}/guide`),
   patchGuideStep: (vid: string, n: number, body: GuideStepPatch) =>
     req<GuideStepDetail>(`/versions/${vid}/guide/steps/${n}`, patch(body)),
-  rewriteGuide: (vid: string, audience: "beginner" | "pro") =>
-    req<GuideRewriteResult>(`/versions/${vid}/guide/rewrite`, json({ audience })),
+  rewriteGuide: (vid: string, audience: string, language: string) =>
+    req<GuideRewriteResult>(
+      `/versions/${vid}/guide/rewrite`,
+      json({ audience, language })
+    ),
   patchGuideInstance: (vid: string, iid: string, transform: number[][]) =>
     req<{ ok: boolean; id: string; transform: number[][] }>(
       `/versions/${vid}/guide/instances/${encodeURIComponent(iid)}`,

@@ -315,5 +315,7 @@
   "guide_rot": "Rotar",
   "guide_step_n": "Paso {{n}}",
   "guide_step_scrub": "Vista por pasos",
-  "guide_no_meshes": "Sin mallas de piezas"
+  "guide_no_meshes": "Sin mallas de piezas",
+  "guide_audience_intermediate": "Intermedio",
+  "guide_language_ph": "Idioma (libre)"
 }

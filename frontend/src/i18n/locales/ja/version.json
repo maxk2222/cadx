@@ -310,5 +310,7 @@
   "guide_rot": "",
   "guide_step_n": "ステップ {{n}}",
   "guide_step_scrub": "ステップ",
-  "guide_no_meshes": "パーツメッシュがありません"
+  "guide_no_meshes": "パーツメッシュがありません",
+  "guide_audience_intermediate": "",
+  "guide_language_ph": "（）"
 }

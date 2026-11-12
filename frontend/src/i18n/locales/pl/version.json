@@ -325,5 +325,7 @@
   "guide_rot": "Obróć",
   "guide_step_n": "Krok {{n}}",
   "guide_step_scrub": "Widok kroków",
-  "guide_no_meshes": "Brak siatek części"
+  "guide_no_meshes": "Brak siatek części",
+  "guide_audience_intermediate": "Średniozaawansowany",
+  "guide_language_ph": "Język (dowolny)"
 }

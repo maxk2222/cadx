@@ -325,5 +325,7 @@
   "guide_rot": "Повернуть",
   "guide_step_n": "Шаг {{n}}",
   "guide_step_scrub": "Пошаговый вид",
-  "guide_no_meshes": "Нет мешей деталей"
+  "guide_no_meshes": "Нет мешей деталей",
+  "guide_audience_intermediate": "Средний",
+  "guide_language_ph": "Язык (своб.)"
 }

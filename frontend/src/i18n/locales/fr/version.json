@@ -315,5 +315,7 @@
   "guide_rot": "Pivoter",
   "guide_step_n": "Étape {{n}}",
   "guide_step_scrub": "Navigation par étape",
-  "guide_no_meshes": "Aucun maillage de pièce"
+  "guide_no_meshes": "Aucun maillage de pièce",
+  "guide_audience_intermediate": "Intermédiaire",
+  "guide_language_ph": "Langue (libre)"
 }

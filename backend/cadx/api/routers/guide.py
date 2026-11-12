@@ -254,7 +254,8 @@ async def patch_step(
 
 
 class RewriteIn(BaseModel):
-    audience: str = Field(pattern="^(beginner|pro)$")
+    audience: str = Field(pattern="^(beginner|intermediate|pro)$")
+    language: str = ""  # free-form target language; "" = keep original
 
 
 class _RewriteStep(BaseModel):
@@ -295,7 +296,11 @@ async def rewrite_guide(
         }
         for s in state.steps
     ]
-    prompt = read_prompt("guide_rewrite.md").replace("{audience}", body.audience)
+    prompt = (
+        read_prompt("guide_rewrite.md")
+        .replace("{audience}", body.audience)
+        .replace("{language}", body.language.strip() or "original")
+    )
     try:
         res = await llm.chat(
             "code",

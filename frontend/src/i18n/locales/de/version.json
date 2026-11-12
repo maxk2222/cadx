@@ -315,5 +315,7 @@
   "guide_rot": "Drehen",
   "guide_step_n": "Schritt {{n}}",
   "guide_step_scrub": "Schrittansicht",
-  "guide_no_meshes": "Keine Teil-Modelle vorhanden"
+  "guide_no_meshes": "Keine Teil-Modelle vorhanden",
+  "guide_audience_intermediate": "Fortgeschritten",
+  "guide_language_ph": "Sprache (frei)"
 }
