@@ -90,7 +90,17 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
     aid = str(a.get("asset_id", ""))
     asset = next((x for x in s.guide_assets if str(x.get("id")) == aid), None)
     if asset is None:
-        return {"ok": False, "error": f"asset '{aid}' not found — see list_assets"}
+        avail = [
+            str(x.get("id"))
+            for x in s.guide_assets
+            if Path(str(x.get("path") or "")).suffix.lower()
+            in cadmeta._BREP_EXTS | cadmeta._MESH_EXTS
+        ]
+        return {
+            "ok": False,
+            "error": f"asset '{aid or '<missing>'}' not found — pass asset_id "
+            f"from list_assets. available_asset_ids={avail[:20]}",
+        }
     path = Path(str(asset.get("path") or ""))
     if not path.exists():  # noqa: ASYNC240
         return {"ok": False, "error": f"asset file missing: {path}"}
@@ -184,23 +194,32 @@ def _suggest_parts(s: GuideToolSession, name: str) -> list[str]:
     return out
 
 
+def _resolve_required(s: GuideToolSession, name: str) -> str | None:
+    """Single resolution chain for a required manual name → part id:
+    explicit alias → part name → part id → substring containment both ways.
+    match_required_parts and the done-guard MUST agree on what "matched"
+    means — divergent rules trap the agent in an alias/done reject loop."""
+    norm = _norm(name)
+    aliases = s._aliases_store
+    pid = (
+        aliases.get(norm)
+        or {_norm(p.name): p.id for p in s.state.parts}.get(norm)
+        or {_norm(p.id): p.id for p in s.state.parts}.get(norm)
+    )
+    if pid is None and norm:
+        for rp in s.state.parts:
+            if norm in _norm(rp.name) or _norm(rp.name) in norm:
+                return rp.id
+    return pid
+
+
 async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     required = _required_names(s)
-    aliases = s._aliases_store
-    registered = {p.id: p for p in s.state.parts}
-    name_index = {_norm(p.name): p.id for p in s.state.parts}
-    id_index = {_norm(p.id): p.id for p in s.state.parts}
     rows = []
     missing = []
     for name in required:
-        norm = _norm(name)
-        pid = aliases.get(norm) or name_index.get(norm) or id_index.get(norm)
-        if pid is None:
-            # substring fallback both ways
-            for rp in registered.values():
-                if norm and (norm in _norm(rp.name) or _norm(rp.name) in norm):
-                    pid = rp.id
-                    break
+        pid = _resolve_required(s, name)
+        sugg = [] if pid else _suggest_parts(s, name)
         sugg = [] if pid else _suggest_parts(s, name)
         rows.append(
             {
@@ -372,16 +391,7 @@ def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
     required = _required_names(s)
     if not required:
         return None
-    aliases = s._aliases_store
-    names = {_norm(p.name): p.id for p in s.state.parts}
-    ids = {_norm(p.id): p.id for p in s.state.parts}
-    missing = [
-        n
-        for n in required
-        if aliases.get(_norm(n)) is None
-        and names.get(_norm(n)) is None
-        and ids.get(_norm(n)) is None
-    ]
+    missing = [n for n in required if _resolve_required(s, n) is None]
     if missing:
         return {
             "ok": False,
