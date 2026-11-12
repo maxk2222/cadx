@@ -56,6 +56,12 @@ def _calls_budget(mission: str, state: GuideState) -> int:
         # assign_media); scale by page count — the steps do not exist yet
         pages = len((state.document.pages if state.document else []) or [])
         base = max(base, 30 + 10 * pages)
+    elif mission == "parts":
+        # one register per uploaded asset + aliases/matches per required
+        # manual name — a fixed cap starves manuals with many BOM entries
+        names = len((state.document.detected_part_names if state.document else []) or [])
+        names += sum(len(st.required_parts) for st in state.steps)
+        base = max(base, 15 + 5 * names)
     return base
 
 

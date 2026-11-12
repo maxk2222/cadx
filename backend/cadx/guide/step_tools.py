@@ -49,6 +49,56 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         },
         ["number", "text", "display_text"],
     ),
+    "create_steps": _fn(
+        "create_steps",
+        "Create MANY steps in ONE call — preferred over looping create_step: "
+        "every manual step with its full dual text plus its sub_steps and "
+        "optional media assignment in a single batch. Each item is "
+        "validated independently; per-item errors come back indexed while "
+        "valid items still apply.",
+        {
+            "steps": _arr(
+                {
+                    "type": "object",
+                    "properties": {
+                        "number": _i("step number (1-based)"),
+                        "title": _s("short step title"),
+                        "text": _s("detailed INTERNAL step description"),
+                        "display_text": _s("short AR-facing instruction (≤140 chars)"),
+                        "action_type": {"type": "string", "enum": _ACTION_TYPES},
+                        "required_parts": _arr(_s("canonical part name"), "parts placed/used"),
+                        "tools": _arr(_s("tool"), "tools needed"),
+                        "safety_hint": _s("safety warning, '' if none"),
+                        "source_pages": _arr(_i("page"), "PDF pages"),
+                        "sub_steps": _arr(
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string", "enum": _SUB_ACTIONS},
+                                    "part": _s("part name/id"),
+                                    "target": _s("parent part/target, '' if base"),
+                                    "text": _s("internal detail"),
+                                    "side": _s("left/right/top/bottom/front/back, '' if n/a"),
+                                },
+                                "required": ["action", "part"],
+                            },
+                            "atomic actions, one per part placed",
+                        ),
+                        "media": {
+                            "type": "object",
+                            "properties": {
+                                "page": _i("source page"),
+                                "figure_index": _i("figure index from list_figures"),
+                            },
+                        },
+                    },
+                    "required": ["number", "text", "display_text"],
+                },
+                "one entry per manual step, in manual order",
+            ),
+        },
+        ["steps"],
+    ),
     "update_step": _fn(
         "update_step",
         "Update fields of an existing step (same fields as create_step; "
@@ -153,6 +203,45 @@ async def create_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     s.state.steps.append(step)
     s.state.steps.sort(key=lambda x: x.number)
     return {"ok": True, "step": num, "total_steps": len(s.state.steps)}
+
+
+async def create_steps(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    items = a.get("steps") or []
+    if not isinstance(items, list) or not items:
+        return {"ok": False, "error": "steps must be a non-empty list"}
+    created: list[int] = []
+    errors: list[dict[str, Any]] = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            errors.append({"index": idx, "error": "item must be an object"})
+            continue
+        media = item.pop("media", None)
+        subs = item.pop("sub_steps", None) or []
+        res = await create_step(s, item)
+        if not res.get("ok"):
+            errors.append({"index": idx, "number": item.get("number"), "error": res.get("error")})
+            continue
+        step_num = int(res["step"])
+        ok = True
+        for j, sub in enumerate(subs):
+            r = await add_sub_step(s, {**sub, "step": step_num})
+            if not r.get("ok"):
+                errors.append(
+                    {"index": idx, "number": step_num, "sub_step": j, "error": r.get("error")}
+                )
+                ok = False
+        if isinstance(media, dict):
+            r = await assign_media(s, {**media, "step": step_num})
+            if not r.get("ok"):
+                errors.append({"index": idx, "number": step_num, "media": r.get("error")})
+        if ok:
+            created.append(step_num)
+    return {
+        "ok": not errors,
+        "created": created,
+        "total_steps": len(s.state.steps),
+        "errors": errors[:20],
+    }
 
 
 async def update_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
@@ -282,6 +371,7 @@ DONE_GUARDS["steps"] = _done_guard
 
 HANDLERS = {
     "create_step": create_step,
+    "create_steps": create_steps,
     "update_step": update_step,
     "add_sub_step": add_sub_step,
     "assign_media": assign_media,

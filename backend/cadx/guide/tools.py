@@ -93,6 +93,7 @@ MISSION_TOOLS: dict[str, list[str]] = {
     ],
     "steps": [
         "create_step",
+        "create_steps",
         "update_step",
         "add_sub_step",
         "assign_media",
