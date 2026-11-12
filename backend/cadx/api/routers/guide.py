@@ -172,6 +172,7 @@ class RewriteIn(BaseModel):
 
 class _RewriteStep(BaseModel):
     number: int
+    title: str = ""
     text: str
     display_text: str
 
@@ -199,7 +200,13 @@ async def rewrite_guide(
     runtime = await runtime_from_db_or_default()
     llm = make_llm(runtime)
     payload = [
-        {"number": s.number, "text": s.text, "display_text": s.display_text} for s in state.steps
+        {
+            "number": s.number,
+            "title": s.title,
+            "text": s.text,
+            "display_text": s.display_text,
+        }
+        for s in state.steps
     ]
     prompt = read_prompt("guide_rewrite.md").replace("{audience}", body.audience)
     try:
@@ -228,6 +235,8 @@ async def rewrite_guide(
         r = by_no.get(s.number)
         if r is None:
             continue
+        if r.title.strip():
+            s.title = r.title.strip()
         if r.text.strip():
             s.text = r.text.strip()
         if r.display_text.strip():

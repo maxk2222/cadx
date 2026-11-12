@@ -1216,11 +1216,14 @@ def _gate_outcome(  # noqa: C901
                 ok = ok and n >= int(g["min"])
             if g.get("max") is not None:
                 ok = ok and n <= int(g["max"])
-            needles = [str(x).lower() for x in g.get("all") or []]
+            needles = [
+                [str(v).lower() for v in (x if isinstance(x, list) else [x])]
+                for x in g.get("all") or []
+            ]
             texts = [
                 f"{s.get('display_text', '')} {s.get('internal_text', '')}".lower() for s in steps
             ]
-            missing = [x for x in needles if not any(x in t for t in texts)]
+            missing = [grp[0] for grp in needles if not any(x in t for x in grp for t in texts)]
             ok = ok and not missing
             measured: dict[str, Any] = {"n_steps": n}
             if missing:
@@ -1229,8 +1232,14 @@ def _gate_outcome(  # noqa: C901
         if name == "guide_parts":
             parts = [p for p in doc.get("parts") or [] if isinstance(p, dict)]
             hay = [f"{p.get('part_id', '')} {p.get('name', '')}".lower() for p in parts]
-            needles = [str(x).lower() for x in g.get("all") or []]
-            missing = [x for x in needles if not any(x in h for h in hay)]
+            # `all` entries may be synonym lists — a German manual yields
+            # "rohr_*"/"bogen_*" part ids, so expected kinds must match ANY
+            # listed alternative per group
+            needles = [
+                [str(v).lower() for v in (x if isinstance(x, list) else [x])]
+                for x in g.get("all") or []
+            ]
+            missing = [grp[0] for grp in needles if not any(x in h for x in grp for h in hay)]
             n_min = int(g.get("min") or 0)
             ok = not missing and len(parts) >= n_min
             return GateResult(

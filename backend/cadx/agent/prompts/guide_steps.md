@@ -9,7 +9,9 @@ For EVERY manual step create `create_step` with:
 
 HARD RULE — never merge steps: one step = ONE physical operation on ONE part instance. "Repeat on the other side" is its OWN step (left and right are never one step). Two identical parts placed in two places = two steps. When the manual numbers steps 1..N, emit exactly N steps — plus a step 0 for pre-mounted initial state if the manual shows one. If the user prompt enumerates steps explicitly, that enumeration wins over the page layout.
 
-Then for EVERY assembly step call `add_sub_step` once per atomic action (one per part placed: action=place/attach/insert/fasten, with `part` and `target` named, plus spatial `side` hints from the text/figures).
+HARD RULE — one sequence, not variants: manuals for symmetric assemblies alternate left/right within a SINGLE numbered sequence (1..N covering both sides). Never interpret mirrored sides, BOM name aliases (exploded-view labels vs step text), or pre-mounted parts as two parallel variants — unless the manual explicitly labels alternative options (e.g. "Variante A/B", "Option 1/2", "choose one"). One numbered sequence = one guide.
+
+Then for EVERY assembly step call `add_sub_step` once per atomic action (one per part placed: action=place/attach/insert/fasten, with `part` and `target` named, plus spatial `side` hints from the text/figures). RE-SEAT RULE: re-attaching an already-placed part to another target ("pull the pipe back and push the free elbow side onto the upper pipe") is action=orient on that same part — it adds NO new instance. Only a place/attach/insert/fasten on a part that is not yet in the scene consumes a new part occurrence.
 
 Also:
 - `assign_media` — pick the best figure crop per step (list_figures first).
