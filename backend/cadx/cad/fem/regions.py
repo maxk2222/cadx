@@ -441,10 +441,30 @@ def _anchor_geometry(
     dia = float(a.get("dia") or 0.0)
     az = a.get("z")
     axc: float | None = None
-    if az is not None:
+    if az is not None and idx == 2:
+        # `z` is a scalar height — only the axial coordinate of a +z/-z
+        # anchor; for x/y-anchored bores it is an in-plane coordinate and
+        # must never masquerade as the axial centre
         axc = float(az)
     elif isinstance(pos, (list, tuple)) and len(pos) == 3 and pos[idx] is not None:
         axc = float(pos[idx])
+    if axc is not None and not (
+        float(lo[idx]) - domain.pitch <= axc <= float(hi[idx]) + domain.pitch
+    ):
+        # declared axial centre sits outside the part bounds (misresolved
+        # anchor — e.g. an entry-face coordinate leaking outboard). A keep
+        # ring centred there pins mostly air and leaves the real bore walls
+        # designable; the signed axis already names the entry face, so clamp
+        # onto the part bound and let `_keep_span`/the void probe bound the
+        # ring to the feature's actual span.
+        log.warning(
+            "fem.anchor_axial_oob",
+            hole_index=region.hole_index,
+            axis=axis,
+            declared=float(axc),
+            bounds=[float(lo[idx]), float(hi[idx])],
+        )
+        axc = float(hi[idx]) if axc > float(hi[idx]) else float(lo[idx])
     if axc is None:
         # no measured axial centre — estimate the pierced wall's mid from
         # the shortest material run on a ring around the bore before

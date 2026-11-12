@@ -525,3 +525,50 @@ def test_live_hole_index_is_not_rebound(two_hole_domain) -> None:
     )
     _fixed3, _F, warnings = resolve_case_dofs(two_hole_domain, case, _TWO_HOLE_ANCHORS)
     assert not any("rebound to anchor" in w for w in warnings)
+
+
+def _lug_with_x_bore() -> trimesh.Trimesh:
+    """Arm-mount shape: 100x80x40 body + a lug plate at the +x end, with an
+    Ø8 pin bore through the lug wall along x at (y=-12, z=25) — the r28
+    flange-pin pattern whose anchor declared its entry 4mm outboard."""
+    body = trimesh.creation.box(extents=[100.0, 80.0, 40.0])
+    body.apply_translation([0.0, 0.0, 20.0])
+    bore = trimesh.creation.cylinder(radius=4.0, height=30.0, sections=32)
+    bore.apply_transform(
+        trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+    )
+    # through the +x lug wall: bore spans x in [40, 55]
+    bore.apply_translation([47.5, -12.0, 25.0])
+    return body.difference(bore, engine="manifold")
+
+
+def test_oob_anchor_axial_clamps_to_declared_face() -> None:
+    """Anchor entry declared 4mm outboard (r28: pos x=54, part xmax=50): the
+    keep ring must clamp onto the declared entry face and pin the real bore
+    mouth — a ring centred at the declared point pins air and lets TopOpt
+    erase the lug."""
+    from cadx.cad.fem.regions import region_cell_mask
+
+    dom = voxelize(_lug_with_x_bore(), 2.0, 400_000)
+    anchors = [
+        {
+            "kind": "hole",
+            "index": 1,
+            "name": "flange pin",
+            "axis": "+x",
+            "pos": [54.0, -12.0, 25.0],
+            "dia": 8.0,
+            "depth_mm": 10.0,
+        }
+    ]
+    cells = region_cell_mask(dom, RegionSpec(kind="hole", hole_index=1), anchors)
+    assert cells.any(), "clamped ring must resolve material"
+    centers = dom.element_centers().reshape((*dom.dims, 3))
+    sel = centers[cells]
+    # the ring covers the bore's mouth wall (x ≳ 42), not the outboard tail
+    # an unclamped centre at x=54 would leave ([47,50] sliver only)
+    assert sel[:, 0].min() < 46.0
+    assert sel[:, 0].max() <= 50.0 + dom.pitch
+    # in-plane it hugs the declared bore line
+    assert np.abs(sel[:, 1] - (-12.0)).max() < 4.0 + 4.0 + dom.pitch
+    assert np.abs(sel[:, 2] - 25.0).max() < 4.0 + 4.0 + dom.pitch
