@@ -85,3 +85,70 @@ def test_done_guard_blocks_incomplete_steps() -> None:
     )
     res = sess._tool_done_mission({"reasoning": "x"})
     assert res["ok"] is False
+
+
+def test_match_required_suggests_renamed_fittings() -> None:
+    """Manuals rename the same fitting between parts list and step text —
+    match_required_parts must suggest registered candidates (category+size),
+    never silently mark them missing."""
+    from cadx.guide import part_tools
+    from cadx.guide.state import DocumentIndex, GuidePart
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.document = DocumentIndex(
+        detected_part_names=[
+            "Elbow DN20, end 2x external",
+            "Elbow DN20, end 1x external 1x internal",
+            "Pipe DN20, l = 300 mm",
+        ]
+    )
+    state.parts.extend(
+        [
+            GuidePart(
+                id="elbow-ss",
+                name="Elbow DN20 socket to spigot",
+                mesh_path="/x/elbow_rn20_socket_to_spigot.glb",
+            ),
+            GuidePart(
+                id="elbow-ff",
+                name="Elbow DN20 socket to socket",
+                mesh_path="/x/elbow_rn20_soket_to_socket.glb",
+            ),
+            GuidePart(id="pipe-300", name="Pipe DN20", mesh_path="/x/pipe_l300.glb"),
+        ]
+    )
+    sess = GuideToolSession(
+        ctx,
+        mission="parts",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    import asyncio
+
+    res = asyncio.run(part_tools.match_required_parts(sess, {}))
+    assert res["required_count"] == 3
+    elbow_suggs = {
+        r["name"]: set(r.get("suggested_part_ids", []))
+        for r in res["matches"]
+        if "Elbow" in r["name"]
+    }
+    # both elbow naming variants suggest both registered elbows, never the pipe
+    for s in elbow_suggs.values():
+        assert s == {"elbow-ss", "elbow-ff"}
+    pipe_row = next(r for r in res["matches"] if "Pipe" in r["name"])
+    assert pipe_row["matched_part_id"] == "pipe-300"  # substring match, no suggestion needed
+
+    # generation refused -> refusal also carries the same candidates
+    state.allow_part_generation = False
+    res2 = asyncio.run(
+        part_tools.generate_missing_part(
+            sess, {"part_id": "x", "name": "Elbow DN20, end 2x external", "description": "y" * 30}
+        )
+    )
+    assert res2["ok"] is False
+    assert set(res2["suggested_part_ids"]) == {"elbow-ss", "elbow-ff"}

@@ -150,6 +150,40 @@ def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9äöüß]+", " ", s.lower()).strip()
 
 
+_CAT_TERMS: list[tuple[str, re.Pattern[str]]] = [
+    ("elbow", re.compile(r"rohrbogen|elbow|\bbogen\b")),
+    ("pipe", re.compile(r"\brohr\b|\bpipe\b")),
+    ("adapter", re.compile(r"adapter")),
+    ("casing", re.compile(r"geh[aä]use|casing|housing")),
+    ("coupling", re.compile(r"\bmuffe\b|coupling|kupplung")),
+]
+
+
+def _sig(s: str) -> tuple[str, frozenset[str]]:
+    n = _norm(s)
+    cat = next((c for c, rx in _CAT_TERMS if rx.search(n)), "other")
+    toks = {f"dn{m}" for m in re.findall(r"(?:dn|rn)\s*(\d+)", n)}
+    toks |= {f"l{m}" for m in re.findall(r"\bl\s*(\d+)", n)}
+    return cat, frozenset(toks)
+
+
+def _suggest_parts(s: GuideToolSession, name: str) -> list[str]:
+    """Deterministic candidate ids for a required name: same category and no
+    conflicting size tokens (manuals rename fittings between the parts list
+    and the step text — end-type words like aussen/innen vs spigot/socket are
+    left to the LLM's `alias_part` decision)."""
+    cat, toks = _sig(name)
+    out = []
+    for p in s.state.parts:
+        pcat, ptoks = _sig(p.name + " " + (p.mesh_path or "") + " " + (p.step_path or ""))
+        if pcat != cat:
+            continue
+        if toks and ptoks and not (toks & ptoks):
+            continue
+        out.append(p.id)
+    return out
+
+
 async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     required = _required_names(s)
     aliases = s._aliases_store
@@ -167,8 +201,14 @@ async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[s
                 if norm and (norm in _norm(rp.name) or _norm(rp.name) in norm):
                     pid = rp.id
                     break
+        sugg = [] if pid else _suggest_parts(s, name)
         rows.append(
-            {"name": name, "matched_part_id": pid, "status": "matched" if pid else "missing"}
+            {
+                "name": name,
+                "matched_part_id": pid,
+                "status": "matched" if pid else "missing",
+                **({"suggested_part_ids": sugg} if sugg else {}),
+            }
         )
         if pid is None:
             missing.append(name)
@@ -178,7 +218,8 @@ async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[s
         "matched": sum(1 for r in rows if r["matched_part_id"]),
         "missing": missing,
         "matches": rows,
-        "note": "resolve every missing name via generate_missing_part or alias_part "
+        "note": "resolve every missing name via alias_part onto a suggested "
+        "candidate (or generate_missing_part when generation is allowed) "
         "before done_mission — assembly needs a CAD source for each",
     }
 
@@ -196,12 +237,15 @@ async def alias_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
 
 async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     if not s.state.allow_part_generation:
+        name = str(a.get("name", "")) or str(a.get("part_id", ""))
+        sugg = _suggest_parts(s, name)
         return {
             "ok": False,
             "error": "part generation is DISABLED for this guide run — every "
             "required part must come from the uploads. Alias the missing "
             "name onto the closest registered part (manuals rename the same "
             "fitting between parts list and step text) or ask_user.",
+            **({"suggested_part_ids": sugg} if sugg else {}),
         }
     pid = _slug(str(a.get("part_id", "")))
     if not pid:
