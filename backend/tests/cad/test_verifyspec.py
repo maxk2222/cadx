@@ -1753,6 +1753,33 @@ def test_envelope_radial_fallback_rotational_part():
     assert checks["envelope_z"]["status"] == "PASS"
 
 
+def test_envelope_square_block_ignores_radial_fallback():
+    """block_sidewall_tap regression: a 40x40x40 square block measures bbox
+    40x40 exactly but its corner reach (~28.3mm > 20) makes the radial
+    criterion fail. The radial reading of "x == y means diameter" must only
+    rescue a failing bbox check, never veto a passing one."""
+    spec = _spec(
+        length_x={"value": 40.0, "source": "stated"},
+        width_y={"value": 40.0, "source": "stated"},
+        height_z={"value": 40.0, "source": "stated"},
+    )
+    res = _res(
+        analysis={
+            "bbox_size": [40.0, 40.0, 40.0],
+            "radial_extent_mm": 28.28,
+            "solid_count": 1,
+            "is_valid": True,
+            "watertight": True,
+            "volume": 64_000.0,
+            "source": "brep",
+        }
+    )
+    checks = _by_name(verify_spec(spec, res))
+    assert checks["envelope_x"]["status"] == "PASS"
+    assert "radial" not in checks["envelope_x"]["evidence"]
+    assert checks["envelope_y"]["status"] == "PASS"
+
+
 def test_envelope_radial_fallback_does_not_rescue_square():
     spec = _spec(
         length_x={"value": 140.0, "source": "stated"},

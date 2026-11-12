@@ -140,7 +140,9 @@ def analyze(shape: Shape, stl_path: Path | None = None) -> Analysis:
                 import numpy as np
 
                 xy = np.asarray(verts)[:, :2]
-                radial_extent_mm = float(np.sqrt(((xy - xy.mean(axis=0)) ** 2).sum(axis=1)).max())
+                # reach from the declared frame origin, not the vertex mean —
+                # tessellation density skews the mean and inflates the extent
+                radial_extent_mm = float(np.sqrt((xy**2).sum(axis=1)).max())
         except Exception:
             watertight = None
 

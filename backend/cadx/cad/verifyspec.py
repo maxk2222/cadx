@@ -2025,34 +2025,37 @@ def _envelope(
             continue
         actual = float(bbox["xyz".index(ax)])
         tol = max(want * tol_pct / 100.0, tol_mm)
-        # rotational-part fallback: a spec declaring length_x == width_y
-        # describes a DIAMETER, not two independent extents — an odd-fold
+        normal_ok = ((actual - want) <= tol) if bound_only else (abs(actual - want) <= tol)
+        # rotational-part rescue: a spec declaring length_x == width_y may
+        # describe a DIAMETER, not two independent extents — an odd-fold
         # part (pentagon blades) can never fill the square bbox its
-        # diameter implies. The honest check is radial reach ≈ D/2.
+        # diameter implies. Only consulted when the plain bbox check failed;
+        # a square block must not be judged against a Ø-radius.
         radial_extent = (res.get("analysis") or {}).get("radial_extent_mm")
-        if ax in "xy" and isinstance(radial_extent, int | float):
+        if ax in "xy" and not normal_ok and isinstance(radial_extent, int | float):
             dx = _dim_value(spec.get("length_x"))
             dy = _dim_value(spec.get("width_y"))
             if dx is not None and dy is not None and abs(dx - dy) <= max(tol, 1e-6):
                 over_r = 2.0 * float(radial_extent) - want
                 delta_r = abs(over_r)
                 ok = (over_r <= tol) if bound_only else (delta_r <= tol)
-                checks.append(
-                    _check(
-                        name,
-                        TIER_ENVELOPE,
-                        "PASS" if ok else "FAIL",
-                        {
-                            "expected_mm": want,
-                            "actual_mm": round(actual, 3),
-                            "radial": True,
-                            "radial_extent_mm": round(float(radial_extent), 3),
-                            "over_mm": round(over_r, 3),
-                            "tol_mm": round(tol, 3),
-                        },
+                if ok:
+                    checks.append(
+                        _check(
+                            name,
+                            TIER_ENVELOPE,
+                            "PASS",
+                            {
+                                "expected_mm": want,
+                                "actual_mm": round(actual, 3),
+                                "radial": True,
+                                "radial_extent_mm": round(float(radial_extent), 3),
+                                "over_mm": round(over_r, 3),
+                                "tol_mm": round(tol, 3),
+                            },
+                        )
                     )
-                )
-                continue
+                    continue
         if bound_only:
             # topopt/refine result: the stated dim is an upper bound — the
             # optimized part must fit inside the envelope, shrinking below
