@@ -107,6 +107,19 @@ async def _append_job_log(db: AsyncSession, job: Job, text: str) -> None:
     job.log = (cur or "") + text
 
 
+def _merge_preview(live: dict[str, Any], prev: Any) -> None:
+    """Latest render produced by a tool call — the job page shows it live;
+    path is stored data-relative so the api can re-resolve it."""
+    if prev is None:
+        return
+    with contextlib.suppress(Exception):
+        live["preview"] = {
+            "path": storage.relpath(Path(str(prev["path"]))),
+            "label": str(prev.get("label") or ""),
+            "ts": datetime.now(UTC).isoformat(),
+        }
+
+
 def make_emit(
     job_id: uuid.UUID, tokens_fn: Callable[[], dict[str, Any]] | None = None
 ) -> Callable[..., Awaitable[None]]:
@@ -167,6 +180,7 @@ def make_emit(
             feed = live.setdefault("activity", [])
             feed.append({"ts": datetime.now(UTC).isoformat(), "text": str(act)[:300]})
             del feed[:-30]
+        _merge_preview(live, fields.get("preview"))
         if tokens_fn is not None:
             with contextlib.suppress(Exception):
                 live["tokens"] = tokens_fn()

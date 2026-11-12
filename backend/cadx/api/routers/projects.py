@@ -44,10 +44,10 @@ async def _latest_meta(
     )
     if not rows:
         return None, None, None
-    latest = max(rows, key=lambda v: v.number)
+    latest = max(rows, key=lambda v: v.created_at)
     done = [v for v in rows if v.status in (VersionStatus.succeeded, VersionStatus.needs_review)]
     best = (
-        max(done, key=lambda v: (v.score if v.score is not None else -1, v.number))
+        max(done, key=lambda v: (v.score if v.score is not None else -1, v.created_at))
         if done
         else latest
     )

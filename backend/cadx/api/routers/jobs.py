@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
@@ -85,6 +85,29 @@ async def get_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
     if (pos := (await _queue_positions([j])).get(j.id)) is not None:
         out.queue_position, out.queue_depth = pos
     return out
+
+
+@router.get("/jobs/{job_id}/preview")
+async def job_preview(job_id: uuid.UUID, db: AsyncSession = Depends(get_session)):
+    """Latest render a running job's tools produced (live preview on the job
+    page — guide assembly snapshots, workbench renders). The worker stores a
+    data-relative path in Job.live.preview; we re-resolve and stream it."""
+    from cadx import storage
+
+    j = await db.get(Job, job_id)
+    if not j:
+        raise HTTPException(404, "job not found")
+    rel = ((j.live or {}).get("preview") or {}).get("path")
+    if not rel:
+        raise HTTPException(404, "no preview yet")
+    try:
+        p = storage.resolve(rel)
+    except ValueError:
+        raise HTTPException(404, "preview path invalid") from None
+    if not p.exists():
+        raise HTTPException(404, "preview not found")
+    # never cache — the preview is rewritten as the job progresses
+    return FileResponse(p, headers={"Cache-Control": "no-store"})
 
 
 @router.get("/jobs/{job_id}/trace")

@@ -102,5 +102,6 @@
   "log_submit": "Submit answers",
   "log_use_defaults": "use defaults",
   "queued_pos": "queued · pos {{n}}/{{m}}",
-  "log_activity": "Agent activity"
+  "log_activity": "Agent activity",
+  "log_preview": "Live preview"
 }

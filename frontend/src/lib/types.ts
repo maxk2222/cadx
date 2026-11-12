@@ -837,6 +837,8 @@ export interface JobLive {
   metrics?: Record<string, number>;
   /** Rolling agent-activity feed (recent tool calls), newest last. */
   activity?: { ts: string; text: string }[];
+  /** Latest render a tool produced (live preview on the job page). */
+  preview?: { path: string; label?: string; ts: string };
   /** Per-run stats for multi-run jobs (topopt / refine sweeps). */
   runs?: {
     index?: number;

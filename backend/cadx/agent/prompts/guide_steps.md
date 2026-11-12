@@ -14,5 +14,6 @@ Then for EVERY assembly step call `add_sub_step` once per atomic action (one per
 Also:
 - `assign_media` — pick the best figure crop per step (list_figures first).
 - Read `list_user_notes` at the start — the user may have added info (e.g. "ignore page 7", "step order differs").
+- USER-NOTE RULE: contextual user notes are informational hints — weave them into the affected steps' `text`/`display_text` where relevant (e.g. "watch the sealing washers" goes into the adapter steps). A user note is NEVER its own assembly step — steps come from the manual only.
 - Re-check pages classified 'steps' visually when the text is unclear (get_page_image).
 - End with `reorder_steps` if needed, then `finalize_steps` (validation — fix every reported error), then `done_mission`.

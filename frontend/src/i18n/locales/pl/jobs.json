@@ -108,5 +108,6 @@
   "log_submit": "Wyślij odpowiedzi",
   "log_use_defaults": "użyj wartości domyślnych",
   "queued_pos": "w kolejce · poz {{n}}/{{m}}",
-  "log_activity": "Aktywność agenta"
+  "log_activity": "Aktywność agenta",
+  "log_preview": "Podgląd na żywo"
 }

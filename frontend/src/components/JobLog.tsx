@@ -417,6 +417,16 @@ export default function JobLog({
         </div>
       )}
 
+      {live.preview?.path && job && (
+        <div className="rounded-md border border-edge bg-panel/60 p-1.5">
+          <img
+            src={`/api/jobs/${job.id}/preview?t=${encodeURIComponent(live.preview.ts)}`}
+            alt={live.preview.label || t("log_preview")}
+            className="max-h-44 w-full rounded object-contain"
+          />
+        </div>
+      )}
+
       {live.activity && live.activity.length > 0 && (
         <div className="rounded-md border border-edge bg-panel/60 px-2 py-1.5">
           <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-faint">

@@ -99,5 +99,6 @@
   "log_submit": "回答を送信",
   "log_use_defaults": "デフォルトを使用",
   "queued_pos": "キュー待ち · {{n}}/{{m}}",
-  "log_activity": "エージェントの活動"
+  "log_activity": "エージェントの活動",
+  "log_preview": "ライブプレビュー"
 }

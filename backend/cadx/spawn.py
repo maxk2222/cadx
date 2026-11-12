@@ -99,9 +99,10 @@ async def _enqueue_or_fail(
         raise
 
 
-async def next_version_number(db: AsyncSession, project_id: uuid.UUID) -> int:
+async def next_version_number(db: AsyncSession, part_id: uuid.UUID) -> int:
+    """Versions are numbered per part — each part owns its v1, v2, … sequence."""
     c = await db.execute(
-        select(func.coalesce(func.max(Version.number), 0)).where(Version.project_id == project_id)
+        select(func.coalesce(func.max(Version.number), 0)).where(Version.part_id == part_id)
     )
     return int(c.scalar_one()) + 1
 
@@ -148,7 +149,7 @@ async def spawn_version_job(
         project_id=project.id,
         part_id=resolved_part_id,
         parent_id=parent.id if parent else None,
-        number=await next_version_number(db, project.id),
+        number=await next_version_number(db, resolved_part_id),
         kind=kind,
         prompt=prompt,
         asset_ids=[str(a) for a in (asset_ids or [])],
@@ -331,7 +332,7 @@ async def spawn_params(
         project_id=parent.project_id,
         part_id=parent.part_id,
         parent_id=parent.id,
-        number=await next_version_number(db, parent.project_id),
+        number=await next_version_number(db, parent.part_id),
         kind=VersionKind.params,
         prompt="params change",
         params={**(parent.params or {}), **params},
@@ -379,7 +380,7 @@ async def spawn_optimize(
         project_id=parent.project_id,
         part_id=parent.part_id,
         parent_id=parent.id,
-        number=await next_version_number(db, parent.project_id),
+        number=await next_version_number(db, parent.part_id),
         kind=VersionKind.optimize,
         prompt=f"optimize {parent.prompt}"[:500],
         gen_mode="topopt",
@@ -445,7 +446,7 @@ async def spawn_resample(
         project_id=parent.project_id,
         part_id=parent.part_id,
         parent_id=parent.id,
-        number=await next_version_number(db, parent.project_id),
+        number=await next_version_number(db, parent.part_id),
         kind=VersionKind.organic if organic_parent else VersionKind.optimize,
         prompt=f"resample {parent.prompt}"[:500],
         gen_mode="mesh" if organic_parent else "topopt",
@@ -509,7 +510,7 @@ async def spawn_refine(
         project_id=parent.project_id,
         part_id=parent.part_id,
         parent_id=parent.id,
-        number=await next_version_number(db, parent.project_id),
+        number=await next_version_number(db, parent.part_id),
         kind=VersionKind.refine,
         prompt=f"refine {parent.prompt}"[:500],
         gen_mode=parent.gen_mode,
@@ -568,7 +569,7 @@ async def spawn_organic(
         project_id=parent.project_id,
         part_id=parent.part_id,
         parent_id=parent.id,
-        number=await next_version_number(db, parent.project_id),
+        number=await next_version_number(db, parent.part_id),
         kind=VersionKind.organic,
         prompt=f"organic {parent.prompt}"[:500],
         gen_mode="mesh",
@@ -862,7 +863,7 @@ async def spawn_restart(  # noqa: C901
             project_id=v.project_id,
             part_id=v.part_id,
             parent_id=v.parent_id,
-            number=await next_version_number(db, v.project_id),
+            number=await next_version_number(db, v.part_id),
             kind=v.kind,
             prompt=v.prompt,
             asset_ids=v.asset_ids or [],
@@ -905,7 +906,7 @@ async def spawn_restart(  # noqa: C901
             project_id=v.project_id,
             part_id=v.part_id,
             parent_id=v.parent_id,
-            number=await next_version_number(db, v.project_id),
+            number=await next_version_number(db, v.part_id),
             kind=VersionKind.params,
             prompt="params change",
             params=v.params or {},
@@ -936,7 +937,7 @@ async def spawn_restart(  # noqa: C901
             project_id=v.project_id,
             part_id=v.part_id,
             parent_id=parent.id,
-            number=await next_version_number(db, v.project_id),
+            number=await next_version_number(db, v.part_id),
             kind=VersionKind.optimize,
             prompt=f"optimize {parent.prompt}"[:500],
             gen_mode="topopt",
@@ -1040,7 +1041,7 @@ async def spawn_mesh_edit(
         project_id=parent.project_id,
         part_id=parent.part_id,
         parent_id=parent.id,
-        number=await next_version_number(db, parent.project_id),
+        number=await next_version_number(db, parent.part_id),
         kind=VersionKind.mesh_edit,
         prompt=(note or f"visual edit of v{parent.number}")[:500],
         gen_mode=parent.gen_mode,
@@ -1121,7 +1122,7 @@ async def spawn_edit_feature(
         project_id=parent.project_id,
         part_id=parent.part_id,
         parent_id=parent.id,
-        number=await next_version_number(db, parent.project_id),
+        number=await next_version_number(db, parent.part_id),
         kind=VersionKind.edit,
         prompt=(f"feature edit: {parameter}={value} on feature {feature_id} (of v{parent.number})")[
             :500

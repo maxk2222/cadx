@@ -102,5 +102,6 @@
   "log_submit": "Antworten absenden",
   "log_use_defaults": "Defaults verwenden",
   "queued_pos": "in Warteschlange · Pos. {{n}}/{{m}}",
-  "log_activity": "Agenten-Aktivität"
+  "log_activity": "Agenten-Aktivität",
+  "log_preview": "Live-Vorschau"
 }

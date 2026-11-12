@@ -820,6 +820,20 @@ async def run_session(  # noqa: C901
                     act = f"{tc.name}({_short(tc.raw_arguments, 140)})"
                     await ctx.emit(step, iteration, act, activity=act)
                 result = await session.execute(tc.name, tc.arguments)
+                with contextlib.suppress(Exception):
+                    # a tool that produced a render updates the live preview
+                    # on the job page (guide assembly snapshots etc.)
+                    img = result.get("image_path") or result.get("preview_path")
+                    imgs = result.get("_images")
+                    if not img and isinstance(imgs, list) and imgs:
+                        img = imgs[-1]
+                    if isinstance(img, str) and img:
+                        await ctx.emit(
+                            step,
+                            iteration,
+                            f"{tc.name}: preview updated",
+                            preview={"path": img, "label": tc.name},
+                        )
             msgs.extend(_result_messages(tc, result, native, session._sent_image_hashes))
             error_streak = error_streak + 1 if not result.get("ok", True) else 0
             # same failure signature again? A verify loop patching around

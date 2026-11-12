@@ -17,7 +17,7 @@
     "evals/assets/kiara_heatpump/Elbow_90deg_RN22_socket_to_spigot.glb",
     "evals/assets/kiara_heatpump/Elbow_90deg_RN22_soket_to_socket.glb"
    ],
-   "prompt": "AR-Montageanleitung fuer den KIARA-Waermepumpen-Demonstrator.\n\nErstelle die komplette Montageanleitung aus dem beigefuegten PDF: extrahiere alle Ausgangszustands-Hinweise, alle Montageschritte und deren Reihenfolge selbststaendig aus Text und Abbildungen — ein Schritt pro physikalischer Teil-Montage, links/rechts niemals zusammenlegen.\n\nVORHANDENE CAD-TEILE (alle benoetigten Teile sind vorhanden — generiere KEINE fehlenden Teile):\n- Gehaeuse (Casing.glb) — Haupt-/Ankerbauteil; das CAD der Waermepumpe selbst ist NICHT vorhanden — erfinde keine Geometrie dafuer.\n- Adapter DN22 (Innengewinde/Muffe)\n- Rohr DN22, Laenge 70 mm\n- Rohr DN22, Laenge 500 mm\n- Rohrbogen DN22 (Muffe auf Spitzende)\n- Rohrbogen DN22 (Muffe auf Muffe)\n\nAUSGANGSZUSTAND (laut Anleitung, nicht als eigener Montageschritt):\n- Das Gehaeuse sitzt bereits auf der Waermepumpe — positioniere es plausibel und stabil als Ankerbauteil.\n- Weitere laut Anleitung vormontierte Komponenten (z.B. untere Adapter) gehoeren zum Ausgangszustand. Nutze PDF-Abbildungen und Anschlussgeometrie fuer ihre Platzierung; falls ohne Waermepumpen-CAD nicht sinnvoll platzierbar, verwende virtuelle Anschlussreferenzen und dokumentiere die Annahme.\n\nZUSATZINFO FUER DEN NUTZER — als Hinweistext in den betroffenen Schritten einweben, NICHT als eigener Montageschritt:\n- Auf die Dichtungsscheiben bei den Adaptern achten.\n- Abschliessende Crimpung aller Verbindungsstellen.",
+   "prompt": "AR-Montageanleitung fuer den KIARA-Waermepumpen-Demonstrator aus der beigefuegten PDF erstellen. Das CAD der Waermepumpe selbst ist nicht vorhanden.\n\nZusatzinfo: auf die Dichtungsscheiben bei den Adaptern achten; abschliessende Crimpung aller Verbindungsstellen.",
    "answers": [
     "Die vormontierten Komponenten gehoeren zum Ausgangszustand — positioniere sie plausibel laut PDF-Abbildungen und dokumentiere die Annahme.",
     "Nutze die PDF-Abbildungen als Referenz; bei Unsicherheit waehle die geometrisch konsistenteste Loesung und dokumentiere sie."
@@ -25,11 +25,40 @@
    "allow_generation": false,
    "max_resumes": 3,
    "gates": [
-    {"type": "status", "expect": ["succeeded", "needs_review"]},
-    {"type": "guide_steps", "min": 8, "all": ["adapter", "rohr", "bogen"]},
-    {"type": "guide_parts", "min": 6, "all": ["casing", "adapter", "pipe", "elbow"]},
-    {"type": "guide_placed", "min": 10},
-    {"type": "guide_score", "min": 60}
+    {
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
+    },
+    {
+     "type": "guide_steps",
+     "min": 8,
+     "all": [
+      "adapter",
+      "rohr",
+      "bogen"
+     ]
+    },
+    {
+     "type": "guide_parts",
+     "min": 6,
+     "all": [
+      "casing",
+      "adapter",
+      "pipe",
+      "elbow"
+     ]
+    },
+    {
+     "type": "guide_placed",
+     "min": 10
+    },
+    {
+     "type": "guide_score",
+     "min": 60
+    }
    ]
   }
  ]

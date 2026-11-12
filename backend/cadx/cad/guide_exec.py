@@ -12,6 +12,7 @@ execute_version/audit_params).
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -136,8 +137,12 @@ def _face_ports(shape) -> list[dict[str, Any]]:
     return ports[:_MAX_PORTS]
 
 
-def extract_ports(ctx: dict, payload: dict[str, Any]) -> dict[str, Any]:
+async def extract_ports(ctx: dict, payload: dict[str, Any]) -> dict[str, Any]:
     """arq task — {step_path} -> {ports, bbox, mesh_path (GLB/STL)}."""
+    return await asyncio.to_thread(_extract_ports_sync, payload)
+
+
+def _extract_ports_sync(payload: dict[str, Any]) -> dict[str, Any]:
     import build123d as bd
 
     step = Path(str(payload["step_path"]))
@@ -170,9 +175,13 @@ def extract_ports(ctx: dict, payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": str(exc)[:300]}
 
 
-def render_assembly(ctx: dict, payload: dict[str, Any]) -> dict[str, Any]:
+async def render_assembly(ctx: dict, payload: dict[str, Any]) -> dict[str, Any]:
     """arq task — {entries:[{mesh_path, transform, color, opacity}], view,
     out_path} -> {image_path}."""
+    return await asyncio.to_thread(_render_assembly_sync, payload)
+
+
+def _render_assembly_sync(payload: dict[str, Any]) -> dict[str, Any]:
     from cadx.cad.render import render_available, render_scene
 
     if not render_available():

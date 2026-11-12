@@ -102,5 +102,6 @@
   "log_submit": "Envoyer les réponses",
   "log_use_defaults": "utiliser les défauts",
   "queued_pos": "en file · pos {{n}}/{{m}}",
-  "log_activity": "Activité de l'agent"
+  "log_activity": "Activité de l'agent",
+  "log_preview": "Aperçu en direct"
 }
