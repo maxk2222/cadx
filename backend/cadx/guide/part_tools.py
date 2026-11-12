@@ -95,13 +95,19 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
     if not path.exists():  # noqa: ASYNC240
         return {"ok": False, "error": f"asset file missing: {path}"}
     ext = path.suffix.lower()
+    if ext not in cadmeta._BREP_EXTS and ext not in cadmeta._MESH_EXTS:
+        return {
+            "ok": False,
+            "error": f"asset '{asset.get('filename')}' is not a CAD file "
+            f"(.{ext.lstrip('.')}) — pick a STEP/GLB/STL asset",
+        }
     part = GuidePart(
         id=pid,
         name=str(a.get("name", "")).strip() or pid,
         source="uploaded",
         asset_id=aid,
-        step_path=str(path) if ext in {".step", ".stp", ".brep"} else None,
-        mesh_path=str(path) if ext not in {".step", ".stp", ".brep"} else None,
+        step_path=str(path) if ext in cadmeta._BREP_EXTS else None,
+        mesh_path=str(path) if ext in cadmeta._MESH_EXTS else None,
     )
     part = await cadmeta.ensure_metadata(part, s.executor)
     s.state.parts.append(part)

@@ -346,11 +346,12 @@ def solve_multi_attachment(
 # free / environment placement (bbox heuristics — KIARA solve_free/env)
 # --------------------------------------------------------------------------- #
 
+# CADX frame contract (AGENTS.md): +Y is FRONT, +X right, +Z up
 _HINT_DIRS = {
     "left": np.array([-1.0, 0.0, 0.0]),
     "right": np.array([1.0, 0.0, 0.0]),
-    "back": np.array([0.0, 1.0, 0.0]),
-    "front": np.array([0.0, -1.0, 0.0]),
+    "back": np.array([0.0, -1.0, 0.0]),
+    "front": np.array([0.0, 1.0, 0.0]),
     "top": np.array([0.0, 0.0, 1.0]),
     "up": np.array([0.0, 0.0, 1.0]),
     "bottom": np.array([0.0, 0.0, -1.0]),
@@ -407,6 +408,8 @@ def solve_env_placement(
     step_text: str,
 ) -> list[list[float]]:
     """Keyword-scan of the step text → solve_free_placement hint."""
+    import re
+
     t = (step_text or "").lower()
     for word, hint in (
         ("on top", "top"),
@@ -425,7 +428,9 @@ def solve_env_placement(
         ("ground", "table"),
         ("boden", "table"),
     ):
-        if word in t:
+        # word boundaries — bare substring matches hit "auf" inside
+        # "laufen"/"verkauf" and misplace parts
+        if re.search(rf"\b{re.escape(word)}\b", t):
             return solve_free_placement(part, placed, hint)
     return solve_free_placement(part, placed, "")
 

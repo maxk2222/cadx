@@ -83,16 +83,6 @@ async def add_arrow(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
             "label": str(a.get("label", ""))[:80],
         }
     )
-    # arrows also enrich the step's joints so unity.py can place them
-    s.state.assembly.joints.append(
-        {
-            "step": step_no,
-            "moving_part": pid,
-            "fixed_part": pid,
-            "approach_axis": vec,
-            "annotation": True,
-        }
-    )
     return {"ok": True, "index": len(s.state.annotations) - 1}
 
 

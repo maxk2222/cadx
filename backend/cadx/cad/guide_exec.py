@@ -12,11 +12,12 @@ execute_version/audit_params).
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
-log = logging.getLogger(__name__)
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
 
 _MAX_PORTS = 24
 _MIN_PLANAR_AREA_FRAC = 0.01
@@ -36,6 +37,8 @@ def _face_ports(shape) -> list[dict[str, Any]]:
 
     faces = list(shape.faces())
     total_area = sum(float(f.area) for f in faces) or 1.0
+    bb = shape.bounding_box()
+    part_ctr = np.array([bb.center.X, bb.center.Y, bb.center.Z], dtype=float)
     ports: list[dict[str, Any]] = []
 
     for idx, face in enumerate(faces):
@@ -53,11 +56,15 @@ def _face_ports(shape) -> list[dict[str, Any]]:
                 loc, d = ax.Location(), ax.Direction()
                 axis = np.array([d.X(), d.Y(), d.Z()], dtype=float)
                 axis /= max(float(np.linalg.norm(axis)), 1e-9)
+                c_arr = np.array([center.X, center.Y, center.Z], dtype=float)
+                # outward convention: the port axis points AWAY from the part
+                # body — OCC's canonical cylinder direction is arbitrary
+                if float(np.dot(axis, c_arr - part_ctr)) < 0:
+                    axis = -axis
                 origin = np.array([loc.X(), loc.Y(), loc.Z()], dtype=float)
-                c = np.array([center.X, center.Y, center.Z], dtype=float)
                 # pos = face center projected onto the cylinder axis
-                pos = origin + axis * float(np.dot(c - origin, axis))
-                radial = c - pos
+                pos = origin + axis * float(np.dot(c_arr - origin, axis))
+                radial = c_arr - pos
                 rn = float(np.linalg.norm(radial))
                 outward = float(np.dot(n, radial / rn)) > 0.0 if rn > 1e-9 else True
                 ports.append(

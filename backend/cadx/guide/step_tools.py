@@ -127,7 +127,14 @@ def _step_fields(a: dict[str, Any]) -> dict[str, Any]:
         if k in a:
             out[k] = [str(x) for x in (a[k] or []) if str(x).strip()][:20]
     if "source_pages" in a:
-        out["source_pages"] = sorted({int(x) for x in (a["source_pages"] or []) if int(x) > 0})[:20]
+        pages: set[int] = set()
+        for x in a["source_pages"] or []:
+            try:
+                if int(x) > 0:
+                    pages.add(int(x))
+            except (TypeError, ValueError):
+                continue
+        out["source_pages"] = sorted(pages)[:20]
     return out
 
 

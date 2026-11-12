@@ -144,6 +144,28 @@ def build_unity_guide(state) -> dict[str, Any]:
                     "direction": to_unity_position((axis_world * 1000.0).tolist()),
                 }
             )
+        # user-authored annotations: WORLD-frame direction hints (down/up/…)
+        # anchored at the annotated part's world position — never rotated
+        for an in state.annotations:
+            if an.get("kind") != "arrow" or int(an.get("step", -1)) != step.number:
+                continue
+            tgt = inst_by_part.get(str(an.get("part_id", "")))
+            part = parts.get(str(an.get("part_id", "")))
+            if tgt is None or part is None:
+                continue
+            from cadx.guide import solver as _solver
+
+            mn, mx = _solver.transform_bbox(part, tgt.transform)
+            anchor = (np.asarray(mn) + np.asarray(mx)) / 2.0
+            axis = _unit(np.asarray(an.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float))
+            arrows.append(
+                {
+                    "instance_id": str(an.get("part_id", "")),
+                    "origin": to_unity_position((anchor - axis * 30.0).tolist()),
+                    "direction": to_unity_position((axis * 1000.0).tolist()),
+                    "label": str(an.get("label", "")),
+                }
+            )
         steps_out.append(
             {
                 "index": step.number,

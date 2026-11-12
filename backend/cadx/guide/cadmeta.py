@@ -7,15 +7,15 @@ task on the cad-light lane — OCC work never runs in the worker.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from cadx.guide.state import GuidePart, PortInfo
+from cadx.logging import get_logger
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 _BREP_EXTS = {".step", ".stp", ".brep"}
 _MESH_EXTS = {".glb", ".gltf", ".stl", ".obj", ".ply", ".3mf"}
@@ -41,16 +41,18 @@ def _cylinder_ports_worker(mesh, part: GuidePart) -> list[PortInfo]:
 
     ports: list[PortInfo] = []
     try:
-        groups = trimesh.grouping.group_vectors(mesh.face_normals, tolerance=0.05)
-        seen: set[int] = set()
+        # group_vectors returns (unique_normals, inverse) — inverse[i] is the
+        # ragged face-index list of group i, NOT a flat per-face map
+        _unique, inverse = trimesh.grouping.group_vectors(mesh.face_normals, angle=0.05)
         planar_idx = 0
-        for cluster in groups:
+        total_area = float(getattr(mesh, "area", 0.0)) or 1.0
+        for cluster in inverse:
+            cluster = np.asarray(cluster, dtype=int).reshape(-1)
+            # filter by covered surface AREA, not tri count — a coarse mesh's
+            # real planar faces can be 2 tris each
+            if float(np.asarray(mesh.area_faces[cluster]).sum()) / total_area < 0.02:
+                continue
             fid = int(cluster[0])
-            if fid in seen:
-                continue
-            seen.update(int(i) for i in cluster)
-            if len(cluster) < max(8, int(0.02 * len(mesh.faces))):
-                continue
             n = np.asarray(mesh.face_normals[fid], dtype=float)
             ctr = np.asarray(mesh.triangles[cluster]).reshape(-1, 3).mean(axis=0)
             ports.append(
@@ -66,7 +68,7 @@ def _cylinder_ports_worker(mesh, part: GuidePart) -> list[PortInfo]:
             if planar_idx >= 12:
                 break
     except Exception as exc:
-        log.warning("guide.ports.mesh_failed", part=part.part_id, err=str(exc))
+        log.warning("guide.ports.mesh_failed", part=part.id, err=str(exc))
     return ports
 
 
@@ -89,7 +91,7 @@ def extract_ports_worker(part: GuidePart) -> GuidePart:
         part.ports = _cylinder_ports_worker(m, part)
         part.status = "analyzed"
     except Exception as exc:
-        log.warning("guide.ports.load_failed", part=part.part_id, err=str(exc))
+        log.warning("guide.ports.load_failed", part=part.id, err=str(exc))
         part.status = "error"
         part.error = str(exc)[:300]
     return part

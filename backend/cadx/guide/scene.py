@@ -8,12 +8,13 @@ module is NOT a dependency here.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import numpy as np
 
-log = logging.getLogger(__name__)
+from cadx.logging import get_logger
+
+log = get_logger(__name__)
 
 _EPS_VOL_MM3 = 1.0  # collision verdict threshold
 
@@ -34,6 +35,15 @@ def _manifold(mesh):
             tri_verts=np.asarray(mesh.faces, dtype=np.uint32),
         )
     )
+
+
+def _intersection_volume(a, b) -> float:
+    """Boolean-intersection volume in mm3 — manifold3d has no ``*`` sugar in
+    this version; batch_boolean is the supported pairwise call."""
+    from manifold3d import Manifold, OpType
+
+    inter = Manifold.batch_boolean([_manifold(a), _manifold(b)], OpType.Intersect)
+    return float(inter.volume()) if inter is not None else 0.0
 
 
 def _to_manifold_mesh(man) -> object:
@@ -87,8 +97,7 @@ class Scene:
             if not (np.all(pmax >= omin - 1e-6) and np.all(pmin <= omax + 1e-6)):
                 continue
             try:
-                inter = _manifold(probe).__mul__(_manifold(other.mesh))
-                vol = float(inter.volume) if inter is not None else 0.0
+                vol = _intersection_volume(probe, other.mesh)
             except Exception as exc:  # degenerate meshes → warn, not crash
                 log.warning("guide.collision.bool_failed", iid=iid, other=other.iid, err=str(exc))
                 vol = -1.0
@@ -128,8 +137,7 @@ class Scene:
                 if not (np.all(amax >= bmin - 1e-6) and np.all(amin <= bmax + 1e-6)):
                     continue
                 try:
-                    inter = _manifold(a.mesh).__mul__(_manifold(b.mesh))
-                    vol = float(inter.volume) if inter is not None else 0.0
+                    vol = _intersection_volume(a.mesh, b.mesh)
                 except Exception as exc:
                     log.warning("guide.collision.bool_failed", a=a.iid, b=b.iid, err=str(exc))
                     vol = -1.0

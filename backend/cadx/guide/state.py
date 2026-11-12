@@ -43,6 +43,8 @@ class GuidePart(BaseModel):
     ports: list[PortInfo] = Field(default_factory=list)
     bbox_min: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
     bbox_max: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    status: str = "registered"  # registered | analyzed | error
+    error: str = ""
 
 
 class GuideSubStep(BaseModel):

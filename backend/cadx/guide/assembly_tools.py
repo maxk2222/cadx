@@ -150,6 +150,13 @@ def _inst(s: GuideToolSession, pid: str) -> AssemblyInstance | None:
     return None
 
 
+def _named_port(s: GuideToolSession, part_id: str, name: Any) -> Any:
+    part = s.state.part_by_id(part_id)
+    if part is None:
+        return None
+    return next((p for p in part.ports if p.name == name), None)
+
+
 def _placed_bboxes(s: GuideToolSession) -> list[dict[str, Any]]:
     out = []
     for inst in s.state.assembly.instances:
@@ -326,6 +333,11 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     s.state.assembly.instances.append(inst)
     s.state.assembly.step_instances.setdefault(str(step_no), []).append(pid)
     if cand.get("moving_port") and cand.get("fixed_port"):
+        fixed_part = s.state.part_by_id(str(cand.get("fixed_part") or ""))
+        fixed_port = next(
+            (p for p in (fixed_part.ports if fixed_part else []) if p.name == cand["fixed_port"]),
+            None,
+        )
         s.state.assembly.joints.append(
             {
                 "step": step_no,
@@ -333,11 +345,10 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
                 "fixed_part": str(cand.get("fixed_part") or ""),
                 "moving_port": cand["moving_port"],
                 "fixed_port": cand["fixed_port"],
-                "approach_axis": (
-                    s.state.part_by_id(pid).ports[0].axis
-                    if s.state.part_by_id(pid).ports
-                    else [0, 0, -1]
-                ),
+                # FIXED port's axis in the FIXED part's local frame — unity.py
+                # rotates it by the fixed instance's transform for arrows, and
+                # rotate_instance rolls about it at the port's world position
+                "approach_axis": list(fixed_port.axis) if fixed_port else [0, 0, -1],
             }
         )
     s._scene_cache = None
@@ -362,14 +373,27 @@ async def rotate_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
     joint = next((j for j in s.state.assembly.joints if j.get("moving_part") == inst.part_id), None)
     m = np.asarray(inst.transform, dtype=float).reshape(4, 4)
     if joint is not None:
-        # roll about the joint axis at the joint's world position
+        # roll about the mate axis at the FIXED port's world position —
+        # approach_axis is stored in the fixed part's local frame
         fixed = _inst(s, str(joint.get("fixed_part", "")))
-        axis = np.asarray(joint.get("approach_axis") or [0, 0, 1], dtype=float)
-        pivot = m[0:3, 3]
+        fixed_part = s.state.part_by_id(str(joint.get("fixed_part", "")))
+        fixed_port = next(
+            (p for p in (fixed_part.ports if fixed_part else []) if p.name == joint.get("fixed_port")),
+            None,
+        )
+        axis_local = np.asarray(joint.get("approach_axis") or [0, 0, 1], dtype=float)
         if fixed is not None:
             fp = np.asarray(fixed.transform, dtype=float).reshape(4, 4)
-            pivot = fp[0:3, 3]
-        inst.transform = (solver.delta_about_pivot(axis, deg, pivot) @ m).tolist()
+            axis_w = fp[0:3, 0:3] @ axis_local
+            if fixed_port is not None:
+                pivot = fp[0:3, 0:3] @ np.asarray(fixed_port.pos, dtype=float) + fp[0:3, 3]
+            else:
+                pivot = fp[0:3, 3]
+            inst.transform = (solver.delta_about_pivot(axis_w, deg, pivot) @ m).tolist()
+        else:
+            inst.transform = (
+                solver.delta_about_pivot(axis_local, deg, m[0:3, 3]) @ m
+            ).tolist()
     else:
         # free parts: rotate about own bbox center
         c = (np.asarray(part.bbox_min) + np.asarray(part.bbox_max)) / 2.0
@@ -454,8 +478,10 @@ async def check_collisions(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
             return {"ok": False, "error": "part not placed or no mesh"}
         # check against all OTHERS — temporarily drop self
         sc.remove(pid)
-        rep = sc.collision_report(pid, part.mesh_path, inst.transform)
-        sc.add(pid, part.mesh_path, inst.transform)
+        try:
+            rep = sc.collision_report(pid, part.mesh_path, inst.transform)
+        finally:
+            sc.add(pid, part.mesh_path, inst.transform)
         return {"ok": True, "part_id": pid, **rep}
     return {"ok": True, **sc.all_pairs_collision_report()}
 
@@ -469,22 +495,8 @@ async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> 
         fx = insts.get(str(j.get("fixed_part", "")))
         if mv is None or fx is None:
             continue
-        mp = next(
-            (
-                p
-                for p in (s.state.part_by_id(mv.part_id) or object()).ports or []
-                if p.name == j.get("moving_port")
-            ),
-            None,
-        )
-        tp = next(
-            (
-                p
-                for p in (s.state.part_by_id(fx.part_id) or object()).ports or []
-                if p.name == j.get("fixed_port")
-            ),
-            None,
-        )
+        mp = _named_port(s, mv.part_id, j.get("moving_port"))
+        tp = _named_port(s, fx.part_id, j.get("fixed_port"))
         if mp is None or tp is None:
             continue
         gap, ndot = solver.evaluate_mate(
@@ -521,17 +533,24 @@ async def validate_assembly_completeness(s: GuideToolSession, a: dict[str, Any])
             continue
         need = set(step.required_parts)
         got = set(s.state.assembly.step_instances.get(str(step.number), []))
-        part_ids = {p.id for p in s.state.parts}
-        # required_parts holds manual names — resolve through aliases/registry
-        resolved_need = {s._aliases_store.get(n.lower()) or n if n in part_ids else n for n in need}
-        missing = resolved_need - got - {""}
-        if missing and not all(m not in {p.name for p in s.state.parts} for m in missing):
-            # only count names we have registered parts for
-            real_missing = {
-                m for m in missing if m in part_ids or m in {p.name for p in s.state.parts}
-            }
-            if real_missing:
-                issues.append(f"step {step.number}: unplaced parts {sorted(real_missing)}")
+        # required_parts holds manual names — resolve via aliases + name/id
+        # index, same matching as match_required_parts (norm-keyed)
+        import re as _re
+
+        def _norm(x: str) -> str:
+            return _re.sub(r"[^a-z0-9äöüß]+", " ", x.lower()).strip()
+
+        index = {_norm(p.name): p.id for p in s.state.parts}
+        index.update({_norm(p.id): p.id for p in s.state.parts})
+        missing = set()
+        for n in need:
+            pid = s._aliases_store.get(_norm(n)) or index.get(_norm(n))
+            if pid is None:
+                missing.add(f"{n} (unresolved)")
+            elif pid not in got:
+                missing.add(pid)
+        if missing:
+            issues.append(f"step {step.number}: unplaced parts {sorted(missing)}")
     if not s.state.assembly.instances:
         issues.append("no parts placed at all")
     return {"ok": not issues, "issues": issues, "placed": sorted(placed)}

@@ -112,7 +112,10 @@ def _review_verdict(
         return True, ""
     flagged = {f.mission for f in blockers if f.mission in MISSION_ORDER} or {"assembly"}
     notes = "\n".join(f"- [{f.severity}] {f.text}" for f in blockers)[:2000]
-    for m in flagged | {"annotate"}:  # annotate+emit always re-run after repair
+    # "review" must reopen too — the repaired assembly needs a FRESH verdict
+    # (rep.iteration only advances inside write_review_report; keeping review
+    # in missions_done re-reads the stale rep forever = infinite repair loop)
+    for m in flagged | {"review", "annotate"}:
         if m in state.missions_done:
             state.missions_done.remove(m)
     state.save(state_dir)
@@ -193,15 +196,22 @@ async def run_guide(
     repair_notes = ""
     while True:
         for mission in MISSION_ORDER:
-            early = await _run_mission(mission, repair_notes)
+            # findings go to the missions that actually re-run — a skipped
+            # (already-done) mission must not consume them
+            notes = repair_notes if mission not in state.missions_done else ""
+            early = await _run_mission(mission, notes)
             if early is not None:
                 return early
-            repair_notes = ""  # consumed after first successful re-run
 
         ship, repair_notes = _review_verdict(state, state_dir, score_target, max_iter)
         if ship:
             break
         iterations += 1
+        if iterations >= max_iter:
+            # belt: rep.iteration bounds this normally; if review can't
+            # complete a verdict we must not loop forever
+            log.warning("guide.repair_loop_cap", max_iter=max_iter)
+            break
 
     artifacts = await _emit_artifacts(state, state_dir)
     outcome = RunOutcome(
