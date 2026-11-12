@@ -214,9 +214,11 @@ def test_cavity_thin_shell_mesh_verified() -> None:
     sealed = regions.region_cell_mask(dom, RegionSpec(kind="cavity"))
     assert sealed.any(), "sealed thin-shell cavity should resolve via mesh verify"
 
-    # same shell but with a real opening drilled through the top wall
+    # same shell but with a real opening drilled through the top wall —
+    # the bore must reach the cavity (inner surface z=17), not just the
+    # outer skin (z=20): z∈[16,28] cuts the full 3mm wall
     hole = trimesh.creation.cylinder(radius=4.0, height=12.0, sections=24)
-    hole.apply_translation([0.0, 0.0, 24.0])
+    hole.apply_translation([0.0, 0.0, 22.0])
     open_shell = shell.difference(hole, engine="manifold")
     dom_open = voxelize(open_shell, pitch_mm=2.0, max_elements=200_000)
     open_mask = regions.region_cell_mask(dom_open, RegionSpec(kind="cavity"))

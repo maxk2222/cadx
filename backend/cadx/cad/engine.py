@@ -107,6 +107,24 @@ def _is_cancelled(cancelled: Callable[[], bool] | None) -> bool:
         return False
 
 
+def _opt_cancel_pair(cancelled: Any, deadline: float | None):
+    """Optimizer stop predicate + 'it was the deadline, not a cancel' flag.
+    TopOpt tails treat a deadline stop as 'budget_exhausted' (still a
+    usable partial density) while a cancel discards the run."""
+
+    hit = [False]
+
+    def _opt_cancelled() -> bool:
+        if _is_cancelled(cancelled):
+            return True
+        if deadline is not None and time.monotonic() > deadline:
+            hit[0] = True
+            return True
+        return False
+
+    return _opt_cancelled, lambda: hit[0]
+
+
 def _mark_cancelled(res: ExecResult) -> None:
     """Same 'cancelled' error shape the task-level checks produce."""
     res.ok = False
@@ -2855,16 +2873,7 @@ def run_topopt_pipeline(  # noqa: C901
     # extracted, verified and committed. Verification solves keep the raw
     # flag — they belong to the post-optimizer tail, not the budget.
     _opt_deadline = t0 + float(s.topopt_timeout_s) if s.topopt_timeout_s else None
-    _deadline_hit = False
-
-    def _opt_cancelled() -> bool:
-        nonlocal _deadline_hit
-        if _is_cancelled(cancelled):
-            return True
-        if _opt_deadline is not None and time.monotonic() > _opt_deadline:
-            _deadline_hit = True
-            return True
-        return False
+    _opt_cancelled, _deadline_hit = _opt_cancel_pair(cancelled, _opt_deadline)
 
     try:
         mesh = load_triangle_mesh(mesh_path)
@@ -4042,7 +4051,7 @@ def run_topopt_pipeline(  # noqa: C901
             if p2_quality > p1_quality:
                 best = p2
 
-    if _deadline_hit:
+    if _deadline_hit():
         res.topopt.setdefault("warnings", []).append(
             f"optimizer reached the {s.topopt_timeout_s}s run budget — the "
             "partial density was still extracted, verified and committed as "
@@ -4535,16 +4544,7 @@ def run_infill_pipeline(  # noqa: C901
     # the caller's wait + tail allowance. Reuses the cancelled mechanism —
     # a stopped guide still yields a usable density field.
     _opt_deadline = t0 + float(s.topopt_timeout_s) if s.topopt_timeout_s else None
-    _deadline_hit = False
-
-    def _opt_cancelled() -> bool:
-        nonlocal _deadline_hit
-        if _is_cancelled(cancelled):
-            return True
-        if _opt_deadline is not None and time.monotonic() > _opt_deadline:
-            _deadline_hit = True
-            return True
-        return False
+    _opt_cancelled, _deadline_hit = _opt_cancel_pair(cancelled, _opt_deadline)
 
     # per-run overrides follow the runtime settings when unset — the same
     # tri-state pattern the other optimize flags use
@@ -4901,7 +4901,7 @@ def run_infill_pipeline(  # noqa: C901
                     "coarse_iterations": guide_r.iterations,
                     "kept_cells": int(guide_mask.sum()),
                 }
-                if _deadline_hit:
+                if _deadline_hit():
                     res.topopt["guide"]["deadline_stop"] = True
                 # flat scalar so eval gates/reports can see the guide solver
                 res.topopt["guide_solver"] = guide_solver

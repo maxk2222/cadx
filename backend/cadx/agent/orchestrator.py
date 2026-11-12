@@ -72,6 +72,23 @@ from cadx.logging import get_logger
 
 log = get_logger(__name__)
 
+
+def _mesh_progress(ctx: AgentCtx, iteration: int):
+    """Shared emit-closure for meshgen progress — both the batch path and
+    the single-generate path reported identical nested closures."""
+
+    async def on_progress(msg: str, p: float) -> None:
+        await ctx.emit(
+            "meshgen",
+            iteration,
+            f"{msg} ({int(p * 100)}%)",
+            sub_progress=p,
+            sub_label=msg,
+        )
+
+    return on_progress
+
+
 # prompt keyword hint for "the user wants a lighter part" — gates the
 # informational fem "could be lightened" minor so it only appears when
 # lightweighting was actually requested (P9)
@@ -2174,14 +2191,7 @@ async def _generate_mesh_batch(  # noqa: C901
             control_input=control_input,
         )
 
-        async def on_progress(msg: str, p: float) -> None:
-            await ctx.emit(
-                "meshgen",
-                iteration,
-                f"{msg} ({int(p * 100)}%)",
-                sub_progress=p,
-                sub_label=msg,
-            )
+        on_progress = _mesh_progress(ctx, iteration)
 
         try:
             results = await ctx.mesh.generate_batch(
@@ -2821,14 +2831,7 @@ async def _generate_mesh(  # noqa: C901
         control_input=control_input,
     )
 
-    async def on_progress(msg: str, p: float) -> None:
-        await ctx.emit(
-            "meshgen",
-            iteration,
-            f"{msg} ({int(p * 100)}%)",
-            sub_progress=p,
-            sub_label=msg,
-        )
+    on_progress = _mesh_progress(ctx, iteration)
 
     result = None
     # transport-level failures (server restarting, port not yet up) are

@@ -193,6 +193,51 @@ def _face_words(work: str) -> set[str]:
     return out
 
 
+def _parse_end_hints(work: str) -> tuple[list[dict[str, Any]], list[tuple[int, int]]]:
+    """``75mm from -x end``-style end/edge offsets → (ends, spans-to-mask)."""
+    ends: list[dict[str, Any]] = []
+    spans: list[tuple[int, int]] = []
+    for m in _POS_END_RE.finditer(work):
+        if _POS_END_RANGE_RE.search(work[: m.start(1)]):
+            continue  # unmasked on purpose — the ±axis still reads as a face hint
+        gtext = m.group(1)
+        nums = list(_POS_END_NUM_RE.finditer(gtext))
+        for n in nums:
+            # bare number in a list: trust it only when conjoined by
+            # "and"/"&"/"/" — "count 2, 30mm from -x" drops the 2
+            if (
+                not n.group(2)
+                and len(nums) > 1
+                and not re.search(r"(?:\band\b|&|/)\s*$", gtext[: n.start()])
+                and not re.match(r"\s*(?:\band\b|&|/)", gtext[n.end() :])
+            ):
+                continue
+            unit = (n.group(2) or "mm").lower()
+            ax = m.group(3).lower()
+            ends.append(
+                {
+                    "axis": ax,
+                    "end": f"{m.group(2)}{ax}",
+                    "offset_mm": float(n.group(1)) * (10.0 if unit == "cm" else 1.0),
+                }
+            )
+        spans.append(m.span())
+    return ends, spans
+
+
+def _parse_near_hints(work: str) -> tuple[list[dict[str, Any]], list[tuple[int, int]]]:
+    """``near the +x end`` proximity hints → (nears, spans-to-mask)."""
+    nears: list[dict[str, Any]] = []
+    spans: list[tuple[int, int]] = []
+    for m in _POS_NEAR_END_RE.finditer(work):
+        if _POS_NEAR_NUM_RE.search(work[: m.start()]):
+            continue  # unmasked on purpose — the ±axis still reads as a face hint
+        ax = m.group(2).lower()
+        nears.append({"axis": ax, "end": f"{m.group(1)}{ax}"})
+        spans.append(m.span())
+    return nears, spans
+
+
 def parse_position_hints(
     text: str,
 ) -> tuple[dict[str, float], list[str], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -223,41 +268,14 @@ def parse_position_hints(
         coords[m.group(1).lower()] = float(m.group(2))
         _mask(m.span())
     _normalize_range_coords(coords, low)
-    ends: list[dict[str, Any]] = []
     work = "".join(masked)
-    for m in _POS_END_RE.finditer(work):
-        if _POS_END_RANGE_RE.search(work[: m.start(1)]):
-            continue  # unmasked on purpose — the ±axis still reads as a face hint
-        gtext = m.group(1)
-        nums = list(_POS_END_NUM_RE.finditer(gtext))
-        for n in nums:
-            # bare number in a list: trust it only when conjoined by
-            # "and"/"&"/"/" — "count 2, 30mm from -x" drops the 2
-            if (
-                not n.group(2)
-                and len(nums) > 1
-                and not re.search(r"(?:\band\b|&|/)\s*$", gtext[: n.start()])
-                and not re.match(r"\s*(?:\band\b|&|/)", gtext[n.end() :])
-            ):
-                continue
-            unit = (n.group(2) or "mm").lower()
-            ax = m.group(3).lower()
-            ends.append(
-                {
-                    "axis": ax,
-                    "end": f"{m.group(2)}{ax}",
-                    "offset_mm": float(n.group(1)) * (10.0 if unit == "cm" else 1.0),
-                }
-            )
-        _mask(m.span())
-    nears: list[dict[str, Any]] = []
+    ends, end_spans = _parse_end_hints(work)
+    for span in end_spans:
+        _mask(span)
     work = "".join(masked)
-    for m in _POS_NEAR_END_RE.finditer(work):
-        if _POS_NEAR_NUM_RE.search(work[: m.start()]):
-            continue  # unmasked on purpose — the ±axis still reads as a face hint
-        ax = m.group(2).lower()
-        nears.append({"axis": ax, "end": f"{m.group(1)}{ax}"})
-        _mask(m.span())
+    nears, near_spans = _parse_near_hints(work)
+    for span in near_spans:
+        _mask(span)
     for m in _POS_MID_RE.finditer("".join(masked)):
         ax = next(g for g in m.groups() if g).lower()
         coords.setdefault(ax, 0.0)

@@ -45,6 +45,7 @@ from cadx.db.models import (
     Project,
 )
 from cadx.db.session import session_scope
+from cadx.ids import to_uuid as _u
 from cadx.llm.capabilities import (
     estimate_prompt_tokens,
     load_caps_session,
@@ -57,10 +58,6 @@ from cadx.runtime_config import RuntimeSettings, load_runtime_settings
 log = get_logger(__name__)
 
 _PARTIAL_FLUSH_S = 1.5  # debounce for streaming-row persistence
-
-
-def _u(s: str | uuid.UUID) -> uuid.UUID:
-    return s if isinstance(s, uuid.UUID) else uuid.UUID(str(s))
 
 
 async def _publish(chat_id: uuid.UUID, event: dict[str, Any]) -> None:

@@ -913,17 +913,19 @@ def _cavity_void_mesh_sealed(domain: VoxelDomain, void: np.ndarray) -> bool:
     dist = ndimage.distance_transform_edt(~np.asarray(domain.solid, dtype=bool))
     seed = pts[int(np.argmax(dist[main]))]
     rng = np.random.default_rng(0)
-    dirs = rng.normal(size=(96, 3))
+    dirs = rng.normal(size=(256, 3))
     dirs /= np.linalg.norm(dirs, axis=1, keepdims=True)
-    origins = np.tile(seed, (96, 1))
+    origins = np.tile(seed, (256, 1))
     try:
         _locs, ray_idx, _tri = ray(origins, dirs, multiple_hits=True)
     except Exception:
         return False
-    hits = np.bincount(np.asarray(ray_idx, dtype=int), minlength=96) if len(ray_idx) else np.zeros(96, int)
-    # a sealed cavity walls off every direction: each ray crosses the shell
-    # (>=2 surface hits). Require the large majority to be walled.
-    return float((hits >= 2).mean()) > 0.9
+    hits = np.bincount(np.asarray(ray_idx, dtype=int), minlength=256) if len(ray_idx) else np.zeros(256, int)
+    # a sealed cavity walls off EVERY direction — each ray crosses the shell
+    # (>=2 surface hits). A real opening frees only its own small cone of
+    # rays, so the gate must be near-perfect: allow only grazing/numerical
+    # misses, not a 90% majority.
+    return float((hits >= 2).mean()) >= 0.99
 
 
 def region_cell_mask(  # noqa: C901

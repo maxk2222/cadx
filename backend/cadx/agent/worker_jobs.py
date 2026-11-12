@@ -58,6 +58,7 @@ from cadx.db.models import (
     VersionStatus,
 )
 from cadx.db.session import session_scope
+from cadx.ids import to_uuid as _u
 from cadx.llm.capabilities import load_caps_session, record_caps_session
 from cadx.llm.client import LLMClient, make_llm
 from cadx.llm.schemas import PartSpec
@@ -72,8 +73,22 @@ log = get_logger(__name__)
 # --------------------------------------------------------------------------- #
 
 
-def _u(s: str | uuid.UUID) -> uuid.UUID:
-    return s if isinstance(s, uuid.UUID) else uuid.UUID(str(s))
+def _job_cancelled_fn(job_id: str):
+    """Closure factory for the identical job-cancellation poller every
+    worker job nests inline. A deleted row means the version was deleted
+    mid-run; a terminal status means the reaper or another guard already
+    finalised it — either way the task is orphaned and must stop."""
+
+    async def check_cancel() -> bool:
+        async with session_scope() as s3:
+            j = await s3.get(Job, job_id)
+            return (
+                j is None
+                or bool(j.cancel_requested)
+                or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
+            )
+
+    return check_cancel
 
 
 def _json_safe(obj: Any) -> Any:
@@ -533,18 +548,7 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         version.status = VersionStatus.running
         await db.commit()
 
-        async def check_cancel() -> bool:
-            async with session_scope() as s3:
-                j = await s3.get(Job, job_id)
-                # a deleted job row means the version was deleted mid-run; a
-                # terminal status means the reaper or another guard already
-                # finalised it — either way the task is orphaned and must
-                # stop, not run to completion
-                return (
-                    j is None
-                    or bool(j.cancel_requested)
-                    or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
-                )
+        check_cancel = _job_cancelled_fn(job_id)
 
         async def check_finish() -> bool:
             async with session_scope() as s3:
@@ -745,14 +749,7 @@ async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         version.status = VersionStatus.running
         await db.commit()
 
-        async def check_cancel() -> bool:
-            async with session_scope() as s3:
-                j = await s3.get(Job, job_id)
-                return (
-                    j is None
-                    or bool(j.cancel_requested)
-                    or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
-                )
+        check_cancel = _job_cancelled_fn(job_id)
 
         runtime_settings = await load_runtime_settings(db)
         project = await db.get(Project, version.project_id)
@@ -1272,14 +1269,7 @@ async def run_meshgen_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         if post.ops:
             post.ops_version = MESH_OPS_VERSION
 
-        async def check_cancel() -> bool:
-            async with session_scope() as s3:
-                j = await s3.get(Job, job_id)
-                return (
-                    j is None
-                    or bool(j.cancel_requested)
-                    or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
-                )
+        check_cancel = _job_cancelled_fn(job_id)
 
         async def on_progress(msg: str, p: float) -> None:
             await emit("meshgen", 1, f"{msg} ({int(p * 100)}%)", sub_progress=p, sub_label=msg)
@@ -1458,15 +1448,7 @@ async def _try_optimize_session(
     the caller then takes the deterministic path."""
     from cadx.agent.steps import optimize as optimize_step
 
-    async def check_cancel() -> bool:
-        async with session_scope() as s3:
-            j = await s3.get(Job, job_id)
-            # deleted row or externally-finalised status → orphaned task
-            return (
-                j is None
-                or bool(j.cancel_requested)
-                or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
-            )
+    check_cancel = _job_cancelled_fn(job_id)
 
     sheet = storage.version_dir(parent.project_id, parent.id) / "contact_sheet.png"
     job_runtime = _job_runtime(runtime_settings, settings)

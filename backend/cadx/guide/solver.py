@@ -70,22 +70,6 @@ def delta_about_pivot(
     d[0:3, 3] = pivot - r @ pivot
     return d
 
-
-def _align_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Minimal 3x3 rotation mapping unit vector a onto unit vector b."""
-    a_u, b_u = _unit(_v(a)), _unit(_v(b))
-    d = float(np.clip(np.dot(a_u, b_u), -1.0, 1.0))
-    if d > 0.999999:
-        return np.eye(3)
-    if d < -0.999999:
-        ortho = np.array([1.0, 0.0, 0.0]) if abs(a_u[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-        axis = _unit(np.cross(a_u, ortho))
-        return axis_angle_rotation_matrix(axis, 180.0)
-    axis = np.cross(a_u, b_u)
-    deg = float(np.degrees(np.arccos(d)))
-    return axis_angle_rotation_matrix(axis, deg)
-
-
 def _frame_matrix(pos: np.ndarray, normal: np.ndarray) -> np.ndarray:
     """4x4 orthonormal frame at ``pos`` with +Z = ``normal``.
 

@@ -35,6 +35,7 @@ from cadx.db.models import (
     VersionStatus,
 )
 from cadx.db.session import session_scope
+from cadx.ids import to_uuid as _u
 from cadx.llm.schemas import ParamDef
 from cadx.logging import get_logger
 
@@ -47,10 +48,6 @@ class SpawnError(Exception):
     def __init__(self, message: str, status: int = 409) -> None:
         super().__init__(message)
         self.status = status
-
-
-def _u(s: str | uuid.UUID) -> uuid.UUID:
-    return s if isinstance(s, uuid.UUID) else uuid.UUID(str(s))
 
 
 async def _enqueue(func: str, payload: dict[str, Any]) -> None:
