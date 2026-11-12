@@ -960,6 +960,9 @@ async def test_topopt_agent_declines_keeps_base(monkeypatch):
             {**MESH_PLAN, "approach": "cad"},
             code,
             MESH_CRITIQUE,
+            # done(-1) is only legitimate after an attempted run — the
+            # session's decline guard rejects skipping optimization outright
+            {"tool_calls": [{"name": "topopt_run", "arguments": {}}]},
             {
                 "tool_calls": [
                     {"name": "done", "arguments": {"run_index": -1, "reasoning": "strong enough"}}
@@ -974,11 +977,18 @@ async def test_topopt_agent_declines_keeps_base(monkeypatch):
         prompt="40x20x10 bracket",
     )
 
+    calls = 0
+
     async def fake_optimize(payload: dict) -> dict:
-        raise AssertionError("optimize must not be called")
+        nonlocal calls
+        calls += 1
+        return {"ok": False, "error": "simulated run failure"}
 
     monkeypatch.setattr(ctx.executor, "optimize", fake_optimize)
     outcome = await run_generation(ctx)
+    # the agent's own attempt may call optimize once — the deterministic
+    # fallback path must never run after the legitimate decline
+    assert calls <= 1
     assert outcome.resolved_mode != "topopt"
     assert "kept the base part" in outcome.mode_note
 

@@ -11,6 +11,7 @@ import PlanPanel from "../components/PlanPanel";
 import SpecPanel from "../components/SpecPanel";
 import StructuralEditor from "../components/StructuralEditor";
 import Inspector from "../components/version/Inspector";
+import GuideTab from "../components/version/GuideTab";
 import OverviewTab from "../components/version/OverviewTab";
 import QualityTab from "../components/version/QualityTab";
 import SaveToLibrary from "../components/version/SaveToLibrary";
@@ -28,7 +29,7 @@ import type { GenMode, Job, RunOptions } from "../lib/types";
 import { useJobEvents } from "../lib/useJobEvents";
 import { useTitle } from "../lib/useTitle";
 
-type Tab = "overview" | "spec" | "code" | "quality" | "files";
+type Tab = "overview" | "spec" | "code" | "quality" | "guide" | "files";
 
 export default function VersionPage() {
   const { t } = useTranslation("version");
@@ -344,6 +345,9 @@ export default function VersionPage() {
                   },
                 ]
               : []),
+            ...(v.kind === "guide"
+              ? [{ id: "guide" as Tab, label: t("tab_guide") }]
+              : []),
             {
               id: "files",
               label: t("tab_files", { count: v.artifacts.length }),
@@ -391,6 +395,10 @@ export default function VersionPage() {
 
         {tab === "quality" && (
           <QualityTab v={v} onStructuralStarted={structuralStarted} />
+        )}
+
+        {tab === "guide" && (
+          <GuideTab versionId={v.id} glbUrl={glb?.url ?? null} />
         )}
 
         {tab === "files" && (

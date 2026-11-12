@@ -1466,3 +1466,56 @@ export interface UpdateStatus {
   finished_at: string | null;
   version?: { sha: string; branch: string; dirty: number } | null;
 }
+
+// ---------- guide versions (anleitungsbuilder) ----------
+
+export interface GuideSubStep {
+  action: string;
+  part: string;
+  target: string;
+  text: string;
+  side: string;
+}
+
+export interface GuideStepDetail {
+  number: number;
+  title: string;
+  text: string;
+  display_text: string;
+  action_type: string;
+  required_parts: string[];
+  safety_hint: string;
+  media_image: string | null;
+  source_pages: number[];
+  sub_steps: GuideSubStep[];
+}
+
+export interface GuideDetail {
+  steps: GuideStepDetail[];
+  media: string[];
+  master_notes: string[];
+  missions_done: string[];
+  review: {
+    score: number;
+    iteration: number;
+    findings: { severity: string; text: string; mission: string }[];
+  };
+  parts: { id: string; name: string; source: string; status: string }[];
+  instances: number;
+  joints: number;
+}
+
+export interface GuideStepPatch {
+  title?: string;
+  text?: string;
+  display_text?: string;
+  safety_hint?: string;
+  media_image?: string;
+}
+
+export interface GuideRewriteResult {
+  ok: boolean;
+  audience: string;
+  rewritten: number;
+  steps: GuideStepDetail[];
+}

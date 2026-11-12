@@ -16,6 +16,7 @@ from cadx.api.routers import (
     chat,
     editor,
     files,
+    guide,
     health,
     images,
     jobs,
@@ -126,6 +127,7 @@ for r in (
     stats.router,
     system.router,
     chat.router,
+    guide.router,
 ):
     app.include_router(r, prefix="/api")
 

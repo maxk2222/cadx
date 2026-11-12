@@ -12,6 +12,10 @@ import type {
   EditableFeature,
   FemPreviewResult,
   GenMode,
+  GuideDetail,
+  GuideRewriteResult,
+  GuideStepDetail,
+  GuideStepPatch,
   Job,
   JobListItem,
   LibraryPart,
@@ -217,6 +221,11 @@ export const api = {
       `/projects/${pid}/versions${partId ? `?part_id=${encodeURIComponent(partId)}` : ""}`
     ),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
+  getGuide: (vid: string) => req<GuideDetail>(`/versions/${vid}/guide`),
+  patchGuideStep: (vid: string, n: number, body: GuideStepPatch) =>
+    req<GuideStepDetail>(`/versions/${vid}/guide/steps/${n}`, patch(body)),
+  rewriteGuide: (vid: string, audience: "beginner" | "pro") =>
+    req<GuideRewriteResult>(`/versions/${vid}/guide/rewrite`, json({ audience })),
   updateVersion: (id: string, body: { name?: string; accepted?: boolean }) =>
     req<VersionDetail>(`/versions/${id}`, patch(body)),
   compareVersions: (vid: string, otherId: string) =>
