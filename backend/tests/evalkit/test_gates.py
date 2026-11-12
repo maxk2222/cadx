@@ -1048,3 +1048,42 @@ def test_threads_gate_detects_helical_groove(tmp_path):
         0
     ]
     assert g_groove.ok, g_groove.measured
+
+
+def test_threads_gate_tolerates_lattice_void_strays(tmp_path):
+    """arm t4r regression: on a TopOpt lattice a real groove shares its probe
+    annulus with void verts that reach the 1.8 mm band ceiling at a single
+    height slice. A `max`-based reach vetoes the groove; the per-slice median
+    must still accept it (and still reject when the void covers most slices)."""
+    from cadx.cad.fem.refine import _thread_groove_solid
+
+    box = trimesh.creation.box(extents=(60.0, 40.0, 10.0)).apply_translation((0, 0, 5))
+    bore = trimesh.creation.cylinder(radius=3.375, height=20, sections=48).apply_translation(
+        (0, 0, 5)
+    )
+    grooved = box.difference(bore, engine="manifold")
+    groove = _thread_groove_solid(r_in=3.32, r_out=4.15, pitch=1.25, depth=11.0)
+    groove.apply_translation([0.0, 0.0, 10.0])
+    grooved = grooved.difference(groove, engine="manifold")
+
+    # lattice void: dense verts out to the band ceiling at ONE axial slice
+    ring = trimesh.creation.annulus(r_min=4.3, r_max=5.16, height=0.6, sections=64)
+    ring.apply_translation((0.0, 0.0, 8.0))
+    polluted = trimesh.util.concatenate([grooved, ring])
+    p_poll = tmp_path / "polluted.stl"
+    polluted.export(p_poll)
+    g_poll = run_gates([{"type": "threads", "min": 1}], _out(artifact_files=[str(p_poll)]), 0)[0]
+    assert g_poll.ok, g_poll.measured
+
+    # a bare lattice void spanning the bore depth is not a thread — per-slice
+    # reaches sit at the ceiling everywhere, so the median keeps rejecting it
+    box2 = trimesh.creation.box(extents=(60.0, 40.0, 10.0)).apply_translation((0, 0, 5))
+    plain2 = box2.difference(bore, engine="manifold")
+    void = trimesh.creation.annulus(r_min=4.3, r_max=5.16, height=9.0, sections=64)
+    void.apply_translation((0.0, 0.0, 5.5))
+    hollow = trimesh.util.concatenate([plain2, void])
+    p_void = tmp_path / "void.stl"
+    hollow.export(p_void)
+    g_void = run_gates([{"type": "threads", "min": 1}], _out(artifact_files=[str(p_void)]), 0)[0]
+    assert not g_void.ok
+    assert all(not d["groove"] for d in g_void.measured["detail"])

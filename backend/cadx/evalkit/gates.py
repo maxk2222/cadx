@@ -14,6 +14,7 @@ Gate specs live in the suite JSON (`stages[].gates`) as
 
 from __future__ import annotations
 
+import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -337,9 +338,20 @@ def _thread_grooves(mesh: Any) -> list[dict[str, Any]]:
                     ((np.arctan2(rel_v[idx], rel_u[idx]) + np.pi) / (2 * np.pi) * 8).astype(int) % 8
                 ).size
             )
-            # groove flanks end at the major radius — annulus verts at/near the
-            # 1.8 mm ceiling mean the wall is a bigger lattice void, not a thread
-            reach = float(r[idx].max() - dia / 2)
+            # groove flanks end at the major radius in EVERY height slice of a
+            # helix; lattice voids or stray verts only spike single slices.
+            # Taking the per-bin max and then the median keeps the crest radius
+            # while verts at/near the 1.8 mm band ceiling (a bigger lattice
+            # void, not a thread) can no longer veto a real groove.
+            edges = np.linspace(0.0, depth + 1.0, 12)
+            in_band = r[idx]
+            in_axial = axial[idx]
+            bin_reach = [
+                float(in_band[(in_axial >= lo) & (in_axial < hi)].max() - dia / 2)
+                for lo, hi in itertools.pairwise(edges)
+                if int(((in_axial >= lo) & (in_axial < hi)).sum()) >= 3
+            ]
+            reach = float(np.median(bin_reach)) if bin_reach else 0.0
             entry.update(
                 groove=sectors >= 4 and axial_cov >= 0.35 and 0.4 <= reach <= 1.7,
                 sectors=sectors,
