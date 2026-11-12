@@ -189,10 +189,11 @@ def evaluate_mate(
 
 
 def _gender_ok(a: PortInfo, b: PortInfo) -> bool:
-    g = {a.gender, b.gender}
-    if g == {"male", "female"}:
-        return True
-    return "flat" in g or "unknown" in g  # uncertain pairs stay candidates
+    # two bare spigots cannot mate — everything else stays a candidate:
+    # rim extraction cannot tell a socket mouth from a pipe's open end
+    # (both surface as "female"), so f-f pairs are allowed and
+    # solve_attachment + the collision check decide whether they fit
+    return {a.gender, b.gender} != {"male"}
 
 
 def _score_pair(a: PortInfo, b: PortInfo) -> float:
@@ -202,8 +203,11 @@ def _score_pair(a: PortInfo, b: PortInfo) -> float:
         if ratio < 0.5:
             return -1.0  # reject: radii can't mate
         score += ratio
-    if {a.gender, b.gender} == {"male", "female"}:
+    g = {a.gender, b.gender}
+    if g == {"male", "female"}:
         score += 0.5
+    elif g == {"female"}:
+        score -= 0.2  # rim ambiguity: socket-over-pipe is plausible but not preferred
     if a.kind == b.kind:
         score += 0.1
     return score

@@ -9,6 +9,7 @@ p5 loop tools, hardened per the master plan.
 
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -190,10 +191,31 @@ def _resolve_name(s: GuideToolSession, name: str) -> str | None:
     cands = list(s._aliases_store.items()) + list(_name_index(s).items())
     # keys shorter than 3 chars would containment-match almost anything
     hits = [(k, pid) for k, pid in cands if len(k) >= 3 and (k in n or n in k)]
-    if not hits:
-        return None
-    # longest containing/contained key wins — "rohrbogen dn22 muffe" beats "rohr"
-    return max(hits, key=lambda kv: len(kv[0]))[1]
+    if hits:
+        # longest containing/contained key wins — "rohrbogen dn22 muffe" beats "rohr"
+        return max(hits, key=lambda kv: len(kv[0]))[1]
+    # token-overlap fallback: feature phrases ("Rohrbogen am linken
+    # Anschluss", "vertikales Rohr 500mm") share a part's distinctive
+    # tokens even with no alias/containment — ≥2 shared tokens keeps it
+    # specific, longest key breaks ties toward the richer name
+    nt = _tokset(n)
+    scored = [
+        (len(_tokset(k) & nt), len(k), pid)
+        for k, pid in cands
+        if len(_tokset(k) & nt) >= 2
+    ]
+    if scored:
+        return max(scored)[2]
+    return None
+
+
+def _tokset(text: str) -> set[str]:
+    """Content tokens (letters / digit-runs) of a normalized name."""
+    return {
+        t
+        for t in re.findall(r"[a-zäöüß]+|\d+", _norm2(text))
+        if len(t) >= 2 or t.isdigit()
+    }
 
 
 # sub_step actions that consume a NEW part occurrence — orient/check inspect
@@ -308,6 +330,10 @@ async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[st
         for j in s.state.assembly.joints
         if j.get("fixed_instance") == fixed_inst.instance_id
         or (not j.get("fixed_instance") and j.get("fixed_part") == fixed_inst.part_id)
+    } | {
+        str(j.get("moving_port"))
+        for j in s.state.assembly.joints
+        if j.get("moving_instance") == fixed_inst.instance_id
     }
     cands = solver.find_matching_ports(moving, fixed, used_fixed_ports=used)
     if not cands:

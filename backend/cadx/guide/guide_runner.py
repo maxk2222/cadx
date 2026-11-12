@@ -343,11 +343,19 @@ async def _run_mission(
         if mission in state.missions_done:
             return None
         if attempt == 0:
-            fails = [
-                f"{e.get('name')}: {str((e.get('result') or {}).get('error'))[:160]}"
-                for e in (result.tool_log or [])
-                if not (e.get("result") or {}).get("ok", True)
-            ]
+            fails = []
+            for e in result.tool_log or []:
+                if not isinstance(e, dict):
+                    continue
+                res = e.get("result")
+                if isinstance(res, dict):
+                    if not res.get("ok", True):
+                        fails.append(
+                            f"{e.get('name')}: {str(res.get('error'))[:160]}"
+                        )
+                elif isinstance(res, str) and '"ok": false' in res:
+                    # _truncate can stringify long results — still flag them
+                    fails.append(f"{e.get('name')}: (truncated failure)")
             last_failures = "\n".join(f"- {f}" for f in fails[-6:])
             last_reason = result.end_reason or ""
             log.info(
