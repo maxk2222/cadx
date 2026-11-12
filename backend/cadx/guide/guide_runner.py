@@ -135,6 +135,75 @@ def _review_verdict(
     return False, notes
 
 
+async def _mission_early(
+    sess: Any, ctx: AgentCtx, state: GuideState, state_dir: Path
+) -> RunOutcome | None:
+    """parked/cancelled -> outcome; mission still running -> None."""
+    if sess.parked:
+        state.save(state_dir)
+        return RunOutcome(
+            status="waiting_for_input",
+            questions=sess.parked_questions,
+            resume_state={"guide_dir": str(state_dir)},
+        )
+    if ctx.check_cancel is not None and await ctx.check_cancel():
+        return RunOutcome(status="cancelled")
+    return None
+
+
+async def _run_mission(
+    mission: str,
+    notes: str,
+    *,
+    ctx: AgentCtx,
+    state: GuideState,
+    state_dir: Path,
+    mk_session: Any,
+) -> RunOutcome | None:
+    """One mission turn. None = mission completed; else early-exit
+    outcome (parked/cancelled/failed).
+
+    A bare final-answer response (the model writing prose instead of
+    calling tools) ends the session WITHOUT done_mission — that is a
+    wobble, not a mission failure, and the incrementally-written state
+    survives it. Retry once with a continuation nudge before failing."""
+    if mission in state.missions_done:
+        return None
+    for attempt in (0, 1):
+        sess = mk_session(mission)
+        nudge = notes
+        if attempt:
+            nudge = (f"{notes}\n\n" if notes else "") + (
+                "CONTINUATION: the previous session ended with plain text "
+                "and no tool calls — the mission is NOT complete. Resume "
+                "the remaining work now and finish with done_mission."
+            )
+        result = await run_session(
+            ctx,
+            role="vision",
+            messages=_mission_prompt(mission, state, nudge),
+            session=sess,
+            max_calls=_MAX_CALLS.get(mission, 40),
+            step=f"guide_{mission}",
+        )
+        early = await _mission_early(sess, ctx, state, state_dir)
+        if early is not None:
+            return early
+        if mission in state.missions_done:
+            return None
+        if attempt == 0:
+            log.info("guide.mission_retry", mission=mission, reason=result.end_reason)
+            continue
+        state.mark_failed(mission)
+        state.save(state_dir)
+        return RunOutcome(
+            status="failed",
+            error=f"mission '{mission}' ended without done_mission "
+            f"({result.end_reason or 'no reason'})",
+        )
+    return None
+
+
 async def run_guide(
     ctx: AgentCtx,
     *,
@@ -171,39 +240,6 @@ async def run_guide(
             enqueue_fn=getattr(ctx, "enqueue_fn", None),
         )
 
-    async def _run_mission(mission: str, notes: str) -> RunOutcome | None:
-        """One mission turn. None = mission completed; else early-exit
-        outcome (parked/cancelled/failed)."""
-        if mission in state.missions_done:
-            return None
-        sess = _session(mission)
-        result = await run_session(
-            ctx,
-            role="vision",
-            messages=_mission_prompt(mission, state, notes),
-            session=sess,
-            max_calls=_MAX_CALLS.get(mission, 40),
-            step=f"guide_{mission}",
-        )
-        if sess.parked:
-            state.save(state_dir)
-            return RunOutcome(
-                status="waiting_for_input",
-                questions=sess.parked_questions,
-                resume_state={"guide_dir": str(state_dir)},
-            )
-        if ctx.check_cancel is not None and await ctx.check_cancel():
-            return RunOutcome(status="cancelled")
-        if mission not in state.missions_done:
-            state.mark_failed(mission)
-            state.save(state_dir)
-            return RunOutcome(
-                status="failed",
-                error=f"mission '{mission}' ended without done_mission "
-                f"({result.end_reason or 'no reason'})",
-            )
-        return None
-
     iterations = 0
     repair_notes = ""
     while True:
@@ -211,7 +247,9 @@ async def run_guide(
             # findings go to the missions that actually re-run — a skipped
             # (already-done) mission must not consume them
             notes = repair_notes if mission not in state.missions_done else ""
-            early = await _run_mission(mission, notes)
+            early = await _run_mission(
+                mission, notes, ctx=ctx, state=state, state_dir=state_dir, mk_session=_session
+            )
             if early is not None:
                 return early
 

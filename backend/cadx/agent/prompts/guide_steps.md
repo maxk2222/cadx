@@ -7,6 +7,8 @@ For EVERY manual step create `create_step` with:
 - `required_parts` — canonical part names exactly as in detected_part_names.
 - `tools`, `safety_hint`, `source_pages` — as applicable.
 
+HARD RULE — never merge steps: one step = ONE physical operation on ONE part instance. "Repeat on the other side" is its OWN step (left and right are never one step). Two identical parts placed in two places = two steps. When the manual numbers steps 1..N, emit exactly N steps — plus a step 0 for pre-mounted initial state if the manual shows one. If the user prompt enumerates steps explicitly, that enumeration wins over the page layout.
+
 Then for EVERY assembly step call `add_sub_step` once per atomic action (one per part placed: action=place/attach/insert/fasten, with `part` and `target` named, plus spatial `side` hints from the text/figures).
 
 Also:

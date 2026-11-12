@@ -101,13 +101,18 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
             "error": f"asset '{asset.get('filename')}' is not a CAD file "
             f"(.{ext.lstrip('.')}) — pick a STEP/GLB/STL asset",
         }
+    mesh_path: str | None = None
+    if ext in cadmeta._MESH_EXTS:
+        # glTF is meter-scale per spec — uploads get an mm-normalized copy
+        # so solver/scene/emit stay in the CAD contract
+        mesh_path = str(cadmeta.normalize_mesh_units(path, s.state_dir / "parts"))
     part = GuidePart(
         id=pid,
         name=str(a.get("name", "")).strip() or pid,
         source="uploaded",
         asset_id=aid,
         step_path=str(path) if ext in cadmeta._BREP_EXTS else None,
-        mesh_path=str(path) if ext in cadmeta._MESH_EXTS else None,
+        mesh_path=mesh_path,
     )
     part = await cadmeta.ensure_metadata(part, s.executor)
     s.state.parts.append(part)

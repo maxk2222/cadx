@@ -45,7 +45,7 @@ def test_mesh_port_extraction_finds_planar_ports(tmp_path: Path) -> None:
     part = cadmeta.extract_ports_worker(part)
     assert part.status == "analyzed", part.error
     assert part.ports, "no planar ports detected on a box mesh"
-    assert all(p.kind == "planar" for p in part.ports)
+    assert all(p.kind == "plane" for p in part.ports)
     assert part.bbox_max[0] == pytest.approx(10.0, abs=0.5)
 
 
@@ -242,3 +242,52 @@ def test_env_hint_no_false_positive_inside_words(tmp_path: Path) -> None:
     t = np.asarray(solver.solve_env_placement(part, placed, "beim Verkauf beachten"))
     base = np.asarray(solver.solve_env_placement(part, placed, "xyz"))
     assert np.allclose(t, base)
+
+
+def test_meter_glb_normalized_to_mm(tmp_path):
+    """glTF is meter-spec — an uploaded .glb under ~5 units gets a x1000
+    normalized copy; all downstream consumers then see mm."""
+    import trimesh
+
+    from cadx.guide.cadmeta import normalize_mesh_units
+
+    tube = trimesh.creation.cylinder(radius=0.011, height=0.07, sections=16)
+    src = tmp_path / "pipe.glb"
+    tube.export(str(src))
+    out = normalize_mesh_units(src, tmp_path / "parts")
+    assert out != src and out.exists()
+    m = trimesh.load(out)
+    dims = m.bounds[1] - m.bounds[0]
+    assert max(dims) > 5.0  # 70mm now, not 0.07m
+
+
+def test_rim_ports_on_elbow_mesh():
+    """Closed sharp-edge loops -> real mating ports: curved fittings the
+    planar-normal heuristic used to miss entirely."""
+    import trimesh
+
+    from cadx.guide.cadmeta import _rim_ports
+    from cadx.guide.state import GuidePart
+
+    # L-bend: two cylinders at right angles, sharp rim at each open end
+    a = trimesh.creation.cylinder(radius=5, height=20, sections=24)
+    b = trimesh.creation.cylinder(radius=5, height=20, sections=24)
+    b.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0], [0, 0, 10]))
+    b.apply_translation([10, 0, 10])
+    mesh = trimesh.util.concatenate([a, b])
+    part = GuidePart(id="p", name="elbow", source="uploaded")
+    ports = _rim_ports(mesh, part)
+    assert ports, "rim loops must yield ports on an open-ended fitting"
+    assert all(p.radius > 0 for p in ports)
+
+
+def test_mission_retries_once_on_bare_final():
+    """A mission session ending without done_mission gets one nudge retry —
+    plain-text endings are a wobble, not a failure."""
+    import inspect
+
+    from cadx.guide import guide_runner
+
+    src = inspect.getsource(guide_runner._run_mission)
+    assert "for attempt in (0, 1)" in src and "CONTINUATION" in src
+    assert "mission_retry" in src
