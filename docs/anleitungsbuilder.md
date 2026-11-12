@@ -87,3 +87,24 @@ tests/guide/                   # state/pdf/solver/unity/tools tests
 
 Requires `CADX_AGENT_MAX_JOBS ≥ 2` when missing-part generation is
 expected (the guide job waits on a child agent job; default is 8).
+
+## Implementation deviations (vs masterplan v2)
+
+- **`guide_status` chat tool dropped** — the generic `job_status` tool
+  already returns step/progress/questions; a second status path would
+  duplicate it.
+- **`ArtifactKind.unity_guide` added** — the plan only listed
+  job/version/asset enum values; the emit artifact needs its own kind
+  (`register_artifacts` handles `guide:*` keys).
+- **Step ids are `guide_<mission>`** — colons break i18next key lookup
+  (`jobs:step.guide:doc`), so mission steps use underscores; labels for
+  all 9 locales live in `jobs.json.step`.
+- **`user_notes.jsonl`** — `attach_guide_note` appends to a sidecar the
+  running missions pick up via `list_user_notes` (simpler than routing
+  notes through the DB while a job is mid-flight).
+- **Evalkit `guide` stage type deferred** — the suite harness only knows
+  generate/edit/fem/… spawn routes; a guide stage needs PDF upload +
+  answer-loop + new gates in `evalkit/http.py`. Tracked as future work.
+- **`wait_job_terminal` reuse** — `generate_missing_part` waits on the
+  child job via the existing spawn helper instead of duplicating poll
+  logic; parked child questions forward to the agent for `ask_user`.
