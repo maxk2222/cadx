@@ -80,6 +80,7 @@ def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
                     "substep_idx": i,
                     "part": ss.part,
                     "target": ss.target,
+                    "text": ss.text,
                 }
                 for i, ss in subs
             )
@@ -269,7 +270,117 @@ def _orient_score(
         w = _world_dir(transform, [1.0 if i == dom else 0.0 for i in range(3)])
         z = abs(w[2])
         score += z if orient == "V" else -z
+    else:
+        # no orientation word: assemblies overwhelmingly grow upward — a
+        # weak vertical bias keeps long parts from sprawling sideways off
+        # a compact cluster, but explicit text always wins over it
+        dims = [
+            moving.bbox_max[i] - moving.bbox_min[i] for i in range(3)
+        ]
+        dom = dims.index(max(dims))
+        w = _world_dir(transform, [1.0 if i == dom else 0.0 for i in range(3)])
+        score += 0.4 * abs(w[2])
     return score
+
+
+def _bbox_corners_world(
+    bbox_min: list[float], bbox_max: list[float], transform: list[list[float]]
+) -> list[list[float]]:
+    return [
+        _world_pos(transform, [x, y, z])
+        for x in (bbox_min[0], bbox_max[0])
+        for y in (bbox_min[1], bbox_max[1])
+        for z in (bbox_min[2], bbox_max[2])
+    ]
+
+
+def _cluster_bbox_growth(
+    sess: GuideToolSession, moving: Any, transform: list[list[float]]
+) -> float:
+    """How much the candidate inflates the placed set's world bbox — a
+    compactness prior: attaching a long part sideways into empty space is
+    a worse read of any manual than keeping the build dense."""
+    if not transform:
+        return 0.0
+    corners = _bbox_corners_world(moving.bbox_min, moving.bbox_max, transform)
+    lo = [min(c[i] for c in corners) for i in range(3)]
+    hi = [max(c[i] for c in corners) for i in range(3)]
+    for inst in sess.state.assembly.instances:
+        fp = sess.state.part_by_id(inst.part_id)
+        if fp is None or not inst.transform:
+            continue
+        for c in _bbox_corners_world(fp.bbox_min, fp.bbox_max, inst.transform):
+            for i in range(3):
+                lo[i] = min(lo[i], c[i])
+                hi[i] = max(hi[i], c[i])
+    # growth = final bbox volume minus the placed-only volume — cheaper to
+    # approximate with the union extent product
+    return (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2])
+
+
+def _same_transform_spot(
+    sess: GuideToolSession, moving_pid: str, transform: list[list[float]]
+) -> bool:
+    """Two instances of one part at ~identical transforms is a stack, not
+    an assembly — reject candidates duplicating an existing placement."""
+    if not transform:
+        return False
+    t = [transform[r][3] for r in range(3)]
+    for inst in sess.state.assembly.instances:
+        if inst.part_id != moving_pid or not inst.transform:
+            continue
+        e = [inst.transform[r][3] for r in range(3)]
+        if max(abs(t[i] - e[i]) for i in range(3)) < 2.0:
+            return True
+    return False
+
+
+def _score_pairs_for_instance(
+    sess: GuideToolSession,
+    moving: Any,
+    inst: Any,
+    iid: str,
+    axes: list[tuple[int, float]],
+    orient: str | None,
+    picked: bool,
+) -> list[tuple[float, float, float, str, dict[str, Any]]]:
+    """(hint, picked-bonus, solver-score, iid, pair) rows for one placed
+    instance — the fixed port's world position AND its world axis both feed
+    the hint: a pipe mated to a downward-facing port runs downward."""
+    if inst is None or not inst.transform:
+        return []
+    fixed = sess.state.part_by_id(inst.part_id)
+    if fixed is None:
+        return []
+    # a port is occupied by a joint on EITHER side — a rim that already
+    # received a pipe (as moving port) cannot host another
+    used = {
+        str(j.get("fixed_port"))
+        for j in sess.state.assembly.joints
+        if j.get("fixed_instance") == iid
+        or (not j.get("fixed_instance") and j.get("fixed_part") == inst.part_id)
+    } | {
+        str(j.get("moving_port"))
+        for j in sess.state.assembly.joints
+        if j.get("moving_instance") == iid
+    }
+    out: list[tuple[float, float, float, str, dict[str, Any]]] = []
+    # uncapped solver call — the tool truncates to its top-8 by solver
+    # score, which silently drops ports a hint needs
+    for pair in solver.find_matching_ports(moving, fixed, used_fixed_ports=used):
+        fp = next((p for p in fixed.ports if p.name == pair.get("fixed_port")), None)
+        wp = _world_pos(inst.transform, fp.pos) if fp else [0.0, 0.0, 0.0]
+        axis_hint = 0.0
+        if fp is not None:
+            fa = _world_dir(inst.transform, fp.axis)
+            axis_hint = sum(sg * fa[ax] for ax, sg in axes)
+            if orient == "V":
+                axis_hint += abs(fa[2])
+            elif orient == "H":
+                axis_hint += 1.0 - abs(fa[2])
+        hint = sum(sg * wp[ax] for ax, sg in axes) + 25.0 * axis_hint
+        out.append((hint, 1.0 if picked else 0.0, float(pair.get("score") or 0.0), iid, pair))
+    return out
 
 
 async def _try_attach(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
@@ -290,7 +401,9 @@ async def _try_attach(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
         else None
     )
     st = sess.state.step_by_number(task["step"])
-    hint_text = f"{task['target'] or ''} {st.title if st else ''}"
+    # direction words live in the sub-step prose ("vertikales Rohr", "nach
+    # oben öffnen"), the target name alone rarely carries them
+    hint_text = f"{task['target'] or ''} {task.get('text') or ''} {st.title if st else ''}"
     axes = _dir_axes(hint_text)
     orient = _orient_word(hint_text)
     inst_by_iid = {
@@ -304,55 +417,40 @@ async def _try_attach(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
     # switch to an unrelated part (a high free rim would otherwise invite
     # pipe-on-pipe stacks). Feature names that resolve to nothing ("linkes
     # oberes Anschlussrohr") fall through to every placed instance.
-    groups = [
-        [iid for iid, i in inst_by_iid.items() if i.part_id == resolved_pid],
-        [iid for iid in inst_by_iid if iid not in {i for i, x in inst_by_iid.items() if x.part_id == resolved_pid}],
-    ] if resolved_pid else [list(inst_by_iid)]
+    resolved_iids = {iid for iid, i in inst_by_iid.items() if i.part_id == resolved_pid}
+    # chain locality: an attachment almost always mates onto something the
+    # manual JUST placed (pipe → adapter → casing in the last steps).
+    # Recent instances form the middle tier so an unresolvable target
+    # ("Rohrbogen") reaches for the pipe it follows, not the casing's
+    # highest free port.
+    recent_iids = {
+        iid
+        for iid, i in inst_by_iid.items()
+        if (i.placed_in_step or 0) >= task["step"] - 2
+    }
+    rest_iids = [iid for iid in inst_by_iid if iid not in resolved_iids]
+    groups = (
+        [
+            [iid for iid in inst_by_iid if iid in resolved_iids],
+            [iid for iid in rest_iids if iid in recent_iids],
+            [iid for iid in rest_iids if iid not in recent_iids],
+        ]
+        if resolved_pid
+        else [
+            [iid for iid in inst_by_iid if iid in recent_iids],
+            [iid for iid in inst_by_iid if iid not in recent_iids],
+        ]
+    )
     scored: list[tuple[float, float, float, str, dict[str, Any]]] = []
     for group in groups:
         if not group:
             continue
         for iid in group:
-            inst = inst_by_iid.get(iid)
-            if inst is None or not inst.transform:
-                continue
-            fixed = sess.state.part_by_id(inst.part_id)
-            if fixed is None:
-                continue
-            # a port is occupied by a joint on EITHER side — a rim that
-            # already received a pipe (as moving port) cannot host another
-            used = {
-                str(j.get("fixed_port"))
-                for j in sess.state.assembly.joints
-                if j.get("fixed_instance") == iid
-                or (not j.get("fixed_instance") and j.get("fixed_part") == inst.part_id)
-            } | {
-                str(j.get("moving_port"))
-                for j in sess.state.assembly.joints
-                if j.get("moving_instance") == iid
-            }
-            # uncapped solver call — the tool truncates to its top-8 by
-            # solver score, which silently drops ports a hint needs
-            for pair in solver.find_matching_ports(moving, fixed, used_fixed_ports=used):
-                fp = next((p for p in fixed.ports if p.name == pair.get("fixed_port")), None)
-                wp = _world_pos(inst.transform, fp.pos) if fp else [0.0, 0.0, 0.0]
-                # the fixed port's world AXIS decides the moving part's
-                # direction — a pipe mated to a downward-facing port runs
-                # downward. Position dominates (mm), the axis term (~one
-                # part-length weight) breaks ties between co-located rims
-                axis_hint = 0.0
-                if fp is not None:
-                    fa = _world_dir(inst.transform, fp.axis)
-                    axis_hint = sum(sg * fa[ax] for ax, sg in axes)
-                    # 'vertikal'/'horizontal' constrain the fixed port's
-                    # direction itself — a vertical pipe needs a vertical port
-                    if orient == "V":
-                        axis_hint += abs(fa[2])
-                    elif orient == "H":
-                        axis_hint += 1.0 - abs(fa[2])
-                hint = sum(sg * wp[ax] for ax, sg in axes) + 25.0 * axis_hint
-                picked = 1.0 if iid == picked_iid else 0.0
-                scored.append((hint, picked, float(pair.get("score") or 0.0), iid, pair))
+            scored.extend(
+                _score_pairs_for_instance(
+                    sess, moving, inst_by_iid.get(iid), iid, axes, orient, iid == picked_iid
+                )
+            )
         if scored:
             break  # resolved part yielded pairs — other part types stay out
     if not scored:
@@ -386,11 +484,24 @@ async def _try_attach(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
                     axes,
                     orient,
                 ),
+                -_cluster_bbox_growth(
+                    sess,
+                    moving,
+                    (sess._preview_cache.get(c.get("candidate_id") or "") or {}).get(
+                        "transform"
+                    )
+                    or [],
+                ),
                 -float(c.get("joint_gap_mm") or 0.0),
             ),
             reverse=True,
         )
         for cand in cands:
+            tr = (sess._preview_cache.get(cand.get("candidate_id") or "") or {}).get(
+                "transform"
+            )
+            if tr and _same_transform_spot(sess, pid, tr):
+                continue
             res = await place_instance(
                 sess,
                 {
@@ -412,6 +523,11 @@ async def _try_env(sess: GuideToolSession, task: dict[str, Any], pid: str) -> st
         return None
     for cand in prev.get("candidates", []):
         if not cand.get("collision_free", True):
+            continue
+        tr = (sess._preview_cache.get(cand.get("candidate_id") or "") or {}).get(
+            "transform"
+        )
+        if tr and _same_transform_spot(sess, pid, tr):
             continue
         res = await place_instance(
             sess,
