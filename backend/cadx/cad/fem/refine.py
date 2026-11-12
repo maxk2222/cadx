@@ -168,7 +168,7 @@ def _parse_spec(spec: str) -> tuple[float, float] | None:
     """'M4-0.7' -> (4.0, 0.7); 'M3-0.5-6' -> (3.0, 0.5)."""
     import re
 
-    m = re.search(r"M(\d+(?:\.\d+)?)[-x](\d+(?:\.\d+)?)", spec.strip(), re.I)
+    m = re.search(r"M(\d+(?:\.\d+)?)[-x\u00d7](\d+(?:\.\d+)?)", spec.strip(), re.I)
     if not m:
         return None
     return float(m.group(1)), float(m.group(2))

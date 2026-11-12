@@ -488,6 +488,20 @@ def validate_part_ref(
     return errors
 
 
+_METRIC_SEP = re.compile(r"^(M\d+(?:\.\d+)?)[x\u00d7](\d+(?:\.\d+)?)$", re.I)
+
+
+def _canonical_size(size: Any) -> Any:
+    """Normalize LLM-written metric sizes to the catalog form 'M10-1.5'.
+    Specs arrive as 'M10x1.5' or with the U+00D7 multiplication sign — the
+    norm tables only carry the dash form, so x/mult-sign separators are
+    rewritten before lookup."""
+    if not isinstance(size, str):
+        return size
+    m = _METRIC_SEP.match(size.strip())
+    return f"{m.group(1).upper()}-{m.group(2)}" if m else size
+
+
 def _constructor_values(
     class_name: str,
     schema: dict[str, dict[str, Any]],
@@ -499,7 +513,10 @@ def _constructor_values(
     simple: bool | None,
     default_length: float | None,
 ) -> tuple[dict[str, Any], str | None]:
+    size = _canonical_size(size)
     values = dict(parameters or {})
+    if "size" in values:
+        values["size"] = _canonical_size(values["size"])
     unknown = sorted(set(values) - set(schema))
     if unknown:
         raise ValueError(f"{class_name}: unsupported parameter(s): {', '.join(unknown)}")

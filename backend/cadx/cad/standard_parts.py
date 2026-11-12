@@ -33,7 +33,11 @@ _DOWN_AXIS_ROTATIONS = {
     "+z": (180.0, 0.0, 0.0),
     "-z": (0.0, 0.0, 0.0),
 }
-_THREAD_SIZE_RE = re.compile(r"^M(?P<diameter>\d+(?:\.\d+)?)[x-](?P<pitch>\d+(?:\.\d+)?)$", re.I)
+# LLM specs write sizes with the U+00D7 multiplication sign as often as ASCII x — accept both
+# (a missed parse means expected_thread_count=0 and preview geometry ships)
+_THREAD_SIZE_RE = re.compile(
+    r"^M(?P<diameter>\d+(?:\.\d+)?)[x\u00d7\-](?P<pitch>\d+(?:\.\d+)?)$", re.I
+)
 # Constructor params that take a host/object, not a scalar — the class is a
 # feature op on an existing part (hole for a fastener, seat for a bearing…)
 # and can never be emitted as a standalone standard part.
@@ -152,11 +156,12 @@ def _thread_data(
     if not threaded:
         return None
     report: dict[str, Any] = {}
+    size = str(part.size or values.get("size") or "").replace("\u00d7", "x")
     with contextlib.suppress(Exception):
         report = catalog.lookup_part(
             part.class_name,
             fastener_type=part.fastener_type or None,
-            size=part.size or None,
+            size=size or None,
             length=part.length_mm,
             parameters={k: v for k, v in values.items() if k not in {"simple"}},
             simple=True,
@@ -165,7 +170,6 @@ def _thread_data(
         report.get("thread_diameter") or report.get("major_diameter") or report.get("diameter")
     )
     pitch = report.get("thread_pitch") or report.get("pitch")
-    size = str(part.size or values.get("size") or "")
     if diameter is None or pitch is None:
         match = _THREAD_SIZE_RE.match(size)
         if match:

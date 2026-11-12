@@ -630,3 +630,29 @@ def test_covered_host_voids_stay_independent() -> None:
     assert not is_host_void_feature(spec.features[1])
     assert is_host_void_feature({"type": "counterbore_hole"})
     assert not is_host_void_feature({"type": "cone"})
+
+
+def test_expected_thread_count_unicode_times_size() -> None:
+    """m10_csk_screw regression: the LLM wrote size 'M10\\u00d71.5' (multiplication sign) —
+    neither the catalog lookup nor _THREAD_SIZE_RE parsed it, so
+    expected_thread_count returned 0 and the preview shank shipped."""
+    part = StandardPartSpec(
+        class_name="CounterSunkScrew",
+        fastener_type="iso10642",
+        size="M10\u00d71.5",
+        length_mm=30,
+        covers_features=["head", "thread"],
+    )
+    spec = PartSpec(
+        name="M10 countersunk screw",
+        summary="M10x30 ISO 10642",
+        length_x=_dims(20, 20, 30)[0],
+        width_y=_dims(20, 20, 30)[1],
+        height_z=_dims(20, 20, 30)[2],
+        features=[
+            Feature(name="head", type="cone"),
+            Feature(name="thread", type="thread"),
+        ],
+        standard_parts=[part],
+    )
+    assert expected_thread_count(spec) == 1
