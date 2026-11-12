@@ -38,7 +38,16 @@ CAD_FEM_QUEUE = "cad-fem"
 # codegen-loop latency lane — these funcs are short rlimit-bounded tasks and
 # must not queue behind a long heavy solve (optimize/topopt/fem) on the
 # serial 'cad' lane. Keep in sync with CadLightWorkerSettings.functions.
-_LIGHT_FUNCS = frozenset({"execute_version", "audit_params", "edit_feature", "export_all"})
+_LIGHT_FUNCS = frozenset(
+    {
+        "execute_version",
+        "audit_params",
+        "edit_feature",
+        "export_all",
+        "extract_ports",
+        "render_assembly",
+    }
+)
 
 
 def exec_error(res: dict[str, Any], default: str = "executor failed") -> str:
@@ -140,6 +149,16 @@ class InProcessExecutor:
             }
 
         return await asyncio.to_thread(_run)
+
+    async def extract_ports(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from cadx.cad.guide_exec import extract_ports
+
+        return await asyncio.to_thread(extract_ports, {}, payload)
+
+    async def render_assembly(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from cadx.cad.guide_exec import render_assembly
+
+        return await asyncio.to_thread(render_assembly, {}, payload)
 
 
 # post-optimizer pipeline allowance for optimize tasks — extraction,
@@ -517,6 +536,12 @@ class QueueExecutor:
 
     async def export_all(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._run_task("export_all", payload, 300)
+
+    async def extract_ports(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._run_task("extract_ports", payload, 120)
+
+    async def render_assembly(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return await self._run_task("render_assembly", payload, 120)
 
     async def cancel_flag(self, job_id: str) -> bool:
         """The orchestrator checks cancellation via ctx.check_cancel; nothing extra here."""

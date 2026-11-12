@@ -1,0 +1,89 @@
+# Anleitungsbuilder — PDF manual → Unity AR guide
+
+Turns an uploaded instruction PDF plus uploaded CAD parts into a
+`unity_guide.json` consumable by an AR app. Missing parts are generated
+through the normal sandboxed CAD pipeline. Everything happens inside one
+chat — the agent asks clarifying questions (`waiting_for_input`) and the
+user can feed supplemental notes mid-run.
+
+Reference implementation: KIARA `ar_guide_agent_v4` (ported, adapted —
+see `docs/anleitungsbuilder-masterplan.md` §3 "Verified platform facts"
+for the platform differences that drove the port).
+
+## Entry points
+
+Chat tools (project-bound chats):
+- `start_guide_builder {pdf_asset_id, cad_asset_ids?, prompt?, wait?}` —
+  spawns the guide job (`spawn_guide`).
+- `attach_guide_note {job_id, note}` — supplemental info mid-run, lands in
+  `user_notes.jsonl` which every mission reads via `list_user_notes`.
+- `answer_questions` — resumes a parked guide job (generic
+  `enqueue_resume` dispatches by the job's payload func).
+- `job_status` — progress as usual.
+
+Uploads: `POST /projects/{id}/assets` accepts `.pdf` (100 MB),
+`.glb/.gltf` (50 MB, `AssetKind.cad_glb`), plus the existing
+`.step/.stp/.stl/.dxf` reference kinds. The chat composer accept list
+covers all of them.
+
+## Pipeline (one durable `JobType.guide` job)
+
+`run_guide_job` (agent queue) → `guide.guide_runner.run_guide` runs the
+missions in order, each a bounded `run_session` with a mission-scoped
+`GuideToolSession` (tool allowlist per mission, `guide/tools.py`):
+
+| Mission | Tools | Output |
+|---|---|---|
+| `doc` | prepare_pdf, page text/images/figures, classify, part names | `state.document` |
+| `steps` | create/update/reorder steps + sub_steps + media | ordered `state.steps` (dual text) |
+| `parts` | register_uploaded_part, match/alias, generate_missing_part | `state.parts` w/ ports+bbox |
+| `assembly` | find_matching_ports, solve_*_preview, place_instance (candidate_id only), collision/render/validate | `state.assembly` |
+| `review` | validators + `write_review_report` | `state.review` |
+| `annotate` | add_arrow | `state.annotations` |
+| emit | (no LLM) | `output/unity_guide.json` artifact |
+
+The review verdict drives a bounded repair loop: blocker findings reopen
+the flagged mission (`guide_review_max_iter`, default 3, score target
+`guide_review_score_target`, default 8).
+
+## Key contracts
+
+- **Dual text**: `GuideStep.text` = detailed internal description;
+  `display_text` = short AR label (validated, ≤240 chars).
+- **State**: `GuideState` JSON, atomic save under
+  `storage.version_dir(project, guide_version)/guide/` — keyed by the
+  guide Version id, never the (transient) job id. Resume reuses it via
+  `job.resume_state["guide_dir"]`.
+- **Placement**: the LLM never supplies transforms —
+  `solve_*_preview` returns server-cached candidates; `place_instance`
+  consumes a `candidate_id`. Port frames/gates ported from KIARA's
+  p5 solver (`guide/solver.py`, mm/Z-up).
+- **Collisions**: manifold3d boolean intersection (`guide/scene.py`) —
+  no FCL dependency.
+- **Heavy CAD work**: `extract_ports` + `render_assembly` run on the
+  executor `cad-light` lane (`cad/guide_exec.py`), never in the worker.
+- **Missing parts**: `generate_missing_part` → `spawn_generate` → normal
+  sandboxed codegen job; parked child questions surface to the agent so
+  it can relay them via `ask_user`.
+- **Units/frame**: CADX mm/Z-up RH → Unity m/Y-up LH via
+  `(x, z, y)·0.001` and `R_u = M·R·Mᵀ` (det −1 map) — golden-tested in
+  `tests/guide/test_unity.py`.
+
+## Runtime settings
+
+`guide_pdf_dpi` (200), `guide_max_pages` (80), `guide_image_budget`
+(24), `guide_review_score_target` (8.0), `guide_review_max_iter` (3).
+
+## Files
+
+```
+backend/cadx/guide/            # the whole pipeline package
+backend/cadx/cad/guide_exec.py # executor tasks (extract_ports, render_assembly)
+backend/cadx/agent/prompts/guide_*.md  # mission system prompts
+backend/cadx/spawn.py          # spawn_guide + generalized enqueue_resume
+backend/cadx/agent/worker_jobs.py      # run_guide_job (agent queue)
+tests/guide/                   # state/pdf/solver/unity/tools tests
+```
+
+Requires `CADX_AGENT_MAX_JOBS ≥ 2` when missing-part generation is
+expected (the guide job waits on a child agent job; default is 8).

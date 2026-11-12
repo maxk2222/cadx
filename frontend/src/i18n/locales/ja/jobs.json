@@ -62,7 +62,13 @@
     "measure": "計測",
     "parametrize": "パラメータ化",
     "refine": "改良",
-    "exec": "エグゼキュータ"
+    "exec": "エグゼキュータ",
+    "guide_doc": "ガイド: ",
+    "guide_steps": "ガイド: ",
+    "guide_parts": "ガイド: ",
+    "guide_assembly": "ガイド: ",
+    "guide_review": "ガイド: レビュー",
+    "guide_annotate": "ガイド: "
   },
   "log_elapsed": "経過時間",
   "log_score": "スコア",

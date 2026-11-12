@@ -23,6 +23,8 @@ class AssetKind(enum.StrEnum):
     reference_step = "reference_step"
     reference_stl = "reference_stl"
     reference_dxf = "reference_dxf"
+    pdf = "pdf"  # instruction manual (anleitungsbuilder)
+    cad_glb = "cad_glb"  # GLB/glTF CAD part (anleitungsbuilder)
 
 
 # Kinds that can serve as image inputs (LLM context, mesh source images).
@@ -39,6 +41,7 @@ class VersionKind(enum.StrEnum):
     organic = "organic"  # procedural pseudo-topology organic restyle
     code = "code"  # externally-supplied build123d code, persisted+executed (MCP)
     meshgen = "meshgen"  # direct image->mesh generation via the sidecar (MCP)
+    guide = "guide"  # anleitungsbuilder run container (guide artifacts attach here)
 
 
 class VersionStatus(enum.StrEnum):
@@ -65,6 +68,7 @@ class JobType(enum.StrEnum):
     organic = "organic"  # procedural pseudo-topology organic restyle (no FEM)
     code = "code"  # execute externally-supplied build123d code — no LLM (MCP)
     meshgen = "meshgen"  # image->mesh generation via sidecar — no LLM (MCP)
+    guide = "guide"  # anleitungsbuilder pipeline run (agent/guide_runner.py)
 
 
 class JobStatus(enum.StrEnum):

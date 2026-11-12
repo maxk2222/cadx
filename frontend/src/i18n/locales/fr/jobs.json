@@ -65,7 +65,13 @@
     "measure": "mesure",
     "parametrize": "paramétrage",
     "refine": "raffinage",
-    "exec": "exécuteur"
+    "exec": "exécuteur",
+    "guide_doc": "guide: analyse doc.",
+    "guide_steps": "guide: étapes",
+    "guide_parts": "guide: pièces",
+    "guide_assembly": "guide: assemblage",
+    "guide_review": "guide: révision",
+    "guide_annotate": "guide: annotations"
   },
   "log_elapsed": "écoulé",
   "log_score": "score",

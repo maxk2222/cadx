@@ -62,7 +62,13 @@
     "measure": "测量",
     "parametrize": "参数化",
     "refine": "细化",
-    "exec": "执行器"
+    "exec": "执行器",
+    "guide_doc": "：",
+    "guide_steps": "：",
+    "guide_parts": "：",
+    "guide_assembly": "：",
+    "guide_review": "：",
+    "guide_annotate": "："
   },
   "log_elapsed": "已用时间",
   "log_score": "分数",

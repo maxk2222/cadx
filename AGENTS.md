@@ -259,6 +259,19 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   `CADX_MCP_TOKEN` bearer when configured). Spawn tools default `wait=false`
   on this surface. See `docs/mcp-server.md`.
 
+- Anleitungsbuilder (PDF manual → Unity AR guide, `docs/anleitungsbuilder.md`,
+  master plan `docs/anleitungsbuilder-masterplan.md`): `cadx/guide/` package,
+  `JobType.guide`/`VersionKind.guide` (migration `v3l4m5n6o7p8`), `AssetKind.pdf`/
+  `cad_glb`. Missions run as bounded `run_session` calls with per-mission tool
+  allowlists (`guide/tools.py`); `GuideState` is the atomic blackboard keyed by
+  the guide Version's `guide/` dir (never the job id). Placement math is
+  server-side only (`guide/solver.py`) — the LLM picks preview
+  `candidate_id`s, never transforms. Heavy CAD work (`extract_ports`,
+  `render_assembly`) runs on the `cad-light` executor lane; collisions use
+  manifold3d. Unity export converts mm/Z-up RH → m/Y-up LH explicitly
+  (`guide/unity.py`, golden-tested). Guide jobs need `CADX_AGENT_MAX_JOBS ≥ 2`
+  when generating missing parts.
+
 ## Testing
 - `tests/cad` must run both natively and inside the executor image
   (`docker compose run cad-executor pytest tests/cad` — requires tests mounted; use local run).

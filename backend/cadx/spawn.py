@@ -24,6 +24,8 @@ from cadx import storage
 from cadx.cad.allowlist import check_code
 from cadx.cad.mesh_ops import OPS_REGISTRY, MeshPostParams
 from cadx.db.models import (
+    Asset,
+    AssetKind,
     Job,
     JobStatus,
     JobType,
@@ -209,6 +211,65 @@ async def spawn_generate(
         extra_version={"gen_mode": mode, "options": opts},
         enqueue_fn=enqueue_fn,
     )
+
+
+async def spawn_guide(
+    db: AsyncSession,
+    project: Project,
+    *,
+    pdf_asset_id: uuid.UUID | str,
+    cad_asset_ids: list[uuid.UUID | str] | None = None,
+    prompt: str = "",
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    """Spawn an anleitungsbuilder run: companion Part+Version (kind=guide)
+    + Job(type=guide) on the agent queue.
+
+    The guide version anchors the run's artifacts (unity_guide.json,
+    renders) and satisfies Job.version_id NOT NULL; GuideState persistence
+    lives in the version's guide/ dir (stable across resume job ids).
+    """
+    pdf_asset = await db.get(Asset, uuid.UUID(str(pdf_asset_id)))
+    if pdf_asset is None or pdf_asset.project_id != project.id:
+        raise SpawnError("pdf asset not found in project", status=404)
+    if pdf_asset.kind != AssetKind.pdf:
+        raise SpawnError("asset is not a PDF", status=422)
+    cad_ids = [str(a) for a in (cad_asset_ids or [])]
+    if cad_ids:
+        rows = await db.execute(
+            select(Asset).where(Asset.id.in_([uuid.UUID(c) for c in cad_ids]))  # type: ignore[attr-defined]
+        )
+        found = {str(a.id): a for a in rows.scalars().all()}
+        for cid in cad_ids:
+            a = found.get(cid)
+            if a is None or a.project_id != project.id:
+                raise SpawnError(f"cad asset {cid} not found in project", status=404)
+
+    stem = Path(pdf_asset.filename or "manual").stem or "manual"
+    # pre-generate the version id so guide_dir is in resume_state BEFORE the
+    # job is enqueued — a runner picking it up immediately must not race a
+    # second commit
+    vid = uuid.uuid4()
+    v, job = await spawn_version_job(
+        db,
+        project,
+        kind=VersionKind.guide,
+        job_type=JobType.guide,
+        func="run_guide_job",
+        prompt=prompt or f"AR guide from {pdf_asset.filename}",
+        part_name=f"AR-Guide {stem}"[:120],
+        asset_ids=[str(pdf_asset.id), *cad_ids],
+        extra_version={"id": vid},
+        extra_job={
+            "resume_state": {
+                "pdf_asset_id": str(pdf_asset.id),
+                "cad_asset_ids": cad_ids,
+                "guide_dir": str(storage.version_dir(project.id, vid) / "guide"),
+            }
+        },
+        enqueue_fn=enqueue_fn,
+    )
+    return v, job
 
 
 async def spawn_edit(
@@ -1162,10 +1223,17 @@ async def enqueue_resume(
     job: Job,
     answers_text: str,
     *,
+    func: str | None = None,
+    resume_extra: dict[str, Any] | None = None,
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> tuple[Version, Job]:
     """Submit clarification answers to a waiting_for_input job — spawns a
-    `resume` job on the same version (extracted from jobs.py::answer)."""
+    `resume` job on the same version (extracted from jobs.py::answer).
+
+    ``func`` defaults to the parked job's own payload func so non-codegen
+    tasks (e.g. run_guide_job) resume through the same entry point they
+    were spawned with; ``resume_extra`` is merged into the new job's
+    resume_state (guide jobs carry their answers to the state file)."""
     if job.status != JobStatus.waiting_for_input:
         raise SpawnError(f"job is {job.status}, not waiting_for_input")
     v = await db.get(Version, job.version_id)
@@ -1173,7 +1241,13 @@ async def enqueue_resume(
         raise SpawnError("version not found", status=404)
     v.prompt = (v.prompt or "") + f"\n\nClarification answers:\n{answers_text}"
     v.status = VersionStatus.queued
-    new_job = Job(version_id=v.id, type=JobType.resume, resume_state=job.resume_state)
+    func = func or ((job.payload or {}).get("func") or "run_agent_job")
+    resume_state = {
+        **(job.resume_state or {}),
+        **(resume_extra or {}),
+        "answers_text": answers_text,
+    }
+    new_job = Job(version_id=v.id, type=JobType.resume, resume_state=resume_state)
     db.add(new_job)
     # the waiting job's lifecycle ends here — its continuation is the resume.
     # Leaving it waiting_for_input keeps the answer form live and lets a
@@ -1184,10 +1258,10 @@ async def enqueue_resume(
     from cadx.api.deps import payload_envelope
 
     args = {"job_id": str(new_job.id), "version_id": str(v.id)}
-    new_job.payload = payload_envelope("run_agent_job", args)
+    new_job.payload = payload_envelope(func, args)
     await db.commit()
     try:
-        await (enqueue_fn or _enqueue)("run_agent_job", args)
+        await (enqueue_fn or _enqueue)(func, args)
     except Exception:
         # fail the new job and put the version + original job back — the
         # original job is still waiting_for_input, so 'failed'/'succeeded'
@@ -1199,7 +1273,7 @@ async def enqueue_resume(
             job.finished_at = None
             await db.commit()
         except Exception:  # never mask the original enqueue error
-            log.warning("enqueue_failure_mark_failed_error", func="run_agent_job")
+            log.warning("enqueue_failure_mark_failed_error", func=func)
         raise
     return v, new_job
 

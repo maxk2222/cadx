@@ -629,6 +629,109 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
 
 
 @_guarded
+async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    """arq function on queue 'agent' — anleitungsbuilder pipeline.
+
+    Same AgentCtx wiring as run_agent_job; the heavy lifting lives in
+    ``guide.guide_runner.run_guide`` (missions + bounded review loop).
+    Resume carries ``answers_text`` + the stable ``guide_dir`` in
+    resume_state — the state file, never the job id, is canonical.
+    """
+    job_id = _u(payload["job_id"])
+    async with session_scope() as db:
+        job = await db.get(Job, job_id)
+        version = await db.get(Version, _u(payload["version_id"]))
+        if job is None or version is None:
+            return {"ok": False, "error": "job or version not found"}
+        if job.status in (JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled):
+            return {"ok": False, "error": f"job already {job.status}"}
+        job.status = JobStatus.running
+        job.started_at = datetime.now(UTC)
+        version.status = VersionStatus.running
+        await db.commit()
+
+        async def check_cancel() -> bool:
+            async with session_scope() as s3:
+                j = await s3.get(Job, job_id)
+                return (
+                    j is None
+                    or bool(j.cancel_requested)
+                    or j.status in (JobStatus.failed, JobStatus.cancelled, JobStatus.succeeded)
+                )
+
+        runtime_settings = await load_runtime_settings(db)
+        project = await db.get(Project, version.project_id)
+        merged = _merge_settings((project.settings or {}) if project else {}, version.options or {})
+        job_runtime = _job_runtime(runtime_settings, merged)
+        llm = _make_llm(
+            job_runtime,
+            backend=merged.llm_backend,
+            caps=await load_caps_session(),
+            caps_cb=record_caps_session,
+        )
+        emit = make_emit(job_id, tokens_fn=lambda: dict(getattr(llm, "total_usage", {}) or {}))
+        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime, emit_cb=emit)
+        trace = DbTrace(job_id)
+        settings = _fill_settings(merged, job_runtime)
+
+        asset_ids = version.asset_ids or []
+        assets: list[Asset] = []
+        if asset_ids:
+            rows = await db.execute(
+                select(Asset).where(col(Asset.id).in_([_u(a) for a in asset_ids]))
+            )
+            assets = list(rows.scalars().all())
+        input_assets = _input_assets(assets)
+
+        actx = AgentCtx(
+            llm=llm,
+            executor=executor,
+            trace=trace,
+            emit=emit,
+            check_cancel=check_cancel,
+            job_id=str(job_id),
+            project_id=version.project_id,
+            version_id=version.id,
+            mode="generate",
+            prompt=version.prompt or "",
+            settings=settings,
+            runtime_settings=job_runtime,
+            assets=input_assets,
+            budget_tokens=runtime_settings.agent_max_tokens_per_job,
+        )
+
+        resume_state = dict(job.resume_state or {})
+        guide_dir = Path(
+            str(resume_state.get("guide_dir") or "")
+            or storage.version_dir(version.project_id, version.id) / "guide"
+        )
+        guide_dir.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
+        if "guide_dir" not in resume_state:
+            # first run: persist the canonical dir so a later resume finds it
+            job.resume_state = {**resume_state, "guide_dir": str(guide_dir)}
+            await db.commit()
+
+        from cadx.guide.guide_runner import run_guide
+
+        try:
+            outcome = await run_guide(actx, state_dir=guide_dir, resume_state=resume_state)
+        except Exception as e:
+            log.exception("guide.job_crashed", job=str(job_id))
+            outcome = RunOutcome(
+                status="failed", error=f"guide crashed: {type(e).__name__}: {e!r}"[:500]
+            )
+
+        # keep the canonical guide dir on the job for the NEXT resume —
+        # run_guide's resume_state only travels via waiting_for_input
+        if outcome.resume_state:
+            outcome.resume_state.setdefault("guide_dir", str(guide_dir))
+        else:
+            outcome.resume_state = {"guide_dir": str(guide_dir)}
+        await _persist_outcome(db, job, version, outcome, emit)
+        return {"ok": outcome.status in ("succeeded", "needs_review"), "status": outcome.status}
+
+
+@_guarded
 async def run_params_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     """Re-execute parent with new params (no LLM). Child version already exists.
 

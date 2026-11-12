@@ -68,7 +68,13 @@
     "measure": "medição",
     "parametrize": "parametrização",
     "refine": "refino",
-    "exec": "executor"
+    "exec": "executor",
+    "guide_doc": "guia: análise doc.",
+    "guide_steps": "guia: passos",
+    "guide_parts": "guia: peças",
+    "guide_assembly": "guia: montagem",
+    "guide_review": "guia: revisão",
+    "guide_annotate": "guia: anotações"
   },
   "log_elapsed": "decorrido",
   "log_score": "pontuação",

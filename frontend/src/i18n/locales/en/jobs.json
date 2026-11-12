@@ -65,7 +65,13 @@
     "measure": "measure",
     "parametrize": "parametrize",
     "refine": "refine",
-    "exec": "executor"
+    "exec": "executor",
+    "guide_doc": "guide: doc analysis",
+    "guide_steps": "guide: step authoring",
+    "guide_parts": "guide: part analysis",
+    "guide_assembly": "guide: assembly",
+    "guide_review": "guide: review",
+    "guide_annotate": "guide: annotations"
   },
   "log_elapsed": "elapsed",
   "log_score": "score",

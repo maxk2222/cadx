@@ -1,0 +1,266 @@
+"""Steps-mission tools — ordered instruction steps with the dual-text
+contract (``text`` internal detail / ``display_text`` AR label).
+
+Ported tool-for-tool from KIARA's StepAuthor surface (v4
+tools/step_tools.py).
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from cadx.guide.state import GuideStep, GuideSubStep
+from cadx.guide.tools import _arr, _fn, _i, _s
+from cadx.logging import get_logger
+
+if TYPE_CHECKING:
+    from cadx.guide.session import GuideToolSession
+
+log = get_logger(__name__)
+
+_ACTION_TYPES = ["assembly", "check", "safety", "prep"]
+_SUB_ACTIONS = ["place", "attach", "orient", "insert", "fasten", "check"]
+
+SCHEMAS: dict[str, dict[str, Any]] = {
+    "create_step": _fn(
+        "create_step",
+        "Create one instruction step. REQUIRED dual text: `text` is the "
+        "detailed internal description for downstream processing (parts, "
+        "tools, spatial hints, tolerances — several sentences OK); "
+        "`display_text` is the short AR-facing instruction shown to the "
+        "user (≤140 chars, imperative, manual language).",
+        {
+            "number": _i("step number (manual order, 1-based)"),
+            "title": _s("short step title"),
+            "text": _s("detailed INTERNAL step description"),
+            "display_text": _s("short AR-facing instruction (≤140 chars)"),
+            "action_type": {
+                "type": "string",
+                "enum": _ACTION_TYPES,
+                "description": "step kind, default assembly",
+            },
+            "required_parts": _arr(
+                _s("canonical part name from detected_part_names or a new label"),
+                "parts this step places/uses",
+            ),
+            "tools": _arr(_s("physical tool name"), "tools needed (e.g. wrench)"),
+            "safety_hint": _s("safety warning shown with the step, '' if none"),
+            "source_pages": _arr(_i("page"), "PDF pages this step comes from"),
+        },
+        ["number", "text", "display_text"],
+    ),
+    "update_step": _fn(
+        "update_step",
+        "Update fields of an existing step (same fields as create_step; "
+        "only provided fields change).",
+        {
+            "number": _i("step number to update"),
+            "title": _s("new title"),
+            "text": _s("new internal text"),
+            "display_text": _s("new AR text (≤140 chars)"),
+            "action_type": {"type": "string", "enum": _ACTION_TYPES},
+            "required_parts": _arr(_s("part name"), "replace required parts"),
+            "tools": _arr(_s("tool"), "replace tools"),
+            "safety_hint": _s("new safety hint"),
+            "source_pages": _arr(_i("page"), "replace source pages"),
+        },
+        ["number"],
+    ),
+    "add_sub_step": _fn(
+        "add_sub_step",
+        "Add one atomic sub-action to a step — MANDATORY for every part "
+        "placement (one sub_step per part placed). The assembly agent "
+        "executes sub_steps in order.",
+        {
+            "step": _i("step number"),
+            "action": {"type": "string", "enum": _SUB_ACTIONS},
+            "part": _s("part name/id this sub-step acts on"),
+            "target": _s("parent part or step reference it attaches to, '' if base"),
+            "text": _s("internal detail for the placement solver"),
+            "side": _s("spatial hint: left/right/top/bottom/front/back, '' if n/a"),
+        },
+        ["step", "action", "part"],
+    ),
+    "assign_media": _fn(
+        "assign_media",
+        "Assign a PDF figure crop (from list_figures) as the step's media_image shown in AR.",
+        {
+            "step": _i("step number"),
+            "page": _i("source page"),
+            "figure_index": _i("figure index on that page (list_figures)"),
+        },
+        ["step", "page", "figure_index"],
+    ),
+    "reorder_steps": _fn(
+        "reorder_steps",
+        "Renumber all steps by the given order of current numbers.",
+        {"order": _arr(_i("current step number"), "step numbers in new order")},
+        ["order"],
+    ),
+    "finalize_steps": _fn(
+        "finalize_steps",
+        "Sort, renumber 1..N and validate the step list. REQUIRED before "
+        "done_mission. Fails when: no steps, missing dual text, assembly "
+        "steps without required_parts or sub_steps.",
+        {},
+        [],
+    ),
+}
+
+
+def _validate_dual_text(text: str, display: str) -> str | None:
+    if not text.strip():
+        return "text (internal description) is required"
+    if not display.strip():
+        return "display_text (AR-facing instruction) is required"
+    if len(display) > 240:
+        return "display_text too long (≤240 chars hard cap; aim ≤140)"
+    return None
+
+
+def _step_fields(a: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k in ("title", "text", "display_text", "action_type", "safety_hint"):
+        if k in a:
+            out[k] = str(a[k])
+    for k in ("required_parts", "tools"):
+        if k in a:
+            out[k] = [str(x) for x in (a[k] or []) if str(x).strip()][:20]
+    if "source_pages" in a:
+        out["source_pages"] = sorted({int(x) for x in (a["source_pages"] or []) if int(x) > 0})[:20]
+    return out
+
+
+async def create_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    num = int(a.get("number", 0))
+    if num < 1:
+        return {"ok": False, "error": "number must be ≥ 1"}
+    if s.state.step_by_number(num) is not None:
+        return {"ok": False, "error": f"step {num} already exists — use update_step"}
+    if err := _validate_dual_text(str(a.get("text", "")), str(a.get("display_text", ""))):
+        return {"ok": False, "error": err}
+    fields = _step_fields(a)
+    if fields.get("action_type") and fields["action_type"] not in _ACTION_TYPES:
+        return {"ok": False, "error": f"action_type must be one of {_ACTION_TYPES}"}
+    step = GuideStep(number=num, **fields)
+    s.state.steps.append(step)
+    s.state.steps.sort(key=lambda x: x.number)
+    return {"ok": True, "step": num, "total_steps": len(s.state.steps)}
+
+
+async def update_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    num = int(a.get("number", 0))
+    step = s.state.step_by_number(num)
+    if step is None:
+        return {"ok": False, "error": f"step {num} not found"}
+    fields = _step_fields(a)
+    new_text = fields.get("text", step.text)
+    new_disp = fields.get("display_text", step.display_text)
+    if err := _validate_dual_text(new_text, new_disp):
+        return {"ok": False, "error": err}
+    if fields.get("action_type") and fields["action_type"] not in _ACTION_TYPES:
+        return {"ok": False, "error": f"action_type must be one of {_ACTION_TYPES}"}
+    for k, v in fields.items():
+        setattr(step, k, v)
+    return {"ok": True, "step": num}
+
+
+async def add_sub_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    step = s.state.step_by_number(int(a.get("step", 0)))
+    if step is None:
+        return {"ok": False, "error": f"step {a.get('step')} not found"}
+    action = str(a.get("action", ""))
+    if action not in _SUB_ACTIONS:
+        return {"ok": False, "error": f"action must be one of {_SUB_ACTIONS}"}
+    part = str(a.get("part", "")).strip()
+    if not part:
+        return {"ok": False, "error": "part is required"}
+    step.sub_steps.append(
+        GuideSubStep(
+            action=action,
+            part=part,
+            target=str(a.get("target", "")),
+            text=str(a.get("text", "")),
+            side=str(a.get("side", "")),
+        )
+    )
+    return {"ok": True, "step": step.number, "sub_steps": len(step.sub_steps)}
+
+
+async def assign_media(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    step = s.state.step_by_number(int(a.get("step", 0)))
+    if step is None:
+        return {"ok": False, "error": f"step {a.get('step')} not found"}
+    page_no = int(a.get("page", 0))
+    idx = int(a.get("figure_index", 0))
+    p = s._page(page_no)
+    if p is None:
+        return {"ok": False, "error": f"page {page_no} not found"}
+    for f in p.figures:
+        if int(f.get("index", 0)) == idx and f.get("image_path"):
+            step.media_image = str(f["image_path"])
+            if page_no not in step.source_pages:
+                step.source_pages = sorted([*step.source_pages, page_no])
+            return {"ok": True, "step": step.number, "media_image": step.media_image}
+    return {"ok": False, "error": f"figure {idx} not found on page {page_no}"}
+
+
+async def reorder_steps(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    order = [int(x) for x in (a.get("order") or [])]
+    cur = sorted(s.state.steps, key=lambda x: x.number)
+    if sorted(order) != [x.number for x in cur]:
+        return {
+            "ok": False,
+            "error": "order must contain every existing step number exactly once",
+            "current": [x.number for x in cur],
+        }
+    rank = {old: i + 1 for i, old in enumerate(order)}
+    for step in s.state.steps:
+        step.number = rank[step.number]
+    s.state.steps.sort(key=lambda x: x.number)
+    return {"ok": True, "order": order}
+
+
+async def finalize_steps(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    if not s.state.steps:
+        return {"ok": False, "error": "no steps created"}
+    s.state.steps.sort(key=lambda x: x.number)
+    errors: list[str] = []
+    for i, step in enumerate(s.state.steps, start=1):
+        step.number = i
+        if err := _validate_dual_text(step.text, step.display_text):
+            errors.append(f"step {i}: {err}")
+        if not step.source_pages:
+            errors.append(f"step {i}: source_pages missing")
+        if step.action_type == "assembly":
+            if not step.required_parts:
+                errors.append(f"step {i}: assembly step without required_parts")
+            if not step.sub_steps:
+                errors.append(f"step {i}: assembly step without sub_steps")
+        step.parts_delta = list(step.required_parts)
+    if errors:
+        return {"ok": False, "error": "validation failed", "errors": errors[:20]}
+    return {"ok": True, "steps": len(s.state.steps)}
+
+
+def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
+    if not s.state.steps:
+        return {"ok": False, "error": "no steps — create steps and call finalize_steps first"}
+    for st in s.state.steps:
+        if err := _validate_dual_text(st.text, st.display_text):
+            return {"ok": False, "error": f"step {st.number}: {err} — fix then finalize_steps"}
+    return None
+
+
+from cadx.guide.tools import DONE_GUARDS  # noqa: E402
+
+DONE_GUARDS["steps"] = _done_guard
+
+HANDLERS = {
+    "create_step": create_step,
+    "update_step": update_step,
+    "add_sub_step": add_sub_step,
+    "assign_media": assign_media,
+    "reorder_steps": reorder_steps,
+    "finalize_steps": finalize_steps,
+}

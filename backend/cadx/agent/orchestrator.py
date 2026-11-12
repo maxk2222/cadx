@@ -118,9 +118,7 @@ def _has_degenerate_case(fem_res: dict[str, Any]) -> bool:
     if not fem_res.get("ok"):
         return False
     cases = ((fem_res.get("fem") or {}).get("cases")) or []
-    return any(
-        (c.get("safety_factor") or 0.0) > _FEM_DEGENERATE_SF for c in cases
-    )
+    return any((c.get("safety_factor") or 0.0) > _FEM_DEGENERATE_SF for c in cases)
 
 
 # cross-agent contract kwargs: the concurrent changes that consume these

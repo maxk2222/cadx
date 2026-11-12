@@ -27,8 +27,23 @@ _REF_EXT = {
     ".stp": AssetKind.reference_step,
     ".stl": AssetKind.reference_stl,
     ".dxf": AssetKind.reference_dxf,
+    ".pdf": AssetKind.pdf,
+    ".glb": AssetKind.cad_glb,
+    ".gltf": AssetKind.cad_glb,
 }
 MAX_ASSET_BYTES = 25 * 1024 * 1024
+# per-kind caps override the global default — instruction PDFs and CAD
+# parts are legitimately bigger than reference photos
+_KIND_MAX_BYTES = {
+    AssetKind.pdf: 100 * 1024 * 1024,
+    AssetKind.cad_glb: 50 * 1024 * 1024,
+    AssetKind.reference_step: 50 * 1024 * 1024,
+    AssetKind.reference_stl: 50 * 1024 * 1024,
+}
+
+
+def _cap_for(kind: AssetKind) -> int:
+    return _KIND_MAX_BYTES.get(kind, MAX_ASSET_BYTES)
 
 
 def _out(a: Asset) -> AssetOut:
@@ -68,11 +83,14 @@ async def upload_assets(
     out: list[Asset] = []
     for f in files:
         data = await f.read()
-        if len(data) > MAX_ASSET_BYTES:
-            raise HTTPException(413, f"{f.filename}: exceeds {MAX_ASSET_BYTES // 2**20}MB")
         kind = _kind_for(f.filename or "", None)
         if kind is None:
             raise HTTPException(415, f"{f.filename}: unsupported type")
+        cap = _cap_for(kind)
+        if len(data) > cap:
+            raise HTTPException(413, f"{f.filename}: exceeds {cap // 2**20}MB")
+        if kind == AssetKind.pdf and not data.startswith(b"%PDF"):
+            raise HTTPException(422, f"{f.filename}: not a PDF file")
         filename = f.filename or "file"
         mime = f.content_type or ""
         width: int | None = None

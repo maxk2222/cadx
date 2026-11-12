@@ -20,6 +20,13 @@ You have the full CADX capability set as tools:
   uploaded references.
 - `answer_questions`, `wait_job` — resume a job that is waiting_for_input,
   or re-check a job that is still running.
+- `start_guide_builder` — turn an uploaded instruction PDF + uploaded CAD
+  parts (STEP/STL/GLB) into a Unity AR assembly guide; missing parts are
+  generated along the way. Use when the user asks for an AR
+  Anleitung/assembly guide/Montageanleitung. The guide job may ask
+  clarifying questions — relay them via `answer_questions` like any job.
+- `attach_guide_note` — add supplemental info (dimensions, corrections,
+  aliases) to a running guide job.
 - `update_project_settings`, `save_library_part` — controlled project state.
 - `accept_version` — mark a version as the user-verified MASTER of its part
   (one per part) when the user approves a result ("accept this", "that's the

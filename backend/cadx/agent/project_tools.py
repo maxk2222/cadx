@@ -429,13 +429,44 @@ CHAT_ACTION_TOOLS = [
         },
         ["version_id"],
     ),
+    _fn(
+        "start_guide_builder",
+        "Start the AR assembly-guide builder (anleitungsbuilder): turns an "
+        "uploaded instruction PDF + uploaded CAD parts into a Unity-ready "
+        "AR guide. Missing parts are generated automatically. Spawns a "
+        "guide job that asks clarifying questions along the way.",
+        {
+            "pdf_asset_id": _s("asset id of the instruction PDF (see list_assets)"),
+            "cad_asset_ids": {
+                "type": "array",
+                "items": _s("asset id"),
+                "description": "uploaded CAD part assets (STEP/STL/GLB)",
+            },
+            "prompt": _s("extra context from the user (optional)"),
+            **_WAIT,
+        },
+        ["pdf_asset_id"],
+    ),
+    _fn(
+        "attach_guide_note",
+        "Attach supplemental info to a RUNNING guide job (extra dimensions, "
+        "corrections to the manual, part aliases) — lands in the guide's "
+        "user_notes which every mission reads.",
+        {
+            **_JOB_REF,
+            "note": _s("the supplemental instruction"),
+        },
+        ["job_id", "note"],
+    ),
 ]
 
 # Tools that trigger the WebGUI's LLM (generation/edit jobs, or relay user
 # answers to a job awaiting clarification). Everything else in
 # CHAT_ACTION_TOOLS is deterministic and safe to expose on LLM-free
 # surfaces (the MCP server offers SAFE_ACTION_TOOLS only).
-LLM_ONLY_TOOL_NAMES = frozenset({"generate_part", "edit_version", "answer_questions"})
+LLM_ONLY_TOOL_NAMES = frozenset(
+    {"generate_part", "edit_version", "answer_questions", "start_guide_builder"}
+)
 
 LLM_ACTION_TOOLS = [t for t in CHAT_ACTION_TOOLS if t["function"]["name"] in LLM_ONLY_TOOL_NAMES]
 SAFE_ACTION_TOOLS = [

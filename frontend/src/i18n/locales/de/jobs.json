@@ -65,7 +65,13 @@
     "measure": "Messung",
     "parametrize": "Parametrisierung",
     "refine": "Verfeinerung",
-    "exec": "Executor"
+    "exec": "Executor",
+    "guide_doc": "Guide: Doku-Analyse",
+    "guide_steps": "Guide: Schritte",
+    "guide_parts": "Guide: Teileanalyse",
+    "guide_assembly": "Guide: Montage",
+    "guide_review": "Guide: Review",
+    "guide_annotate": "Guide: Annotationen"
   },
   "log_elapsed": "verstrichen",
   "log_score": "Score",

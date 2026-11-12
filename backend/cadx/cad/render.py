@@ -349,3 +349,58 @@ def render_thumbnail(
     pl.screenshot(str(out_path))
     pl.close()
     return out_path
+
+
+def render_scene(
+    entries: list[dict[str, Any]],
+    out_path: Path,
+    *,
+    view: str = "iso",
+    size: int = 1024,
+) -> Path | None:
+    """Render a multi-mesh assembly scene (guide builder).
+
+    ``entries``: [{"mesh_path", "transform" (4x4 row-major), "color",
+    "opacity"}]. One off-screen plotter, per-mesh transforms applied in
+    world space; used by the executor ``render_assembly`` task — never run
+    this worker-side (no GL there).
+    """
+    if not render_available():
+        return None
+    import numpy as np
+    import pyvista as pv
+
+    pl = pv.Plotter(off_screen=True, window_size=(size, size))
+    try:
+        pl.set_background("white")
+        center = np.zeros(3)
+        n = 0
+        for e in entries:
+            mesh = _load_for_render(e["mesh_path"])
+            t = np.asarray(e.get("transform") or np.eye(4), dtype=float).reshape(4, 4)
+            if t.shape == (4, 4) and not np.allclose(t, np.eye(4)):
+                mesh = mesh.transform(t, inplace=False)
+            pl.add_mesh(
+                mesh,
+                color=e.get("color") or "#9aa3ad",
+                opacity=float(e.get("opacity", 1.0)),
+                smooth_shading=True,
+                split_sharp_edges=True,
+            )
+            center += np.asarray(mesh.center, dtype=float)
+            n += 1
+        if not n:
+            return None
+        center /= n
+        pl.add_axes(color="black")
+        if view == "iso":
+            pl.camera_position = "iso"
+        else:
+            pl.reset_camera()
+        pl.reset_camera()
+        pl.camera.zoom(1.15)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        pl.screenshot(str(out_path))
+        return out_path
+    finally:
+        pl.close()

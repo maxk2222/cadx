@@ -213,6 +213,12 @@ class RuntimeSettings(BaseModel):
     chat_spawn_timeout_s: int = Field(default=2700, ge=60, le=86_400)
     chat_history_messages: int = Field(default=60, ge=4, le=500)
     chat_image_max: int = Field(default=8, ge=0, le=50)  # images per user message
+    # anleitungsbuilder (guide) mission budgets — see cadx/guide/
+    guide_pdf_dpi: int = Field(default=200, ge=72, le=400)
+    guide_max_pages: int = Field(default=80, ge=1, le=400)
+    guide_image_budget: int = Field(default=24, ge=0, le=100)
+    guide_review_score_target: float = Field(default=8.0, ge=1.0, le=10.0)
+    guide_review_max_iter: int = Field(default=3, ge=0, le=10)
     fem_voxel_mm: float = Field(default=1.5, gt=0, le=100)
     fem_max_elements: int = Field(default=150_000, ge=1, le=5_000_000)
     fem_spsolve_dofs: int = Field(default=120_000, ge=1_000, le=5_000_000)

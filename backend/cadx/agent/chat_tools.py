@@ -25,6 +25,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from cadx.agent.project_tools import (
@@ -39,7 +40,7 @@ from cadx.agent.types import AgentCtx
 from cadx.db.models import Chat, Job, Project, Version
 from cadx.db.session import session_scope
 from cadx.logging import get_logger
-from cadx.spawn import SpawnError, enqueue_resume, spawn_edit, spawn_generate
+from cadx.spawn import SpawnError, enqueue_resume, spawn_edit, spawn_generate, spawn_guide
 
 log = get_logger(__name__)
 
@@ -198,3 +199,50 @@ class ChatToolSession(ProjectToolSession):
             return await enqueue_resume(db, j, answers_text, enqueue_fn=self._enqueue_fn)
 
         return await self._spawn_and_wait("answer_questions", spawn, bool(a.get("wait", True)))
+
+    async def _tool_start_guide_builder(self, a: dict[str, Any]) -> dict[str, Any]:
+        pdf_id = str(a.get("pdf_asset_id", "")).strip()
+        if not pdf_id:
+            return {"ok": False, "error": "pdf_asset_id required (see list_assets)"}
+
+        async def spawn(db: Any) -> tuple[Version, Job]:
+            project = await self._project(db)
+            return await spawn_guide(
+                db,
+                project,
+                pdf_asset_id=pdf_id,
+                cad_asset_ids=[str(x) for x in a.get("cad_asset_ids") or []],
+                prompt=str(a.get("prompt") or ""),
+                enqueue_fn=self._enqueue_fn,
+            )
+
+        return await self._spawn_and_wait("start_guide_builder", spawn, bool(a.get("wait", True)))
+
+    async def _tool_attach_guide_note(self, a: dict[str, Any]) -> dict[str, Any]:
+        note = str(a.get("note", "")).strip()
+        if not note:
+            return {"ok": False, "error": "note required"}
+        try:
+            jid = uuid.UUID(str(a.get("job_id", "")))
+        except ValueError:
+            return {"ok": False, "error": "invalid job id"}
+        import json as _json
+
+        from cadx import storage as _storage
+        from cadx.db.session import session_scope as _scope
+
+        async with _scope() as db:
+            j = await db.get(Job, jid)
+            if j is None:
+                return {"ok": False, "error": "job not found"}
+            gdir = (j.resume_state or {}).get("guide_dir")
+            if not gdir:
+                v = await db.get(Version, j.version_id)
+                if v is None:
+                    return {"ok": False, "error": "version not found"}
+                gdir = str(_storage.version_dir(v.project_id, v.id) / "guide")
+            p = Path(gdir) / "user_notes.jsonl"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write(_json.dumps({"note": note[:2000]}) + "\n")
+        return {"ok": True, "noted": "saved — running missions pick it up via list_user_notes"}

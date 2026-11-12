@@ -16,6 +16,7 @@ from cadx.agent.worker_jobs import (
     run_code_job,
     run_edit_feature_job,
     run_fem_job,
+    run_guide_job,
     run_mesh_edit_job,
     run_meshgen_job,
     run_optimize_job,
@@ -26,6 +27,7 @@ from cadx.agent.worker_jobs import (
     run_topopt_resample_job,
 )
 from cadx.cad import resources
+from cadx.cad.guide_exec import extract_ports, render_assembly
 from cadx.cad.tasks import (
     audit_params,
     edit_feature,
@@ -433,6 +435,7 @@ class AgentWorkerSettings:
     functions = [  # noqa: RUF012
         run_agent_job,
         run_chat_turn,
+        run_guide_job,
         run_edit_feature_job,
         run_params_job,
         run_reexport_job,
@@ -535,6 +538,8 @@ class CadLightWorkerSettings:
         audit_params,
         edit_feature,
         export_all,
+        extract_ports,
+        render_assembly,
     ]
     on_startup = cadlight_startup
     on_shutdown = worker_shutdown

@@ -3676,11 +3676,7 @@ class ToolSession:
                             "unverified or below the target safety factor."
                         ),
                     }
-                if (
-                    not self.struct_runs
-                    and self.struct_attempts == 0
-                    and self.topopt_left > 0
-                ):
+                if not self.struct_runs and self.struct_attempts == 0 and self.topopt_left > 0:
                     why = self._decline_guard() if self._decline_guard else None
                     if why is None:
                         return {

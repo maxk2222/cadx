@@ -1,0 +1,111 @@
+"""Review-mission tools — the bounded quality gate before annotate/emit.
+
+The review LLM inspects geometry (validators + renders), step order and
+coverage, then writes ONE ReviewReport (score 0..10 + findings carrying
+the responsible mission). The runner turns blocker findings into repair
+iterations (≤ guide_review_max_iter) targeting the flagged mission.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from cadx.guide.state import ReviewFinding, ReviewReport
+from cadx.guide.tools import _arr, _fn, _num
+from cadx.logging import get_logger
+
+if TYPE_CHECKING:
+    from cadx.guide.session import GuideToolSession
+
+log = get_logger(__name__)
+
+SCHEMAS: dict[str, dict[str, Any]] = {
+    "write_review_report": _fn(
+        "write_review_report",
+        "Submit the final review for this iteration: overall score 0..10 "
+        "plus findings. Every finding MUST name the mission that owns the "
+        "fix (doc|steps|parts|assembly) — blocker findings restart that "
+        "mission in the repair loop (bounded).",
+        {
+            "score": _num("overall guide quality 0..10"),
+            "findings": _arr(
+                {
+                    "type": "object",
+                    "properties": {
+                        "severity": {"type": "string", "enum": ["blocker", "warning", "note"]},
+                        "mission": {
+                            "type": "string",
+                            "enum": ["doc", "steps", "parts", "assembly", "annotate"],
+                        },
+                        "step": {"type": "integer"},
+                        "text": {"type": "string"},
+                        "evidence": {"type": "string"},
+                    },
+                    "required": ["severity", "mission", "text"],
+                },
+                "findings — empty list means clean",
+            ),
+            "geometry_ok": {
+                "type": "boolean",
+                "description": "did geometry validation pass (joints+collisions)",
+            },
+        },
+        ["score", "findings"],
+    ),
+}
+
+
+async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    score = max(0.0, min(10.0, float(a.get("score", 0.0))))
+    findings = []
+    for f in a.get("findings") or []:
+        try:
+            sev = str(f.get("severity", "note"))
+            mission = str(f.get("mission", ""))
+            if sev not in ("blocker", "warning", "note"):
+                sev = "note"
+            if mission not in ("doc", "steps", "parts", "assembly", "annotate"):
+                mission = "assembly"
+            findings.append(
+                ReviewFinding(
+                    severity=sev,
+                    mission=mission,
+                    step=int(f["step"]) if f.get("step") is not None else None,
+                    text=str(f.get("text", ""))[:500],
+                    evidence=str(f.get("evidence", ""))[:300],
+                )
+            )
+        except Exception:
+            continue
+    it = int(s.state.review.iteration) + 1
+    s.state.review = ReviewReport(
+        score=score,
+        findings=findings,
+        geometry_ok=bool(a["geometry_ok"]) if a.get("geometry_ok") is not None else None,
+        iteration=it,
+    )
+    return {
+        "ok": True,
+        "score": score,
+        "iteration": it,
+        "blockers": sum(1 for f in findings if f.severity == "blocker"),
+        "note": "done_mission ends the review — the runner decides whether a "
+        "repair iteration is needed (score/blockers vs bounds)",
+    }
+
+
+def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
+    if s.state.review.iteration == 0 or (
+        s.state.review.iteration > 0 and not s.state.review.findings and s.state.review.score == 0
+    ):
+        return {"ok": False, "error": "call write_review_report first"}
+    return None
+
+
+from cadx.guide.tools import DONE_GUARDS  # noqa: E402
+
+DONE_GUARDS["review"] = _done_guard
+
+HANDLERS = {
+    "write_review_report": write_review_report,
+}

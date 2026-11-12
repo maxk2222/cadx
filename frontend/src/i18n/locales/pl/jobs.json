@@ -71,7 +71,13 @@
     "measure": "pomiar",
     "parametrize": "parametryzacja",
     "refine": "ulepszanie",
-    "exec": "executor"
+    "exec": "executor",
+    "guide_doc": "przewodnik: analiza",
+    "guide_steps": "przewodnik: kroki",
+    "guide_parts": "przewodnik: części",
+    "guide_assembly": "przewodnik: montaż",
+    "guide_review": "przewodnik: przegląd",
+    "guide_annotate": "przewodnik: adnotacje"
   },
   "log_elapsed": "czas",
   "log_score": "ocena",

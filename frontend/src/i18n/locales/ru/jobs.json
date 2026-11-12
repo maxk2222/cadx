@@ -71,7 +71,13 @@
     "measure": "измерение",
     "parametrize": "параметризация",
     "refine": "доработка",
-    "exec": "исполнитель"
+    "exec": "исполнитель",
+    "guide_doc": "гайд: анализ док.",
+    "guide_steps": "гайд: шаги",
+    "guide_parts": "гайд: детали",
+    "guide_assembly": "гайд: сборка",
+    "guide_review": "гайд: ревью",
+    "guide_annotate": "гайд: аннотации"
   },
   "log_elapsed": "прошло",
   "log_score": "оценка",

@@ -129,7 +129,7 @@ export default function Composer({
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept="image/*,.pdf,.step,.stp,.stl,.glb,.gltf,.dxf"
           multiple
           className="hidden"
           onChange={(e) => {

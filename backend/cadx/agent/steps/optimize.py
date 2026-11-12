@@ -837,9 +837,7 @@ def _setup_session(
 
     def _decline_possible() -> str | None:
         """Why a fresh run cannot be attempted — None when one still fits."""
-        if _budget_exceeded(
-            ops, ctx.runtime_settings.topopt_timeout_s + _OPT_TAIL_S + 120
-        ):
+        if _budget_exceeded(ops, ctx.runtime_settings.topopt_timeout_s + _OPT_TAIL_S + 120):
             return "stage deadline too close for a full optimize run"
         if session.struct_budget_left is not None and session.struct_budget_left <= 0:
             return "structural wall-clock budget exhausted"

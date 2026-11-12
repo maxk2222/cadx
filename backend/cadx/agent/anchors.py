@@ -633,9 +633,7 @@ def _axial_depth(
         # through-material thickness, not the bore depth: handing the host
         # span down as depth_mm let the deterministic re-cut drive a
         # "blind 20 mm" tap clean through a 40 mm cube (block_sidewall_tap).
-        m = re.search(
-            r"(\d+(?:[.,]\d+)?)\s*(?:mm\s+)?(?:deep|tief|depth)\b", text, re.I
-        )
+        m = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:mm\s+)?(?:deep|tief|depth)\b", text, re.I)
         if m:
             try:
                 return float(m.group(1).replace(",", "."))
