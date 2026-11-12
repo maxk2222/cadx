@@ -145,11 +145,14 @@ class RefineFeature:
 _KIND_ALIASES = {
     "tapped_bore": "tap",
     "tapped_hole": "tap",
+    "tapped_blind_bore": "tap",
     "tap_hole": "tap",
     "threaded_bore": "tap",
     "threaded_hole": "tap",
     "thread_hole": "tap",
     "bore": "hole",
+    "blind_bore": "hole",
+    "blind_hole": "hole",
     "tunnel": "hole",
     "bearing": "bearing_seat",
 }
