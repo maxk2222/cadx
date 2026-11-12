@@ -127,10 +127,21 @@ class HttpDriver:
         return await self._post("/projects", json=body)
 
     async def upload_assets(self, project_id: str, paths: list[Path]) -> list[dict[str, Any]]:
+        """Upload files, reusing same-named project assets from earlier runs —
+        eval projects are durable, re-uploading identical inputs every run
+        would pile up duplicates on the project page."""
         if not paths:
             return []
-        files = [("files", (p.name, p.read_bytes(), "application/octet-stream")) for p in paths]
-        return await self._post(f"/projects/{project_id}/assets", files=files)
+        existing = await self._get(f"/projects/{project_id}/assets")
+        by_name: dict[str, dict[str, Any]] = {}
+        for a in existing or []:
+            by_name.setdefault(str(a.get("filename")), a)
+        out: list[dict[str, Any]] = [a for p in paths if (a := by_name.get(p.name))]
+        todo = [p for p in paths if p.name not in by_name]
+        if todo:
+            files = [("files", (p.name, p.read_bytes(), "application/octet-stream")) for p in todo]
+            out.extend(await self._post(f"/projects/{project_id}/assets", files=files))
+        return out
 
     async def version(self, vid: str) -> dict[str, Any]:
         return await self._get(f"/versions/{vid}")
