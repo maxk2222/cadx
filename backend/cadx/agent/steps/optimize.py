@@ -214,6 +214,10 @@ class _SessionOps:
     alloc: Any
     contact_sheet: Path | None
     deadline: float | None = None  # monotonic timestamp — job/stage wall-clock bound
+    # runs dispatched this session — the FIRST structural run must always be
+    # allowed: a stage that starts no solve ships base.stl and fails every
+    # downstream gate, which is strictly worse than a timed-out partial run
+    started_runs: int = 0
     # request-level declared optimize fields (eval stage config / optimize
     # dialog) — the baseline under tool args: fields the tool cannot
     # express (structure_mode, warm_density_relpath) must not be dropped
@@ -224,6 +228,8 @@ class _SessionOps:
 def _budget_exceeded(ops: _SessionOps, needed_s: float) -> dict[str, Any] | None:
     """Refuse a new executor run that cannot plausibly finish inside the
     job's wall-clock bound — the tool error pushes the model to `done()`."""
+    if ops.started_runs == 0:
+        return None
     if ops.deadline is None or time.monotonic() + needed_s <= ops.deadline:
         return None
     return {
@@ -472,6 +478,7 @@ def _make_topopt_fn(ops: _SessionOps) -> Any:
         ) is not None:
             return guard
         it = next(ops.alloc)
+        ops.started_runs += 1
         opt = {**ops.request_opt, **_opt_overrides(a)}
         keep, kerr = _valid_regions(a.get("keep_regions"))
         if kerr:
@@ -536,6 +543,7 @@ def _make_infill_fn(ops: _SessionOps) -> Any:
         ) is not None:
             return guard
         it = next(ops.alloc)
+        ops.started_runs += 1
         opt = {**ops.request_opt, **_opt_overrides(a)}
         opt["structure_mode"] = "infill"
         await ctx.emit(

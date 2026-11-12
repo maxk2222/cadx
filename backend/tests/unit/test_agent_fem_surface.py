@@ -10,7 +10,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any
 
-from cadx.agent.steps.optimize import _make_suggest_fn, _SessionOps
+from cadx.agent.steps.optimize import _budget_exceeded, _make_suggest_fn, _SessionOps
 from cadx.agent.toolloop import _metrics_hint
 from cadx.db.models import JobStatus, JobType
 from cadx.spawn import _job_summary
@@ -155,6 +155,34 @@ def test_suggest_load_cases_returns_spec_cases_when_present() -> None:
     )
     res = asyncio.run(_make_suggest_fn(ops)({}))
     assert res["load_cases"] == spec_cases
+
+
+def _ops(deadline: float | None, started: int = 0) -> _SessionOps:
+    ops = _SessionOps(
+        ctx=SimpleNamespace(),
+        base={},
+        spec=SimpleNamespace(),
+        spec_cases=[],
+        default_material="pla",
+        alloc=iter(range(10)),
+        contact_sheet=None,
+        deadline=deadline,
+    )
+    ops.started_runs = started
+    return ops
+
+
+def test_budget_exceeded_first_run_always_allowed() -> None:
+    # regression: an optimize stage whose LLM planning ate the deadline used
+    # to refuse even the FIRST solve — shipping bare base.stl and failing
+    # every downstream gate. A timed-out partial run is strictly better.
+    assert _budget_exceeded(_ops(deadline=0.0, started=0), needed_s=9999) is None
+
+
+def test_budget_exceeded_blocks_subsequent_runs() -> None:
+    blocked = _budget_exceeded(_ops(deadline=0.0, started=1), needed_s=9999)
+    assert blocked is not None and blocked["ok"] is False
+    assert _budget_exceeded(_ops(deadline=None, started=1), needed_s=9999) is None
 
 
 def test_metrics_hint_keeps_new_structural_keys() -> None:
