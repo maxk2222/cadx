@@ -69,5 +69,6 @@
   "no_preview": "no preview produced",
   "live_preview": "live preview",
   "final": "final",
-  "it_short": "it {{n}}"
+  "it_short": "it {{n}}",
+  "guide_title": "AR Guide Builder"
 }

@@ -68,5 +68,6 @@
   "no_preview": "未生成预览",
   "live_preview": "实时预览",
   "final": "最终",
-  "it_short": "第 {{n}} 次迭代"
+  "it_short": "第 {{n}} 次迭代",
+  "guide_title": "AR指南构建器"
 }

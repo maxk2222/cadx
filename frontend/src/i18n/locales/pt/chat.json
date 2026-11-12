@@ -70,5 +70,6 @@
   "no_preview": "nenhuma prévia produzida",
   "live_preview": "prévia ao vivo",
   "final": "final",
-  "it_short": "it {{n}}"
+  "it_short": "it {{n}}",
+  "guide_title": "Construtor de guia AR"
 }

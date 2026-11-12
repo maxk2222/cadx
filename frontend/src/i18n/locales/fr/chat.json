@@ -69,5 +69,6 @@
   "no_preview": "aucun aperçu produit",
   "live_preview": "aperçu en direct",
   "final": "final",
-  "it_short": "it {{n}}"
+  "it_short": "it {{n}}",
+  "guide_title": "Constructeur de guide AR"
 }

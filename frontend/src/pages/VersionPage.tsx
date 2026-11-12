@@ -321,23 +321,29 @@ export default function VersionPage() {
           onChange={setTab}
           tabs={[
             { id: "overview", label: t("tab_model") },
-            { id: "spec", label: t("tab_spec") },
-            ...(v.code != null
-              ? [{ id: "code" as Tab, label: t("tab_code") }]
+            // guide versions carry no generated code/spec — spec and quality
+            // panels (DFM/FEM) would render meaningless empty states
+            ...(v.kind !== "guide"
+              ? [
+                  { id: "spec" as Tab, label: t("tab_spec") },
+                  ...(v.code != null
+                    ? [{ id: "code" as Tab, label: t("tab_code") }]
+                    : []),
+                  {
+                    id: "quality" as Tab,
+                    label: (
+                      <span className="flex items-center justify-center gap-1">
+                        {t("tab_quality")}
+                        {dfmCount > 0 && (
+                          <span className="rounded-full bg-amber-600 px-1.5 text-[10px] text-white">
+                            {dfmCount}
+                          </span>
+                        )}
+                      </span>
+                    ),
+                  },
+                ]
               : []),
-            {
-              id: "quality",
-              label: (
-                <span className="flex items-center justify-center gap-1">
-                  {t("tab_quality")}
-                  {dfmCount > 0 && (
-                    <span className="rounded-full bg-amber-600 px-1.5 text-[10px] text-white">
-                      {dfmCount}
-                    </span>
-                  )}
-                </span>
-              ),
-            },
             {
               id: "files",
               label: t("tab_files", { count: v.artifacts.length }),

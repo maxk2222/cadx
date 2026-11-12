@@ -30,7 +30,7 @@ export interface Part {
 export interface Asset {
   id: string;
   project_id: string;
-  kind: "image" | "generated_image" | "reference_step" | "reference_stl" | "reference_dxf";
+  kind: "image" | "generated_image" | "reference_step" | "reference_stl" | "reference_dxf" | "pdf" | "cad_glb";
   filename: string;
   mime: string;
   width: number | null;
@@ -113,7 +113,7 @@ export interface VersionSummary {
   part_id: string;
   parent_id: string | null;
   number: number;
-  kind: "generate" | "edit" | "params" | "optimize" | "refine" | "mesh_edit" | "organic" | "code" | "meshgen";
+  kind: "generate" | "edit" | "params" | "optimize" | "refine" | "mesh_edit" | "organic" | "code" | "meshgen" | "guide";
   prompt: string;
   /** optional user-assigned label ("" when unset) */
   name: string;

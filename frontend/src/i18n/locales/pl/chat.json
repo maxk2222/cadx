@@ -71,5 +71,6 @@
   "no_preview": "nie utworzono podglądu",
   "live_preview": "podgląd na żywo",
   "final": "końcowy",
-  "it_short": "it {{n}}"
+  "it_short": "it {{n}}",
+  "guide_title": "Kreator instrukcji AR"
 }

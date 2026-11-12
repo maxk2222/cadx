@@ -2,7 +2,9 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Check,
   FileBox,
+  FileText,
   ImageIcon,
+  Package,
   Pencil,
   PenLine,
   Sparkles,
@@ -22,6 +24,13 @@ import SafeImg from "./SafeImg";
 const KIND_ICON: Record<string, React.ReactNode> = {
   image: <ImageIcon className="h-5 w-5" />,
   generated_image: <Sparkles className="h-5 w-5" />,
+  pdf: <FileText className="h-5 w-5" />,
+  cad_glb: <Package className="h-5 w-5" />,
+};
+
+const KIND_LABEL: Record<string, string> = {
+  pdf: "PDF",
+  cad_glb: "GLB",
 };
 
 const isImage = (k: Asset["kind"]) => k === "image" || k === "generated_image";
@@ -198,7 +207,9 @@ export default function AssetManager({
                       : undefined
                   }
                 >
-                  {a.kind === "generated_image" ? t("asset.ai") : a.kind.replace("reference_", "")}
+                  {a.kind === "generated_image"
+                    ? t("asset.ai")
+                    : (KIND_LABEL[a.kind] ?? a.kind.replace("reference_", ""))}
                 </span>
                 {a.gen_params?.role_hint === "sketch" && (
                   <span

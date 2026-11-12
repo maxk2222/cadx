@@ -69,5 +69,6 @@
   "no_preview": "no se produjo vista previa",
   "live_preview": "vista previa en vivo",
   "final": "final",
-  "it_short": "it {{n}}"
+  "it_short": "it {{n}}",
+  "guide_title": "Constructor de guía AR"
 }

@@ -57,6 +57,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
         : false,
   });
   const j = stream.job ?? job.data;
+  const isGuide = spawned.tool === "start_guide_builder";
   const active = j ? !TERMINAL.includes(j.status) : true;
   const now = useNow(1000, active);
   const version = useQuery({
@@ -112,7 +113,9 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
     <div className="overflow-hidden rounded-lg border border-edge bg-bg">
       <div className="flex items-center gap-2 border-b border-edge px-3 py-1.5">
         <span className="text-xs font-medium text-fg">
-          {spawned.tool ?? spawned.kind ?? t("job")}
+          {isGuide
+            ? t("guide_title")
+            : (spawned.tool ?? spawned.kind ?? t("job"))}
         </span>
         {j && <StatusBadge status={j.status} />}
         {stepNow && active && (
@@ -210,7 +213,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
         </div>
       )}
 
-      {vid && (
+      {vid && !isGuide && (
         <div className="relative m-3 aspect-video overflow-hidden rounded bg-panel">
           {active ? (
             <LivePreview versionId={vid} active={active} />
@@ -232,7 +235,7 @@ export default function ChatJobCard({ spawned }: { spawned: SpawnedRef }) {
           </div>
         </div>
       )}
-      {!vid && j && active && (
+      {(!vid || isGuide) && j && active && (
         <div className="flex justify-end px-3 pt-2">
           <ProgressRing value={progress} size={44} />
         </div>

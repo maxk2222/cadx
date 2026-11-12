@@ -68,5 +68,6 @@
   "no_preview": "プレビューが生成されませんでした",
   "live_preview": "ライブプレビュー",
   "final": "最終",
-  "it_short": "it {{n}}"
+  "it_short": "it {{n}}",
+  "guide_title": "ARガイドビルダー"
 }
