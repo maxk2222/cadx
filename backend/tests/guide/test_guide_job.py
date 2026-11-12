@@ -119,11 +119,16 @@ async def test_run_guide_job_waiting_then_resume(_db, monkeypatch):
 
 async def test_unity_artifact_written(_db, monkeypatch, tmp_path):
     """emit writes unity_guide.json into the guide output dir."""
+    from cadx import storage
     from cadx.guide.guide_runner import _emit_artifacts
     from cadx.guide.state import GuideState
 
-    state = GuideState(output_dir=str(tmp_path))
-    state.save(tmp_path)
-    arts = await _emit_artifacts(state, tmp_path)
-    assert (tmp_path / "output" / "unity_guide.json").exists()
-    assert arts["unity_guide"].endswith("unity_guide.json")
+    # production guide dirs live under storage.data_root() (version_dir/guide)
+    state_dir = storage.data_root() / "test-guide" / "guide"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    state = GuideState(output_dir=str(state_dir))
+    state.save(state_dir)
+    arts = await _emit_artifacts(state, state_dir)
+    assert (state_dir / "output" / "unity_guide.json").exists()
+    assert arts["guide:unity_guide"].endswith("unity_guide.json")
+    assert storage.resolve(arts["guide:unity_guide"]).exists()

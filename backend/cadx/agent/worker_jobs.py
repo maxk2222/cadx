@@ -381,6 +381,16 @@ def register_artifacts(
                     size=size,
                 )
             )
+        elif key.startswith("guide:"):
+            session.add(
+                Artifact(
+                    version_id=version_id,
+                    kind=ArtifactKind.unity_guide,
+                    view=key.split(":", 1)[1],
+                    path=rel,
+                    size=size,
+                )
+            )
 
 
 def _input_assets(assets: list[Asset]) -> list[InputAsset]:

@@ -23,6 +23,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from cadx import storage
 from cadx.agent.context import system_prompt
 from cadx.agent.orchestrator import RunOutcome
 from cadx.agent.toolloop import run_session
@@ -77,7 +78,7 @@ async def _emit_artifacts(state: GuideState, state_dir: Path) -> dict[str, str]:
     guide_path.write_text(json.dumps(guide, indent=1), encoding="utf-8")
     state.unity_guide_path = str(guide_path)
     state.save(state_dir)
-    return {"unity_guide": str(guide_path)}
+    return {"guide:unity_guide": storage.relpath(guide_path)}
 
 
 def _load_or_init_state(ctx: AgentCtx, state_dir: Path, resume_state: dict[str, Any]) -> GuideState:

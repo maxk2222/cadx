@@ -200,8 +200,8 @@ async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
     if len(desc) < 20:
         return {"ok": False, "error": "description too short — the generator needs real geometry"}
 
-    from cadx.db import session_scope
-    from cadx.models import Project
+    from cadx.db.models import Project
+    from cadx.db.session import session_scope
     from cadx.spawn import SpawnError, spawn_generate, wait_job_terminal
 
     name = str(a.get("name", "")).strip() or pid
@@ -264,7 +264,7 @@ async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
 
     # locate the finished version's CAD source (STEP preferred, else STL/GLB)
     from cadx import storage
-    from cadx.models import Version
+    from cadx.db.models import Version
 
     async with session_scope() as db:
         v = await db.get(Version, uuid.UUID(str(version.id)))

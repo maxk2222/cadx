@@ -92,6 +92,7 @@ class ArtifactKind(enum.StrEnum):
     thumbnail = "thumbnail"
     mesh_raw = "mesh_raw"
     fem = "fem"  # FEM stress/deformation renders + reports
+    unity_guide = "unity_guide"  # anleitungsbuilder unity_guide.json export
 
 
 ProcessType = Literal["fdm", "sla", "cnc3", "cnc2d"]

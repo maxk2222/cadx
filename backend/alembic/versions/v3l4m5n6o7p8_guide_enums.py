@@ -30,6 +30,7 @@ def upgrade() -> None:
         op.execute("ALTER TYPE versionkind ADD VALUE IF NOT EXISTS 'guide'")
         op.execute("ALTER TYPE assetkind ADD VALUE IF NOT EXISTS 'pdf'")
         op.execute("ALTER TYPE assetkind ADD VALUE IF NOT EXISTS 'cad_glb'")
+        op.execute("ALTER TYPE artifactkind ADD VALUE IF NOT EXISTS 'unity_guide'")
 
 
 def downgrade() -> None:
