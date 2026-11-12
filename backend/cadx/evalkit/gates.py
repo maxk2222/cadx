@@ -6,7 +6,8 @@ Gate specs live in the suite JSON (`stages[].gates`) as
 - **outcome gates** — status/score/bbox/features/watertight/verify_spec/
   fem/topopt/tokens/wall time, read off the normalized outcome;
 - **mesh gates** — `radial_peaks`, `radial_envelope`, `volume(_fraction)`,
-  `contains_point`, `bodies` — computed with trimesh on the stage's final committed mesh
+  `contains_point`, `bodies`, `threads` — computed with trimesh on the stage's
+  final committed mesh
   (STL/GLB/3MF, authoritative-first via `_mesh_artifact_files`), skipped
   with detail when no mesh is available.
 """
@@ -269,7 +270,84 @@ def _gate_mesh(g: dict[str, Any], outcome: StageOutcome) -> GateResult:
         maxb = int(g.get("max") or 1)
         return GateResult(name, n <= maxb, measured=n, expected=f"<= {maxb}")
 
+    if name in ("threads", "thread"):
+        # Helical-groove evidence on the shipped mesh. verify_spec only counts
+        # declared thread metadata and refine_verify re-probes bore tunnels —
+        # both passed runs whose final STL carried smooth pilot bores
+        # (r19/r29). Bores are located via scan_mesh_anchors (blind taps are
+        # invisible to hole_groups); a groove shows as wall verts past the
+        # pilot radius covering >=4 of 8 azimuth sectors across >=35% of the
+        # bore depth (a helix rotates through all sectors; a mouth chamfer or
+        # a neighbouring offset channel cannot produce that signature).
+        found = _thread_grooves(mesh)
+        want = int(g.get("min", 1))
+        n = sum(1 for t in found if t["groove"])
+        return GateResult(
+            name,
+            n >= want,
+            measured={"grooves": n, "bores": len(found), "detail": found},
+            expected={"min": want},
+        )
+
     return GateResult(name, True, detail="unhandled mesh gate (skipped)")
+
+
+_AXIS_IDX = {"+x": 0, "-x": 0, "+y": 1, "-y": 1, "+z": 2, "-z": 2}
+
+
+def _thread_grooves(mesh: Any) -> list[dict[str, Any]]:
+    """Per-bore helical-groove evidence for the `threads` gate."""
+    import numpy as np
+
+    from cadx.cad.fem.anchors3d import scan_mesh_anchors
+
+    try:
+        anchors = scan_mesh_anchors(mesh)
+    except Exception:
+        return []
+    verts = np.asarray(mesh.vertices, dtype=float)
+    out: list[dict[str, Any]] = []
+    for a in anchors:
+        dia = float(a.get("dia") or 0.0)
+        axis = str(a.get("axis") or "")
+        if a.get("kind") not in ("hole", "window", "dimple") or axis not in _AXIS_IDX:
+            continue
+        if not 2.0 <= dia <= 24.0:  # thread scale only — not bores/bearings
+            continue
+        ax = _AXIS_IDX[axis]
+        pos = [float(x) for x in (a.get("pos") or [0.0, 0.0, 0.0])]
+        depth = float(a.get("depth_mm") or 0.0) or 5.0
+        iu, iv = (i for i in range(3) if i != ax)
+        rel_u = verts[:, iu] - pos[iu]
+        rel_v = verts[:, iv] - pos[iv]
+        r = np.hypot(rel_u, rel_v)
+        axial = np.abs(verts[:, ax] - pos[ax])
+        sel = (r > dia / 2 + 0.3) & (r < dia / 2 + 1.8) & (axial <= depth + 1.0)
+        idx = np.nonzero(sel)[0]
+        entry: dict[str, Any] = {
+            "pos": [round(x, 1) for x in pos],
+            "axis": axis,
+            "dia": round(dia, 2),
+            "groove": False,
+        }
+        if len(idx) >= 10:
+            axial_cov = float(axial[idx].max() - axial[idx].min()) / depth
+            sectors = int(
+                np.unique(
+                    ((np.arctan2(rel_v[idx], rel_u[idx]) + np.pi) / (2 * np.pi) * 8).astype(int) % 8
+                ).size
+            )
+            # groove flanks end at the major radius — annulus verts at/near the
+            # 1.8 mm ceiling mean the wall is a bigger lattice void, not a thread
+            reach = float(r[idx].max() - dia / 2)
+            entry.update(
+                groove=sectors >= 4 and axial_cov >= 0.35 and 0.4 <= reach <= 1.7,
+                sectors=sectors,
+                axial_cov=round(axial_cov, 2),
+                reach=round(reach, 2),
+            )
+        out.append(entry)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1019,6 +1097,8 @@ MESH_GATES = {
     "volume_fraction",
     "contains_point",
     "bodies",
+    "threads",
+    "thread",
 }
 
 

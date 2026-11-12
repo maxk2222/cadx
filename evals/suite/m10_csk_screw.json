@@ -34,6 +34,10 @@
      "expect": true
     },
     {
+     "type": "threads",
+     "min": 1
+    },
+    {
      "type": "verify_spec",
      "expect": "PASS",
      "ignore": ["dfm", "envelope_x", "envelope_y"]

@@ -1020,3 +1020,31 @@ def test_radial_envelope_measures_tip_radius(tmp_path):
         0,
     )[0]
     assert not g2.ok
+
+
+def test_threads_gate_detects_helical_groove(tmp_path):
+    """r19/r29 regression: a mesh whose bore measures the pilot diameter but
+    carries no helical groove passed every bore/watertight gate. The
+    `threads` gate must probe the wall for rotating groove evidence."""
+    from cadx.cad.fem.refine import _thread_groove_solid
+
+    box = trimesh.creation.box(extents=(60.0, 40.0, 10.0)).apply_translation((0, 0, 5))
+    bore = trimesh.creation.cylinder(radius=3.375, height=20, sections=48).apply_translation(
+        (0, 0, 5)
+    )
+    plain = box.difference(bore, engine="manifold")
+    groove = _thread_groove_solid(r_in=3.32, r_out=4.15, pitch=1.25, depth=11.0)
+    groove.apply_translation([0.0, 0.0, 10.0])
+    grooved = plain.difference(groove, engine="manifold")
+
+    p_plain = tmp_path / "plain.stl"
+    plain.export(p_plain)
+    g_plain = run_gates([{"type": "threads", "min": 1}], _out(artifact_files=[str(p_plain)]), 0)[0]
+    assert not g_plain.ok
+
+    p_groove = tmp_path / "grooved.stl"
+    grooved.export(p_groove)
+    g_groove = run_gates([{"type": "threads", "min": 1}], _out(artifact_files=[str(p_groove)]), 0)[
+        0
+    ]
+    assert g_groove.ok, g_groove.measured

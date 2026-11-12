@@ -20,6 +20,7 @@
         ] },
         { "type": "bodies", "max": 1 },
         { "type": "watertight", "expect": true },
+        { "type": "threads", "min": 1 },
         { "type": "verify_spec", "expect": "PASS" },
         { "type": "max_wall_s", "s": 900 }
       ]

@@ -800,7 +800,12 @@ def _implicit_thread_plausible(feature: Any, kind: str, size_mm: float) -> bool:
     return abs(dia - tap) <= max(1.0, 0.15 * tap)
 
 
-_PILOT_WORDS = re.compile(r"tap[-\s]?drill|pilot|core\s*hole|kernloch|vorbohr|pre[-\s]?drill", re.I)
+# "pilot"/core-hole wording marks a feature that IS only the pilot — the
+# finished thread arrives later (topopt seeds). Bare "tap-drill" must NOT
+# qualify: "modelled at tap-drill diameter" is the standard way to spec a
+# real thread (observed regression: m8_tapped_plate + robot-arm M12 seeds
+# shipped preview bores because their thread features were skipped here).
+_PILOT_WORDS = re.compile(r"\bpilot\b|core\s*hole|kernloch|vorbohr|pre[-\s]?drill", re.I)
 
 
 def _pilot_hole_feature(feature: Any) -> bool:

@@ -341,6 +341,40 @@ def test_expected_thread_count_skips_declared_tap_drill_pilots() -> None:
     assert expected_thread_count(spec) == 3
 
 
+def test_expected_thread_count_tap_drill_wording_keeps_real_threads() -> None:
+    """Regression (m8_tapped_plate r-s1, robot_arm M12): 'modelled at
+    tap-drill diameter' is the STANDARD way to spec a real thread — the
+    pilot exclusion must only fire on pilot/core-hole wording, or the
+    export rebuild is skipped and preview geometry ships silently."""
+    d = lambda v: Dim(value=v, unit="mm", source="stated")  # noqa: E731
+    spec = PartSpec(
+        name="plate",
+        summary="",
+        units="mm",
+        length_x=d(60),
+        width_y=d(40),
+        height_z=d(10),
+        features=[
+            Feature(
+                name="M8 tapped through-hole",
+                type="tapped_hole",
+                thread_spec="M8x1.25",
+                description="M8x1.25 internal thread, modelled at tap-drill "
+                "diameter 6.8 mm, straight through the plate along Z.",
+                dims={"diameter": 6.8},
+            ),
+            Feature(
+                name="m12_tapped_bore",
+                type="tapped_bore",
+                thread_spec="M12x1.75",
+                description="M12x1.75 internal-thread through-bore along Z, "
+                "modelled at tap-drill diameter. Thread groove rebuilt at export.",
+            ),
+        ],
+    )
+    assert expected_thread_count(spec) == 2
+
+
 def test_expected_thread_count_rejects_smeared_non_hole_kinds() -> None:
     """The sprocket_520_45t failure: intake copied the bolt-hole callout
     ("M10x1.25-6H") onto the lightening windows — a `slot` with no bore

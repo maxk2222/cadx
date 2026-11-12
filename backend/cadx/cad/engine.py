@@ -47,6 +47,7 @@ from cadx.cad.mesh_ops import (
     candidate_meshes,
     clean,
     decimate,
+    export_stl,
     flat_base_ratio,
     is_flat_bottom,
     keep_significant_components,
@@ -1080,7 +1081,7 @@ def run_mesh_pipeline(  # noqa: C901
     # 6. STL into _run (drives renders, analysis, exports)
     stl_path = workdir / "model.stl"
     try:
-        mesh.export(str(stl_path), file_type="stl")
+        mesh = export_stl(mesh, stl_path)
     except Exception as e:
         res.error = f"failed to write STL: {e}"
         return _done()
@@ -2902,7 +2903,7 @@ def run_topopt_pipeline(  # noqa: C901
             norm_stl = out_dir / "_run" / "topopt_input.stl"
             try:
                 norm_stl.parent.mkdir(parents=True, exist_ok=True)
-                mesh.export(str(norm_stl), file_type="stl")
+                export_stl(mesh, norm_stl)
                 res.topopt["normalized_input_relpath"] = storage.relpath(norm_stl)
             except Exception as e:
                 log.warning("topopt.normalized_export_failed", error=str(e)[:200])
@@ -3553,7 +3554,7 @@ def run_topopt_pipeline(  # noqa: C901
             run_dir.mkdir(parents=True, exist_ok=True)
             stl_path = run_dir / "model.stl"
             with contextlib.suppress(Exception):
-                opt_mesh.export(str(stl_path), file_type="stl")
+                opt_mesh = export_stl(opt_mesh, stl_path)
                 res.mesh = {
                     "pipeline": "topopt",
                     "partial": True,
@@ -4370,7 +4371,7 @@ def run_topopt_pipeline(  # noqa: C901
     run_dir.mkdir(parents=True, exist_ok=True)
     stl_path = run_dir / "model.stl"
     try:
-        opt_mesh.export(str(stl_path), file_type="stl")
+        opt_mesh = export_stl(opt_mesh, stl_path)
     except Exception as e:
         res.error = f"failed to write optimized STL: {e}"
         return res
@@ -4933,7 +4934,7 @@ def run_infill_pipeline(  # noqa: C901
             run_dir.mkdir(parents=True, exist_ok=True)
             stl_path = run_dir / "model.stl"
             with contextlib.suppress(Exception):
-                candidate_mesh.export(str(stl_path), file_type="stl")
+                candidate_mesh = export_stl(candidate_mesh, stl_path)
                 res.mesh = {
                     "pipeline": "infill",
                     "partial": True,
@@ -5803,7 +5804,7 @@ def run_infill_pipeline(  # noqa: C901
     if _is_cancelled(cancelled):
         return _cancelled_candidate(best, "before_final_exports")
     try:
-        opt_mesh.export(str(stl_path), file_type="stl")
+        opt_mesh = export_stl(opt_mesh, stl_path)
     except Exception as e:
         res.error = f"failed to write optimized STL: {e}"
         return res
@@ -6082,7 +6083,7 @@ def run_topopt_resample(  # noqa: C901
     run_dir.mkdir(parents=True, exist_ok=True)
     stl_path = run_dir / "model.stl"
     try:
-        opt_mesh.export(str(stl_path), file_type="stl")
+        opt_mesh = export_stl(opt_mesh, stl_path)
     except Exception as e:
         res.error = f"failed to write resampled STL: {e}"
         return res
@@ -6286,7 +6287,7 @@ def run_organic_pipeline(
     run_dir.mkdir(parents=True, exist_ok=True)
     stl_path = run_dir / "model.stl"
     try:
-        opt_mesh.export(str(stl_path), file_type="stl")
+        opt_mesh = export_stl(opt_mesh, stl_path)
     except Exception as e:
         res.error = f"failed to write organic STL: {e}"
         return res
@@ -6472,7 +6473,7 @@ def run_refine(
     run_dir.mkdir(parents=True, exist_ok=True)
     stl_path = run_dir / "model.stl"
     try:
-        out.export(str(stl_path), file_type="stl")
+        out = export_stl(out, stl_path)
     except Exception as e:
         res.error = f"failed to write refined STL: {e}"
         return res

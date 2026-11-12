@@ -2239,3 +2239,42 @@ def test_corridor_fill_skips_fresh_helical_groove():
     rep = RefineReport()
     out, _, _ = _corridor_wall_fill(grooved, feat, 12.0, 12.0, False, rep)
     assert out is grooved  # rotating signature recognized — no refill
+
+
+def test_postpass_recut_restores_groove_erased_by_reskin():
+    """r19 regression: a watertight-postpass reskin (alpha-wrap/voxel at
+    ~0.5-0.7 mm granularity) smooths the sub-mm helical groove away while
+    the pilot bore survives — bore-dia probes cannot see the loss and
+    blind taps were never probed at all. The recut pass must probe the
+    groove radius and re-cut it, so `helical` in the report never counts
+    a thread the shipped mesh does not carry."""
+    from cadx.cad.fem.refine import _groove_present, _postpass_recut, _thread_groove_solid
+
+    feat = RefineFeature(
+        name="m8",
+        kind="tap",
+        axis="+z",
+        u=0.0,
+        v=0.0,
+        dia=6.75,
+        through=True,
+        thread_spec="M8-1.25",
+        helical=True,
+    )
+    grooved = _bored_wide(0.0, 6.75)
+    groove = _thread_groove_solid(r_in=3.32, r_out=4.15, pitch=1.25, depth=13.0)
+    groove.apply_translation([0.0, 0.0, 12.0])
+    grooved = grooved.difference(groove, engine="manifold")
+    assert _groove_present(grooved, feat) is True
+
+    # the reskinned variant keeps the pilot bore but loses the groove —
+    # exactly the r19 shipped artifact's state
+    reskin = _bored_wide(0.0, 6.75)
+    assert _groove_present(reskin, feat) is False
+
+    rep = RefineReport()
+    rep.applied.append({"name": "m8", "kind": "tap", "cut_depth_mm": 14.0})
+    fixed = _postpass_recut(reskin, grooved, [feat], rep)
+    assert _groove_present(fixed, feat) is True
+    assert fixed.is_watertight
+    assert any("helical groove" in w for w in rep.warnings)

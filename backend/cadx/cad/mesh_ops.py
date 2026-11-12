@@ -2758,3 +2758,41 @@ def clip_to_outline(
     except Exception:
         pass
     return mesh
+
+
+def export_stl(mesh: trimesh.Trimesh, path: Path | str) -> trimesh.Trimesh:
+    """Write an STL whose on-disk topology matches what was verified in memory.
+
+    trimesh exports STL in float32 — hairline vertices that are distinct in
+    float64 collapse on disk, and an in-memory watertight surface can split
+    open into boundary edges / non-manifold flaps (the r29 refine leak:
+    15 boundary edges at a pin-bore mouth that only existed post-write).
+    Quantizing to float32 precision FIRST turns the collapse into an
+    in-memory event we can merge and light-repair; the file then carries
+    exactly the checked topology. Heavy reskins stay in repair_mesh_file —
+    this helper never re-skins (that would erase sub-mm thread detail).
+
+    Returns the quantized mesh actually written.
+    """
+    q = mesh.copy()
+    q.vertices = np.asarray(q.vertices, dtype=np.float32).astype(np.float64)
+    q.merge_vertices()
+    q.remove_unreferenced_vertices()
+    area = q.area_faces
+    keep = np.isfinite(area) & (area > 1e-9)
+    if not bool(keep.all()):
+        q.update_faces(keep)
+        q.remove_unreferenced_vertices()
+    if not (q.is_watertight and q.is_winding_consistent):
+        with contextlib.suppress(Exception):
+            q.process(validate=True)
+        with contextlib.suppress(Exception):
+            trimesh.repair.fill_holes(q)
+            q.fix_normals()
+        if not (q.is_watertight and q.is_winding_consistent):
+            q = _stitch_hairline_boundary(q)
+            with contextlib.suppress(Exception):
+                trimesh.repair.fill_holes(q)
+                q.fix_normals()
+    q.export(str(path), file_type="stl")
+    return q

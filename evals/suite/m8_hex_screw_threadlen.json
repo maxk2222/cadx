@@ -16,6 +16,7 @@
         { "type": "bbox", "dims": [14.4, 14.4, 56], "match": "match", "tol_mm": 3 },
         { "type": "bodies", "max": 1 },
         { "type": "watertight", "expect": true },
+        { "type": "threads", "min": 1 },
         { "type": "verify_spec", "expect": "PASS", "ignore": ["dfm"] },
         { "type": "max_wall_s", "s": 900 }
       ]

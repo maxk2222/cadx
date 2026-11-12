@@ -727,6 +727,10 @@
      "depth_class": "through"
     },
     {
+     "type": "threads",
+     "min": 3
+    },
+    {
      "type": "watertight",
      "expect": true
     }

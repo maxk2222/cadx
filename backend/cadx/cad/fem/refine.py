@@ -2619,40 +2619,111 @@ def _drop_sliver_parts(out: trimesh.Trimesh, report: RefineReport) -> trimesh.Tr
     return out
 
 
-def _postpass_recut(
-    out: trimesh.Trimesh,
-    pre: trimesh.Trimesh,
-    features: list[RefineFeature],
-    report: RefineReport,
-) -> trimesh.Trimesh:
-    """Re-cut through-features the watertight postpass damaged.
+def _groove_present(mesh: trimesh.Trimesh, feat: RefineFeature) -> bool | None:
+    """True when the bore wall still carries the helical groove.
 
-    A reskin postpass (alpha-wrap ≈ bbox/200 granularity ≈ 0.7 mm on this
-    part class) erodes fresh bore walls — a Ø6.5 cut re-measures Ø5.5 and
-    a thin restored wall can seal entirely. The surface scan later catches
-    it as a verify-miss, but the bore is already lost. When the postpass
-    returned a different mesh (any repair ran), probe each applied
-    through-feature the same way the verifier does — sealed, not open,
-    or measurably undersized -> re-apply the cut once, then re-run the
-    postpass (a no-op while the boolean output stays watertight).
-    """
-    if out is pre:
-        return out
+    A heavy watertight repair (alpha-wrap/voxel, granularity ~0.5-0.7 mm)
+    smooths a 0.5-0.8 mm thread groove away while the pilot bore survives
+    — bore-dia probes cannot see the loss. Probe the wall's outer radius
+    directly inside the thread reach: groove present iff material reaches
+    well past the pilot radius. Returns None when no wall vertices exist
+    to judge (groove shallower than the probe can distinguish — not a
+    verdict, never degraded). Missing wall vertices return False: a
+    helical feature must leave wall evidence in its reach — none means
+    the corridor is sealed or empty, both degraded states."""
+    parsed = _parse_spec(feat.thread_spec)
+    d_maj = parsed[0] if parsed else feat.dia
+    r_out = d_maj / 2.0 + 0.15 + feat.dia_extra / 2.0
+    r_in = _effective_dia(feat) / 2.0
+    if r_out - r_in < 0.3:
+        return None
+    ax, au, av = _AXES_ANY.get(feat.axis, _AXES_ANY["+z"])
+    sign = 1.0 if feat.axis[0] == "+" else -1.0
+    entry = float(mesh.bounds[1][ax] if sign > 0 else mesh.bounds[0][ax])
+    span_ax = float(mesh.bounds[1][ax] - mesh.bounds[0][ax])
+    reach = float(feat.depth_mm) if feat.depth_mm else span_ax
+    reach = min(reach, span_ax)
+    # probe the middle of the reach — mouth chamfers and the blind tip
+    # legitimately deviate from the groove radius
+    lo_ax, hi_ax = entry - sign * 0.15 * reach, entry - sign * 0.9 * reach
+    a_lo, a_hi = (hi_ax, lo_ax) if hi_ax < lo_ax else (lo_ax, hi_ax)
+    v = mesh.vertices
+    in_ax = (v[:, ax] >= a_lo) & (v[:, ax] <= a_hi)
+    if not in_ax.any():
+        return False
+    du = v[in_ax, au] - feat.u
+    dv = v[in_ax, av] - feat.v
+    d = np.hypot(du, dv)
+    wall = (d >= r_in - 0.5) & (d <= r_out + 0.8)
+    if int(wall.sum()) < 6:
+        return False
+    hi = wall & (d >= r_in + 0.4 * (r_out - r_in))
+    if not hi.any():
+        return False
+    # a helical groove wraps the bore — over its turns the outer radius
+    # appears at every azimuth. A drifted neighbouring channel supplies
+    # high-radius verts only on its far side, so sector coverage separates
+    # a real groove from stray wall material a few mm off-centre.
+    bins = np.floor((np.arctan2(dv[hi], du[hi]) + np.pi) / (2 * np.pi) * 8).astype(int)
+    return bool(len(np.unique(bins)) >= 4)
+
+
+def _light_watertight_repair(out: trimesh.Trimesh, report: RefineReport) -> trimesh.Trimesh:
+    """Watertight repair that must never reskin — heavy repair granularity
+    erases sub-mm thread grooves, so after a groove re-cut only
+    vertex-level healing is allowed; a still-leaky mesh is reported
+    honestly rather than rebuilt featureless."""
     try:
-        from cadx.cad.fem import anchors3d
-
-        scanned = anchors3d.scan_mesh_anchors(out)
+        out.merge_vertices()
+        out.update_faces(out.nondegenerate_faces())
+        out.remove_unreferenced_vertices()
+        out.fill_holes()
+        out.fix_normals()
     except Exception:
-        return out
-    applied_names = {str(e.get("name") or "") for e in report.applied}
-    recut = 0
-    for feat in features:
-        if feat.name not in applied_names or not feat.through or feat.kind not in _CUTABLE:
-            continue
+        pass
+    if not out.is_watertight:
         try:
-            # the same measurement channel the verifier/gates use: a scanned
-            # hole at the applied (u, v) — a reskin that sealed the bore or
-            # shrank it under the gate bar counts as degraded
+            from cadx.cad.mesh_ops import _stitch_hairline_boundary
+
+            stitched = _stitch_hairline_boundary(out)
+            if stitched is not out:
+                out = stitched
+                with contextlib.suppress(Exception):
+                    out.fill_holes()
+                    out.fix_normals()
+        except Exception:
+            pass
+    if not out.is_watertight:
+        report.warnings.append(
+            "refined mesh is not watertight after groove-safe repair — "
+            "shipped as-is rather than reskinning the thread grooves away"
+        )
+    from cadx.cad.mesh_ops import orient_nested_shells
+
+    return orient_nested_shells(out)
+
+
+def _postpass_degraded(
+    out: trimesh.Trimesh,
+    features: list[RefineFeature],
+    applied_names: set[str],
+    scanned: list[dict[str, Any]] | None,
+) -> list[tuple[RefineFeature, str]]:
+    """Probe applied features for postpass damage — returns (feat, reason).
+
+    Through-bores use the verifier's anchor scan (sealed or undersized) —
+    skipped entirely when `scanned` is None (the scan itself failed, no
+    evidence to condemn a bore on). Helical thread/tap additionally probe
+    the groove's outer radius — a reskin smooths the groove away while the
+    pilot bore survives."""
+    degraded: list[tuple[RefineFeature, str]] = []
+    for feat in features:
+        if feat.name not in applied_names or feat.kind not in _CUTABLE:
+            continue
+        reason = ""
+        if feat.kind in ("thread", "tap") and feat.helical and _groove_present(out, feat) is False:
+            reason = "helical groove lost to postpass reskin"
+        if not reason and feat.through and scanned is not None:
             m_dia: float | None = None
             for t in scanned:
                 if str(t.get("axis") or "+z") != feat.axis:
@@ -2663,35 +2734,80 @@ def _postpass_recut(
                 if math.hypot(tuv[0] - feat.u, tuv[1] - feat.v) <= 2.0:
                     m_dia = float(t.get("dia") or 0.0)
                     break
-            degraded = m_dia is None or (feat.dia > 0 and m_dia < 0.95 * feat.dia)
-            if not degraded:
-                continue
-            ax = _AXES_ANY[feat.axis][0]
-            rec = next((e for e in reversed(report.applied) if e.get("name") == feat.name), {})
-            # seat on the bbox face with the reach the first cut needed —
-            # covers the reskinned wall but leaves material behind the
-            # channel (e.g. the gusset rib) untouched
-            span = float(out.bounds[1][ax] - out.bounds[0][ax])
-            rec_depth = float(rec.get("cut_depth_mm") or feat.depth_mm or span)
-            entry_face = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
-            before = len(report.applied)
-            out = _apply_cut(
-                out,
-                replace(feat, plug_first=False, depth_mm=rec_depth),
-                report,
-                entry_override=entry_face,
-            )
-            if len(report.applied) > before:
-                recut += 1
-                report.applied[-1]["postpass_recut"] = True
-                report.warnings.append(
-                    f"feature '{feat.name}': re-cut after watertight repair — "
-                    f"postpass degraded the bore (scanned dia {m_dia} vs {feat.dia})"
+            if m_dia is None or (feat.dia > 0 and m_dia < 0.95 * feat.dia):
+                reason = f"bore degraded (scanned dia {m_dia} vs {feat.dia})"
+        if reason:
+            degraded.append((feat, reason))
+    return degraded
+
+
+def _postpass_recut(
+    out: trimesh.Trimesh,
+    pre: trimesh.Trimesh,
+    features: list[RefineFeature],
+    report: RefineReport,
+) -> trimesh.Trimesh:
+    """Re-cut features the watertight postpass damaged.
+
+    A reskin postpass (alpha-wrap ≈ bbox/200 granularity ≈ 0.7 mm on this
+    part class) erodes fresh bore walls — a Ø6.5 cut re-measures Ø5.5, a
+    thin restored wall can seal entirely, and a sub-mm thread groove is
+    smoothed away while its pilot bore survives. The surface scan later
+    catches sealed bores as verify-misses, but groove loss is invisible to
+    bore-diameter probes. When the postpass returned a different mesh (any
+    repair ran), probe every applied cuttable feature — through-bores via
+    the verifier's scan, helical thread/tap via the groove-radius probe —
+    and re-apply degraded cuts. Two bounded rounds: the first postpass may
+    reskin again and erase a fresh groove; after the second re-cut only a
+    light repair runs so the groove can never be lost behind the metric.
+    """
+    if out is pre:
+        return out
+    try:
+        scanned: list[dict[str, Any]] | None = anchors3d.scan_mesh_anchors(out)
+    except Exception:
+        return out
+    applied_names = {str(e.get("name") or "") for e in report.applied}
+    for round_no in (1, 2):
+        degraded = _postpass_degraded(out, features, applied_names, scanned)
+        if not degraded:
+            break
+        recut = 0
+        for feat, reason in degraded:
+            try:
+                ax = _AXES_ANY[feat.axis][0]
+                rec = next((e for e in reversed(report.applied) if e.get("name") == feat.name), {})
+                # seat on the bbox face with the reach the first cut needed —
+                # covers the reskinned wall but leaves material behind the
+                # channel (e.g. the gusset rib) untouched
+                span = float(out.bounds[1][ax] - out.bounds[0][ax])
+                rec_depth = float(rec.get("cut_depth_mm") or feat.depth_mm or span)
+                entry_face = float(out.bounds[1][ax] if feat.axis[0] == "+" else out.bounds[0][ax])
+                before = len(report.applied)
+                out = _apply_cut(
+                    out,
+                    replace(feat, plug_first=False, depth_mm=rec_depth),
+                    report,
+                    entry_override=entry_face,
                 )
-        except Exception as e:
-            report.warnings.append(f"feature '{feat.name}': post-repair re-cut failed: {e}")
-    if recut:
-        out = _watertight_postpass(out, report)
+                if len(report.applied) > before:
+                    recut += 1
+                    report.applied[-1]["postpass_recut"] = True
+                    report.warnings.append(
+                        f"feature '{feat.name}': re-cut after watertight repair — {reason}"
+                    )
+            except Exception as e:
+                report.warnings.append(f"feature '{feat.name}': post-repair re-cut failed: {e}")
+        if not recut:
+            break
+        if round_no == 1:
+            out = _watertight_postpass(out, report)
+            try:
+                scanned = anchors3d.scan_mesh_anchors(out)
+            except Exception:
+                scanned = None
+        else:
+            out = _light_watertight_repair(out, report)
     return out
 
 

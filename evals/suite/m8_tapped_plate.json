@@ -51,6 +51,10 @@
      "expect": true
     },
     {
+     "type": "threads",
+     "min": 1
+    },
+    {
      "type": "verify_spec",
      "expect": "PASS"
     },
