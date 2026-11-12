@@ -6,7 +6,7 @@ Checklist (use the tools — never guess; batch calls wherever possible — ever
 3. `validate_assembly_geometry` — joint gaps + normal dots OK?
 4. `validate_assembly_completeness` — every required part placed in its step?
 5. `check_collisions` — zero intersections?
-6. `render_assembly` with `each_step=true` — ONE call returns a render per step state — LOOK: does the build look like the manual's figures (`get_page_image` on the 2–3 most complex step pages to compare, not every page)?
+6. `render_assembly` with `each_step=true` — ONE call returns a render per step state — LOOK: does the build look like the manual's figures? HARD CAP: at most 3 image calls total for manual comparison — prefer `get_figure_image` (small crops) over `get_page_image` (full pages), and only for the most complex steps.
 
 Then `write_review_report` ONCE:
 - `score` 0..10: 10 = perfect buildable guide; ≤6 = real problems; ≥8 ships.

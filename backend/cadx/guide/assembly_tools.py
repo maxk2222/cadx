@@ -340,7 +340,21 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
         str(a.get("target_port", "")),
     )
     if not cands:
-        return {"ok": False, "error": "no candidates — check port names via get_part_features"}
+        # self-healing error: name the valid ports AND the compatible pairs so
+        # the next call succeeds instead of guessing port names blindly
+        err_out: dict[str, Any] = {
+            "ok": False,
+            "error": "no candidates for those port names",
+            "moving_ports": [p.name for p in moving.ports],
+            "fixed_ports": [p.name for p in fixed.ports],
+        }
+        auto = solver.find_matching_ports(moving, fixed)
+        if auto:
+            err_out["compatible_pairs"] = auto[:6]
+            err_out["hint"] = (
+                "retry with moving_port/target_port from compatible_pairs"
+            )
+        return err_out
     # collision-check each candidate against the placed set
     sc = _scene(s)
     for c in cands:

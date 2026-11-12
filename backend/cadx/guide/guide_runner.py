@@ -292,6 +292,8 @@ async def _run_mission(
     survives it. Retry once with a continuation nudge before failing."""
     if mission in state.missions_done:
         return None
+    last_failures = ""
+    last_reason = ""
     for attempt in (0, 1):
         sess = mk_session(mission)
         if mission == "assembly" and not state.assembly.planner.get("ran"):
@@ -306,11 +308,25 @@ async def _run_mission(
                 state.assembly.planner = {"ran": True, "error": "planner crashed — LLM assembles"}
         nudge = notes
         if attempt:
-            nudge = (f"{notes}\n\n" if notes else "") + (
-                "CONTINUATION: the previous session ended with plain text "
-                "and no tool calls — the mission is NOT complete. Resume "
-                "the remaining work now and finish with done_mission."
+            cause = (
+                f"it exhausted its tool-call budget ({last_reason}) — work "
+                "efficiently this time: batch reads, no redundant checks, "
+                "finish the mission promptly"
+                if last_reason in ("budget", "turns")
+                else "it ended without done_mission "
+                f"({last_reason or 'no reason'})"
             )
+            nudge = (f"{notes}\n\n" if notes else "") + (
+                f"CONTINUATION: the previous session is gone — {cause}. "
+                "The durable state keeps everything already applied — do "
+                "NOT redo completed work. Resume the remaining work now "
+                "and finish with done_mission."
+            )
+            if last_failures:
+                nudge += (
+                    "\nThe previous attempt also hit these tool errors — "
+                    "do NOT repeat the same calls verbatim:\n" + last_failures
+                )
         calls_budget = _calls_budget(mission, state)
         result = await run_session(
             ctx,
@@ -327,7 +343,19 @@ async def _run_mission(
         if mission in state.missions_done:
             return None
         if attempt == 0:
-            log.info("guide.mission_retry", mission=mission, reason=result.end_reason)
+            fails = [
+                f"{e.get('name')}: {str((e.get('result') or {}).get('error'))[:160]}"
+                for e in (result.tool_log or [])
+                if not (e.get("result") or {}).get("ok", True)
+            ]
+            last_failures = "\n".join(f"- {f}" for f in fails[-6:])
+            last_reason = result.end_reason or ""
+            log.info(
+                "guide.mission_retry",
+                mission=mission,
+                reason=result.end_reason,
+                failures=fails[-6:],
+            )
             continue
         state.mark_failed(mission)
         state.save(state_dir)
