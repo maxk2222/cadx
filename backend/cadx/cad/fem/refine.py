@@ -945,6 +945,15 @@ def _cutter_mesh(
         )
         bore.apply_translation([0, 0, -cd / 2.0 + over_out / 2.0])
         tools.append(bore)
+    if len(tools) > 1:
+        # overlapping tool shells (pilot bore x helical groove ring) must be
+        # unioned, not concatenated — a stacked cutter leaves the boolean's
+        # junction verts unsewn (6 coincident pairs → non-manifold edges the
+        # moment any merge_vertices runs)
+        with contextlib.suppress(Exception):
+            joined = trimesh.boolean.union(tools, engine="manifold")
+            if joined is not None and len(getattr(joined, "faces", [])):
+                return joined
     return trimesh.util.concatenate(tools)
 
 
@@ -2701,6 +2710,20 @@ def _light_watertight_repair(out: trimesh.Trimesh, report: RefineReport) -> trim
         except Exception:
             pass
     if not out.is_watertight:
+        # boolean sliver flaps: edges shared by >2 faces — invisible to
+        # boundary repair, dropped flap-by-flap here
+        try:
+            from cadx.cad.mesh_ops import _drop_nonmanifold_slivers
+
+            cleaned = _drop_nonmanifold_slivers(out)
+            if cleaned is not out:
+                out = cleaned
+                with contextlib.suppress(Exception):
+                    out.fill_holes()
+                    out.fix_normals()
+        except Exception:
+            pass
+    if not out.is_watertight:
         report.warnings.append(
             "refined mesh is not watertight after groove-safe repair — "
             "shipped as-is rather than reskinning the thread grooves away"
@@ -2708,6 +2731,37 @@ def _light_watertight_repair(out: trimesh.Trimesh, report: RefineReport) -> trim
     from cadx.cad.mesh_ops import orient_nested_shells
 
     return orient_nested_shells(out)
+
+
+def recut_exported_threads(
+    path: Path,
+    features: list[RefineFeature],
+    report: RefineReport,
+) -> None:
+    """File-level groove guard for shipped refine meshes.
+
+    The generic export repair reskins leaky files (alpha-wrap/voxel,
+    granularity ≈ 0.5-0.7 mm) — erasing the helical grooves the in-memory
+    postpass already restored once. Re-probe every applied thread/tap on
+    the file mesh and re-cut what the repair smoothed away; the recut's own
+    bounded loop keeps the last repair light so no reskin can silently
+    erase the groove a second time. No-op without helical features."""
+    if not any(f.kind in ("thread", "tap") and f.helical for f in features):
+        return
+    path = Path(path)
+    try:
+        m = trimesh.load(str(path), force="mesh")
+    except Exception as e:
+        report.warnings.append(f"export groove guard: {path.name} unreadable: {e}")
+        return
+    out = _postpass_recut(m, None, features, report)
+    if out is not m:
+        try:
+            from cadx.cad.mesh_ops import export_stl
+
+            export_stl(out, path, file_type=path.suffix.lstrip("."))
+        except Exception as e:
+            report.warnings.append(f"export groove guard: {path.name} rewrite failed: {e}")
 
 
 def _postpass_degraded(
@@ -2750,7 +2804,7 @@ def _postpass_degraded(
 
 def _postpass_recut(
     out: trimesh.Trimesh,
-    pre: trimesh.Trimesh,
+    pre: trimesh.Trimesh | None,
     features: list[RefineFeature],
     report: RefineReport,
 ) -> trimesh.Trimesh:
@@ -2767,8 +2821,8 @@ def _postpass_recut(
     and re-apply degraded cuts. Two bounded rounds: the first postpass may
     reskin again and erase a fresh groove; after the second re-cut only a
     light repair runs so the groove can never be lost behind the metric.
-    """
-    if out is pre:
+    ``pre=None`` forces the probe (file-level guard use)."""
+    if pre is not None and out is pre:
         return out
     try:
         scanned: list[dict[str, Any]] | None = anchors3d.scan_mesh_anchors(out)
@@ -2841,6 +2895,14 @@ def _watertight_postpass(out: trimesh.Trimesh, report: RefineReport) -> trimesh.
         out.fix_normals()
     except Exception:
         pass
+    if not out.is_watertight:
+        # X-junction sheets (edge shared by >2 faces where a cutter wall
+        # crosses the part wall) need no reskin — a self-union resolves
+        # them natively and keeps sub-mm grooves intact
+        with contextlib.suppress(Exception):
+            from cadx.cad.mesh_ops import _drop_nonmanifold_slivers
+
+            out = _drop_nonmanifold_slivers(out)
     if not out.is_watertight:
         try:
             from cadx.cad.mesh_ops import _ensure_watertight, _rebuild_drift

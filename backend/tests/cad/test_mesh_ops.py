@@ -1557,8 +1557,11 @@ def _ray_hits(m, origin, direction, axis_i):
 
 
 def test_op_machine_feature_face_word_sidewall_tap():
-    """face='left' + at=[u,v]: ray entry on the -x wall, M8 tap 20 mm deep —
-    the bore must open on the -x face and bottom out at x≈0."""
+    """face='left' + at=[u,v]: entry on the +x wall, M8 tap 20 mm deep —
+    the bore must open on the +x face and bottom out at x≈0 while the
+    -x far wall stays intact. An on-axis ray sees just the far wall and
+    the bottom — a third hit at x≈20 would mean a membrane seals the
+    bore mouth (stacked-cutter artifact)."""
     out = apply_op(
         _box(40, 40, 40),
         MeshOp(
@@ -1575,9 +1578,9 @@ def test_op_machine_feature_face_word_sidewall_tap():
     )
     assert out.is_watertight
     xs = _ray_hits(out, [-30.0, 0.0, 5.0], [1, 0, 0], 0)
-    assert xs[0] == pytest.approx(-20.0, abs=0.6)  # left entry face
-    assert xs[1] == pytest.approx(0.0, abs=0.8)  # bore bottom: entry -20 + depth 20
-    assert xs[2] == pytest.approx(20.0, abs=0.6)  # far wall intact
+    assert xs[0] == pytest.approx(-20.0, abs=0.6)  # far wall intact
+    assert xs[1] == pytest.approx(0.0, abs=0.8)  # bore bottom: entry +20 - depth 20
+    assert len(xs) == 2  # mouth open — a sealed mouth adds an on-axis hit
 
 
 def test_op_machine_feature_pick_point_curved():

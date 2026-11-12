@@ -2335,6 +2335,48 @@ def _stitch_hairline_boundary(  # noqa: C901
     return m if cur != (n_b0, nm0) else mesh
 
 
+def _drop_nonmanifold_slivers(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Resolve boolean X-junction sheets via a manifold self-union.
+
+    A groove/bore cut can leave the cutter wall crossing the part wall —
+    edge shared by 4 faces (two intersecting sheets), topologically
+    consistent for manifold3d but failing trimesh.is_watertight's
+    exactly-two-faces rule. Sliver surgery (drop/weld/fill) oscillates:
+    fill_holes re-mints the flap on the shared edge. A self-union
+    re-evaluates the mesh through manifold3d's own tessellation, which
+    resolves the junctions natively — same volume, same bbox, no reskin
+    (groove-safe by construction). Adopted only when it actually seals."""
+    m = mesh.copy()
+    try:
+        groups = trimesh.grouping.group_rows(m.edges_sorted)
+        if not any(len(g) > 2 for g in groups):
+            return m
+        from manifold3d import Manifold, Mesh
+
+        mm = Manifold(
+            mesh=Mesh(
+                vert_properties=m.vertices.astype(np.float32),
+                tri_verts=m.faces.astype(np.uint32),
+            )
+        )
+        merged = (mm + mm).to_mesh()
+        cand = trimesh.Trimesh(
+            vertices=np.asarray(merged.vert_properties)[:, :3],
+            faces=np.asarray(merged.tri_verts),
+            process=False,
+        )
+        v0 = abs(float(m.volume))
+        if (
+            cand.is_watertight
+            and cand.is_winding_consistent
+            and (v0 < 1e-6 or abs(float(cand.volume) - v0) / v0 < 0.01)
+        ):
+            return cand
+    except Exception:
+        pass
+    return m
+
+
 def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """Repair ladder plus shell-parity: whatever rung fixed the mesh, the
     result keeps nested cavity walls negatively wound."""
@@ -2760,7 +2802,7 @@ def clip_to_outline(
     return mesh
 
 
-def export_stl(mesh: trimesh.Trimesh, path: Path | str) -> trimesh.Trimesh:
+def export_stl(mesh: trimesh.Trimesh, path: Path | str, file_type: str = "stl") -> trimesh.Trimesh:
     """Write an STL whose on-disk topology matches what was verified in memory.
 
     trimesh exports STL in float32 — hairline vertices that are distinct in
@@ -2794,5 +2836,17 @@ def export_stl(mesh: trimesh.Trimesh, path: Path | str) -> trimesh.Trimesh:
             with contextlib.suppress(Exception):
                 trimesh.repair.fill_holes(q)
                 q.fix_normals()
-    q.export(str(path), file_type="stl")
+        if not (q.is_watertight and q.is_winding_consistent):
+            # quantizing re-mints X-junction sheets at coincidence vertices —
+            # resolve them via self-union like the in-memory postpass
+            with contextlib.suppress(Exception):
+                fixed = _drop_nonmanifold_slivers(q)
+                if fixed is not q:
+                    # union output re-tessellates in f64 — quantize again so
+                    # the on-disk file carries exactly the verified topology
+                    # instead of collapsing silently at write time
+                    fixed.vertices = fixed.vertices.astype(np.float32).astype(np.float64)
+                    fixed.merge_vertices()
+                    q = fixed
+    q.export(str(path), file_type=file_type)
     return q

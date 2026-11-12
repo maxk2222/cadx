@@ -2278,3 +2278,58 @@ def test_postpass_recut_restores_groove_erased_by_reskin():
     assert _groove_present(fixed, feat) is True
     assert fixed.is_watertight
     assert any("helical groove" in w for w in rep.warnings)
+
+
+def test_recut_exported_threads_restores_groove_on_shipped_file(tmp_path):
+    """t2r regression: the generic export repair reskins the shipped STL
+    (alpha_wrap faces_out=83052 erased all three M8 grooves AFTER the
+    in-memory postpass already restored them). recut_exported_threads must
+    re-probe the file mesh, re-cut the groove and write it back without
+    another reskin."""
+    from cadx.cad.fem.refine import (
+        _groove_present,
+        recut_exported_threads,
+    )
+
+    feat = RefineFeature(
+        name="m8",
+        kind="tap",
+        axis="+z",
+        u=0.0,
+        v=0.0,
+        dia=6.75,
+        through=True,
+        thread_spec="M8-1.25",
+        helical=True,
+    )
+    # file state after a heavy export repair: pilot bore only, no groove
+    reskinned = _bored_wide(0.0, 6.75)
+    stl = tmp_path / "model.stl"
+    reskinned.export(str(stl))
+    assert _groove_present(trimesh.load(str(stl)), feat) is False
+
+    rep = RefineReport()
+    rep.applied.append({"name": "m8", "kind": "tap", "cut_depth_mm": 14.0})
+    recut_exported_threads(stl, [feat], rep)
+
+    fixed = trimesh.load(str(stl))
+    assert _groove_present(fixed, feat) is True
+    assert fixed.is_watertight
+    assert any("helical groove" in w for w in rep.warnings)
+
+
+def test_recut_exported_threads_noop_without_helical(tmp_path):
+    from cadx.cad.fem.refine import recut_exported_threads
+
+    reskinned = _bored_wide(0.0, 6.75)
+    stl = tmp_path / "model.stl"
+    reskinned.export(str(stl))
+    before = len(trimesh.load(str(stl)).faces)
+    rep = RefineReport()
+    recut_exported_threads(
+        stl,
+        [RefineFeature(name="p", kind="hole", dia=6.75, through=True)],
+        rep,
+    )
+    assert len(trimesh.load(str(stl)).faces) == before
+    assert not rep.warnings

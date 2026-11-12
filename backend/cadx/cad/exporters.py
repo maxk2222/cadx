@@ -371,6 +371,14 @@ def repair_mesh_file(
         # downstream body counting sees a phantom second solid)
         m.fix_normals()
     if not m.is_watertight:
+        # X-junction sheets (>2 faces per edge from crossing cutter walls)
+        # resolve natively via self-union — skips the reskin that would
+        # erase sub-mm features like thread grooves
+        with contextlib.suppress(Exception):
+            from cadx.cad.mesh_ops import _drop_nonmanifold_slivers
+
+            m = _drop_nonmanifold_slivers(m)
+    if not m.is_watertight:
         from cadx.cad.mesh_ops import _ensure_watertight, _rebuild_drift
 
         rebuilt = _ensure_watertight(m)

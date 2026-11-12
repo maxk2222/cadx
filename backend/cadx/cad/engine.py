@@ -241,6 +241,24 @@ def _repair_export_meshes(exports: dict[str, str | None], exp_dir: Path) -> None
                 log.warning("export.repair_failed", fmt=fmt, error=str(e)[:200])
 
 
+def _guard_export_grooves(
+    exports: dict[str, str | None],
+    exp_dir: Path,
+    feats: list[Any],
+    rep: Any,
+) -> None:
+    """Re-probe + re-cut helical grooves on the shipped mesh files.
+
+    A heavy file repair reskins (alpha-wrap/voxel ≈ 0.5-0.7 mm granularity)
+    — erasing the grooves the in-memory postpass already restored once."""
+    from cadx.cad.fem.refine import recut_exported_threads
+
+    for fmt in ("stl", "3mf", "glb"):
+        fname = exports.get(fmt)
+        if fname:
+            recut_exported_threads(exp_dir / fname, feats, rep)
+
+
 def _attach_verify_spec(
     res: ExecResult,
     spec_dict: dict[str, Any] | None,
@@ -6549,6 +6567,10 @@ def run_refine(
     # files — flap/sliver debris can split off as phantom bodies; heavy
     # repair stays conditional inside repair_mesh_file
     _repair_export_meshes(res.exports, out_dir / "exports")
+    # but a heavy file repair reskins — erasing helical grooves the in-memory
+    # postpass restored; guard re-probes + re-cuts them on the shipped files
+    _guard_export_grooves(res.exports, out_dir / "exports", feats, rep)
+    res.features["refine"]["warnings"] = res_warnings + rep.warnings
     if _is_cancelled(cancelled):
         _mark_cancelled(res)
         return res
