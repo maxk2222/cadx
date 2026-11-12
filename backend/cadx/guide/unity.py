@@ -16,6 +16,8 @@ from typing import Any
 
 import numpy as np
 
+from cadx.guide.solver import _unit
+
 # spatial change-of-basis (unit vectors); det = -1 → RH→LH
 _M = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
 _MM_TO_M = 0.001
@@ -230,11 +232,6 @@ def build_unity_guide(state) -> dict[str, Any]:
         "steps": steps_out,
         "review": {"score": state.review.score, "iterations": state.review.iteration},
     }
-
-
-def _unit(v: np.ndarray) -> np.ndarray:
-    n = float(np.linalg.norm(v))
-    return v / n if n > 1e-12 else v
 
 
 def _model_ref(part: Any) -> str:

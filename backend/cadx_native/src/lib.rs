@@ -17,6 +17,7 @@ fn cadx_native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<spmv::SpMv>()?;
     m.add_function(wrap_pyfunction!(cg::cg_solve, m)?)?;
     m.add_function(wrap_pyfunction!(edges::feature_edges, m)?)?;
+    m.add_function(wrap_pyfunction!(edges::collapse_remap, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

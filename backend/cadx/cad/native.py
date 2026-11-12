@@ -315,3 +315,18 @@ def feature_edges(mesh: Any) -> list[dict[str, Any]] | None:
         ]
     except Exception:
         return None
+
+
+def collapse_remap(pairs: Any, n_verts: int) -> Any | None:
+    """Union-find remap for the boundary-stitch pass — the Python loop is
+    O(n_verts) per repair pass; the kernel does it in µs. Returns an
+    int64 (n,) array or None."""
+    if _nx is None or not native_enabled("geom"):
+        return None
+    try:
+        import numpy as np
+
+        pl = [(int(a), int(b)) for a, b in pairs]
+        return np.asarray(_nx.collapse_remap(pl, int(n_verts)), dtype=np.int64)
+    except Exception:
+        return None

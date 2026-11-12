@@ -19,6 +19,7 @@ import numpy as np
 import trimesh
 from pydantic import BaseModel, Field
 
+from cadx.cad import native as _native
 from cadx.cad.analysis import Analysis
 from cadx.llm.schemas import OrganicParams, ParamDef, PartSpec
 from cadx.logging import get_logger
@@ -2302,21 +2303,24 @@ def _stitch_hairline_boundary(  # noqa: C901
                         pairs.add((b, c))
         if not pairs:
             break
-        parent = np.arange(len(verts))
+        remap = _native.collapse_remap(pairs, len(verts))
+        if remap is None:
+            # python fallback — identical union-find semantics
+            parent = np.arange(len(verts))
 
-        def _find(x: int, _p: np.ndarray = parent) -> int:
-            # _p pins the pass's union table (B023 — the closure outlives
-            # the loop variable)
-            while _p[x] != x:
-                _p[x] = _p[_p[x]]
-                x = _p[x]
-            return int(x)
+            def _find(x: int, _p: np.ndarray = parent) -> int:
+                # _p pins the pass's union table (B023 — the closure outlives
+                # the loop variable)
+                while _p[x] != x:
+                    _p[x] = _p[_p[x]]
+                    x = _p[x]
+                return int(x)
 
-        for a, b in pairs:
-            ra, rb = _find(a), _find(b)
-            if ra != rb:
-                parent[rb] = ra
-        remap = np.array([_find(i) for i in range(len(verts))], dtype=np.int64)
+            for a, b in pairs:
+                ra, rb = _find(a), _find(b)
+                if ra != rb:
+                    parent[rb] = ra
+            remap = np.array([_find(i) for i in range(len(verts))], dtype=np.int64)
         faces = remap[np.asarray(m.faces, dtype=np.int64)]
         keep = (
             (faces[:, 0] != faces[:, 1])

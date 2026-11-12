@@ -349,3 +349,45 @@ fn circle_fit(pts: &[(f64, f64)]) -> Option<(f64, f64, f64)> {
     }
     Some((h, k, r2.sqrt()))
 }
+
+
+/// Vertex-collapse remap for the boundary-stitch repair pass: union the
+/// (a,b) pairs and return one root per vertex — the Python caller then
+/// does `faces = remap[faces]` and drops degenerate tris. Same union-find
+/// semantics as the trimesh-side loop it replaces (path halving, last
+/// pair wins on root order: rb joins ra).
+#[pyfunction]
+pub fn collapse_remap(
+    py: Python<'_>,
+    pairs: Vec<(i64, i64)>,
+    n_verts: i64,
+) -> Bound<'_, numpy::PyArray1<i64>> {
+    let n = n_verts.max(0) as usize;
+    let mut parent: Vec<i64> = (0..n as i64).collect();
+    for (a, b) in pairs {
+        let mut ra = a;
+        while parent[ra as usize] != ra {
+            parent[ra as usize] = parent[parent[ra as usize] as usize];
+            ra = parent[ra as usize];
+        }
+        let mut rb = b;
+        while parent[rb as usize] != rb {
+            parent[rb as usize] = parent[parent[rb as usize] as usize];
+            rb = parent[rb as usize];
+        }
+        if ra != rb {
+            parent[rb as usize] = ra;
+        }
+    }
+    let out: Vec<i64> = (0..n as i64)
+        .map(|i| {
+            let mut x = i;
+            while parent[x as usize] != x {
+                parent[x as usize] = parent[parent[x as usize] as usize];
+                x = parent[x as usize];
+            }
+            x
+        })
+        .collect();
+    numpy::PyArray1::from_vec(py, out)
+}
