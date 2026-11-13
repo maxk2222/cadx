@@ -327,6 +327,14 @@ async def _run_mission(
         return None
     last_failures = ""
     last_reason = ""
+    # the durable assembly is written per tool call — a mission that dies
+    # mid-repair must not leave a half-stripped scene behind, so keep a
+    # pre-session copy and restore it on failure. Covers both the first
+    # run (preassembly's deterministic placement survives a failed LLM
+    # refine) and a review-reopened repair (the scored assembly survives).
+    assembly_snapshot = (
+        state.assembly.model_copy(deep=True) if mission == "assembly" else None
+    )
     for attempt in (0, 1):
         sess = mk_session(mission)
         if mission == "assembly" and not state.assembly.planner.get("ran"):
@@ -401,6 +409,9 @@ async def _run_mission(
                 failures=fails,
             )
             continue
+        if assembly_snapshot is not None:
+            state.assembly = assembly_snapshot
+            log.info("guide.assembly_restored", mission=mission)
         state.mark_failed(mission)
         state.save(state_dir)
         if mission in _OPTIONAL:
