@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cadx.guide import cadmeta
+from cadx.guide.assembly_tools import _tokset
 from cadx.guide.state import GuidePart
 from cadx.guide.tools import _b, _fn, _s
 from cadx.logging import get_logger
@@ -81,18 +82,17 @@ def _slug(pid: str) -> str:
     return s[:60]
 
 
-async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
-    pid = _slug(str(a.get("part_id", "")))
-    if not pid:
-        return {"ok": False, "error": "part_id must be a non-empty slug"}
-    if s.state.part_by_id(pid) is not None:
-        return {"ok": False, "error": f"part_id '{pid}' already registered"}
-    aid = str(a.get("asset_id", ""))
-    asset = next((x for x in s.guide_assets if str(x.get("id")) == aid), None)
-    if asset is None and aid:
+def _resolve_asset(s: GuideToolSession, ref: str, *, part_id: str, name: str) -> Any | None:
+    """Forgiving asset lookup: exact asset_id → basename/filename →
+    unambiguous filename token overlap. Hallucinated/stale UUIDs are a
+    common LLM failure — the part's own name+slug shares tokens with the
+    real filename ("adapter_rn22_ig_plain" → "Adapter_rn22_internal_…
+    .glb" shares adapter/rn22/plain); ties stay an error."""
+    asset = next((x for x in s.guide_assets if str(x.get("id")) == ref), None)
+    if asset is None and ref:
         # models know upload FILE names, not UUIDs — a hallucinated id is
         # often a real filename; accept basename/filename as the reference
-        norm = aid.lower().rsplit("/", 1)[-1]
+        norm = ref.lower().rsplit("/", 1)[-1]
         asset = next(
             (
                 x
@@ -106,8 +106,36 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
             ),
             None,
         )
-        if asset is not None:
-            aid = str(asset.get("id"))
+    if asset is None:
+        qt = _tokset(f"{ref} {part_id} {name}")
+        scored: list[tuple[int, Any]] = []
+        for x in s.guide_assets:
+            if Path(str(x.get("path") or "")).suffix.lower() not in (
+                cadmeta._BREP_EXTS | cadmeta._MESH_EXTS
+            ):
+                continue
+            ft = _tokset(Path(str(x.get("filename") or x.get("path") or "")).stem)
+            ov = len(qt & ft)
+            if ov:
+                scored.append((ov, x))
+        scored.sort(key=lambda t: -t[0])
+        if scored and scored[0][0] >= 2 and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+            asset = scored[0][1]
+    return asset
+
+
+async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    pid = _slug(str(a.get("part_id", "")))
+    if not pid:
+        return {"ok": False, "error": "part_id must be a non-empty slug"}
+    if s.state.part_by_id(pid) is not None:
+        return {"ok": False, "error": f"part_id '{pid}' already registered"}
+    aid = str(a.get("asset_id", ""))
+    asset = _resolve_asset(
+        s, aid, part_id=str(a.get("part_id") or ""), name=str(a.get("name") or "")
+    )
+    if asset is not None:
+        aid = str(asset.get("id"))
     if asset is None:
         avail = [
             str(x.get("filename") or x.get("id"))

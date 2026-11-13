@@ -390,3 +390,42 @@ def test_add_arrow_resolves_forgiving_ids() -> None:
         assert state.annotations[-1]["part_id"] == "pipe_l70"
     res = asyncio.run(add_arrow(sess, {"step": 99, "part_id": "pipe_l70", "direction": "down"}))
     assert res["ok"] is False and "valid steps" in res["error"]
+
+
+def test_resolve_asset_rescues_hallucinated_uuid() -> None:
+    """The LLM passed a stale/invented asset UUID 5x in a row and the
+    parts mission died on error_streak — the resolver must fall back to
+    an unambiguous filename token overlap from part_id+name."""
+    from cadx.guide.part_tools import _resolve_asset
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import GuideState
+
+    assets = [
+        {"id": "aaa-1", "filename": "Casing.glb", "kind": "cad", "path": "/x/Casing.glb"},
+        {"id": "bbb-2", "filename": "Adapter_rn22_internal_thread_to_plain.glb",
+         "kind": "cad", "path": "/x/Adapter_rn22_internal_thread_to_plain.glb"},
+        {"id": "ccc-3", "filename": "Elbow_90deg_RN22_socket_to_spigot.glb",
+         "kind": "cad", "path": "/x/Elbow_90deg_RN22_socket_to_spigot.glb"},
+        {"id": "ddd-4", "filename": "Elbow_90deg_RN22_soket_to_socket.glb",
+         "kind": "cad", "path": "/x/Elbow_90deg_RN22_soket_to_socket.glb"},
+    ]
+    sess = GuideToolSession(
+        MagicMock(), mission="parts", state=GuideState(), state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=assets, executor=None,
+    )
+    # exact id still wins
+    assert _resolve_asset(sess, "aaa-1", part_id="x", name="y")["id"] == "aaa-1"
+    # filename reference resolves
+    assert _resolve_asset(sess, "Casing.glb", part_id="c", name="Casing")["id"] == "aaa-1"
+    # hallucinated uuid + descriptive part fields → unambiguous filename match
+    got = _resolve_asset(
+        sess, "4f636566-9525-4d99-865a-9364d449219b",
+        part_id="adapter_rn22_ig_plain", name="Adapter DN22, Innengewinde/Muffe",
+    )
+    assert got and got["id"] == "bbb-2"
+    # ambiguous part fields (generic elbow name matches both) stay an error
+    assert _resolve_asset(
+        sess, "deadbeef-0000-1111-2222-333344445555",
+        part_id="bogen", name="Rohrbogen",
+    ) is None
