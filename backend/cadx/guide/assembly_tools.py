@@ -496,6 +496,15 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             "error": f"all {need} required '{pid}' instance(s) already placed — "
             "use unplace_instance to reposition instead of adding more",
         }
+    if need == 0 and existing:
+        # parts the manual never mounts (host/anchor referenced only in
+        # check steps) exist exactly once — never let a repair loop add
+        # another casing/base
+        return {
+            "ok": False,
+            "error": f"'{pid}' is already placed and not required by any "
+            "assembly step — it is the fixed host, not a mountable part",
+        }
     cap = max(need, 2) + 2  # slack for manuals missing counts; bound runaway
     if len(existing) >= cap:
         return {

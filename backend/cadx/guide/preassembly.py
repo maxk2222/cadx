@@ -141,7 +141,7 @@ def _spawn_premounts(
         if task.get("anchor") or task.get("premount"):
             continue
         tpid = _resolve_name(sess, task.get("target"))
-        if not tpid or tpid == _resolve_name(sess, task["part"]):
+        if not tpid or tpid in (_resolve_name(sess, task["part"]), host_pid):
             continue
         missing = _side_words(task.get("target") or "") - planned_sides.get(tpid, set())
         missing -= {s for _, s in ((e["part"], e.get("text")) for e in extra) if _ == tpid for s in _side_words(s or "")}
