@@ -972,6 +972,26 @@ def _score_pairs_for_instance(
     # received a pipe (as moving port) cannot host another; coincident
     # extraction duplicates count as the same physical connection
     used = _used_port_names(sess, inst)
+    # location words must DISAMBIGUATE symmetric interfaces, not outrank
+    # the physical fit: raw mm ("oberer" → +376 for a top funnel vs +71
+    # for the real stub) let a merely-higher port win over the right
+    # interface by hundreds of points. Normalize by the host's world
+    # span per axis (bounded ~±0.5 each) and fold the solver fit into the
+    # same sum at 4x — a snug thread interface beats a merely-higher
+    # coarse seat, equal fits still split cleanly left/right/up/down.
+    mn_w, mx_w = solver.world_bbox(
+        fixed.bbox_min, fixed.bbox_max, np.asarray(inst.transform, dtype=float).reshape(4, 4)
+    )
+    center_w = (mn_w + mx_w) / 2.0
+    span_w = np.maximum(mx_w - mn_w, 1.0)
+    corners_w = np.array(
+        [
+            [x, y, z]
+            for x in (mn_w[0], mx_w[0])
+            for y in (mn_w[1], mx_w[1])
+            for z in (mn_w[2], mx_w[2])
+        ]
+    )
     out: list[tuple[float, float, float, str, dict[str, Any]]] = []
     # uncapped solver call — the tool truncates to its top-8 by solver
     # score, which silently drops ports a hint needs
@@ -982,11 +1002,19 @@ def _score_pairs_for_instance(
         wp = _world_pos(inst.transform, fp.pos) if fp else [0.0, 0.0, 0.0]
         axis_hint = 0.0
         if fp is not None:
+            fa = _world_dir(inst.transform, fp.axis)
+            # a mouth buried deep inside the host silhouette along its own
+            # axis is an interior junction — unreachable without tunneling
+            # through the body, same rule the anchor orientation applies
+            if (
+                float((corners_w @ solver._unit(np.asarray(fa))).max() - np.dot(np.asarray(wp), solver._unit(np.asarray(fa))))
+                > 60.0
+            ):
+                continue
             if fp.kind == "plane":
                 # a rim/socket mate is what assembly manuals mean — flat
                 # faces only win when no cylindrical port is available
                 axis_hint -= 2.0
-            fa = _world_dir(inst.transform, fp.axis)
             axis_hint += sum(sg * fa[ax] for ax, sg in open_axes)
             if orient == "V":
                 axis_hint += abs(fa[2])
@@ -1002,7 +1030,10 @@ def _score_pairs_for_instance(
                     axis_hint += 6.0 * (1.0 - abs(fa[feed_perp]))
             if float(pair.get("score") or 0.0) < 0.0:
                 axis_hint += 2.0 * float(pair["score"])
-        hint = sum(sg * wp[ax] for ax, sg in axes) + 25.0 * axis_hint
+        pos_hint = 1.5 * sum(
+            sg * (wp[ax] - float(center_w[ax])) / float(span_w[ax]) for ax, sg in axes
+        )
+        hint = pos_hint + 25.0 * axis_hint + 4.0 * float(pair.get("score") or 0.0)
         out.append((hint, 1.0 if picked else 0.0, float(pair.get("score") or 0.0), iid, pair))
     return out
 

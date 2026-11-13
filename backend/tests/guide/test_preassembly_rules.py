@@ -509,3 +509,69 @@ def test_anchor_orientation_never_picks_recessed_port() -> None:
     ]
     rot = pa._anchor_orientation(sess, host, tasks)
     assert np.allclose(rot, np.eye(3))
+
+
+def test_attach_hint_cannot_outrank_physical_fit() -> None:
+    """'oberer Anschluss' added the port's raw world height (hundreds of
+    mm) to the candidate hint — a top funnel mouth beat the real front
+    stub purely by being higher. Location words must disambiguate
+    near-tied interfaces, never overturn the physical fit; and a mouth
+    reachable only by tunneling through the body is not an interface."""
+    host = _part(
+        "gehaeuse",
+        [
+            # the real connection: exposed pipe tip on the front face, low
+            PortInfo(
+                name="stub", kind="cylinder", pos=[-46.0, 71.0, 50.0],
+                axis=[0, 1, 0], radius=11.9, inner_radius=10.7,
+                outer_radius=13.1, depth=0.0, gender="female",
+            ),
+            # a coarse male stub nested in a top funnel — the 'opening on
+            # top' the adapter kept being fitted onto
+            PortInfo(
+                name="top_stub", kind="cylinder", pos=[-60.0, -60.0, 355.0],
+                axis=[0, 0, 1], radius=21.4, inner_radius=21.4,
+                outer_radius=21.4, depth=0.0, gender="male", nested_in="funnel",
+            ),
+            PortInfo(
+                name="funnel", kind="cylinder", pos=[-60.0, -60.0, 355.0],
+                axis=[0, 0, 1], radius=30.0, inner_radius=27.0,
+                depth=15.0, gender="female",
+            ),
+            # interior junction 130mm inside the body — good fit, unreachable
+            PortInfo(
+                name="inner", kind="cylinder", pos=[-46.0, -60.0, 50.0],
+                axis=[0, 1, 0], radius=12.1, inner_radius=3.2,
+                outer_radius=12.1, depth=0.0, gender="male", nested_in="inner_sock",
+            ),
+        ],
+        bbox=((-125.0, -195.0, 0.0), (125.0, 71.5, 355.0)),
+    )
+    host.name = "Gehäuse"
+    adapter = _part(
+        "adapter",
+        [
+            PortInfo(
+                name="nut", kind="cylinder", pos=[10.0, 0, 0],
+                axis=[1, 0, 0], radius=15.5, inner_radius=11.06,
+                outer_radius=15.5, depth=0.3, gender="female",
+            )
+        ],
+        bbox=((0.0, -16.0, -16.0), (16.0, 16.0, 16.0)),
+    )
+    sess = _sess([host, adapter])
+    inst = AssemblyInstance(
+        part_id="gehaeuse", instance_id="gehaeuse#1",
+        transform=np.eye(4).tolist(), placed_in_step=1,
+    )
+    rows = pa._score_pairs_for_instance(
+        sess, adapter, inst, "gehaeuse#1",
+        axes=[(0, -1.0), (2, 1.0)],  # "linker oberer Anschluss"
+        open_axes=[], orient=None, feed_perp=None, picked=False,
+    )
+    rows.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+    assert rows and rows[0][4]["fixed_port"] == "stub"
+    picked = {r[4]["fixed_port"] for r in rows}
+    assert "inner" not in picked  # recessed past reach — never an interface
+    assert "top_stub" in picked   # legal thread seat — but below the snug stub
+    assert rows[0][2] > next(r[2] for r in rows if r[4]["fixed_port"] == "top_stub")
