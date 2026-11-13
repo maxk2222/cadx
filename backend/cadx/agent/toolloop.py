@@ -806,7 +806,17 @@ async def run_session(  # noqa: C901
         for tc in tool_calls:
             calls += 1
             if tc.arguments_error:
-                result = {"ok": False, "error": tc.arguments_error}
+                # finish=length means the provider cut the args mid-JSON —
+                # without this hint the model retries the same oversized
+                # payload and burns its error streak on identical calls.
+                err = tc.arguments_error
+                if resp.finish_reason == "length":
+                    err += (
+                        " — the tool call was cut off by the output token limit "
+                        "(context nearly full). Split it into smaller calls "
+                        "(e.g. one create_step per call, shorter text fields)."
+                    )
+                result = {"ok": False, "error": err}
                 session.tool_log.append(
                     {"name": tc.name, "args": {"_raw": tc.raw_arguments[:300]}, "result": result}
                 )
