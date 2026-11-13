@@ -151,10 +151,23 @@ def test_ask_user_question_shape() -> None:
 def test_done_mission_preloads_guards(tmp_path) -> None:
     """done_mission as the FIRST tool call must still hit the parts guard —
     module import is lazy, DONE_GUARDS could be empty."""
+    import importlib
+    import sys
+
     from cadx.guide import tools as gtools
 
-    # simulates a fresh interpreter where no *_tools module was imported
+    # guards register at *_tools module import — earlier test files may
+    # already have imported them, and then a bare DONE_GUARDS.clear() can
+    # never repopulate: reload forces real re-registration (the lazy-import
+    # path this test protects)
     gtools.DONE_GUARDS.clear()
+    for name in (
+        "doc_tools", "step_tools", "part_tools",
+        "assembly_tools", "review_tools", "annotate_tools",
+    ):
+        mod = sys.modules.get(f"cadx.guide.{name}")
+        if mod is not None:
+            importlib.reload(mod)
     gtools.merged_handlers()
     assert "parts" in gtools.DONE_GUARDS
     assert "assembly" in gtools.DONE_GUARDS
