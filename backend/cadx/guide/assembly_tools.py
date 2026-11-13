@@ -560,11 +560,20 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     if not premount and need == 0 and existing:
         # parts the manual never mounts (host/anchor referenced only in
         # check steps) exist exactly once — never let a repair loop add
-        # another casing/base
+        # another casing/base. Name the still-open requirements too: the
+        # caller usually wants the OTHER part id that is actually missing
+        open_req = [
+            f"{p}@step{st_no}"
+            for st_no, req in reqs.items()
+            for p, n in req.items()
+            if n
+            > sum(1 for i in s.state.assembly.instances if i.placed_in_step == st_no and i.part_id == p)
+        ]
+        hint = f" — still needed elsewhere: {open_req[:6]}" if open_req else ""
         return {
             "ok": False,
             "error": f"'{pid}' is already placed and not required by any "
-            "assembly step — it is the fixed host, not a mountable part",
+            f"assembly step — it is the fixed host, not a mountable part{hint}",
         }
     cap = max(need, 2) + 2  # slack for manuals missing counts; bound runaway
     if len(existing) >= cap:

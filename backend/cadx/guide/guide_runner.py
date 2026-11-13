@@ -508,6 +508,8 @@ async def run_guide(
     iterations = 0
     repair_notes = ""
     lint_cycles = 0
+    best_score = -1.0
+    best_assembly = None
     while True:
         for mission in MISSION_ORDER:
             # deterministic plan lint before assembly spends its budget:
@@ -546,6 +548,12 @@ async def run_guide(
                 return early
 
         ship, repair_notes = _review_verdict(state, state_dir, score_target, max_iter)
+        # keep the best-SCORED assembly across repair iterations — an LLM
+        # repair that "succeeds" can still degrade the build (7.0 -> 4.0 in
+        # eval round 5), and the failure-restore only guards mission death
+        if state.assembly.instances and state.review.score > best_score:
+            best_score = state.review.score
+            best_assembly = state.assembly.model_copy(deep=True)
         if ship:
             break
         iterations += 1
@@ -554,6 +562,18 @@ async def run_guide(
             # complete a verdict we must not loop forever
             log.warning("guide.repair_loop_cap", max_iter=max_iter)
             break
+
+    # ship the best-scored geometry, not the last repair attempt — a
+    # regressed final iteration must not downgrade the build
+    if best_assembly is not None and state.review.score < best_score:
+        log.info(
+            "guide.assembly_best_restored",
+            restored_score=best_score,
+            final_score=state.review.score,
+        )
+        state.assembly = best_assembly
+        state.review.score = best_score
+        state.save(state_dir)
 
     artifacts = await _emit_artifacts(state, state_dir, ctx.executor)
     outcome = RunOutcome(
