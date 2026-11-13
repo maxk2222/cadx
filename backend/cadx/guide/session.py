@@ -32,6 +32,11 @@ log = get_logger(__name__)
 
 PLAN_MAX_BYTES = 200 * 1024
 
+# image-lookup failure budget per session before the tools short-circuit —
+# enough rope for one typo, not enough for a retry spiral
+_IMAGE_TOOLS = {"get_figure_image", "get_page_image"}
+_IMAGE_FAIL_CAP = 3
+
 # shared session-owned tool schemas (dispatched via _tool_* methods below)
 SESSION_SCHEMAS: dict[str, dict[str, Any]] = {
     "done_mission": gtools._fn(
@@ -195,6 +200,7 @@ class GuideToolSession(ToolSession):
         self._enqueue_fn = enqueue_fn
         self._preview_cache: dict[str, dict[str, Any]] = {}
         self._aliases_store = self._load_aliases()
+        self._bad_image_calls = 0
         self.parked = False
         self.parked_questions: list[dict[str, Any]] = []
         # image budget for _images results (page images, assembly renders)
@@ -213,17 +219,30 @@ class GuideToolSession(ToolSession):
         return out
 
     async def _dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        # image-lookup circuit breaker: repeated invalid figure/page indices
+        # burned whole mission budgets — after _IMAGE_FAIL_CAP failures the
+        # tools short-circuit and redirect the agent to renders/audits
+        if name in _IMAGE_TOOLS and self._bad_image_calls >= _IMAGE_FAIL_CAP:
+            return {
+                "ok": False,
+                "error": "PDF image lookups disabled for this session "
+                "after repeated invalid indices — verify via "
+                "render_assembly and the numeric audits instead",
+            }
         handler = getattr(self, f"_tool_{name}", None)
         if handler is not None:
             res = handler(args)
-            return await res if inspect.iscoroutinefunction(handler) else res
-        module_handler = gtools.merged_handlers().get(name)
-        if module_handler is None:
-            return {"ok": False, "error": f"unknown tool '{name}'"}
-        res = await module_handler(self, args)
-        # module handlers mutate self.state — persist unless they opted out
-        if isinstance(res, dict) and not res.get("_no_save"):
-            self.state.save(self.state_dir)
+            res = await res if inspect.iscoroutinefunction(handler) else res
+        else:
+            module_handler = gtools.merged_handlers().get(name)
+            if module_handler is None:
+                return {"ok": False, "error": f"unknown tool '{name}'"}
+            res = await module_handler(self, args)
+            # module handlers mutate self.state — persist unless opted out
+            if isinstance(res, dict) and not res.get("_no_save"):
+                self.state.save(self.state_dir)
+        if name in _IMAGE_TOOLS and isinstance(res, dict) and not res.get("ok"):
+            self._bad_image_calls += 1
         return res
 
     async def _emit(self, progress: float, label: str, **fields: Any) -> None:
@@ -247,7 +266,14 @@ class GuideToolSession(ToolSession):
         if not p.exists():
             return {}
         try:
-            return {str(k): str(v) for k, v in json.loads(p.read_text()).items()}
+            from cadx.guide.assembly_tools import _norm2
+
+            # keys may predate the umlaut-folding normalizer — re-fold on
+            # load so old aliases still resolve ("wärmepumpe" → "warmepumpe")
+            return {
+                _norm2(str(k)): str(v)
+                for k, v in json.loads(p.read_text()).items()
+            }
         except Exception:
             return {}
 

@@ -423,6 +423,18 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
             "moving_ports": [p.name for p in moving.ports],
             "fixed_ports": [p.name for p in fixed.ports],
         }
+        empty = []
+        if not moving.ports:
+            empty.append(moving.id)
+        if not fixed.ports:
+            empty.append(fixed.id)
+        if empty:
+            err_out["error"] = (
+                f"{empty} have no extracted ports — run get_part_features "
+                "on them first, then retry"
+            )
+            err_out["next_action"] = f"get_part_features({empty[0]!r})"
+            return err_out
         auto = solver.find_matching_ports(moving, fixed, include_mismatch=True)
         if auto:
             err_out["compatible_pairs"] = auto[:6]
@@ -917,9 +929,15 @@ def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
 
 
 def _norm2(x: str | None) -> str:
+    """Canonical label form: case/punctuation-insensitive PLUS umlaut-folded
+    both ways (ä→a, ae→a) — manuals and extractors mix "Wärmepumpe" with
+    "Waermepumpe" freely. Applied to every alias/key AND lookup so a
+    digraph label still resolves the umlaut part name."""
     import re
 
-    return re.sub(r"[^a-z0-9äöüß]+", " ", (x or "").lower()).strip()
+    n = re.sub(r"[^a-z0-9äöüß]+", " ", (x or "").lower()).strip()
+    n = n.replace("ä", "a").replace("ö", "o").replace("ü", "u").replace("ß", "ss")
+    return re.sub(r"ae|oe|ue", lambda m: m.group(0)[0], n)
 
 
 from cadx.guide.tools import DONE_GUARDS  # noqa: E402

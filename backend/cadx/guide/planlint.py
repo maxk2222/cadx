@@ -28,7 +28,12 @@ from typing import Any
 
 from structlog import get_logger
 
-from cadx.guide.assembly_tools import _PLACE_ACTIONS, _resolve_name
+from cadx.guide.assembly_tools import (
+    _PLACE_ACTIONS,
+    _name_index,
+    _norm2,
+    _resolve_name,
+)
 from cadx.guide.session import GuideToolSession
 
 log = get_logger(__name__)
@@ -41,6 +46,20 @@ def _resolve_part(sess: GuideToolSession, name: str | None, step_no: int) -> str
     st = sess.state.step_by_number(step_no)
     ctx = f"{st.text} {st.title}" if st else ""
     return _resolve_name(sess, name, context=ctx)
+
+
+def _suggest(sess: GuideToolSession, name: str) -> str:
+    """Closest registered name/alias for an unresolvable reference — gives
+    the repair mission a concrete target instead of a dead end."""
+    import difflib
+
+    keys = list(sess._aliases_store) + list(_name_index(sess))
+    close = difflib.get_close_matches(_norm2(name), keys, n=1, cutoff=0.6)
+    if close:
+        pid = sess._aliases_store.get(close[0]) or _name_index(sess).get(close[0])
+        return f" — did you mean '{pid or close[0]}'?"
+    ids = [p.id for p in sess.state.parts][:8]
+    return f" — registered parts: {ids}"
 
 
 def _lint_refs(
@@ -60,8 +79,9 @@ def _lint_refs(
                             "mission": "steps",
                             "severity": "blocker",
                             "text": f"step {st.number} sub {i}: target '{name}' "
-                            "matches no registered part — fix the reference "
-                            "text or alias the intended part",
+                            "matches no registered part"
+                            + _suggest(sess, name)
+                            + " — fix the reference text or alias the part",
                         }
                     )
             if ss.action in _PLACE_ACTIONS:
@@ -74,8 +94,9 @@ def _lint_refs(
                             "mission": "parts",
                             "severity": "blocker",
                             "text": f"step {st.number} sub {i}: part '{ss.part}' "
-                            "matches no registered part — register/alias the "
-                            "uploaded asset it names (or fix the sub-step text)",
+                            "matches no registered part"
+                            + _suggest(sess, ss.part)
+                            + " — register/alias the asset or fix the text",
                         }
                     )
     # anchors: referenced but never placed — preassembly places them at the

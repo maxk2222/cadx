@@ -60,11 +60,16 @@ def _tool_failures(result: Any, limit: int = 6) -> list[str]:
                 ) or "ok=false"
                 fails.append(f"{e.get('name')}: {str(detail)[:160]}")
         elif isinstance(res, str) and '"ok": false' in res:
-            # _truncate can stringify long results — salvage the error
-            # field so the retry nudge still names the actual cause
-            m = re.search(r'"error"\s*:\s*"((?:[^"\\]|\\.)*)"', res)
-            detail = m.group(1)[:160] if m else "(truncated failure)"
-            fails.append(f"{e.get('name')}: {detail}")
+            # _truncate can stringify long results — salvage a useful cause.
+            # audit results carry per-joint "ok": false rows but the real
+            # story is bad_joints/buried_instances, not the "error" field
+            detail = None
+            for key in ("error", "bad_joints", "buried_instances", "issues"):
+                m = re.search(rf'"{key}"\s*:\s*(\[.*?\]|"((?:[^"\\]|\\.)*)")', res)
+                if m:
+                    detail = f"{key}: {m.group(1)[:160]}"
+                    break
+            fails.append(f"{e.get('name')}: {detail or '(truncated failure)'}")
     return fails[-limit:]
 
 

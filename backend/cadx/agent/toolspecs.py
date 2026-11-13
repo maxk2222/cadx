@@ -2125,12 +2125,19 @@ class ToolSession:
         req = spec.get("parameters", {}).get("required") or []
         missing = [k for k in req if not isinstance(args, dict) or k not in args]
         if missing:
-            props = list(spec.get("parameters", {}).get("properties", {}).keys())
+            props = spec.get("parameters", {}).get("properties", {})
+            shape = []
+            for k, v in props.items():
+                items_req = ((v or {}).get("items") or {}).get("required")
+                if (v or {}).get("type") == "array" and items_req:
+                    shape.append(f"{k}: [{{{', '.join(items_req)}}}, ...]")
+                else:
+                    shape.append(k)
             result = {
                 "ok": False,
                 "error": (
                     f"missing required argument(s): {', '.join(missing)} — "
-                    f"call {name} with args {{{', '.join(props)}}}"
+                    f"call {name} with args {{{', '.join(shape)}}}"
                 ),
             }
             self.tool_log.append({"name": name, "args": _truncate_args(args), "result": result})

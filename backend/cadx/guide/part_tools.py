@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cadx.guide import cadmeta
-from cadx.guide.assembly_tools import _tokset
+from cadx.guide.assembly_tools import _norm2, _tokset
 from cadx.guide.state import GuidePart
 from cadx.guide.tools import _b, _fn, _s
 from cadx.logging import get_logger
@@ -215,7 +215,7 @@ def _required_names(s: GuideToolSession) -> list[str]:
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9äöüß]+", " ", s.lower()).strip()
+    return _norm2(s)
 
 
 _CAT_TERMS: list[tuple[str, re.Pattern[str]]] = [

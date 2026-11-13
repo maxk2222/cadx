@@ -1,33 +1,125 @@
 {
-  "name": "kiara_guide_bare",
-  "project": "eval:kiara-guide-bare",
-  "difficulty": 4,
-  "description": "Ablation: minimal prompt, no canned answers — the agent must extract everything from the PDF on its own. Tests clarification-free autonomy.",
-  "stages": [
+ "name": "kiara_guide_bare",
+ "project": "eval:kiara-guide-bare",
+ "difficulty": 4,
+ "description": "Ablation: minimal prompt, no canned answers — the agent must extract everything from the PDF on its own. Tests clarification-free autonomy.",
+ "stages": [
+  {
+   "id": "guide",
+   "type": "guide",
+   "timeout_s": 5400,
+   "pdf": "evals/assets/kiara_heatpump/Montageanleitung_Demonstrator_KIARA_v2.pdf",
+   "cad_parts": [
+    "evals/assets/kiara_heatpump/Casing.glb",
+    "evals/assets/kiara_heatpump/Adapter_rn22_internal_thread_to_plain.glb",
+    "evals/assets/kiara_heatpump/Pipe_l70.glb",
+    "evals/assets/kiara_heatpump/Pipe_l500.glb",
+    "evals/assets/kiara_heatpump/Elbow_90deg_RN22_socket_to_spigot.glb",
+    "evals/assets/kiara_heatpump/Elbow_90deg_RN22_soket_to_socket.glb"
+   ],
+   "prompt": "AR-Montageanleitung aus der beigefuegten PDF erstellen.",
+   "answers": [],
+   "allow_generation": false,
+   "max_resumes": 0,
+   "gates": [
     {
-      "id": "guide",
-      "type": "guide",
-      "timeout_s": 5400,
-      "pdf": "evals/assets/kiara_heatpump/Montageanleitung_Demonstrator_KIARA_v2.pdf",
-      "cad_parts": [
-        "evals/assets/kiara_heatpump/Casing.glb",
-        "evals/assets/kiara_heatpump/Adapter_rn22_internal_thread_to_plain.glb",
-        "evals/assets/kiara_heatpump/Pipe_l70.glb",
-        "evals/assets/kiara_heatpump/Pipe_l500.glb",
-        "evals/assets/kiara_heatpump/Elbow_90deg_RN22_socket_to_spigot.glb",
-        "evals/assets/kiara_heatpump/Elbow_90deg_RN22_soket_to_socket.glb"
+     "type": "status",
+     "expect": [
+      "succeeded",
+      "needs_review"
+     ]
+    },
+    {
+     "type": "guide_steps",
+     "min": 8,
+     "all": [
+      "adapter",
+      [
+       "pipe",
+       "rohr"
       ],
-      "prompt": "AR-Montageanleitung aus der beigefuegten PDF erstellen.",
-      "answers": [],
-      "allow_generation": false,
-      "max_resumes": 0,
-      "gates": [
-        { "type": "status", "expect": ["succeeded", "needs_review"] },
-        { "type": "guide_steps", "min": 8, "all": ["adapter", ["pipe", "rohr"], ["elbow", "bogen"]] },
-        { "type": "guide_parts", "min": 6, "all": [["casing", "gehause", "gehäuse", "housing"], "adapter", ["pipe", "rohr"], ["elbow", "bogen", "rohrbogen"]] },
-        { "type": "guide_placed", "min": 10 },
-        { "type": "guide_mate_quality", "max_gap_mm": 30.0, "min_normal_dot": -0.95 }
+      [
+       "elbow",
+       "bogen"
       ]
+     ]
+    },
+    {
+     "type": "guide_parts",
+     "min": 6,
+     "all": [
+      [
+       "casing",
+       "gehause",
+       "gehäuse",
+       "housing"
+      ],
+      "adapter",
+      [
+       "pipe",
+       "rohr"
+      ],
+      [
+       "elbow",
+       "bogen",
+       "rohrbogen"
+      ]
+     ]
+    },
+    {
+     "type": "guide_placed",
+     "min": 10
+    },
+    {
+     "type": "guide_mate_quality",
+     "max_gap_mm": 30.0,
+     "min_normal_dot": -0.95
+    },
+    {
+     "type": "guide_joints",
+     "min": 9,
+     "all": [
+      [
+       "adapter",
+       [
+        "casing",
+        "gehause",
+        "gehäuse",
+        "housing"
+       ]
+      ],
+      [
+       "70",
+       "adapter"
+      ],
+      [
+       [
+        "elbow",
+        "bogen"
+       ],
+       "adapter"
+      ],
+      [
+       "500",
+       [
+        "elbow",
+        "bogen"
+       ]
+      ],
+      [
+       [
+        "elbow",
+        "bogen"
+       ],
+       "500"
+      ]
+     ]
+    },
+    {
+     "type": "guide_score",
+     "min": 6.0
     }
-  ]
+   ]
+  }
+ ]
 }

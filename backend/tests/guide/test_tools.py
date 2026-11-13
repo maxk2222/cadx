@@ -429,3 +429,81 @@ def test_resolve_asset_rescues_hallucinated_uuid() -> None:
         sess, "deadbeef-0000-1111-2222-333344445555",
         part_id="bogen", name="Rohrbogen",
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_image_lookup_circuit_breaker() -> None:
+    """Repeated invalid figure/page lookups short-circuit after the cap —
+    the missing-part eval run burned its whole review mission on these."""
+    from cadx.guide.session import _IMAGE_FAIL_CAP
+
+    sess = GuideToolSession(
+        MagicMock(), mission="review", state=GuideState(), state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[], executor=None,
+    )
+    for _ in range(_IMAGE_FAIL_CAP):
+        res = await sess._dispatch(
+            "get_figure_image", {"page": 99, "figure_index": 99}
+        )
+        assert res["ok"] is False
+    assert sess._bad_image_calls == _IMAGE_FAIL_CAP
+    res = await sess._dispatch("get_figure_image", {"page": 99, "figure_index": 99})
+    assert res["ok"] is False
+    assert "disabled" in res["error"]
+    res = await sess._dispatch("get_page_image", {"page": 99})
+    assert res["ok"] is False and "disabled" in res["error"]
+
+
+def test_resolve_name_digraph_fold() -> None:
+    """'Waermepumpe'/'Rohr DN 22, l = 70 mm' style labels resolve the
+    umlaut/punctuation part names — the blocker pattern from eval run 2."""
+    from types import SimpleNamespace
+
+    from cadx.guide.state import GuidePart
+
+    state = GuideState()
+    state.parts = [
+        GuidePart(id="casing", name="Wärmepumpe Gehäuse"),
+        GuidePart(id="pipe_l70", name="Rohr DN22 l=70mm"),
+    ]
+    sess = SimpleNamespace(state=state, _aliases_store={})
+    from cadx.guide.assembly_tools import _resolve_name
+
+    assert _resolve_name(sess, "Waermepumpe") == "casing"
+    assert _resolve_name(sess, "Wärmepumpe Gehäuse") == "casing"
+    assert _resolve_name(sess, "Rohr DN 22, l = 70 mm") == "pipe_l70"
+
+
+@pytest.mark.asyncio
+async def test_solve_attachment_empty_ports_names_fix() -> None:
+    """Empty port lists mean 'features not extracted' — the error must name
+    get_part_features, not just echo empty lists."""
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import solve_attachment_preview
+    from cadx.guide.state import AssemblyInstance, GuidePart
+
+    state = GuideState()
+    state.parts = [
+        GuidePart(id="pipe", name="Pipe", ports=[]),
+        GuidePart(id="elbow", name="Elbow", ports=[]),
+    ]
+    state.assembly.instances = [
+        AssemblyInstance(
+            instance_id="elbow#1", part_id="elbow",
+            transform=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+        )
+    ]
+    sess = SimpleNamespace(state=state, _aliases_store={})
+    res = await solve_attachment_preview(
+        sess,
+        {
+            "part_id": "pipe",
+            "target_part_id": "elbow#1",
+            "moving_port": "rim_0",
+            "target_port": "rim_1",
+        },
+    )
+    assert res["ok"] is False
+    assert "get_part_features" in res["error"]
