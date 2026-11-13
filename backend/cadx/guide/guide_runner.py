@@ -75,13 +75,18 @@ def _tool_failures(result: Any, limit: int = 6) -> list[str]:
         elif isinstance(res, str) and '"ok": false' in res:
             # _truncate can stringify long results — salvage a useful cause.
             # audit results carry per-joint "ok": false rows but the real
-            # story is bad_joints/buried_instances, not the "error" field
+            # story is bad_joints/buried_instances, not the "error" field.
+            # Slice the raw tail after the key — a truncated array has no
+            # closing bracket for a regex to match, which is exactly where
+            # "(truncated failure)" used to hide the cause.
             detail = None
-            for key in ("error", "bad_joints", "buried_instances", "issues"):
-                m = re.search(rf'"{key}"\s*:\s*(\[.*?\]|"((?:[^"\\]|\\.)*)")', res)
-                if m and m.group(1) not in ("[]", '""'):
-                    detail = f"{key}: {m.group(1)[:160]}"
-                    break
+            for key in ("error", "bad_joints", "buried_instances", "issues", "collisions"):
+                m = re.search(rf'"{key}"\s*:\s*', res)
+                if m:
+                    tail = res[m.end() : m.end() + 160].strip()
+                    if tail and tail not in ("[]", '""', "null"):
+                        detail = f"{key}: {tail}"
+                        break
             fails.append(f"{e.get('name')}: {detail or '(truncated failure)'}")
     return fails[-limit:]
 

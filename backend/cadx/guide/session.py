@@ -466,7 +466,9 @@ class GuideToolSession(ToolSession):
         }
 
     def _tool_get_part_features(self, a: dict[str, Any]) -> dict[str, Any]:
-        p = self.state.part_by_id(str(a.get("part_id", "")))
+        from cadx.guide.assembly_tools import _part_ref
+
+        p = _part_ref(self, a.get("part_id", ""))
         if p is None:
             ids = [x.id for x in self.state.parts][:15]
             return {"ok": False, "error": f"part '{a.get('part_id')}' not found — valid part_ids: {ids}"}
