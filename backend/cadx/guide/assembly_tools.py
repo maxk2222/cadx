@@ -768,10 +768,10 @@ def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
     return None
 
 
-def _norm2(x: str) -> str:
+def _norm2(x: str | None) -> str:
     import re
 
-    return re.sub(r"[^a-z0-9äöüß]+", " ", x.lower()).strip()
+    return re.sub(r"[^a-z0-9äöüß]+", " ", (x or "").lower()).strip()
 
 
 from cadx.guide.tools import DONE_GUARDS  # noqa: E402
