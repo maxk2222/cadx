@@ -1195,6 +1195,41 @@ def _gate_outcome(  # noqa: C901
         want = int(g.get("min") or 1)
         return GateResult(name, len(outcome.asset_ids) >= want, measured=len(outcome.asset_ids))
 
+    if name == "guide_joints":
+        # authoritative mate graph — pairs of (moving part, fixed part)
+        # that must exist in the emitted joints; synonym lists tolerated
+        doc = outcome.extras.get("guide")
+        if not isinstance(doc, dict):
+            return GateResult(
+                name,
+                None,
+                detail="no unity_guide.json on the outcome — guide emit never ran",
+            )
+        joints = [j for j in doc.get("joints") or [] if isinstance(j, dict)]
+        pairs = [
+            (f"{j.get('moving_part', '')}".lower(), f"{j.get('fixed_part', '')}".lower())
+            for j in joints
+        ]
+        missing = []
+        for pair in g.get("all") or []:
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                continue
+            mov_grp = [str(v).lower() for v in (pair[0] if isinstance(pair[0], list) else [pair[0]])]
+            fix_grp = [str(v).lower() for v in (pair[1] if isinstance(pair[1], list) else [pair[1]])]
+            hit = any(
+                any(m in mp for m in mov_grp) and any(f in fp for f in fix_grp)
+                for mp, fp in pairs
+            )
+            if not hit:
+                missing.append(f"{mov_grp[0]}→{fix_grp[0]}")
+        ok = not missing and len(joints) >= int(g.get("min") or 0)
+        return GateResult(
+            name,
+            ok,
+            measured={"n_joints": len(joints), "missing_pairs": missing or None},
+            expected={"all": g.get("all"), "min": g.get("min")},
+        )
+
     if name in ("guide_steps", "guide_parts", "guide_placed", "guide_score"):
         # anleitungsbuilder evidence — parsed unity_guide.json the driver
         # stored on extras["guide"]; absent → inconclusive, never silently ok

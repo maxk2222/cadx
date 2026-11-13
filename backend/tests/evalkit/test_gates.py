@@ -1177,3 +1177,47 @@ def test_guide_gates_fail_on_missing_evidence():
     )
     assert [g.ok for g in gates] == [False, False, False, False]
     assert gates[1].measured["missing"] == ["nonexistent_part"]
+
+
+def test_guide_joints_gate():
+    """The emitted joint graph is verifiable mate evidence — expected
+    (moving_part → fixed_part) pairs must appear, with synonym groups."""
+    o = _out()
+    doc = _guide_doc()
+    doc["joints"] = [
+        {"moving_part": "adapter", "fixed_part": "casing", "step": 2},
+        {"moving_part": "pipe_l70", "fixed_part": "adapter", "step": 4},
+        {"moving_part": "elbow_spigot", "fixed_part": "adapter", "step": 6},
+        {"moving_part": "pipe_l500", "fixed_part": "elbow_spigot", "step": 8},
+        {"moving_part": "elbow_socket", "fixed_part": "pipe_l500", "step": 9},
+    ]
+    o.extras["guide"] = doc
+    gates = run_gates(
+        [
+            {
+                "type": "guide_joints",
+                "min": 4,
+                "all": [
+                    ["adapter", ["casing", "gehause"]],
+                    ["70", "adapter"],
+                    [["elbow", "bogen"], "adapter"],
+                    ["500", ["elbow", "bogen"]],
+                    [["elbow", "bogen"], "500"],
+                ],
+            }
+        ],
+        o,
+        wall_s=1.0,
+    )
+    assert gates[0].ok is True, gates[0].measured
+
+    # a wrong-direction pair must fail — pipe on pipe is physically invalid
+    gates = run_gates([{"type": "guide_joints", "all": [["adapter", "70"]]}], o, wall_s=1.0)
+    assert gates[0].ok is False
+    assert "adapter→70" in gates[0].measured["missing_pairs"]
+
+    # no joints emitted at all — inconclusive only when the doc is missing;
+    # an empty joints list on a real doc is a hard fail of `min`
+    doc["joints"] = []
+    gates = run_gates([{"type": "guide_joints", "min": 1}], o, wall_s=1.0)
+    assert gates[0].ok is False

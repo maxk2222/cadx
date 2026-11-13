@@ -51,7 +51,12 @@
           "type": "guide_parts",
           "min": 6,
           "all": [
-            "casing",
+            [
+              "casing",
+              "gehause",
+              "gehäuse",
+              "housing"
+            ],
             "adapter",
             [
               "pipe",
@@ -67,6 +72,46 @@
         {
           "type": "guide_placed",
           "min": 10
+        },
+        {
+          "type": "guide_joints",
+          "min": 9,
+          "all": [
+            [
+              "adapter",
+              [
+                "casing",
+                "gehause",
+                "gehäuse",
+                "housing"
+              ]
+            ],
+            [
+              "70",
+              "adapter"
+            ],
+            [
+              [
+                "elbow",
+                "bogen"
+              ],
+              "adapter"
+            ],
+            [
+              "500",
+              [
+                "elbow",
+                "bogen"
+              ]
+            ],
+            [
+              [
+                "elbow",
+                "bogen"
+              ],
+              "500"
+            ]
+          ]
         },
         {
           "type": "guide_score",

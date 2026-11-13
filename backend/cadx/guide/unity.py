@@ -230,6 +230,26 @@ def build_unity_guide(state) -> dict[str, Any]:
             for p in state.parts
         ],
         "steps": steps_out,
+        # durable joint graph — the authoritative mate evidence the planner
+        # and agent produced; gates + downstream tooling verify against THIS,
+        # not derived arrows or free-text claims
+        "joints": [
+            {
+                k: j.get(k)
+                for k in (
+                    "step",
+                    "moving_part",
+                    "fixed_part",
+                    "moving_instance",
+                    "fixed_instance",
+                    "moving_port",
+                    "fixed_port",
+                    "bridge",
+                )
+                if j.get(k) is not None
+            }
+            for j in state.assembly.joints
+        ],
         "review": {"score": state.review.score, "iterations": state.review.iteration},
     }
 
