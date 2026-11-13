@@ -342,3 +342,45 @@ def test_pick_target_pairs_symmetric_1to1() -> None:
     })
     second = pa._pick_target_instance(sess, "adapter", moving_pid="pipe")
     assert second == "adapter#2"
+
+
+def test_port_qualifier_words_do_not_poison_side_signature() -> None:
+    """'obere Öffnung des linken unteren Rohrbogens' — 'obere' modifies the
+    PORT, not the elbow's location. A {links,unten,oben} ref that isn't
+    covered by the elbow's {links,unten} sig spawned a phantom premount
+    instance in the live run (duplicate elbows, horizontal L500s)."""
+    parts = [
+        GuidePart(id="casing", name="Gehäuse"),
+        GuidePart(id="adapter", name="Adapter DN22"),
+        GuidePart(id="l500", name="Rohr DN22, l = 500 mm"),
+        GuidePart(id="elbow_in", name="Rohrbogen DN22, 1x außen 1x innen"),
+        GuidePart(id="elbow_out", name="Rohrbogen DN22, 2x außen"),
+    ]
+    sess = _sess(parts)
+    tasks = [
+        {"step": 1, "substep_idx": -1, "part": "casing", "target": "", "anchor": True},
+        {"step": 2, "substep_idx": 0, "part": "adapter", "target": "Gehäuse",
+         "text": "Adapter auf das Gewinde des linken oberen Anschlusses"},
+        {"step": 3, "substep_idx": 0, "part": "adapter", "target": "Gehäuse",
+         "text": "Adapter auf das Gewinde des rechten oberen Anschlusses"},
+        {"step": 6, "substep_idx": 0, "part": "Rohrbogen DN22, 1x außen 1x innen",
+         "target": "Adapter",
+         "text": "Rohrbogen in den vormontierten Adapter am linken unteren "
+                "Anschluss einstecken, Öffnung zeigt nach oben"},
+        {"step": 7, "substep_idx": 0, "part": "Rohrbogen DN22, 1x außen 1x innen",
+         "target": "Adapter",
+         "text": "Rohrbogen in den vormontierten Adapter am rechten unteren "
+                "Anschluss einstecken, Öffnung zeigt nach oben"},
+        {"step": 8, "substep_idx": 0, "part": "Rohr DN22, l = 500 mm",
+         "target": "Rohrbogen DN22, 1x außen 1x innen",
+         "text": "Rohr DN22 l=500mm in die obere Öffnung des linken unteren "
+                "Rohrbogens einstecken"},
+        {"step": 10, "substep_idx": 0, "part": "Rohr DN22, l = 500 mm",
+         "target": "Rohrbogen DN22, 1x außen 1x innen",
+         "text": "Rohr DN22 l=500mm in die obere Öffnung des rechten unteren "
+                "Rohrbogens einstecken"},
+    ]
+    out = pa._spawn_premounts(sess, tasks)
+    prems = [t for t in out if t.get("premount")]
+    # only the two lower adapter premounts — NO elbow premounts
+    assert len(prems) == 2 and all(t["part"] == "adapter" for t in prems)

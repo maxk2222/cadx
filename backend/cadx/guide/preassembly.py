@@ -145,6 +145,21 @@ def _spawn_premounts(
             " ",
             first_clause.lower(),
         )
+        # port qualifiers modify a FEATURE, not the instance location:
+        # "obere Öffnung des linken unteren Rohrbogens" locates the elbow
+        # left+lower — "obere" describes its port and must stay out of the
+        # side signature (a phantom {links,unten,oben} ref spawned a bogus
+        # premount elbow). "Anschluss"/"Seite" stay — they name the
+        # instance's mount location in these manuals.
+        first_clause = re.sub(
+            r"\b(ober|oberer|obere|oberen|unter|unterer|untere|unteren|"
+            r"linker|linke|linken|rechter|rechte|rechten|"
+            r"upper|lower|top|bottom|left|right)\s+"
+            r"(öffnung|muffe|bohrung|lippe|kante|ende|"
+            r"opening|socket|bore|mouth|lip|edge|end)\w*",
+            r" \2",
+            first_clause,
+        )
         return _side_words(f"{t.get('target') or ''} {first_clause}")
 
     # every task contributes its own side signature — an instance only
