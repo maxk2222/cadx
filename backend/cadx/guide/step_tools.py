@@ -178,7 +178,26 @@ def _step_fields(a: dict[str, Any]) -> dict[str, Any]:
             out[k] = str(a[k])
     for k in ("required_parts", "tools"):
         if k in a:
-            out[k] = [str(x) for x in (a[k] or []) if str(x).strip()][:20]
+            v = a[k]
+            # models sometimes send the list as a string literal
+            # ("['Rohr DN22']") — iterating that string would store
+            # single characters, so parse list-shaped strings first
+            if isinstance(v, str):
+                s = v.strip()
+                if s.startswith("["):
+                    try:
+                        import ast as _ast
+                        import json as _json
+
+                        try:
+                            v = _json.loads(s)
+                        except _json.JSONDecodeError:
+                            v = _ast.literal_eval(s)
+                    except (ValueError, SyntaxError):
+                        v = [s]
+                else:
+                    v = [s] if s else []
+            out[k] = [str(x) for x in (v or []) if str(x).strip()][:20]
     if "source_pages" in a:
         pages: set[int] = set()
         for x in a["source_pages"] or []:
@@ -220,6 +239,19 @@ async def create_steps(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
             continue
         media = item.pop("media", None)
         subs = item.pop("sub_steps", None) or []
+        if isinstance(subs, str):
+            # string-encoded list from the model — iterating it would
+            # explode one sub-step per character
+            try:
+                import ast as _ast
+                import json as _json
+
+                try:
+                    subs = _json.loads(subs)
+                except _json.JSONDecodeError:
+                    subs = _ast.literal_eval(subs)
+            except (ValueError, SyntaxError):
+                subs = []
         res = await create_step(s, item)
         if not res.get("ok"):
             errors.append({"index": idx, "number": item.get("number"), "error": res.get("error")})

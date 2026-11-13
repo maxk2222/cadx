@@ -223,8 +223,12 @@ class GuideToolSession(ToolSession):
         # burned whole mission budgets — after _IMAGE_FAIL_CAP failures the
         # tools short-circuit and redirect the agent to renders/audits
         if name in _IMAGE_TOOLS and self._bad_image_calls >= _IMAGE_FAIL_CAP:
+            # _streak_exempt: a guardrail message, not a model error — it
+            # must not feed error_streak or the breaker itself kills the
+            # mission it exists to protect
             return {
                 "ok": False,
+                "_streak_exempt": True,
                 "error": "PDF image lookups disabled for this session "
                 "after repeated invalid indices — verify via "
                 "render_assembly and the numeric audits instead",

@@ -72,8 +72,11 @@ def _lint_refs(
     first_place: dict[str, int] = {}
     for st in steps:
         for i, ss in enumerate(st.sub_steps):
+            # only PLACEMENT targets must resolve — check/orient targets are
+            # context anchors (the pre-existing host, walls, "Wärmepumpe")
+            # that legitimately match no kit part
             for name in (ss.target, ss.target2):
-                if name and not _resolve_name(sess, name):
+                if name and ss.action in _PLACE_ACTIONS and not _resolve_name(sess, name):
                     findings.append(
                         {
                             "mission": "steps",
@@ -123,6 +126,8 @@ def _lint_order(
     findings: list[dict[str, Any]] = []
     for st in steps:
         for i, ss in enumerate(st.sub_steps):
+            if ss.action not in _PLACE_ACTIONS:
+                continue
             for name in (ss.target, ss.target2):
                 if not name:
                     continue

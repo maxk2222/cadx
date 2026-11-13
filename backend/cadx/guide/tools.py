@@ -99,6 +99,10 @@ MISSION_TOOLS: dict[str, list[str]] = {
         "assign_media",
         "reorder_steps",
         "finalize_steps",
+        # manuals name parts freely ("Wärmepumpe" for the registered
+        # "casing") — a steps repair needs alias_part to map the manual's
+        # label onto the registered asset, not only text edits
+        "alias_part",
         *SHARED_PAGE_TOOLS,
         *SHARED_STATE_TOOLS,
         *SHARED_PLAN_TOOLS,
