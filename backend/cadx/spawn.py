@@ -219,6 +219,7 @@ async def spawn_guide(
     cad_asset_ids: list[uuid.UUID | str] | None = None,
     prompt: str = "",
     allow_generation: bool = True,
+    attach_images: bool = True,
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> tuple[Version, Job]:
     """Spawn an anleitungsbuilder run: companion Part+Version (kind=guide)
@@ -260,7 +261,10 @@ async def spawn_guide(
         asset_ids=[str(pdf_asset.id), *cad_ids],
         extra_version={
             "id": vid,
-            "options": {"guide_allow_generation": allow_generation},
+            "options": {
+                "guide_allow_generation": allow_generation,
+                "guide_attach_images": attach_images,
+            },
         },
         extra_job={
             "resume_state": {

@@ -103,6 +103,9 @@ class EvalStage(BaseModel):
     answers: list[str] = Field(default_factory=list)
     # False = uploads must cover every required part (no agent generation)
     allow_generation: bool = True
+    # False = text-only ablation: no page/figure/render images reach the
+    # agent — extraction and assembly must work from text + geometry
+    attach_images: bool = True
     max_resumes: int = 3  # parked-question rounds before the stage cancels
     # execution
     timeout_s: float = 7200.0
@@ -137,7 +140,7 @@ class EvalCase(BaseModel):
 
     name: str
     project: str = ""  # defaults to eval:<name>
-    difficulty: Literal[1, 2, 3] = 1
+    difficulty: Literal[1, 2, 3, 4, 5] = 1
     description: str = ""
     images: list[str] = Field(default_factory=list)  # case-level input images
     settings: dict[str, Any] = Field(default_factory=dict)  # ProjectSettings overrides

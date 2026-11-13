@@ -652,6 +652,7 @@ class HttpDriver:
                 "cad_asset_ids": cad_ids,
                 "prompt": stage.prompt,
                 "allow_generation": stage.allow_generation,
+                "attach_images": stage.attach_images,
             },
         )
         vid, jid = str(enq.get("version_id")), str(enq.get("job_id"))

@@ -915,6 +915,7 @@ class LocalDriver:
                 cad_asset_ids=cad_ids,
                 prompt=stage.prompt,
                 allow_generation=stage.allow_generation,
+                attach_images=stage.attach_images,
                 enqueue_fn=_noop_enqueue,
             )
         vid, jid = v.id, j.id

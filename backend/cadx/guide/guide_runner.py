@@ -257,6 +257,12 @@ def _load_or_init_state(
             output_dir=str(state_dir),
             allow_part_generation=allow_generation,
         )
+        # the user's request is durable context for EVERY mission —
+        # without this the prompt only lives on the version row and the
+        # extraction/assembly agents never see requirements like
+        # "watch the gasket washers" or "crimp all joints at the end"
+        if ctx.prompt and ctx.prompt.strip():
+            state.user_notes.append(ctx.prompt.strip())
         state.save(state_dir)
     # resume: fold the answered clarification into pending_answers
     if resume_state.get("answers_text"):
@@ -444,6 +450,7 @@ async def run_guide(
     state_dir: Path,
     resume_state: dict[str, Any],
     allow_generation: bool = True,
+    attach_images: bool = True,
     park_job: Any = None,
 ) -> RunOutcome:
     """Mission loop. ``park_job`` (optional) is invoked with the question
@@ -468,7 +475,7 @@ async def run_guide(
             project_id=ctx.project_id or ctx.version_id,
             guide_assets=assets,
             executor=ctx.executor,
-            attach_images=True,
+            attach_images=attach_images,
             emit=ctx.emit,
             park_fn=_park,
             check_cancel=ctx.check_cancel,

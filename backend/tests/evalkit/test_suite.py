@@ -41,9 +41,12 @@ def test_shipped_suite_loads_and_validates():
         "robot_arm_infill_guided",
         "robot_arm_mount",
         "robot_arm_mount_autonomous",
+        "kiara_guide_bare",
+        "kiara_guide_textonly",
+        "kiara_guide_missing_part",
     ]
     assert [c.difficulty for c in cases] == [
-        1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3
+        1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 5
     ]
     for c in cases:
         assert c.project.startswith("eval:")
@@ -136,6 +139,9 @@ def test_suite_files_present():
         "bearing_bracket_topopt.json",
         "block_sidewall_tap.json",
         "helical_pinion_shaft.json",
+        "kiara_guide_bare.json",
+        "kiara_guide_missing_part.json",
+        "kiara_guide_textonly.json",
         "kiara_heatpump_guide.json",
         "l_bracket_rib.json",
         "m10_csk_screw.json",

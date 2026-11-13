@@ -164,6 +164,9 @@ class GuideRequest(BaseModel):
     # False = every needed part must come from the uploads; the parts
     # mission may only alias/register, never spawn a generation job
     allow_generation: bool = True
+    # False = degraded-input mode: tool results carry no page/render
+    # images — the agent works from extracted text and geometry alone
+    attach_images: bool = True
 
 
 # --------------------------------------------------------------------------- #
