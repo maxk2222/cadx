@@ -160,7 +160,8 @@ def _pick_target_instance(
 async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
     """Place what the step plan determines — returns (and persists) a report."""
     report: dict[str, Any] = {"placed": [], "skipped": [], "failed": []}
-    for task in _plan(sess):
+    tasks = _plan(sess)
+    for ti, task in enumerate(tasks):
         pid = _resolve_name(sess, task["part"])
         if not pid:
             report["failed"].append({**task, "reason": f"unresolved part '{task['part']}'"})
@@ -168,7 +169,7 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
         if _already_satisfied(sess, task["step"], pid):
             report["skipped"].append({**task, "reason": "already satisfied"})
             continue
-        placed = await _try_attach(sess, task, pid)
+        placed = await _try_attach(sess, task, pid, _lookahead(sess, tasks, ti, pid))
         if not placed:
             placed = await _try_env(sess, task, pid)
         if placed:
@@ -242,26 +243,64 @@ def _world_dir(transform: list[list[float]], vec: list[float]) -> list[float]:
     return [sum(transform[r][c] * vec[c] for c in range(3)) for r in range(3)]
 
 
+def _lookahead(
+    sess: GuideToolSession,
+    tasks: list[dict[str, Any]],
+    ti: int,
+    pid: str,
+) -> tuple[list[tuple[int, float]], str | None]:
+    """Direction/orient requirements of the NEXT task mating onto this
+    part — the elbow being placed now must leave a free port facing where
+    the 'vertikales Rohr' will need it. Applies only when the next task's
+    target resolves to this part or to nothing (chain fallback); a target
+    resolving elsewhere constrains that part, not this one."""
+    for nxt in tasks[ti + 1 :]:
+        npid = _resolve_name(sess, nxt["part"])
+        if not npid or npid == pid:
+            continue
+        tpid = _resolve_name(sess, nxt.get("target") or "")
+        if tpid is not None and tpid != pid:
+            return [], None
+        text = f"{nxt.get('target') or ''} {nxt.get('text') or ''}"
+        return _dir_axes(text), _orient_word(text)
+    return [], None
+
+
 def _orient_score(
     moving: Any,
     mated_port: str,
     transform: list[list[float]],
     axes: list[tuple[int, float]],
     orient: str | None,
+    next_axes: tuple[list[tuple[int, float]], str | None] = ([], None),
 ) -> float:
     """How well the candidate leaves the part ready for the NEXT mate:
     remaining ports should face the hinted direction (an elbow mounted
     'unten' keeps its free socket pointing down for the vertical pipe),
     and 'vertikal'/'horizontal' pin the part's dominant bbox axis."""
     score = 0.0
+    n_axes, n_orient = next_axes
+    free = [p for p in moving.ports if p.name != mated_port]
     if axes:
         best = 0.0
-        for p in moving.ports:
-            if p.name == mated_port:
-                continue
+        for p in free:
             w = _world_dir(transform, p.axis)
             best = max(best, max(sg * w[ax] for ax, sg in axes))
         score += best
+    if n_axes or n_orient:
+        # lookahead: a free port must aim where the NEXT part approaches —
+        # ports mate anti-parallel, so the incoming part extends along the
+        # free port's own axis direction
+        best = 0.0
+        for p in free:
+            w = _world_dir(transform, p.axis)
+            v = max(sg * w[ax] for ax, sg in n_axes) if n_axes else 0.0
+            if n_orient == "V":
+                v = max(v, w[2])
+            elif n_orient == "H":
+                v = max(v, 1.0 - abs(w[2]))
+            best = max(best, v)
+        score += 0.8 * best
     if orient:
         dims = [
             moving.bbox_max[i] - moving.bbox_min[i] for i in range(3)
@@ -383,7 +422,12 @@ def _score_pairs_for_instance(
     return out
 
 
-async def _try_attach(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
+async def _try_attach(
+    sess: GuideToolSession,
+    task: dict[str, Any],
+    pid: str,
+    next_axes: tuple[list[tuple[int, float]], str | None] = ([], None),
+) -> str | None:
     """Port-driven attach onto the best target instance; None if nothing
     works (no pairs / all candidates collide).
 
@@ -483,6 +527,7 @@ async def _try_attach(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
                     or [],
                     axes,
                     orient,
+                    next_axes,
                 ),
                 -_cluster_bbox_growth(
                     sess,

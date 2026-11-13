@@ -45,7 +45,11 @@ def _calls_budget(mission: str, state: GuideState) -> int:
     collide), a fixed cap would break longer manuals."""
     base = _MAX_CALLS.get(mission, 40)
     n = sum(max(1, len(s.sub_steps)) for s in state.steps) or len(state.steps)
-    if mission == "assembly":
+    if mission == "doc":
+        # page-by-page text+figure reads cost ~3 calls per page
+        pages = len((state.document.pages if state.document else []) or [])
+        base = max(base, 10 + 3 * pages)
+    elif mission == "assembly":
         base = max(base, 10 + 6 * n)
     elif mission == "review":
         # the reviewer legitimately renders a preview per step — a fixed cap

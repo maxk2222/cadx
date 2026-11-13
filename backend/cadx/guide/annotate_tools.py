@@ -68,8 +68,21 @@ async def add_arrow(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     if s.state.step_by_number(step_no) is None:
         return {"ok": False, "error": f"step {step_no} not found"}
     pid = str(a.get("part_id", ""))
-    if s.state.part_by_id(pid) is None:
-        return {"ok": False, "error": f"part '{pid}' not found"}
+    part = s.state.part_by_id(pid)
+    if part is None:
+        # models pass instance ids ("pipe_l70#1") or near-miss slugs —
+        # strip the '#n' suffix, then report what actually exists
+        base = pid.split("#", 1)[0]
+        part = s.state.part_by_id(base)
+    if part is None:
+        ids = [p.id for p in s.state.parts][:15]
+        insts = [i.instance_id for i in s.state.assembly.instances][:15]
+        return {
+            "ok": False,
+            "error": f"part '{pid}' not found — valid part_ids: {ids}; "
+            f"instance ids: {insts} (pass part_id, not instance_id)",
+        }
+    pid = part.id
     d = str(a.get("direction", "")).strip().lower()
     vec = _DIR_VECS.get(d)
     if vec is None:
