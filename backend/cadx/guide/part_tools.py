@@ -209,6 +209,19 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
             f"mapped {made or ['<none>']} onto it; use part_id "
             f"'{existing.id}' from here",
         }
+    # part_id uniqueness is a hard invariant — a second asset under an
+    # existing id orphans it (part_by_id finds only the first). Observed:
+    # 'rohr_70mm' registered to an ELBOW file first, then the real
+    # Pipe_l70.glb under the same id → the true mesh became unreachable.
+    taken = s.state.part_by_id(pid)
+    if taken is not None:
+        return {
+            "ok": False,
+            "error": f"part_id '{pid}' is already registered to a different "
+            f"asset ('{taken.name}') — if the manual uses two names for the "
+            f"same physical part, call alias_part('{pid}', '<other name>'); "
+            "if this is a genuinely different part, pick a distinct part_id",
+        }
     if not path.exists():  # noqa: ASYNC240
         return {"ok": False, "error": f"asset file missing: {path}"}
     ext = path.suffix.lower()
@@ -234,6 +247,19 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
     )
     part = await cadmeta.ensure_metadata(part, s.executor)
     s.state.parts.append(part)
+    # name↔file category sanity: 'Rohr l=70' bound to 'Elbow_…_socket.glb'
+    # is almost always a wrong-asset pick (observed: an elbow file
+    # registered under the pipe's name, orphaning the real pipe). Advisory
+    # only — arbitrary part names are legitimate.
+    ncat, _ = _sig(str(part.name))
+    fcat, _ = _sig(path.stem)
+    warn = (
+        f"WARNING: name '{part.name}' looks like a {ncat} but file "
+        f"'{path.name}' looks like a {fcat} — double-check this is the "
+        "right asset; if not, register the correct one under a distinct id"
+        if ncat != "other" and fcat != "other" and ncat != fcat
+        else ""
+    )
     return {
         "ok": part.status == "analyzed",
         "part_id": pid,
@@ -241,9 +267,12 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
         "ports": len(part.ports),
         "bbox": [part.bbox_min, part.bbox_max],
         "error": part.error,
-        "note": "no ports found — mating will use bbox/free placement"
-        if part.status == "analyzed" and not part.ports
-        else "",
+        "note": (warn + " | " if warn else "")
+        + (
+            "no ports found — mating will use bbox/free placement"
+            if part.status == "analyzed" and not part.ports
+            else ""
+        ),
     }
 
 
