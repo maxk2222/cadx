@@ -136,7 +136,15 @@ def _engage_mm(moving_port: PortInfo, fixed_port: PortInfo) -> float:
     0 for unmeasured ports keeps flush mating."""
     sock, plug = _receiver(moving_port, fixed_port)
     if sock is None:
-        return 0.0
+        seat = _thread_seat(moving_port, fixed_port)
+        return seat if seat is not None else 0.0
+    if (
+        _measured(moving_port)
+        and _measured(fixed_port)
+        and _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug)
+    ):
+        seat = _thread_seat(moving_port, fixed_port)
+        return seat if seat is not None else 0.0
     d = _socket_depth(sock)
     if d <= 0.0:
         return 0.0
@@ -273,6 +281,24 @@ def _receiver(a: PortInfo, b: PortInfo) -> tuple[PortInfo | None, PortInfo | Non
     return (a, b) if sa else (b, a)
 
 
+def _thread_seat(moving: PortInfo, fixed: PortInfo) -> float | None:
+    """A nut/female mouth SEATING onto a male stub nested inside a boss
+    socket (union-fitting thread site): the drawn stub often stands
+    coarsely for the real threaded connection — the Innengewinde can't
+    wrap it (bore < stub OD) but the nut still threads at the connection
+    mouth, face landing ~flush there instead of sinking into the socket
+    pocket. Returns the seat tuck (mm the mouth face dips inside the
+    mouth plane) or None when the pair isn't a seat. Only fires on
+    explicit nested stubs — a bare male port still hard-rejects an
+    undersized bore, and the enclosing socket remains legal for parts
+    that actually plug into it."""
+    if moving.gender != "female" or fixed.gender != "male" or fixed.nested_in is None:
+        return None
+    if _outer_r(fixed) > max(_inner_r(moving) * 2.4, _outer_r(moving) * 1.5):
+        return None  # stub is a different size class entirely, not a coarse thread site
+    return min(3.0, _outer_r(fixed) * 0.15)
+
+
 def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
     # different port KINDS can never mate — a flat face can't accept a
     # pipe, a rim can't seat on a plane. Mixed pairs only ever produced
@@ -290,10 +316,16 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
             # versions of the same fit — no thread detection needed.
             sock, plug = _receiver(a, b)
             if sock is None or plug is None:
+                seat = _thread_seat(a, b)
+                if seat is not None:
+                    return 0.5 if _socket_depth(a) < 4.0 else 0.35
                 return -1.0
             # clear radius is ray-measured ~10% low — accept with slack,
             # still hard-reject a plug that can't physically enter
             if _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug):
+                seat = _thread_seat(a, b)
+                if seat is not None:
+                    return 0.5 if _socket_depth(a) < 4.0 else 0.35
                 return -1.0  # socket can't swallow the plug
             # SNUGNESS: the right interface is the TIGHTEST legal fit —
             # a union nut's clear bore and a recessed shoulder are both
@@ -327,8 +359,8 @@ def _is_collar(port: PortInfo, part: GuidePart, *, moving_side: bool) -> bool:
     fitting's collar EDGE, not a mate target — the mouth is the real
     interface. On the moving side only a RECESS-SHADOWED male counts
     (a genuine spigot protrudes past its coincident bore lip)."""
-    if port.gender != "male":
-        return False
+    if port.gender != "male" or port.nested_in is not None:
+        return False  # a stub nested in a boss socket is the thread site, not a collar edge
     pa = _v(port.axis)
     pp = _v(port.pos)
     for q in part.ports:

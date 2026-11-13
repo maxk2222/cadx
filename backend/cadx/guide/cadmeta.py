@@ -263,21 +263,24 @@ def _rim_ports(mesh, part: GuidePart) -> list[PortInfo]:
                 port.depth,
             )
             if stub is not None:
-                tip_pos, stub_in, stub_out = stub
-                # emitted as a MALE tube end — the Außengewinde stub is a
-                # plug a fitting wraps; marking it a socket would let a
-                # plug sink unboundedly into the nut's through-bore
+                _tip_pos, stub_in, stub_out = stub
+                # emitted as a MALE stub — the Außengewinde site a fitting
+                # wraps. The port sits at the ENCLOSING SOCKET'S mouth: the
+                # nut's face lands at the mouth plane when threading on
+                # (the stub continues out past it like a real pipe end),
+                # not sunk inside the boss cavity at tip_pos.
                 ports.append(
                     PortInfo(
                         name=f"rim_{len(ports)}",
                         kind="cylinder",
-                        pos=[round(float(v), 4) for v in tip_pos],
+                        pos=list(port.pos),
                         axis=list(port.axis),
                         gender="male",
                         radius=round(stub_out, 3),
                         inner_radius=round(stub_in, 3),
                         outer_radius=round(stub_out, 3),
                         depth=0.0,
+                        nested_in=port.name,
                     )
                 )
     return ports

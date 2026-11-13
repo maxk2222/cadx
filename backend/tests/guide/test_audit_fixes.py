@@ -657,3 +657,75 @@ def test_review_report_rejects_high_score_on_bad_audit(tmp_path) -> None:
     # an honest low score goes through
     r = asyncio.run(write_review_report(s, {"score": 5.0, "findings": []}))
     assert r["ok"] and r.get("audit_ok") is False
+
+
+def _stub(name: str, *, pos=(0, 0, 0), outer: float, nested_in: str | None) -> PortInfo:
+    return PortInfo(
+        name=name, kind="cylinder", pos=list(pos), axis=[0.0, 0.0, -1.0],
+        radius=outer, inner_radius=outer, outer_radius=outer,
+        depth=0.0, gender="male", nested_in=nested_in,
+    )
+
+
+def test_thread_seat_beats_oversized_socket() -> None:
+    """A nut/female mouth whose bore is too small for a boss-nested male
+    stub still seats ON the thread site — the stub inside a funnel/boss
+    opening is the real interface, not the enclosing socket pocket that
+    would swallow the fitting (adapter landing inside the union nut)."""
+    nut = _phys_part(
+        "adapter", [_sock("mouth", pos=(0, 0, -20), inner=11.0, outer=15.5, seat=0.3, lip=14.75)]
+    )
+    host = _phys_part(
+        "casing",
+        [
+            _sock("funnel", pos=(0, 0, -20), inner=27.0, seat=15.0, outer=0.0, lip=30.0),
+            _stub("stub", pos=(0, 0, -20), outer=21.4, nested_in="funnel"),
+        ],
+    )
+    cands = solver.find_matching_ports(nut, host, include_mismatch=True)
+    assert cands and cands[0]["fixed_port"] == "stub"
+    assert cands[0]["score"] > 0.4
+    # the funnel socket must lose — plugging a nut INTO the nut pocket
+    # is physically wrong
+    funnel = next(c for c in cands if c["fixed_port"] == "funnel")
+    assert funnel["score"] < cands[0]["score"]
+    # seat engagement: a few mm tuck at the mouth plane, not a dive
+    assert 0.0 < solver._engage_mm(
+        nut.ports[0], host.ports[1]
+    ) <= 4.0
+
+
+def test_no_seat_on_bare_stub() -> None:
+    """A bare male stub (not nested in a socket) keeps the hard reject —
+    thread-seat is only for boss-nested thread sites."""
+    nut = _phys_part(
+        "adapter", [_sock("mouth", pos=(0, 0, -20), inner=11.0, outer=15.5, seat=0.3, lip=14.75)]
+    )
+    host = _phys_part("pump", [_stub("stub", outer=21.4, nested_in=None)])
+    cands = solver.find_matching_ports(nut, host, include_mismatch=True)
+    assert not cands or cands[0]["score"] <= 0.0
+
+
+def test_deep_socket_seats_below_thread_mouth() -> None:
+    """A deep receiving socket (the muffe end) seats worse than a shallow
+    thread mouth — the nut face, not the push-fit bore, is the thread
+    interface."""
+    mover = _phys_part(
+        "adapter",
+        [
+            _sock("mouth", pos=(0, 0, -20), inner=11.0, outer=15.5, seat=0.3, lip=14.75),
+            _sock("muffe", pos=(0, 0, 20), axis=(0, 0, 1), inner=9.9, outer=12.8,
+                  seat=500.0, lip=11.0),
+        ],
+    )
+    host = _phys_part(
+        "casing",
+        [_sock("funnel", pos=(0, 0, -20), inner=27.0, seat=15.0),
+         _stub("stub", pos=(0, 0, -20), outer=21.4, nested_in="funnel")],
+    )
+    cands = solver.find_matching_ports(mover, host, include_mismatch=True)
+    assert cands and cands[0]["moving_port"] == "mouth"
+    muffe = next(
+        c for c in cands if c["moving_port"] == "muffe" and c["fixed_port"] == "stub"
+    )
+    assert muffe["score"] < cands[0]["score"]

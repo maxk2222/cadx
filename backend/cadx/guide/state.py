@@ -34,6 +34,8 @@ class PortInfo(BaseModel):
     depth: float = 0.0  # measured bore depth inward (0 = solid/unknown)
     inner_radius: float = 0.0  # clear bore radius inside the port (0 = unmeasured)
     outer_radius: float = 0.0  # rim's outer lip (tube OD / collar OD; 0 = unmeasured)
+    nested_in: str | None = None  # enclosing socket port name — a stub recessed
+    # inside a boss/nut opening (union-fitting thread site), not a collar edge
 
 
 class GuidePart(BaseModel):
