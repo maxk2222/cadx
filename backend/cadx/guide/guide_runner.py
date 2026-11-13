@@ -20,6 +20,7 @@ mission-scoped ``GuideToolSession``:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -59,8 +60,11 @@ def _tool_failures(result: Any, limit: int = 6) -> list[str]:
                 ) or "ok=false"
                 fails.append(f"{e.get('name')}: {str(detail)[:160]}")
         elif isinstance(res, str) and '"ok": false' in res:
-            # _truncate can stringify long results — still flag them
-            fails.append(f"{e.get('name')}: (truncated failure)")
+            # _truncate can stringify long results — salvage the error
+            # field so the retry nudge still names the actual cause
+            m = re.search(r'"error"\s*:\s*"((?:[^"\\]|\\.)*)"', res)
+            detail = m.group(1)[:160] if m else "(truncated failure)"
+            fails.append(f"{e.get('name')}: {detail}")
     return fails[-limit:]
 
 
