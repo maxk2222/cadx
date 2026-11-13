@@ -605,3 +605,104 @@ def test_place_instance_respects_quantity() -> None:
         place_instance(sess, {"part_id": "elbow", "candidate_id": "c2", "step": 1, "premount": True})
     )
     assert r2["ok"] is False and "ships only 1x" in r2["error"], r2
+
+
+def test_place_instance_rejects_candidate_on_wrong_target() -> None:
+    """Plan says 'insert pipe into adapter' but the preview candidate mates
+    to the casing (pipe fits its rim port too → buried-in-host geometry).
+    place_instance must refuse and name the right fixed_part."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.assembly_tools import place_instance
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts += [
+        GuidePart(id="casing", name="Gehäuse"),
+        GuidePart(id="adapter", name="Adapter DN22"),
+        GuidePart(id="pipe", name="Rohr 70"),
+    ]
+    state.assembly.instances.append(
+        AssemblyInstance(
+            part_id="adapter", instance_id="adapter#1",
+            transform=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+            placed_in_step=1, substep_idx=0,
+        )
+    )
+    state.steps.append(
+        GuideStep(
+            number=2, text="t", display_text="d",
+            required_parts=["Rohr 70"],
+            sub_steps=[{"action": "insert", "part": "Rohr 70", "target": "Adapter DN22"}],
+        )
+    )
+    sess = GuideToolSession(
+        ctx, mission="assembly", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    tf = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+    # candidate mates pipe→casing (wrong: plan wants adapter)
+    sess._preview_cache["bad"] = {
+        "transform": tf, "moving_port": "p_out", "fixed_port": "rim_0",
+        "fixed_part": "casing", "fixed_instance": "casing#1",
+    }
+    r_bad = asyncio.run(
+        place_instance(sess, {"part_id": "pipe", "candidate_id": "bad", "step": 2})
+    )
+    assert r_bad["ok"] is False and "requires target" in r_bad["error"], r_bad
+    assert "adapter" in r_bad["error"]
+    # same candidate shape but mating pipe→adapter passes the target check
+    sess._preview_cache["good"] = {
+        "transform": tf, "moving_port": "p_out", "fixed_port": "sock",
+        "fixed_part": "adapter", "fixed_instance": "adapter#1",
+    }
+    r_good = asyncio.run(
+        place_instance(sess, {"part_id": "pipe", "candidate_id": "good", "step": 2})
+    )
+    assert r_good["ok"], r_good
+
+
+def test_place_instance_skips_target_check_for_env_targets() -> None:
+    """'linkes oberes Anschlussrohr' is a casing feature, not a registered
+    part — the candidate's fixed_part cannot be verified and must pass."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.assembly_tools import place_instance
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import GuidePart, GuideState, GuideStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts += [
+        GuidePart(id="casing", name="Gehäuse"),
+        GuidePart(id="adapter", name="Adapter DN22"),
+    ]
+    state.steps.append(
+        GuideStep(
+            number=1, text="t", display_text="d",
+            required_parts=["Adapter DN22"],
+            sub_steps=[{
+                "action": "fasten", "part": "Adapter DN22",
+                "target": "linkes oberes Anschlussrohr",
+            }],
+        )
+    )
+    sess = GuideToolSession(
+        ctx, mission="assembly", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    sess._preview_cache["c"] = {
+        "transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+        "moving_port": "thr", "fixed_port": "rim_0",
+        "fixed_part": "casing", "fixed_instance": "casing#1",
+    }
+    r = asyncio.run(
+        place_instance(sess, {"part_id": "adapter", "candidate_id": "c", "step": 1})
+    )
+    assert r["ok"], r

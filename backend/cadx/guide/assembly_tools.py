@@ -524,6 +524,45 @@ async def solve_env_preview(s: GuideToolSession, a: dict[str, Any]) -> dict[str,
     return {"ok": True, "candidates": _cache_candidates(s, cands)}
 
 
+def _target_mismatch(
+    s: GuideToolSession, step: Any, pid: str, req_idx: int, cand: dict[str, Any]
+) -> str | None:
+    """Reject a candidate whose fixed part contradicts the substep's declared
+    target — the solver happily returns collision-free candidates mating to
+    the casing when the plan says 'Adapter', burying the part in the host.
+    Unresolvable targets are host/env features (a casing nozzle is not a
+    registered part) and skip the check; bridge substeps accept either
+    target/target2."""
+    ctx = f"{step.text} {step.title}"
+    subs = [
+        (i, ss)
+        for i, ss in enumerate(step.sub_steps)
+        if ss.action in _PLACE_ACTIONS
+        and _resolve_name(s, ss.part, context=f"{ss.text or ''} {ctx}") == pid
+    ]
+    targets: list[tuple[str, str | None]] = []
+    for idx, ss in subs:
+        if req_idx and idx != req_idx and any(i == req_idx for i, _ in subs):
+            continue
+        for name in (ss.target, ss.target2):
+            if name:
+                targets.append((name, _resolve_name(s, name, context=f"{ss.text or ''} {ctx}")))
+    resolved = {t for _, t in targets if t}
+    fixed_pid = str(cand.get("fixed_part") or "")
+    if not resolved or fixed_pid in resolved:
+        return None
+    wanted = next(n for n, t in targets if t)
+    want_pid = sorted(resolved)[0]
+    placed_want = [i.instance_id for i in _insts_of(s, want_pid)]
+    ref = placed_want[0] if len(placed_want) == 1 else want_pid
+    return (
+        f"candidate mates to '{fixed_pid or 'nothing'}' but step {step.number} "
+        f"requires target '{wanted}' (resolves to '{want_pid}') — re-run "
+        "solve_attachment_preview/find_matching_ports with "
+        f"target_part_id='{ref}'"
+    )
+
+
 async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     pid = str(a.get("part_id", ""))
     part = s.state.part_by_id(pid)
@@ -614,6 +653,14 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             "error": "candidate collides with placed parts — pick another or rotate",
             "collisions": cand.get("collisions", []),
         }
+    # the candidate must mate to the part the plan declares — a solver
+    # preview run against the wrong fixed part (e.g. casing instead of the
+    # adapter already seated on it) produces perfectly collision-free
+    # candidates that bury the moving part in the host
+    if not premount:
+        err = _target_mismatch(s, step, pid, int(a.get("substep_idx", 0)), cand)
+        if err:
+            return {"ok": False, "error": err}
     transform = cand["transform"]
     inst = AssemblyInstance(
         part_id=pid,
