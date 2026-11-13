@@ -154,6 +154,8 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float]]:
                 np.asarray(mv.transform, dtype=float).reshape(4, 4),
                 tp,
                 np.asarray(fx.transform, dtype=float).reshape(4, 4),
+                moving_part=parts.get(mv.part_id),
+                fixed_part=parts.get(fx.part_id),
             )
             m = {"gap_mm": round(gap, 3), "normal_dot": round(ndot, 3)}
             key = mv.instance_id or mv.part_id

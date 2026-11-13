@@ -812,6 +812,8 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
             np.asarray(mv.transform, dtype=float).reshape(4, 4),
             tp,
             np.asarray(fx.transform, dtype=float).reshape(4, 4),
+            moving_part=s.state.part_by_id(mv.part_id),
+            fixed_part=s.state.part_by_id(fx.part_id),
         )
         # plug-in-socket joints stay engaged as long as the plug tip is
         # inside the bore — a union nut never bottoms out. Tolerance =

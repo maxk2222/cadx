@@ -121,7 +121,43 @@ def _port_roll_reference(port: PortInfo, part: GuidePart) -> np.ndarray | None:
     return x if float(np.linalg.norm(x)) > 1e-6 else None
 
 
-def _engage_mm(moving_port: PortInfo, fixed_port: PortInfo) -> float:
+def _plug_protrusion(part: GuidePart | None, port: PortInfo) -> float | None:
+    """Exposed male length of a plug port: the distance from its rim back
+    along ``-axis`` to the nearest co-axial sibling rim (the shoulder the
+    plug rises from). A plug can never engage deeper than it protrudes —
+    without this bound a deep receiver swallows a short stub whole and the
+    moving part tunnels into the host face. Pipe ends return their full
+    length (the far rim IS the sibling), so long plugs stay unconstrained.
+    ``None`` = no shoulder rim extracted (flush/bounded mount) — callers
+    keep their prior behaviour."""
+    if part is None:
+        return None
+    ax = _unit(_v(port.axis))
+    p0 = _v(port.pos)
+    best: float | None = None
+    for q in part.ports:
+        if q is port:
+            continue
+        d = _v(q.pos) - p0
+        along = float(np.dot(d, ax))
+        if along >= -0.5:
+            continue  # only rims BEHIND the tip bound the protrusion
+        if float(np.linalg.norm(d - ax * along)) > 2.0:
+            continue  # different cylinder axis line
+        if abs(float(np.dot(_v(q.axis), ax))) < 0.9:
+            continue
+        if best is None or -along < best:
+            best = -along
+    return best
+
+
+def _engage_mm(
+    moving_port: PortInfo,
+    fixed_port: PortInfo,
+    *,
+    moving_part: GuidePart | None = None,
+    fixed_part: GuidePart | None = None,
+) -> float:
     """How deep the plug enters the socket along the joint axis — the
     RECEIVING port's measured seat only. Two refinements over the naive
     'deepest bore wins' model:
@@ -132,6 +168,8 @@ def _engage_mm(moving_port: PortInfo, fixed_port: PortInfo) -> float:
     - a LOOSE fit (collar bore ≫ plug — union nuts, flange bosses) means
       the plug rests at the mouth/seat face, not buried to full seat
       depth; only snug fits travel to the seat (spigot into muffe)
+    - engagement is clamped to the plug's PROTRUSION — a socket deeper
+      than the exposed plug must not pull the moving part into the host
 
     0 for unmeasured ports keeps flush mating."""
     sock, plug = _receiver(moving_port, fixed_port)
@@ -149,6 +187,11 @@ def _engage_mm(moving_port: PortInfo, fixed_port: PortInfo) -> float:
     if d <= 0.0:
         return 0.0
     deep = min(d * 0.85, 40.0)
+    prot = _plug_protrusion(
+        fixed_part if plug is fixed_port else moving_part, plug
+    )
+    if prot is not None:
+        deep = min(deep, prot)
     margin = _inner_r(sock) - _outer_r(plug)
     # margin ≤2mm → true socket fit (deep); ≥10mm → collar/nut mate (shallow)
     t = min(max((margin - 2.0) / 8.0, 0.0), 1.0)
@@ -177,7 +220,9 @@ def transform_port_to_target(
     floating at its rim.
     """
     if engage_mm is None:
-        engage_mm = _engage_mm(moving_port, fixed_port)
+        engage_mm = _engage_mm(
+            moving_port, fixed_port, moving_part=moving, fixed_part=fixed_part
+        )
     t_r = fixed_transform[0:3, 0:3]
     t_t = fixed_transform[0:3, 3]
     tp_pos = t_r @ (_v(fixed_port.pos) - _v(fixed_port.axis) * engage_mm) + t_t
@@ -212,12 +257,16 @@ def evaluate_mate(
     fixed_transform: np.ndarray,
     *,
     engage_mm: float | None = None,
+    moving_part: GuidePart | None = None,
+    fixed_part: GuidePart | None = None,
 ) -> tuple[float, float]:
     """(joint_gap_mm, normal_dot) of a mated port pair. normal_dot = -1 is a
     perfect antiparallel mate. Gap is measured to the ENGAGED mate point —
     a plug seated inside a socket still counts as closed."""
     if engage_mm is None:
-        engage_mm = _engage_mm(moving_port, fixed_port)
+        engage_mm = _engage_mm(
+            moving_port, fixed_port, moving_part=moving_part, fixed_part=fixed_part
+        )
     t = np.asarray(moving_transform, dtype=float).reshape(4, 4)
     tp = np.asarray(fixed_transform, dtype=float).reshape(4, 4)
     mp_world = t[0:3, 0:3] @ _v(moving_port.pos) + t[0:3, 3]
@@ -395,10 +444,14 @@ def _is_collar(port: PortInfo, part: GuidePart, *, moving_side: bool) -> bool:
 
 def _port_exposure(part: GuidePart) -> dict[str, float]:
     """Recession depth of each port's mouth below the part's silhouette
-    along its own axis. A shoulder INSIDE a through-bore (adapter rim_3)
-    scores high — the real openings sit at the part's extremes. Reaching
-    a recessed mouth requires tunneling through the part's other
-    openings, which is physically wrong for a fresh mate."""
+    along its own axis. Reaching a recessed mouth requires tunneling
+    through the part's other openings — physically wrong for a fresh mate.
+
+    Socket ports are judged at their MOUTH, not their recorded seat: a
+    union nut's cavity bottom sits deep inside the fitting by design, yet
+    the plug enters through a mouth flush with the silhouette. The mouth
+    is ``pos + axis * socket_depth`` clamped to the part's own extent —
+    a through-bore's mouth is the far face, never beyond it."""
     mn, mx = _v(part.bbox_min), _v(part.bbox_max)
     corners = np.array(
         [[x, y, z] for x in (mn[0], mx[0]) for y in (mn[1], mx[1]) for z in (mn[2], mx[2])]
@@ -407,7 +460,10 @@ def _port_exposure(part: GuidePart) -> dict[str, float]:
     for p in part.ports:
         a = _unit(_v(p.axis))
         extreme = float((corners @ a).max())
-        out[p.name] = max(extreme - float(np.dot(_v(p.pos), a)), 0.0)
+        p_proj = float(np.dot(_v(p.pos), a))
+        d = _socket_depth(p)
+        mouth = p_proj + min(d, max(extreme - p_proj, 0.0))
+        out[p.name] = max(extreme - mouth, 0.0)
     return out
 
 
@@ -441,6 +497,26 @@ def find_matching_ports(
                 # the intended interface. Last-resort/collar scores are
                 # informational — don't sink them below the gate.
                 sc -= min((exp_m.get(mp.name, 0.0) + exp_f.get(tp.name, 0.0)) / 25.0, 0.55)
+                # a short plug prefers the socket SIZED to it — a union
+                # nut's cavity (≈ stub length) is the designed interface.
+                # ASYMMETRIC: a socket shallower than the plug leaves the
+                # stub hanging out and the mating face hovering — heavily
+                # penalized; an oversized bore just wastes depth — mildly
+                # penalized. Only bounded plugs draw the term — a pipe end
+                # (protrusion = full length) keeps every socket legal.
+                sock, plug = _receiver(mp, tp)
+                if sock is not None and plug is not None:
+                    prot = _plug_protrusion(
+                        fixed if plug is tp else moving, plug
+                    )
+                    if prot is not None and prot < 80.0:
+                        sock_d = _socket_depth(sock)
+                        if sock_d < prot:
+                            sc -= min(0.5, (prot - sock_d) / prot * 2.0)
+                        else:
+                            oversize = sock_d - prot - 6.0
+                            if oversize > 0.0:
+                                sc -= min(0.35, oversize * 0.02)
             out.append(
                 {
                     "moving_port": mp.name,
@@ -449,7 +525,9 @@ def find_matching_ports(
                     "moving_gender": mp.gender,
                     "fixed_gender": tp.gender,
                     "radius_mm": [mp.radius, tp.radius],
-                    "engage_mm": round(_engage_mm(mp, tp), 2),
+                    "engage_mm": round(
+                        _engage_mm(mp, tp, moving_part=moving, fixed_part=fixed), 2
+                    ),
                 }
             )
     out.sort(key=lambda c: (-c["score"], c["moving_port"], c["fixed_port"]))

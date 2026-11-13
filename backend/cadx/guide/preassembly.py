@@ -110,6 +110,7 @@ def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
     # anchors first within their step — other tasks may attach onto them
     tasks.extend(anchors)
     tasks.sort(key=lambda t: (t["step"], not t.get("anchor")))
+    _infer_bridges(sess, tasks)
     # pre-mounted duplicates: a place-task whose TARGET text carries a
     # side qualifier ("unterer linker Adapter") refers to an instance at
     # THAT side — when the part's own placements all happen later or at
@@ -117,6 +118,46 @@ def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
     # place. Spawn a mount task for it onto the earliest referenceable
     # host before the referencing step.
     return _spawn_premounts(sess, tasks)
+
+
+def _infer_bridges(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> None:
+    """Recover omitted ``target2`` from the sub-step text — manuals write
+    both mates into one instruction ("Muffe auf das vertikale Rohr, dann
+    die freie Muffe auf das obere Rohr") and extraction leaves target2
+    empty half the time, silently downgrading bridge steps to single
+    mates. Only parts with ≥2 cylinder ports can bridge; a later clause
+    must resolve to a DIFFERENT part the plan places no later than this
+    step — the physical pairing in ``_try_bridge`` still decides."""
+    plan_step: dict[str, int] = {}
+    for t in tasks:
+        pid = _rp(sess, t["part"], t["step"])
+        if pid:
+            plan_step.setdefault(pid, t["step"])
+    for t in tasks:
+        if t.get("premount") or t.get("anchor") or str(t.get("target2") or "").strip():
+            continue
+        pid = _rp(sess, t["part"], t["step"])
+        part = sess.state.part_by_id(pid) if pid else None
+        if (
+            part is None
+            or sum(1 for p in part.ports or [] if p.kind == "cylinder") < 2
+        ):
+            continue
+        target_pid = _resolve_name(sess, t.get("target") or "")
+        clauses = re.split(
+            r"[,;.]| dann | danach | anschlie\w* | then | and ",
+            (t.get("text") or "").lower(),
+        )
+        for clause in clauses[1:]:
+            pid2 = _resolve_name(sess, clause.strip())
+            if (
+                pid2
+                and pid2 not in (pid, target_pid)
+                and plan_step.get(pid2, 10**9) <= t["step"]
+            ):
+                t["target2"] = pid2
+                t["target2_inferred"] = True
+                break
 
 
 # canonical side keys — inflected surface forms of the same direction
@@ -406,17 +447,25 @@ def _rotated_part_view(part: Any, rot: np.ndarray) -> SimpleNamespace:
 
 
 def _anchor_orientation(sess: GuideToolSession, part: Any, tasks: list[dict[str, Any]]) -> np.ndarray:
-    """Rotate the host so the manual's attach tasks find compatible,
-    laterally reachable interfaces. The asset frame is arbitrary — a
-    host port pointing straight up/down forces an impossible
-    over-the-top or under-floor mate; a host's connection hardware faces
-    the assembly's working side (+Y front by frame contract). Scores the
-    first few host-bound tasks under every cube rotation by pair
-    legality (the solver's fit) + lateral reach + the task's side words,
-    then picks the best orientation."""
+    """Best-scoring host rotation — see ``_anchor_orientations``."""
+    scored = _anchor_orientations(sess, part, tasks)
+    return scored[0][1] if scored else np.eye(3)
+
+
+def _anchor_orientations(
+    sess: GuideToolSession, part: Any, tasks: list[dict[str, Any]]
+) -> list[tuple[float, np.ndarray]]:
+    """Every cube rotation scored by how usable the host's ports are for
+    the manual's attach tasks — solver pair legality + lateral reach +
+    side words. The asset frame is arbitrary — a host port pointing
+    straight up/down forces an impossible over-the-top or under-floor
+    mate; a host's connection hardware faces the assembly's working side
+    (+Y front by frame contract). Returns (score, rot) sorted desc — the
+    caller trial-places the top candidates because scores can tie within
+    noise and only the measured result is authoritative."""
     host_ports = [p for p in part.ports if p.kind == "cylinder"]
     if not host_ports:
-        return np.eye(3)
+        return [(0.0, np.eye(3))]
     attach: list[tuple[dict[str, Any], Any]] = []
     for t in tasks:
         if t.get("anchor") or t.get("premount"):
@@ -430,9 +479,9 @@ def _anchor_orientation(sess: GuideToolSession, part: Any, tasks: list[dict[str,
         if len(attach) >= 4:
             break
     if not attach:
-        return np.eye(3)
+        return [(0.0, np.eye(3))]
     low_bias = _below_chain(sess, tasks)
-    best_rot, best_s = np.eye(3), -1e18
+    scored: list[tuple[float, np.ndarray]] = []
     for rot in _cube_rotations():
         ports_r = [
             (
@@ -482,9 +531,9 @@ def _anchor_orientation(sess: GuideToolSession, part: Any, tasks: list[dict[str,
                 s += task_best
         if np.allclose(rot, np.eye(3)):
             s += 0.01  # keep the asset frame when no orientation wins outright
-        if s > best_s:
-            best_rot, best_s = rot, s
-    return best_rot
+        scored.append((s, rot))
+    scored.sort(key=lambda sr: -sr[0])
+    return scored
 
 
 def _interface_score(
@@ -624,18 +673,123 @@ def _anchor_lift(
     return max(0.0, chain_h - unlifted_port_z)
 
 
-async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
-    """Place what the step plan determines — returns (and persists) a report."""
-    report: dict[str, Any] = {"placed": [], "skipped": [], "failed": []}
-    tasks = _plan(sess)
-    anchor_pid = next(
-        (_rp(sess, t["part"], t["step"]) for t in tasks if t.get("anchor")), None
-    )
-    anchor_part = sess.state.part_by_id(anchor_pid) if anchor_pid else None
-    anchor_rot = (
-        _anchor_orientation(sess, anchor_part, tasks) if anchor_part is not None else None
-    )
-    lift = _anchor_lift(sess, tasks, anchor_rot)
+def _host_subgraph(sess: GuideToolSession, anchor_iid: str) -> set[str]:
+    """Instances in the anchor's attachment tree — child links follow
+    PRIMARY (non-bridge) joints only. A bridge part's primary mate roots
+    it in the other chain (the floor run), so it stays out — exactly the
+    boundary a lift correction must not cross."""
+    children: dict[str, list[str]] = {}
+    for j in sess.state.assembly.joints:
+        if j.get("bridge"):
+            continue
+        children.setdefault(str(j.get("fixed_instance") or ""), []).append(
+            str(j.get("moving_instance") or "")
+        )
+    out: set[str] = set()
+    frontier = [anchor_iid]
+    while frontier:
+        iid = frontier.pop()
+        if iid in out:
+            continue
+        out.add(iid)
+        frontier.extend(children.get(iid, []))
+    return out
+
+
+def _bridge_closure_shift(sess: GuideToolSession, host_set: set[str]) -> float | None:
+    """Z offset the anchor subtree needs so the bridge joints close.
+
+    The anchor lift is an estimate — ``_chain_height`` cannot know the
+    bridge part's socket-to-socket rise — so once placement is done the
+    measured residual is authoritative: for every bridge joint exactly
+    one side belongs to the anchor subtree, and moving that side by the
+    residual's z component closes the gap while every subtree-internal
+    joint stays exact. Conflicting corrections (spread >10mm) mean the
+    residual is not a uniform lift error — refuse to guess."""
+    parts = {p.id: p for p in sess.state.parts}
+    inst = {i.instance_id: i for i in sess.state.assembly.instances}
+    shifts: list[float] = []
+    for j in sess.state.assembly.joints:
+        if not j.get("bridge"):
+            continue
+        mv = inst.get(str(j.get("moving_instance") or ""))
+        fx = inst.get(str(j.get("fixed_instance") or ""))
+        if mv is None or fx is None:
+            continue
+        mp = next((p for p in parts[mv.part_id].ports if p.name == j.get("moving_port")), None)
+        tp = next((p for p in parts[fx.part_id].ports if p.name == j.get("fixed_port")), None)
+        if mp is None or tp is None:
+            continue
+        t_m = np.asarray(mv.transform, dtype=float).reshape(4, 4)
+        t_f = np.asarray(fx.transform, dtype=float).reshape(4, 4)
+        mpw = t_m[0:3, 0:3] @ solver._v(mp.pos) + t_m[0:3, 3]
+        fpw = (
+            t_f[0:3, 0:3]
+            @ (
+                solver._v(tp.pos)
+                - solver._v(tp.axis)
+                * solver._engage_mm(
+                    mp, tp, moving_part=parts[mv.part_id], fixed_part=parts[fx.part_id]
+                )
+            )
+            + t_f[0:3, 3]
+        )
+        resid = mpw - fpw
+        in_m, in_f = mv.instance_id in host_set, fx.instance_id in host_set
+        if in_f and not in_m:
+            shifts.append(float(resid[2]))
+        elif in_m and not in_f:
+            shifts.append(float(-resid[2]))
+    if not shifts or max(shifts) - min(shifts) > 10.0:
+        return None
+    shift = float(np.mean(shifts))
+    return shift if abs(shift) >= 0.5 else None
+
+
+def _lift_correct_for_bridges(
+    sess: GuideToolSession,
+    anchor_pid: str | None,
+    lift: float,
+    report: dict[str, Any],
+) -> None:
+    """Refine the estimated anchor lift with the measured bridge residual.
+
+    The floor chain (premounts → risers → bridge primaries) is grounded —
+    it can't move — so the correction shifts only the anchor subtree
+    (host + everything jointed onto it) along the lift axis. Gated on an
+    existing lift: it refines an estimate, it never invents one."""
+    if not anchor_pid or lift <= 0.0:
+        return
+    for inst in sess.state.assembly.instances:
+        if inst.part_id != anchor_pid:
+            continue
+        host_set = _host_subgraph(sess, inst.instance_id)
+        shift = _bridge_closure_shift(sess, host_set)
+        if shift is None:
+            continue
+        shift = float(max(-lift, min(60.0, shift)))
+        for i in sess.state.assembly.instances:
+            if i.instance_id in host_set and i.transform:
+                t = np.asarray(i.transform, dtype=float).reshape(4, 4)
+                t[2, 3] += shift
+                i.transform = [[float(v) for v in row] for row in t.tolist()]
+        report["lift_correction_mm"] = round(shift, 2)
+        log.info(
+            "guide.preassembly.lift_correction",
+            shift_mm=round(shift, 2),
+            anchor=inst.instance_id,
+        )
+        return
+
+
+async def _place_tasks(
+    sess: GuideToolSession,
+    tasks: list[dict[str, Any]],
+    lift: float,
+    anchor_rot: np.ndarray | None,
+    report: dict[str, Any],
+) -> None:
+    """The deterministic placement pass for one anchor rotation."""
     for ti, task in enumerate(tasks):
         pid = _rp(sess, task["part"], task["step"])
         if not pid:
@@ -656,11 +810,15 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
                 sess, task, pid, _dir_axes(hint0), feed_perp, tasks=tasks, ti=ti
             )
             if not placed:
-                placed = await _try_attach(sess, task, pid, lookahead, feed_perp)
+                placed = await _try_attach(
+                    sess, task, pid, lookahead, feed_perp, tasks=tasks
+                )
         else:
             placed = await _try_bridge(sess, task, pid)
         if not placed:
-            placed = await _try_attach(sess, task, pid, lookahead, feed_perp)
+            placed = await _try_attach(
+                sess, task, pid, lookahead, feed_perp, tasks=tasks
+            )
         if not placed and task.get("anchor"):
             placed = await _place_anchor(sess, task, pid, lift, anchor_rot)
         if not placed:
@@ -669,11 +827,100 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
             report["placed"].append({**task, "part_id": pid, "instance_id": placed})
         else:
             report["failed"].append({**task, "part_id": pid, "reason": "no candidate"})
+
+
+def _attempt_quality(sess: GuideToolSession, report: dict[str, Any]) -> tuple[float, ...]:
+    """How consistent one trial placement came out: more parts placed and
+    smaller measured bridge residuals win. The scorecard orientation
+    only ranks candidates — this is the measured verdict."""
+    resid = 0.0
+    parts = {p.id: p for p in sess.state.parts}
+    inst = {i.instance_id: i for i in sess.state.assembly.instances}
+    for j in sess.state.assembly.joints:
+        if not j.get("bridge"):
+            continue
+        mv = inst.get(str(j.get("moving_instance") or ""))
+        fx = inst.get(str(j.get("fixed_instance") or ""))
+        if mv is None or fx is None:
+            continue
+        mp = next((p for p in parts[mv.part_id].ports if p.name == j.get("moving_port")), None)
+        tp = next((p for p in parts[fx.part_id].ports if p.name == j.get("fixed_port")), None)
+        if mp is None or tp is None:
+            continue
+        resid += solver.evaluate_mate(
+            mp,
+            np.asarray(mv.transform, dtype=float).reshape(4, 4),
+            tp,
+            np.asarray(fx.transform, dtype=float).reshape(4, 4),
+            moving_part=parts[mv.part_id],
+            fixed_part=parts[fx.part_id],
+        )[0]
+    return (float(len(report["placed"])), -float(len(report["failed"])), -round(resid, 1))
+
+
+async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
+    """Place what the step plan determines — returns (and persists) a report.
+
+    Orientation is a verified choice, not a one-shot guess: the top
+    scoring rotations are trial-placed and the attempt with the most
+    placed parts and smallest measured bridge residual is kept. Ties in
+    the port-scorecard happen (same tube's front/rear ends score within
+    noise) — only the measured result is authoritative."""
+    tasks = _plan(sess)
+    anchor_pid = next(
+        (_rp(sess, t["part"], t["step"]) for t in tasks if t.get("anchor")), None
+    )
+    anchor_part = sess.state.part_by_id(anchor_pid) if anchor_pid else None
+    rot_cands = (
+        [rot for _, rot in _anchor_orientations(sess, anchor_part, tasks)[:3]]
+        if anchor_part is not None
+        else [None]
+    )
+    asm = sess.state.assembly
+    snap_i = len(asm.instances)
+    snap_j = len(asm.joints)
+    snap_si = {k: len(v) for k, v in asm.step_instances.items()}
+    best: tuple[tuple[float, ...], dict[str, Any], list, list, dict] | None = None
+    for rot in rot_cands:
+        report: dict[str, Any] = {"placed": [], "skipped": [], "failed": []}
+        lift = _anchor_lift(sess, tasks, rot)
+        try:
+            await _place_tasks(sess, tasks, lift, rot, report)
+            _lift_correct_for_bridges(sess, anchor_pid, lift, report)
+            quality = _attempt_quality(sess, report)
+        except Exception:
+            # a crashed trial must not poison the next rotation's attempt —
+            # the rollback below still runs, then worse rotations get tried
+            quality = (-1e9, -1e9, -1e9)
+            log.exception("guide.preassembly.trial_failed")
+        tail_i = list(asm.instances[snap_i:])
+        tail_j = list(asm.joints[snap_j:])
+        tail_si = {
+            k: list(v[snap_si.get(k, 0) :]) for k, v in asm.step_instances.items()
+        }
+        del asm.instances[snap_i:]
+        del asm.joints[snap_j:]
+        for k, v in asm.step_instances.items():
+            del v[snap_si.get(k, 0) :]
+        sess._scene_cache = None
+        if best is None or quality > best[0]:
+            best = (quality, report, tail_i, tail_j, tail_si)
+        if quality[1] == 0.0 and quality[2] > -2.0:
+            break  # fully consistent plan — no need to try worse rotations
+    assert best is not None
+    _q, report, tail_i, tail_j, tail_si = best
+    asm.instances.extend(tail_i)
+    asm.joints.extend(tail_j)
+    for k, v in tail_si.items():
+        asm.step_instances.setdefault(k, []).extend(v)
+    sess._scene_cache = None
     sess.state.assembly.planner = {
         "ran": True,
         "placed": len(report["placed"]),
         "skipped": len(report["skipped"]),
         "failed": report["failed"][:10],
+        "quality": list(_q),
+        "lift_correction_mm": report.get("lift_correction_mm"),
     }
     sess.state.save(sess.state_dir)
     log.info(
@@ -768,6 +1015,54 @@ def _feeds_bridge_axis(
             return 2
         if pp and tp in downstream:
             downstream.add(pp)
+    return None
+
+
+def _chain_side_dir(
+    sess: GuideToolSession,
+    tasks: list[dict[str, Any]],
+    task: dict[str, Any],
+    feed_perp: int,
+) -> np.ndarray | None:
+    """Horizontal direction the floor chain feeding this bridge stands
+    at — a host port feeding the bridge must FACE the chain or the elbow
+    can never close. Derived from the premount task sharing this task's
+    left/right signature, evaluated with the same host-port pick the
+    premount placement itself uses (world frame, rotation-aware)."""
+    insts = sess.state.assembly.instances
+    host_inst = insts[0] if insts else None
+    if host_inst is None or not host_inst.transform:
+        return None
+    host = sess.state.part_by_id(host_inst.part_id)
+    if host is None:
+        return None
+    host_view = _world_part_view(host_inst, host)
+    c_w = np.asarray(
+        _world_pos(
+            host_inst.transform,
+            [(host.bbox_min[i] + host.bbox_max[i]) / 2 for i in range(3)],
+        )
+    )
+    my_sides = _side_words(f"{task.get('target') or ''} {task.get('text') or ''}")
+    for t in tasks:
+        if not t.get("premount"):
+            continue
+        st0 = sess.state.step_by_number(t["step"])
+        ph = (
+            f"{t.get('target') or ''} {t.get('text') or ''} "
+            f"{st0.title if st0 else ''}"
+        )
+        p_lr = _side_words(ph) & {"l", "r"}
+        if p_lr and not (p_lr & my_sides):
+            continue
+        xy_axes = [(a, s) for a, s in _dir_axes(ph) if a < 2]
+        fp = _pick_host_port(host_view, xy_axes, feed_perp)
+        if fp is None:
+            continue
+        d = np.asarray(fp.pos[:2], dtype=float) - c_w[:2]
+        n = float(np.linalg.norm(d))
+        if n > 1e-6:
+            return d / n
     return None
 
 
@@ -954,6 +1249,7 @@ def _score_pairs_for_instance(
     orient: str | None,
     feed_perp: int | None,
     picked: bool,
+    chain_dir: np.ndarray | None = None,
 ) -> list[tuple[float, float, float, str, dict[str, Any]]]:
     """(hint, picked-bonus, solver-score, iid, pair) rows for one placed
     instance — the fixed port's world POSITION follows the location axes
@@ -1028,6 +1324,16 @@ def _score_pairs_for_instance(
                     axis_hint -= 10.0
                 else:
                     axis_hint += 6.0 * (1.0 - abs(fa[feed_perp]))
+                if chain_dir is not None:
+                    # the mated port must also FACE the chain's side — a
+                    # rear pipe end is a valid female mouth too, but a
+                    # bridge from the front chain can never reach it
+                    fa_xy = np.asarray([fa[0], fa[1]], dtype=float)
+                    n_xy = float(np.linalg.norm(fa_xy))
+                    if n_xy > 0.3:
+                        axis_hint += 4.0 * float(
+                            np.dot(fa_xy / n_xy, chain_dir)
+                        )
             if float(pair.get("score") or 0.0) < 0.0:
                 axis_hint += 2.0 * float(pair["score"])
         pos_hint = 1.5 * sum(
@@ -1142,19 +1448,34 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
                         np.asarray(m),
                         fp2,
                         np.asarray(i2.transform),
+                        moving_part=moving,
+                        fixed_part=fixed2,
                     )[0]
                     # side words ("linkes Rohr … linkes oberes Rohr")
                     # disambiguate which INSTANCE pair the bridge closes —
-                    # without this a left-side bridge grabbed the right pipe
+                    # bounded: a direction hint may break near-ties but can
+                    # never buy an unclosed gap (raw mm would swamp res)
                     side = _side(i1, fixed1, p1["fixed_port"]) + _side(
                         i2, fixed2, p2["fixed_port"]
                     )
-                    key = res - 25.0 * side
+                    key = res - 15.0 * float(np.tanh(side / 40.0))
                     if best is None or key < best[0]:
-                        best = (key, m, (i1, p1), (i2, p2))
+                        best = (key, res, m, (i1, p1), (i2, p2))
     if best is None:
         return None
-    _res, m, (i1, p1), (i2, p2) = best
+    _key, res, m, (i1, p1), (i2, p2) = best
+    # a bridge that can't physically close isn't a bridge — when the best
+    # residual exceeds half the second socket's grip the plug barely
+    # reaches the bore; fall back to the primary mate instead of
+    # recording an open gap as a joint
+    mp2b = next((q for q in moving.ports if q.name == p2["moving_port"]), None)
+    fp2b = next((q for q in fixed2.ports if q.name == p2["fixed_port"]), None)
+    sd2 = max(
+        solver._socket_depth(mp2b) if mp2b is not None else 0.0,
+        solver._socket_depth(fp2b) if fp2b is not None else 0.0,
+    )
+    if res > max(1.0, min(sd2 * 0.5, 15.0)):
+        return None
     cid = f"bridge-{pid}-{task['step']}-{task['substep_idx']}"
     sess._preview_cache[cid] = {
         "transform": m,
@@ -1205,6 +1526,7 @@ async def _try_attach(
     pid: str,
     next_axes: tuple[list[tuple[int, float]], str | None] = ([], None),
     feed_perp: int | None = None,
+    tasks: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """Port-driven attach onto the best target instance; None if nothing
     works (no pairs / all candidates collide).
@@ -1280,6 +1602,11 @@ async def _try_attach(
             if sess.state.assembly.instances
             else None
         )
+        chain_dir = (
+            _chain_side_dir(sess, tasks or [], task, feed_perp)
+            if feed_perp is not None
+            else None
+        )
         for iid in group:
             # the perpendicular-port rule applies where a bridge-feeding
             # chain STARTS — the host port — not mid-chain, where a
@@ -1289,6 +1616,7 @@ async def _try_attach(
                     sess, moving, inst_by_iid.get(iid), iid, axes, open_axes, orient,
                     feed_perp if iid == anchor_iid else None,
                     iid == picked_iid,
+                    chain_dir if iid == anchor_iid else None,
                 )
             )
         if scored:
