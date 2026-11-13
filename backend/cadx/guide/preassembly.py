@@ -159,6 +159,44 @@ def _infer_bridges(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> None:
                 t["target2_inferred"] = True
                 break
 
+    _infer_legs(sess, tasks)
+
+
+def _infer_legs(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> None:
+    """Cross-substep legs: text-only extractions split one bridge into two
+    placement sub-steps ("Bogen aufs vertikale Rohr" + "freie Muffe aufs
+    obere Rohr") — the second sub-step names the SAME part against a
+    DIFFERENT target part. Merge it as target2 on the first task and tag
+    the second as a leg: if the bridge physically fails the leg still
+    places as a genuine second instance (IKEA "dowel into A, dowel into
+    B" resolves targets to the SAME host and never reaches this merge)."""
+    by_step: dict[int, list[int]] = {}
+    for ti, t in enumerate(tasks):
+        by_step.setdefault(t["step"], []).append(ti)
+    for tis in by_step.values():
+        for a_pos, ai in enumerate(tis):
+            a = tasks[ai]
+            if a.get("premount") or a.get("anchor") or str(a.get("target2") or "").strip():
+                continue
+            pid_a = _rp(sess, a["part"], a["step"])
+            part = sess.state.part_by_id(pid_a) if pid_a else None
+            if part is None or sum(1 for p in part.ports or [] if p.kind == "cylinder") < 2:
+                continue
+            tgt_a = _resolve_name(sess, a.get("target") or "")
+            for bi in tis[a_pos + 1 :]:
+                b = tasks[bi]
+                if b.get("premount") or b.get("anchor") or b.get("_leg_of") is not None:
+                    continue
+                if _rp(sess, b["part"], b["step"]) != pid_a:
+                    continue
+                tgt_b = _resolve_name(sess, b.get("target") or "")
+                if not tgt_b or tgt_b in (pid_a, tgt_a):
+                    continue
+                a["target2"] = tgt_b
+                a["target2_inferred"] = True
+                b["_leg_of"] = ai
+                break
+
 
 # canonical side keys — inflected surface forms of the same direction
 # must collapse ("(links oben)" vs "linken oberen" produced disjoint
@@ -939,6 +977,11 @@ async def _place_tasks(
     """The deterministic placement pass for one anchor rotation."""
     for ti, task in enumerate(tasks):
         task.pop("bridge_miss", None)  # stale residual of a prior trial
+        leg_of = task.get("_leg_of")
+        if leg_of is not None and tasks[leg_of].get("_bridged"):
+            # partner bridge closed both mates — this sub-step is covered
+            report["skipped"].append({**task, "reason": "bridge leg absorbed"})
+            continue
         pid = _rp(sess, task["part"], task["step"])
         if not pid:
             report["failed"].append({**task, "reason": f"unresolved part '{task['part']}'"})
@@ -1700,6 +1743,9 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
             "bridge": True,
         }
     )
+    # a cross-substep merge (if any) is confirmed only now — the leg
+    # task checks this flag before deciding between skip and new instance
+    task["_bridged"] = True
     return iid
 
 

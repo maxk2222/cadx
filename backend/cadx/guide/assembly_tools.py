@@ -280,13 +280,22 @@ def _completeness_issues(s: GuideToolSession) -> list[str]:
     """Every instance a step requires must exist — per-step counting, a part
     placed once does NOT satisfy later steps that need their own copy."""
     issues: list[str] = []
+    # a committed bridge joint's moving instance also covers the absorbed
+    # leg sub-step ("freie Muffe aufs Rohr") — one physical instance can
+    # satisfy two placement substeps when the second names a mate, not a
+    # new occurrence
+    legs: dict[tuple[int, str], int] = {}
+    for j in s.state.assembly.joints:
+        if j.get("bridge"):
+            key = (int(j.get("step", 0)), str(j.get("moving_part") or ""))
+            legs[key] = legs.get(key, 0) + 1
     for st_no, counts in _step_requirements(s).items():
         for pid, need in counts.items():
             have = sum(
                 1
                 for i in s.state.assembly.instances
                 if i.placed_in_step == st_no and i.part_id == pid
-            )
+            ) + legs.get((st_no, pid), 0)
             if have < need:
                 issues.append(f"step {st_no}: '{pid}' needs {need} instance(s), has {have}")
     if not s.state.assembly.instances:

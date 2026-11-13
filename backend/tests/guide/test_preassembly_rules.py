@@ -631,6 +631,65 @@ def test_bridge_miss_absurd_residual_is_no_pose_error() -> None:
     assert pa._bridge_closure_shift(sess, {"h"}, tasks) is None
 
 
+# --------------------------------------------------------------------- #
+# cross-substep bridge legs
+# --------------------------------------------------------------------- #
+
+
+def _two_cyl_part(pid: str) -> GuidePart:
+    return _part(
+        pid,
+        [
+            PortInfo(name="a", kind="cylinder", pos=[0, 0, 0], axis=[0, 0, 1], radius=5),
+            PortInfo(name="b", kind="cylinder", pos=[0, 0, 0], axis=[1, 0, 0], radius=5),
+        ],
+    )
+
+
+def test_cross_substep_leg_merges_into_bridge() -> None:
+    """Text-only extractions split one physical bridge into two substeps:
+    "elbow onto the vertical pipe" + "free socket onto the upper pipe".
+    Same part + DIFFERENT target part = the second is the bridge leg."""
+    sess = _sess([_two_cyl_part("elbow"), _part("pipe500"), _part("pipe70")])
+    tasks = [
+        {"step": 9, "substep_idx": 0, "part": "elbow", "target": "pipe500", "text": ""},
+        {"step": 9, "substep_idx": 1, "part": "elbow", "target": "pipe70", "text": ""},
+    ]
+    pa._infer_bridges(sess, tasks)
+    assert tasks[0]["target2"] == "pipe70"
+    assert tasks[0]["target2_inferred"] is True
+    assert tasks[1].get("_leg_of") == 0
+
+
+def test_cross_substep_two_instances_same_host_is_no_leg() -> None:
+    """"Dowel into the panel" twice — same part, SAME target part = two
+    occurrences, never a bridge leg (the merge would swallow one)."""
+    sess = _sess([_two_cyl_part("dowel"), _part("panel")])
+    tasks = [
+        {"step": 4, "substep_idx": 0, "part": "dowel", "target": "panel", "text": ""},
+        {"step": 4, "substep_idx": 1, "part": "dowel", "target": "panel", "text": ""},
+    ]
+    pa._infer_bridges(sess, tasks)
+    assert not tasks[0].get("target2")
+    assert tasks[1].get("_leg_of") is None
+
+
+def test_cross_substep_single_port_part_never_bridges() -> None:
+    """A part with <2 cylindrical ports physically cannot close a second
+    mate — no merge even with a different target."""
+    one_port = _part(
+        "plug", [PortInfo(name="a", kind="cylinder", pos=[0, 0, 0], axis=[0, 0, 1], radius=5)]
+    )
+    sess = _sess([one_port, _part("host"), _part("other")])
+    tasks = [
+        {"step": 3, "substep_idx": 0, "part": "plug", "target": "host", "text": ""},
+        {"step": 3, "substep_idx": 1, "part": "plug", "target": "other", "text": ""},
+    ]
+    pa._infer_bridges(sess, tasks)
+    assert not tasks[0].get("target2")
+    assert tasks[1].get("_leg_of") is None
+
+
 def test_lift_correct_shifts_only_host_subtree_and_clamps() -> None:
     """The correction moves the anchor subtree as ONE rigid group —
     floor-chain instances stay put — and without an estimated lift the
