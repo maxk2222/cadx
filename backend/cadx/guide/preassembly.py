@@ -696,54 +696,98 @@ def _host_subgraph(sess: GuideToolSession, anchor_iid: str) -> set[str]:
     return out
 
 
-def _bridge_closure_shift(sess: GuideToolSession, host_set: set[str]) -> float | None:
-    """Z offset the anchor subtree needs so the bridge joints close.
+def _bridge_joint_resid(
+    sess: GuideToolSession,
+    j: dict[str, Any],
+    parts: dict[str, Any],
+    inst: dict[str, Any],
+) -> np.ndarray | None:
+    """World residual vector (moving socket minus engaged fixed point)
+    of one recorded bridge joint; None when it can't be measured."""
+    mv = inst.get(str(j.get("moving_instance") or ""))
+    fx = inst.get(str(j.get("fixed_instance") or ""))
+    if mv is None or fx is None:
+        return None
+    mp = next((p for p in parts[mv.part_id].ports if p.name == j.get("moving_port")), None)
+    tp = next((p for p in parts[fx.part_id].ports if p.name == j.get("fixed_port")), None)
+    if mp is None or tp is None:
+        return None
+    t_m = np.asarray(mv.transform, dtype=float).reshape(4, 4)
+    t_f = np.asarray(fx.transform, dtype=float).reshape(4, 4)
+    mpw = t_m[0:3, 0:3] @ solver._v(mp.pos) + t_m[0:3, 3]
+    fpw = (
+        t_f[0:3, 0:3]
+        @ (
+            solver._v(tp.pos)
+            - solver._v(tp.axis)
+            * solver._engage_mm(
+                mp, tp, moving_part=parts[mv.part_id], fixed_part=parts[fx.part_id]
+            )
+        )
+        + t_f[0:3, 3]
+    )
+    return mpw - fpw
 
-    The anchor lift is an estimate — ``_chain_height`` cannot know the
-    bridge part's socket-to-socket rise — so once placement is done the
-    measured residual is authoritative: for every bridge joint exactly
-    one side belongs to the anchor subtree, and moving that side by the
-    residual's z component closes the gap while every subtree-internal
-    joint stays exact. Conflicting corrections (spread >10mm) mean the
-    residual is not a uniform lift error — refuse to guess."""
+
+def _bridge_closure_shift(
+    sess: GuideToolSession, host_set: set[str], tasks: list[dict[str, Any]] | None = None
+) -> np.ndarray | None:
+    """Offset the anchor subtree needs so the bridge mates close.
+
+    The anchor pose is an estimate — ``_chain_height`` cannot know the
+    bridge part's socket-to-socket rise and the host's X/Y came from
+    centering — so once placement is done the measured residual is
+    authoritative: for every bridge mate exactly one side belongs to the
+    anchor subtree, and moving that side by the residual closes the gap
+    while every subtree-internal joint stays exact. Bound-REJECTED
+    candidates contribute their stored residual vector too — the bound
+    gates the joint record, not the measurement.
+
+    Consensus is per-axis: an offset is a systematic placement error only
+    where every bridge agrees on it — opposing residuals (mirrored
+    parts) cancel that axis instead of producing a guess."""
     parts = {p.id: p for p in sess.state.parts}
     inst = {i.instance_id: i for i in sess.state.assembly.instances}
-    shifts: list[float] = []
+    shifts: list[np.ndarray] = []
     for j in sess.state.assembly.joints:
         if not j.get("bridge"):
             continue
-        mv = inst.get(str(j.get("moving_instance") or ""))
-        fx = inst.get(str(j.get("fixed_instance") or ""))
-        if mv is None or fx is None:
+        resid = _bridge_joint_resid(sess, j, parts, inst)
+        if resid is None:
             continue
-        mp = next((p for p in parts[mv.part_id].ports if p.name == j.get("moving_port")), None)
-        tp = next((p for p in parts[fx.part_id].ports if p.name == j.get("fixed_port")), None)
-        if mp is None or tp is None:
-            continue
-        t_m = np.asarray(mv.transform, dtype=float).reshape(4, 4)
-        t_f = np.asarray(fx.transform, dtype=float).reshape(4, 4)
-        mpw = t_m[0:3, 0:3] @ solver._v(mp.pos) + t_m[0:3, 3]
-        fpw = (
-            t_f[0:3, 0:3]
-            @ (
-                solver._v(tp.pos)
-                - solver._v(tp.axis)
-                * solver._engage_mm(
-                    mp, tp, moving_part=parts[mv.part_id], fixed_part=parts[fx.part_id]
-                )
-            )
-            + t_f[0:3, 3]
-        )
-        resid = mpw - fpw
-        in_m, in_f = mv.instance_id in host_set, fx.instance_id in host_set
+        in_m = str(j.get("moving_instance") or "") in host_set
+        in_f = str(j.get("fixed_instance") or "") in host_set
         if in_f and not in_m:
-            shifts.append(float(resid[2]))
+            shifts.append(resid)
         elif in_m and not in_f:
-            shifts.append(float(-resid[2]))
-    if not shifts or max(shifts) - min(shifts) > 10.0:
+            shifts.append(-resid)
+    for t in tasks or []:
+        miss = t.get("bridge_miss")
+        if not miss:
+            continue
+        resid = np.asarray(miss["resid"], dtype=float)
+        res_n = float(np.linalg.norm(resid))
+        if res_n < 1e-6 or res_n > 80.0:
+            continue  # absurdly large miss is a pairing error, not a pose error
+        i1h = miss.get("i1") in host_set
+        i2h = miss.get("i2") in host_set
+        if i2h and not i1h:
+            shifts.append(resid)
+        elif i1h and not i2h:
+            shifts.append(-resid)
+    if not shifts:
         return None
-    shift = float(np.mean(shifts))
-    return shift if abs(shift) >= 0.5 else None
+    out = np.zeros(3)
+    any_axis = False
+    for ax in range(3):
+        vals = [float(s[ax]) for s in shifts]
+        if max(vals) - min(vals) > 10.0:
+            continue
+        mean = float(np.mean(vals))
+        if abs(mean) >= 0.5:
+            out[ax] = mean
+            any_axis = True
+    return out if any_axis else None
 
 
 def _lift_correct_for_bridges(
@@ -751,6 +795,7 @@ def _lift_correct_for_bridges(
     anchor_pid: str | None,
     lift: float,
     report: dict[str, Any],
+    tasks: list[dict[str, Any]] | None = None,
 ) -> None:
     """Refine the estimated anchor lift with the measured bridge residual.
 
@@ -758,28 +803,130 @@ def _lift_correct_for_bridges(
     it can't move — so the correction shifts only the anchor subtree
     (host + everything jointed onto it) along the lift axis. Gated on an
     existing lift: it refines an estimate, it never invents one."""
-    if not anchor_pid or lift <= 0.0:
+    if not anchor_pid:
         return
     for inst in sess.state.assembly.instances:
         if inst.part_id != anchor_pid:
             continue
         host_set = _host_subgraph(sess, inst.instance_id)
-        shift = _bridge_closure_shift(sess, host_set)
+        shift = _bridge_closure_shift(sess, host_set, tasks)
         if shift is None:
             continue
-        shift = float(max(-lift, min(60.0, shift)))
+        if lift <= 0.0:
+            shift = shift.copy()
+            shift[2] = 0.0  # no estimated lift — the host may not float
+        shift[2] = float(max(-lift, min(60.0, shift[2])))
+        shift[0] = float(max(-60.0, min(60.0, shift[0])))
+        shift[1] = float(max(-60.0, min(60.0, shift[1])))
+        if float(np.linalg.norm(shift)) < 0.5:
+            continue
         for i in sess.state.assembly.instances:
             if i.instance_id in host_set and i.transform:
                 t = np.asarray(i.transform, dtype=float).reshape(4, 4)
-                t[2, 3] += shift
+                t[0:3, 3] += shift
                 i.transform = [[float(v) for v in row] for row in t.tolist()]
-        report["lift_correction_mm"] = round(shift, 2)
+        report["lift_correction_mm"] = [round(float(v), 2) for v in shift]
         log.info(
             "guide.preassembly.lift_correction",
-            shift_mm=round(shift, 2),
+            shift_mm=[round(float(v), 2) for v in shift],
             anchor=inst.instance_id,
         )
         return
+
+
+async def _retry_bridges(
+    sess: GuideToolSession, tasks: list[dict[str, Any]], report: dict[str, Any]
+) -> None:
+    """Re-solve bridge mates after the lift correction moved the host
+    subtree. Tasks whose best candidate failed the residual bound keep
+    their measured miss in ``bridge_miss``; once the host side sits at
+    the corrected height the same candidate closes inside the bound.
+
+    The fallback attach already placed the part on its primary mate —
+    the retry swaps the instance transform surgically (the bridge solve
+    keeps the primary mate exact) and rewrites that step's joints from
+    the solved pair set. Only leaf instances are touched — a part other
+    joints hang on stays as placed."""
+    for task in tasks:
+        miss = task.pop("bridge_miss", None)
+        if not miss:
+            continue
+        pid = _rp(sess, task["part"], task["step"])
+        moving = sess.state.part_by_id(pid) if pid else None
+        if moving is None:
+            continue
+        placed = [
+            i
+            for i in sess.state.assembly.instances
+            if i.part_id == pid
+            and i.placed_in_step == task["step"]
+            and i.substep_idx == task["substep_idx"]
+        ]
+        if not placed:
+            continue
+        inst = placed[-1]
+        # leaf only — re-transforming a part children hang on orphans them
+        if any(
+            str(j.get("fixed_instance") or "") == inst.instance_id
+            for j in sess.state.assembly.joints
+        ):
+            continue
+        # free the ports this instance already occupies — its primary-mate
+        # joint would otherwise mask the very candidate being re-solved
+        old_joints = [
+            j
+            for j in sess.state.assembly.joints
+            if str(j.get("moving_instance") or "") == inst.instance_id
+            and j.get("step") == task["step"]
+        ]
+        sess.state.assembly.joints[:] = [
+            j
+            for j in sess.state.assembly.joints
+            if not (
+                str(j.get("moving_instance") or "") == inst.instance_id
+                and j.get("step") == task["step"]
+            )
+        ]
+        best = _bridge_search(sess, task, pid)
+        if best is None or best[1] > _bridge_bound(sess, task, pid, best):
+            sess.state.assembly.joints.extend(old_joints)  # keep the honest miss
+            continue
+        _key, res, m, (i1, p1), (i2, p2), _rv = best
+        inst.transform = [[float(v) for v in row] for row in np.asarray(m).tolist()]
+        sess.state.assembly.joints.extend(
+            [
+                {
+                    "step": task["step"],
+                    "moving_part": pid,
+                    "fixed_part": i1.part_id,
+                    "moving_instance": inst.instance_id,
+                    "fixed_instance": i1.instance_id,
+                    "moving_port": p1["moving_port"],
+                    "fixed_port": p1["fixed_port"],
+                    "approach_axis": p1.get("axis") or [0.0, 0.0, 1.0],
+                },
+                {
+                    "step": task["step"],
+                    "moving_part": pid,
+                    "fixed_part": i2.part_id,
+                    "moving_instance": inst.instance_id,
+                    "fixed_instance": i2.instance_id,
+                    "moving_port": p2["moving_port"],
+                    "fixed_port": p2["fixed_port"],
+                    "approach_axis": p2.get("axis") or [0.0, 0.0, 1.0],
+                    "bridge": True,
+                },
+            ]
+        )
+        sess._scene_cache = None
+        report.setdefault("bridge_retries", []).append(
+            {"step": task["step"], "residual_mm": round(res, 2)}
+        )
+        log.info(
+            "guide.preassembly.bridge_retry",
+            step=task["step"],
+            residual_mm=round(res, 2),
+        )
 
 
 async def _place_tasks(
@@ -791,6 +938,7 @@ async def _place_tasks(
 ) -> None:
     """The deterministic placement pass for one anchor rotation."""
     for ti, task in enumerate(tasks):
+        task.pop("bridge_miss", None)  # stale residual of a prior trial
         pid = _rp(sess, task["part"], task["step"])
         if not pid:
             report["failed"].append({**task, "reason": f"unresolved part '{task['part']}'"})
@@ -886,7 +1034,8 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
         lift = _anchor_lift(sess, tasks, rot)
         try:
             await _place_tasks(sess, tasks, lift, rot, report)
-            _lift_correct_for_bridges(sess, anchor_pid, lift, report)
+            _lift_correct_for_bridges(sess, anchor_pid, lift, report, tasks)
+            await _retry_bridges(sess, tasks, report)
             quality = _attempt_quality(sess, report)
         except Exception:
             # a crashed trial must not poison the next rotation's attempt —
@@ -1381,11 +1530,18 @@ def _free_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
     return {p.name for p in (fp.ports if fp else [])} - _used_port_names(sess, inst)
 
 
-async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
+def _bridge_search(
+    sess: GuideToolSession, task: dict[str, Any], pid: str
+) -> tuple[float, float, Any, tuple, tuple, np.ndarray] | None:
     """Two-sided mate for bridging parts (elbow joining pipe A to pipe B):
     when the sub-step names a second target and the part has >=2 ports,
     solve both mates simultaneously — the roll around the primary axis is
-    chosen so the SECOND mate also closes."""
+    chosen so the SECOND mate also closes.
+
+    Returns ``(key, residual, transform, (i1, p1), (i2, p2), resid_vec)``
+    for the best candidate or None when nothing solves. The residual is
+    NOT bound-checked here — the caller decides whether it closes,
+    records a ``bridge_miss`` for the lift-correction pass, or commits."""
     if not str(task.get("target2") or "").strip():
         return None
     t1, t2 = _resolve_name(sess, task["target"]), _resolve_name(sess, task.get("target2"))
@@ -1402,6 +1558,8 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
     }
     fixed1 = sess.state.part_by_id(t1)
     fixed2 = sess.state.part_by_id(t2)
+    if fixed1 is None or fixed2 is None:
+        return None
     st_b = sess.state.step_by_number(task["step"])
     hint_b = f"{task.get('target') or ''} {task.get('target2') or ''} {task.get('text') or ''} {st_b.title if st_b else ''}"
     axes_b = _dir_axes(hint_b)
@@ -1415,7 +1573,7 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
         )
         return sum(sg * wp[ax] for ax, sg in axes_b)
 
-    best: tuple[float, list, dict, dict] | None = None
+    best: tuple[float, float, Any, tuple, tuple, np.ndarray] | None = None
     for i1 in targets[t1]:
         for i2 in targets[t2]:
             p1s = solver.find_matching_ports(
@@ -1443,14 +1601,18 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
                     fp2 = next(
                         p for p in fixed2.ports if p.name == p2["fixed_port"]
                     )
-                    res = solver.evaluate_mate(
-                        mp2,
-                        np.asarray(m),
-                        fp2,
-                        np.asarray(i2.transform),
-                        moving_part=moving,
-                        fixed_part=fixed2,
-                    )[0]
+                    t_m = np.asarray(m, dtype=float).reshape(4, 4)
+                    t_f = np.asarray(i2.transform, dtype=float).reshape(4, 4)
+                    eng = solver._engage_mm(
+                        mp2, fp2, moving_part=moving, fixed_part=fixed2
+                    )
+                    mpw = t_m[0:3, 0:3] @ solver._v(mp2.pos) + t_m[0:3, 3]
+                    fpw = (
+                        t_f[0:3, 0:3] @ (solver._v(fp2.pos) - solver._v(fp2.axis) * eng)
+                        + t_f[0:3, 3]
+                    )
+                    resid_v = mpw - fpw
+                    res = float(np.linalg.norm(resid_v))
                     # side words ("linkes Rohr … linkes oberes Rohr")
                     # disambiguate which INSTANCE pair the bridge closes —
                     # bounded: a direction hint may break near-ties but can
@@ -1460,21 +1622,46 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
                     )
                     key = res - 15.0 * float(np.tanh(side / 40.0))
                     if best is None or key < best[0]:
-                        best = (key, res, m, (i1, p1), (i2, p2))
-    if best is None:
-        return None
-    _key, res, m, (i1, p1), (i2, p2) = best
-    # a bridge that can't physically close isn't a bridge — when the best
-    # residual exceeds half the second socket's grip the plug barely
-    # reaches the bore; fall back to the primary mate instead of
-    # recording an open gap as a joint
-    mp2b = next((q for q in moving.ports if q.name == p2["moving_port"]), None)
-    fp2b = next((q for q in fixed2.ports if q.name == p2["fixed_port"]), None)
+                        best = (key, res, m, (i1, p1), (i2, p2), resid_v)
+    return best
+
+
+def _bridge_bound(sess: GuideToolSession, task: dict[str, Any], pid: str, best: tuple) -> float:
+    """Acceptance limit for a bridge residual: at most half the second
+    socket's grip (plug must reach well into the bore)."""
+    _key, _res, _m, _p1, (_i2, p2), _rv = best
+    moving = sess.state.part_by_id(pid)
+    fixed2 = sess.state.part_by_id(_resolve_name(sess, task.get("target2")) or "")
+    mp2b = next((q for q in (moving.ports if moving else []) if q.name == p2["moving_port"]), None)
+    fp2b = next(
+        (q for q in (fixed2.ports if fixed2 else []) if q.name == p2["fixed_port"]),
+        None,
+    )
     sd2 = max(
         solver._socket_depth(mp2b) if mp2b is not None else 0.0,
         solver._socket_depth(fp2b) if fp2b is not None else 0.0,
     )
-    if res > max(1.0, min(sd2 * 0.5, 15.0)):
+    return max(1.0, min(sd2 * 0.5, 15.0))
+
+
+async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
+    best = _bridge_search(sess, task, pid)
+    if best is None:
+        return None
+    _key, res, m, (i1, p1), (i2, p2), resid_v = best
+    # a bridge that can't physically close isn't a bridge — when the best
+    # residual exceeds half the second socket's grip the plug barely
+    # reaches the bore; fall back to the primary mate instead of
+    # recording an open gap as a joint. The measured residual is KEPT on
+    # the task — a mostly-vertical miss is a lift error the correction
+    # pass can still close, after which the bridge is retried.
+    if res > _bridge_bound(sess, task, pid, best):
+        task["bridge_miss"] = {
+            "resid": [float(v) for v in resid_v],
+            "i1": str(i1.instance_id),
+            "i2": str(i2.instance_id),
+            "res": float(res),
+        }
         return None
     cid = f"bridge-{pid}-{task['step']}-{task['substep_idx']}"
     sess._preview_cache[cid] = {

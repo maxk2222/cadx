@@ -575,3 +575,132 @@ def test_attach_hint_cannot_outrank_physical_fit() -> None:
     assert "inner" not in picked  # recessed past reach — never an interface
     assert "top_stub" in picked   # legal thread seat — but below the snug stub
     assert rows[0][2] > next(r[2] for r in rows if r[4]["fixed_port"] == "top_stub")
+
+
+# --------------------------------------------------------------------- #
+# bridge residual → measured host correction → retry
+# --------------------------------------------------------------------- #
+
+
+def test_bridge_miss_residuals_drive_per_axis_consensus() -> None:
+    """Bound-rejected bridge candidates keep their measured residual —
+    the host subtree shift is the per-axis MEAN of them, signed by which
+    side of the mate sits in the anchor subgraph."""
+    sess = _sess([])
+    tasks = [
+        {"bridge_miss": {"resid": [0.0, 8.0, 16.0], "i1": "el#1", "i2": "p#1", "res": 17.9}},
+        {"bridge_miss": {"resid": [0.0, 9.0, 17.0], "i1": "el#2", "i2": "p#2", "res": 19.2}},
+    ]
+    shift = pa._bridge_closure_shift(sess, {"p#1", "p#2"}, tasks)
+    assert shift is not None
+    assert abs(float(shift[2]) - 16.5) < 0.6
+    assert abs(float(shift[1]) - 8.5) < 0.6
+    assert float(shift[0]) == 0.0
+
+
+def test_bridge_miss_conflicting_axis_cancels() -> None:
+    """Mirrored bridges (left needs +x, right needs -x) must NOT average
+    into a sideways guess — only the axis every bridge agrees on is
+    corrected."""
+    sess = _sess([])
+    tasks = [
+        {"bridge_miss": {"resid": [30.0, 0.0, 16.0], "i1": "e1", "i2": "h1", "res": 34.0}},
+        {"bridge_miss": {"resid": [-30.0, 0.0, 16.0], "i1": "e2", "i2": "h2", "res": 34.0}},
+    ]
+    shift = pa._bridge_closure_shift(sess, {"h1", "h2"}, tasks)
+    assert shift is not None
+    assert float(shift[0]) == 0.0
+    assert abs(float(shift[2]) - 16.0) < 1e-6
+
+
+def test_bridge_miss_sign_follows_host_side() -> None:
+    """resid = moving-socket minus fixed-point: when the FIRST mate's
+    instance is the one in the anchor subtree, the moving part rides
+    with it — the shift opposes the residual."""
+    sess = _sess([])
+    tasks = [{"bridge_miss": {"resid": [0.0, 0.0, 12.0], "i1": "h", "i2": "f", "res": 12.0}}]
+    shift = pa._bridge_closure_shift(sess, {"h"}, tasks)
+    assert shift is not None and float(shift[2]) == -12.0
+
+
+def test_bridge_miss_absurd_residual_is_no_pose_error() -> None:
+    """A 300mm miss is a wrong pairing/orientation — never a placement
+    offset the host subtree should chase."""
+    sess = _sess([])
+    tasks = [{"bridge_miss": {"resid": [0.0, 0.0, 300.0], "i1": "e", "i2": "h", "res": 300.0}}]
+    assert pa._bridge_closure_shift(sess, {"h"}, tasks) is None
+
+
+def test_lift_correct_shifts_only_host_subtree_and_clamps() -> None:
+    """The correction moves the anchor subtree as ONE rigid group —
+    floor-chain instances stay put — and without an estimated lift the
+    host may not float in z."""
+    host = _part("host")
+    floor = _part("floor")
+    host_i = AssemblyInstance(
+        part_id="host", instance_id="host#1",
+        transform=np.eye(4).tolist(), placed_in_step=1,
+    )
+    floor_i = AssemblyInstance(
+        part_id="floor", instance_id="floor#1",
+        transform=np.eye(4).tolist(), placed_in_step=2,
+    )
+    child_i = AssemblyInstance(
+        part_id="floor", instance_id="floor#2",
+        transform=np.eye(4).tolist(), placed_in_step=3,
+    )
+    sess = _sess(
+        [host, floor],
+        AssemblyState(
+            instances=[host_i, floor_i, child_i],
+            joints=[{
+                "step": 3, "moving_part": "floor", "fixed_part": "host",
+                "moving_instance": "floor#2", "fixed_instance": "host#1",
+                "moving_port": "a", "fixed_port": "b",
+            }],
+        ),
+    )
+    tasks = [{"bridge_miss": {"resid": [0.0, 5.0, 20.0], "i1": "e", "i2": "host#1", "res": 20.6}}]
+    rep: dict = {}
+    pa._lift_correct_for_bridges(sess, "host", lift=0.0, report=rep, tasks=tasks)
+    # lift=0 → z component suppressed; y still corrected
+    assert np.asarray(child_i.transform)[1, 3] == pytest.approx(5.0)
+    assert np.asarray(child_i.transform)[2, 3] == pytest.approx(0.0)
+    assert np.asarray(host_i.transform)[1, 3] == pytest.approx(5.0)
+    # floor#1 is not jointed to the host — untouched
+    assert np.asarray(floor_i.transform)[1, 3] == pytest.approx(0.0)
+
+
+def test_retry_bridges_restores_joints_when_still_unclosed() -> None:
+    """A retry that still misses the bound must hand back the fallback
+    joints it borrowed — never leave the part floating joint-less."""
+    moving = _part("elbow")  # no ports → _bridge_search declines
+    target = _part("pipe")
+    mi = AssemblyInstance(
+        part_id="elbow", instance_id="elbow#1",
+        transform=np.eye(4).tolist(), placed_in_step=9,
+    )
+    ti = AssemblyInstance(
+        part_id="pipe", instance_id="pipe#1",
+        transform=np.eye(4).tolist(), placed_in_step=8,
+    )
+    joint = {
+        "step": 9, "moving_part": "elbow", "fixed_part": "pipe",
+        "moving_instance": "elbow#1", "fixed_instance": "pipe#1",
+        "moving_port": "a", "fixed_port": "b",
+    }
+    sess = _sess(
+        [moving, target], AssemblyState(instances=[mi, ti], joints=[joint])
+    )
+    tasks = [
+        {
+            "step": 9, "substep_idx": 0, "part": "elbow",
+            "target": "pipe", "target2": "pipe",
+            "bridge_miss": {"resid": [0.0, 0.0, 12.0], "i1": "pipe#1", "i2": "pipe#1", "res": 12.0},
+        }
+    ]
+    import asyncio
+
+    asyncio.run(pa._retry_bridges(sess, tasks, {}))
+    assert sess.state.assembly.joints == [joint]
+    assert np.asarray(mi.transform).reshape(4, 4)[0:3, 3].tolist() == [0.0, 0.0, 0.0]
