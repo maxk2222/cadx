@@ -2133,11 +2133,16 @@ class ToolSession:
                     shape.append(f"{k}: [{{{', '.join(items_req)}}}, ...]")
                 else:
                     shape.append(k)
+            sent = (
+                f" — you sent keys: {sorted(args)}"
+                if isinstance(args, dict) and args
+                else ""
+            )
             result = {
                 "ok": False,
                 "error": (
                     f"missing required argument(s): {', '.join(missing)} — "
-                    f"call {name} with args {{{', '.join(shape)}}}"
+                    f"call {name} with args {{{', '.join(shape)}}}{sent}"
                 ),
             }
             self.tool_log.append({"name": name, "args": _truncate_args(args), "result": result})

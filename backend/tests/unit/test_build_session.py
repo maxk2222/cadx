@@ -169,6 +169,10 @@ async def test_missing_required_arg_returns_named_error():
     assert "start" in res["error"] and "missing required" in res["error"]
     res = await session.execute("add_block", {"code": "result = Box(1,1,1)"})
     assert res["ok"] is False and "name" in res["error"]
+    # wrong-key calls name the keys actually sent — the agent sees its
+    # mislabeled payload instead of a bare 'missing' complaint
+    res = await session.execute("add_block", {"items": [{"name": "x"}]})
+    assert res["ok"] is False and "'items'" in res["error"]
 
 
 async def test_add_block_appends_and_rejects_duplicates():
