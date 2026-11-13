@@ -19,3 +19,10 @@ Zwei vormontierte Adapter UNTERHALB des Gehäuses (links+rechts) gehören zum Au
 - elbow_spigot_L/R → adapter_lower_L/R, Öffnung +Z
 - pipe_l500_L/R → elbow_spigot_L/R (vertikal)
 - elbow_socket_L/R → pipe_l500_L/R:top UND pipe_l70_L/R:top (2 Joints je Bogen)
+
+## Klärungen vom Auftraggeber (2026-11-13)
+- Das Gehäuse sitzt AUF der Wärmepumpe (Pumpen-CAD existiert nicht, wird NICHT gebaut) — das Gehäuse steht aufrecht (Render-Perspektive täuscht, es ist NICHT gekippt).
+- Die vormontierten Adapter sitzen an der HINTEREN Seite der Wärmepumpe, ca. 600 mm UNTERHALB des Gehäuses — praktisch auf Boden-/Pumpenniveau. Darum: die 500-mm-Rohre zeigen VOM GEWICHTPUNKT DES GEWICHTPUNKT GEHÄUSES NACH UNTEN (Kette: unterer Adapter → Bogen Muffe→Spitzende, freie Öffnung oben → L500 vertikal hoch → Muffe-Muffe-Bogen als Brücke zum L70 oben).
+- Aus den PDF-Figuren: die „oberen" Gehäuse-Anschlüsse sind die waagerechten Stutzen an der FRONT-Seite (Adapters + L70 ragen horizontal heraus); die unteren Gehäuse-Stutzen (rim_19/20, hinten unten) sind Referenzpunkte für die vormontierten Adapter — die Adapter selbst gehören aber zur Pumpe: Referenz-Platzierung, keine erfundene Pumpen-Geometrie.
+- Höhenlogik: Adapter unten (~Bodenniveau) + Bogen + L500 → L500-Top landet in der Höhe der Gehäuse-Front-Anschlüsse; dort verbindet der Muffe-Muffe-Bogen vertikal↔horizontal.
+- Adapter-Seiten (Auftraggeber): eine Seite hat ein INNENGEWINDE → schraubt auf die Gewinde-Stutzen am Gehäuse; die andere Seite ist die FEMALE-AUFNAHME für das L70-Rohr. Der Adapter ist also richtungsgebunden: Gewinde→Stutzen, Aufnahme→Rohr.

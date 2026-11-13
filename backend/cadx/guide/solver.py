@@ -196,39 +196,76 @@ def _gender_ok(a: PortInfo, b: PortInfo) -> bool:
     return {a.gender, b.gender} != {"male"}
 
 
-def _score_pair(a: PortInfo, b: PortInfo) -> float:
-    score = 0.0
+def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
+    # different port KINDS can never mate — a flat face can't accept a
+    # pipe, a rim can't seat on a plane. Mixed pairs only ever produced
+    # geometrically legal but physically meaningless frame matches
+    # (adapter face_0 "mating" a casing rim)
+    if a.kind != b.kind:
+        return -1.0
+    score = 0.1
     if a.kind == "cylinder" and b.kind == "cylinder" and min(a.radius, b.radius) > 0:
         ratio = min(a.radius, b.radius) / max(a.radius, b.radius)
         if ratio < 0.5:
-            return -1.0  # reject: radii can't mate
+            if not include_mismatch:
+                return -1.0  # reject: radii can't mate
+            # radius mismatch stays a LAST-RESORT candidate, not a reject:
+            # rim extraction can measure a collar instead of the stub, and
+            # instruction kits are representative — the manual may call a
+            # joint the measured radii can't prove
+            return -0.5
         score += ratio
     g = {a.gender, b.gender}
     if g == {"male", "female"}:
         score += 0.5
     elif g == {"female"}:
         score -= 0.2  # rim ambiguity: socket-over-pipe is plausible but not preferred
-    if a.kind == b.kind:
-        score += 0.1
     return score
+
+
+def _is_collar(port: PortInfo, part: GuidePart, *, moving_side: bool) -> bool:
+    """A male rim coincident with a female mouth on the same part is the
+    fitting's collar EDGE, not a mate target — the mouth is the real
+    interface. On the moving side only a RECESS-SHADOWED male counts
+    (a genuine spigot protrudes past its coincident bore lip)."""
+    if port.gender != "male":
+        return False
+    pa = _v(port.axis)
+    pp = _v(port.pos)
+    for q in part.ports:
+        if q is port or q.gender != "female":
+            continue
+        if float(np.linalg.norm(_v(q.pos) - pp)) >= 2.5:
+            continue
+        if abs(float(np.dot(_v(q.axis), pa))) <= 0.9:
+            continue
+        if not moving_side:
+            return True
+        if float(np.dot(_v(q.pos), pa)) > float(np.dot(pp, pa)) + 0.5:
+            return True  # the female mouth reaches further — this male is recessed
+    return False
 
 
 def find_matching_ports(
     moving: GuidePart,
     fixed: GuidePart,
     used_fixed_ports: set[str] | None = None,
+    include_mismatch: bool = False,
 ) -> list[dict[str, Any]]:
     """Deterministic ranked port-pair candidates (no transforms yet)."""
     out = []
     for mp in moving.ports:
+        mp_collar = _is_collar(mp, moving, moving_side=True)
         for tp in fixed.ports:
             if used_fixed_ports and tp.name in used_fixed_ports:
                 continue
             if not _gender_ok(mp, tp):
                 continue
-            sc = _score_pair(mp, tp)
-            if sc < 0:
+            sc = _score_pair(mp, tp, include_mismatch=include_mismatch)
+            if sc <= -1.0:
                 continue
+            if mp_collar or _is_collar(tp, fixed, moving_side=False):
+                sc = -0.6  # collar edges rank below every real interface
             out.append(
                 {
                     "moving_port": mp.name,

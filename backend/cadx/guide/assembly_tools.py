@@ -190,6 +190,8 @@ def _resolve_name(s: GuideToolSession, name: str) -> str | None:
     matching alias/name keeps that usable instead of collapsing to free
     placement."""
     n = _norm2(name)
+    if not n:
+        return None
     hit = s._aliases_store.get(n) or _name_index(s).get(n)
     if hit:
         return hit
@@ -340,7 +342,9 @@ async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[st
         for j in s.state.assembly.joints
         if j.get("moving_instance") == fixed_inst.instance_id
     }
-    cands = solver.find_matching_ports(moving, fixed, used_fixed_ports=used)
+    cands = solver.find_matching_ports(
+        moving, fixed, used_fixed_ports=used, include_mismatch=True
+    )
     if not cands:
         return {
             "ok": True,
@@ -379,7 +383,7 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
             "moving_ports": [p.name for p in moving.ports],
             "fixed_ports": [p.name for p in fixed.ports],
         }
-        auto = solver.find_matching_ports(moving, fixed)
+        auto = solver.find_matching_ports(moving, fixed, include_mismatch=True)
         if auto:
             err_out["compatible_pairs"] = auto[:6]
             err_out["hint"] = (
@@ -471,9 +475,13 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     # per-step quota: a step that already holds its required count of this
     # part must not absorb another — repairs go through unplace_instance,
     # not through stacking extras into an already-satisfied step
+    # planner-driven pre-mounts (initial-state hardware the manual names but
+    # never mounts itself — e.g. fittings already on the device) legitimately
+    # add instances beyond the step requirements; they still respect the cap
+    premount = bool(a.get("premount"))
     need_here = reqs.get(step_no, {}).get(pid, 0)
     have_here = sum(1 for i in existing if i.placed_in_step == step_no)
-    if need_here and have_here >= need_here:
+    if not premount and need_here and have_here >= need_here:
         still_open = [
             st_no
             for st_no, req in reqs.items()
@@ -490,13 +498,13 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             f"required '{pid}' instance(s){hint} — use unplace_instance to "
             "reposition instead of adding more",
         }
-    if need and need_here == 0 and len(existing) >= need:
+    if not premount and need and need_here == 0 and len(existing) >= need:
         return {
             "ok": False,
             "error": f"all {need} required '{pid}' instance(s) already placed — "
             "use unplace_instance to reposition instead of adding more",
         }
-    if need == 0 and existing:
+    if not premount and need == 0 and existing:
         # parts the manual never mounts (host/anchor referenced only in
         # check steps) exist exactly once — never let a repair loop add
         # another casing/base

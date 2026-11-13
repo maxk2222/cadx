@@ -24,6 +24,7 @@ Deterministic choices, in order:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
@@ -129,13 +130,31 @@ def _spawn_premounts(
     host_pid = next((t["part"] for t in tasks if t.get("anchor")), None)
     if host_pid is None:
         host_pid = tasks[0]["part"] if tasks else ""
-    planned_sides: dict[str, set[str]] = {}
+    def _ref_sides(t: dict[str, Any]) -> set[str]:
+        # side words that describe the TARGET location: the bare target
+        # name plus only the first text clause (the one naming it) —
+        # later clauses describe OTHER parts ("freie Seite auf das obere
+        # Rohr") and would spawn bogus pre-mounts
+        first_clause = (t.get("text") or "").split(",")[0]
+        for cut in (" dann ", " anschließ", " und "):
+            first_clause = first_clause.split(cut)[0]
+        # orientation phrases ("Öffnung nach oben", "nach unten zeigend")
+        # are not LOCATION qualifiers — strip them or they poison the sig
+        first_clause = re.sub(
+            r"nach\s+(oben|unten|links|rechts|vorne|hinten|oben zeigend)\w*",
+            " ",
+            first_clause.lower(),
+        )
+        return _side_words(f"{t.get('target') or ''} {first_clause}")
+
+    # every task contributes its own side signature — an instance only
+    # covers a reference when ONE signature contains ALL the reference's
+    # side words (an upper-left adapter is not a lower-left one)
+    planned_sigs: dict[str, list[frozenset[str]]] = {}
     for t in tasks:
         pid = _resolve_name(sess, t["part"])
         if pid:
-            planned_sides.setdefault(pid, set()).update(
-                _side_words(f"{t.get('target') or ''} {t.get('text') or ''}")
-            )
+            planned_sigs.setdefault(pid, []).append(frozenset(_ref_sides(t)))
     extra: list[dict[str, Any]] = []
     for task in tasks:
         if task.get("anchor") or task.get("premount"):
@@ -143,9 +162,15 @@ def _spawn_premounts(
         tpid = _resolve_name(sess, task.get("target"))
         if not tpid or tpid in (_resolve_name(sess, task["part"]), host_pid):
             continue
-        missing = _side_words(task.get("target") or "") - planned_sides.get(tpid, set())
-        missing -= {s for _, s in ((e["part"], e.get("text")) for e in extra) if _ == tpid for s in _side_words(s or "")}
-        if not missing:
+        ref = _ref_sides(task)
+        if not ref:
+            continue
+        # only when the part's own placements split into per-side
+        # instances does a side-qualified target mean ANOTHER instance —
+        # for a single-instance part the side words locate a feature ON it
+        if len({s for s in planned_sigs.get(tpid, []) if s}) < 2:
+            continue
+        if any(ref <= sig for sig in planned_sigs.get(tpid, [])):
             continue
         extra.append(
             {
@@ -154,11 +179,11 @@ def _spawn_premounts(
                 "part": tpid,
                 "target": host_pid,
                 "target2": "",
-                "text": task.get("target") or "",
+                "text": f"{task.get('target') or ''} {task.get('text') or ''}",
                 "premount": True,
             }
         )
-        planned_sides.setdefault(tpid, set()).update(missing)
+        planned_sigs.setdefault(tpid, []).append(frozenset(ref))
     return sorted(
         tasks + extra,
         key=lambda t: (t["step"], not t.get("anchor"), not t.get("premount")),
@@ -195,25 +220,17 @@ def _pick_target_instance(
     insts = [i for i in sess.state.assembly.instances if i.part_id == tid]
     if not insts:
         return None
-    used_ports: dict[str, set[str]] = {}
     used_types: dict[str, set[str]] = {}
     for j in sess.state.assembly.joints:
         fi = str(j.get("fixed_instance") or "")
-        mi = str(j.get("moving_instance") or "")
         if fi:
-            used_ports.setdefault(fi, set()).add(str(j.get("fixed_port")))
             used_types.setdefault(fi, set()).add(str(j.get("moving_part") or ""))
-        if mi:
-            used_ports.setdefault(mi, set()).add(str(j.get("moving_port")))
 
     def _free(inst: Any) -> bool:
         part = sess.state.part_by_id(inst.part_id)
         if not (part and part.ports):
             return True
-        free = {p.name for p in part.ports} - used_ports.get(
-            inst.instance_id or inst.part_id, set()
-        )
-        return bool(free)
+        return bool(_free_port_names(sess, inst))
 
     candidates = [i for i in insts if _free(i)]
     for inst in candidates:
@@ -223,10 +240,99 @@ def _pick_target_instance(
     return (candidates or insts)[-1].instance_id or (candidates or insts)[-1].part_id
 
 
+def _pick_host_port(host: Any, axes: list[tuple[int, float]], feed_perp: int | None) -> Any | None:
+    """Best host port for a task: side-word position match; when the
+    chain feeds a bridge, ports parallel to the incoming leg are
+    geometrically impossible and lose hard."""
+    center = [(host.bbox_min[i] + host.bbox_max[i]) / 2 for i in range(3)]
+    best, best_s = None, -1e18
+    front_bias = 0.0 if any(a == 1 for a, _ in axes) else 0.3
+    for fp in host.ports:
+        if fp.kind != "cylinder":
+            continue
+        rel = [fp.pos[i] - center[i] for i in range(3)]
+        s = sum(sg * rel[a] for a, sg in axes) + front_bias * rel[1]
+        if feed_perp is not None:
+            s += -400.0 if abs(fp.axis[feed_perp]) > 0.8 else 150.0 * (1.0 - abs(fp.axis[feed_perp]))
+        if s > best_s:
+            best_s, best = s, fp
+    return best
+
+
+def _chain_height(sess: GuideToolSession, tasks: list[dict[str, Any]], prem_idx: int, host_pid: str) -> float:
+    """Height of the ONE chain growing from the premount: follow the task
+    graph tip→tip (sibling sides share part ids and stay out); stop at a
+    bridge task (it closes the loop, adds no height) or when a task
+    re-targets the host."""
+    tip = _resolve_name(sess, tasks[prem_idx]["part"])
+    chain_pids = [tip] if tip else []
+    for t in tasks[prem_idx + 1 :]:
+        if t.get("premount"):
+            continue
+        tp = _resolve_name(sess, t.get("target") or "")
+        if tp == host_pid:
+            break  # chain reached back to the host
+        if tp != tip:
+            continue
+        if str(t.get("target2") or "").strip():
+            break  # bridge task — the chain terminates here
+        pp = _resolve_name(sess, t["part"])
+        if pp:
+            chain_pids.append(pp)
+            tip = pp
+    return sum(
+        float(p.bbox_max[2] - p.bbox_min[2])
+        for cpid in chain_pids
+        if (p := sess.state.part_by_id(cpid)) is not None
+    )
+
+
+def _anchor_lift(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> float:
+    """When the manual mounts hardware BELOW the host (e.g. fittings
+    pre-mounted on a device the casing covers), the anchor can't sit on
+    the floor — the chain from the floor-level premounts (fitting → elbow
+    → pipe) must reach the host's ports. Lift = estimated chain height
+    above the premount - the host port's unlifted height."""
+    prem_idx = next((i for i, t in enumerate(tasks) if t.get("premount")), None)
+    if prem_idx is None:
+        return 0.0
+    prem = tasks[prem_idx]
+    st0 = sess.state.step_by_number(prem["step"])
+    hint0 = f"{prem.get('target') or ''} {prem.get('text') or ''} {st0.title if st0 else ''}"
+    if not any(sg < 0 for ax, sg in _dir_axes(hint0) if ax == 2):
+        return 0.0  # premounts beside/above the host — host stays grounded
+    host_pid = _resolve_name(sess, prem.get("target") or "")
+    host = sess.state.part_by_id(host_pid) if host_pid else None
+    if host is None:
+        return 0.0
+    chain_h = _chain_height(sess, tasks, prem_idx, host_pid)
+    if chain_h <= 0:
+        return 0.0
+    # host port the first host-bound task aims at — same preference the
+    # attach solver applies: side words plus, when the chain later feeds
+    # a bridge, ports PERPENDICULAR to the incoming leg (a vertical pipe
+    # can't elbow onto a vertical stub)
+    port_local_z = 0.0
+    for ti, t in enumerate(tasks):
+        if _resolve_name(sess, t.get("target") or "") != host_pid:
+            continue
+        tpid = _resolve_name(sess, t["part"])
+        feed_perp = _feeds_bridge_axis(sess, tasks, ti, tpid) if tpid else None
+        st = sess.state.step_by_number(t["step"])
+        hint = f"{t.get('target') or ''} {t.get('text') or ''} {st.title if st else ''}"
+        fp = _pick_host_port(host, _dir_axes(hint), feed_perp)
+        if fp is not None:
+            port_local_z = float(fp.pos[2])
+        break
+    unlifted_port_z = port_local_z - float(host.bbox_min[2])
+    return max(0.0, chain_h - unlifted_port_z)
+
+
 async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
     """Place what the step plan determines — returns (and persists) a report."""
     report: dict[str, Any] = {"placed": [], "skipped": [], "failed": []}
     tasks = _plan(sess)
+    lift = _anchor_lift(sess, tasks)
     for ti, task in enumerate(tasks):
         pid = _resolve_name(sess, task["part"])
         if not pid:
@@ -235,11 +341,23 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
         if _already_satisfied(sess, task["step"], pid):
             report["skipped"].append({**task, "reason": "already satisfied"})
             continue
-        placed = await _try_bridge(sess, task, pid)
+        lookahead = _lookahead(sess, tasks, ti, pid)
+        feed_perp = _feeds_bridge_axis(sess, tasks, ti, pid)
+        if task.get("premount"):
+            # initial-state hardware is not mated onto a kit port — give it
+            # a documented reference pose beside/below the host instead of
+            # a fake joint to an incompatible rim
+            st0 = sess.state.step_by_number(task["step"])
+            hint0 = f"{task.get('target') or ''} {task.get('text') or ''} {st0.title if st0 else ''}"
+            placed = await _place_premount_ref(sess, task, pid, _dir_axes(hint0), feed_perp)
+            if not placed:
+                placed = await _try_attach(sess, task, pid, lookahead, feed_perp)
+        else:
+            placed = await _try_bridge(sess, task, pid)
         if not placed:
-            placed = await _try_attach(sess, task, pid, _lookahead(sess, tasks, ti, pid))
+            placed = await _try_attach(sess, task, pid, lookahead, feed_perp)
         if not placed and task.get("anchor"):
-            placed = await _place_anchor(sess, task, pid)
+            placed = await _place_anchor(sess, task, pid, lift)
         if not placed:
             placed = await _try_env(sess, task, pid)
         if placed:
@@ -279,9 +397,27 @@ _VERTICAL = {"vertikal", "senkrecht", "vertical"}
 _HORIZONTAL = {"horizontal", "waagerecht", "waagrecht"}
 
 
+# "Öffnung nach oben" / "nach unten zeigend" describe the direction a FREE
+# port must face — not where the target sits. Kept separate: mixing them
+# into location axes pushed mounts to the wrong side
+_OPEN_PHRASE = re.compile(r"nach\s+(oben|unten|links|rechts|vorne|hinten)\w*")
+
+
+def _open_axes(text: str) -> list[tuple[int, float]]:
+    """(axis, sign) hints from 'nach <dir>' opening/orientation phrases."""
+    out: list[tuple[int, float]] = []
+    seen: set[int] = set()
+    for word in _OPEN_PHRASE.findall((text or "").lower()):
+        hit = _DIR_TOKENS.get(word)
+        if hit and hit[0] not in seen:
+            out.append(hit)
+            seen.add(hit[0])
+    return out
+
+
 def _dir_axes(text: str) -> list[tuple[int, float]]:
     """One (axis, sign) hint per axis found in a target/location phrase."""
-    t = " " + (text or "").lower() + " "
+    t = _OPEN_PHRASE.sub(" ", " " + (text or "").lower() + " ")
     out: list[tuple[int, float]] = []
     seen: set[int] = set()
     for tok, (ax, sg) in _DIR_TOKENS.items():
@@ -300,6 +436,65 @@ def _orient_word(text: str) -> str | None:
     if any(w in t for w in _HORIZONTAL):
         return "H"
     return None
+
+
+def _feeds_bridge_axis(
+    sess: GuideToolSession,
+    tasks: list[dict[str, Any]],
+    ti: int,
+    pid: str,
+) -> int | None:
+    """Axis a later bridge's OTHER leg approaches along, when this task's
+    part (or the chain built on it) is one bridge endpoint. A straight
+    fitting continues its host port's axis — so that port must face
+    PERPENDICULAR to the incoming leg, or a 90° bridge can never close.
+    Leg direction comes from the bridge task's own words ("vertikales
+    Rohr"); absent a word, chains build upward → assume Z."""
+    downstream = {pid}
+    for t in tasks[ti + 1 :]:
+        pp = _resolve_name(sess, t["part"])
+        tp = _resolve_name(sess, t.get("target") or "")
+        t2 = _resolve_name(sess, t.get("target2"))
+        if t2 and (tp in downstream or t2 in downstream):
+            other = t.get("target") if t2 in downstream else t.get("target2")
+            text = f"{other or ''} {t.get('text') or ''}".lower()
+            if any(w in text for w in _HORIZONTAL):
+                return None  # horizontal legs can run along X or Y — no axis
+            return 2
+        if pp and tp in downstream:
+            downstream.add(pp)
+    return None
+
+
+def _mounted_on_host(sess: GuideToolSession, fixed_inst: Any) -> bool:
+    """Is the fixed instance the assembly's base/host — the anchor every
+    fitting mounts onto? Hardware on a host presents its free port
+    outward; chain mates (pipe→elbow) must not get the radial prior."""
+    insts = sess.state.assembly.instances
+    return bool(insts and fixed_inst is insts[0])
+
+
+def _outward_free_score(
+    moving: Any,
+    mated_port: str,
+    transform: list[list[float]],
+    fixed_port_world: list[float],
+    host_center: list[float],
+) -> float:
+    """Hardware mounted on a host presents its open port pointing AWAY
+    from the host body — radial outward — so downstream parts can mate
+    to it (a rear-facing socket lets a 90° elbow's free opening point
+    up)."""
+    d = [fixed_port_world[i] - host_center[i] for i in range(3)]
+    n = float(np.sqrt(sum(x * x for x in d))) or 1.0
+    d = [x / n for x in d]
+    best = 0.0
+    for p in moving.ports:
+        if p.name == mated_port:
+            continue
+        w = _world_dir(transform, p.axis)
+        best = max(best, sum(w[i] * d[i] for i in range(3)))
+    return best
 
 
 def _world_pos(transform: list[list[float]], pos: list[float]) -> list[float]:
@@ -332,7 +527,7 @@ def _lookahead(
         if tpid is not None and tpid != pid:
             return [], None
         text = f"{nxt.get('target') or ''} {nxt.get('text') or ''}"
-        return _dir_axes(text), _orient_word(text)
+        return _open_axes(text) or _dir_axes(text), _orient_word(text)
     return [], None
 
 
@@ -450,49 +645,68 @@ def _score_pairs_for_instance(
     inst: Any,
     iid: str,
     axes: list[tuple[int, float]],
+    open_axes: list[tuple[int, float]],
     orient: str | None,
+    feed_perp: int | None,
     picked: bool,
 ) -> list[tuple[float, float, float, str, dict[str, Any]]]:
     """(hint, picked-bonus, solver-score, iid, pair) rows for one placed
-    instance — the fixed port's world position AND its world axis both feed
-    the hint: a pipe mated to a downward-facing port runs downward."""
+    instance — the fixed port's world POSITION follows the location axes
+    ("unterer linker Anschluss"), while its world AXIS follows opening
+    phrases ("Öffnung nach oben") — a pipe mated to a downward-facing port
+    runs downward. ``feed_perp`` is the axis a later bridge's other leg
+    approaches along: the mated port must be PERPENDICULAR to it, or a
+    90° bridge can never close (a vertical pipe can't elbow onto a
+    vertical stub)."""
     if inst is None or not inst.transform:
         return []
     fixed = sess.state.part_by_id(inst.part_id)
     if fixed is None:
         return []
     # a port is occupied by a joint on EITHER side — a rim that already
-    # received a pipe (as moving port) cannot host another
-    used = {
-        str(j.get("fixed_port"))
-        for j in sess.state.assembly.joints
-        if j.get("fixed_instance") == iid
-        or (not j.get("fixed_instance") and j.get("fixed_part") == inst.part_id)
-    } | {
-        str(j.get("moving_port"))
-        for j in sess.state.assembly.joints
-        if j.get("moving_instance") == iid
-    }
+    # received a pipe (as moving port) cannot host another; coincident
+    # extraction duplicates count as the same physical connection
+    used = _used_port_names(sess, inst)
     out: list[tuple[float, float, float, str, dict[str, Any]]] = []
     # uncapped solver call — the tool truncates to its top-8 by solver
     # score, which silently drops ports a hint needs
-    for pair in solver.find_matching_ports(moving, fixed, used_fixed_ports=used):
+    for pair in solver.find_matching_ports(
+        moving, fixed, used_fixed_ports=used, include_mismatch=True
+    ):
         fp = next((p for p in fixed.ports if p.name == pair.get("fixed_port")), None)
         wp = _world_pos(inst.transform, fp.pos) if fp else [0.0, 0.0, 0.0]
         axis_hint = 0.0
         if fp is not None:
+            if fp.kind == "plane":
+                # a rim/socket mate is what assembly manuals mean — flat
+                # faces only win when no cylindrical port is available
+                axis_hint -= 2.0
             fa = _world_dir(inst.transform, fp.axis)
-            axis_hint = sum(sg * fa[ax] for ax, sg in axes)
+            axis_hint += sum(sg * fa[ax] for ax, sg in open_axes)
             if orient == "V":
                 axis_hint += abs(fa[2])
             elif orient == "H":
                 axis_hint += 1.0 - abs(fa[2])
+            if feed_perp is not None:
+                # bridge feasibility dominates location words: a stub
+                # PARALLEL to the incoming leg can never be bridged to —
+                # a 90° elbow physically cannot close that loop
+                if abs(fa[feed_perp]) > 0.8:
+                    axis_hint -= 10.0
+                else:
+                    axis_hint += 6.0 * (1.0 - abs(fa[feed_perp]))
+            if float(pair.get("score") or 0.0) < 0.0:
+                axis_hint += 2.0 * float(pair["score"])
         hint = sum(sg * wp[ax] for ax, sg in axes) + 25.0 * axis_hint
         out.append((hint, 1.0 if picked else 0.0, float(pair.get("score") or 0.0), iid, pair))
     return out
 
 
-def _free_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
+def _used_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
+    """Ports occupied on an instance — expanded over COINCIDENT ports:
+    extraction emits both the spigot's outer rim and its bore lip at the
+    same spot (male+female, same axis) — physically one connection, so
+    mating one occupies all."""
     used = {
         str(j.get("fixed_port"))
         for j in sess.state.assembly.joints
@@ -504,7 +718,25 @@ def _free_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
         if j.get("moving_instance") == inst.instance_id
     }
     fp = sess.state.part_by_id(inst.part_id)
-    return {p.name for p in (fp.ports if fp else [])} - used
+    if fp is None:
+        return used
+    for name in list(used):
+        p = next((q for q in fp.ports if q.name == name), None)
+        if p is None:
+            continue
+        for q in fp.ports:
+            if q.name in used:
+                continue
+            same_spot = max(abs(p.pos[i] - q.pos[i]) for i in range(3)) < 2.5
+            same_axis = abs(sum(p.axis[i] * q.axis[i] for i in range(3))) > 0.9
+            if same_spot and same_axis:
+                used.add(q.name)
+    return used
+
+
+def _free_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
+    fp = sess.state.part_by_id(inst.part_id)
+    return {p.name for p in (fp.ports if fp else [])} - _used_port_names(sess, inst)
 
 
 async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
@@ -512,6 +744,8 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
     when the sub-step names a second target and the part has >=2 ports,
     solve both mates simultaneously — the roll around the primary axis is
     chosen so the SECOND mate also closes."""
+    if not str(task.get("target2") or "").strip():
+        return None
     t1, t2 = _resolve_name(sess, task["target"]), _resolve_name(sess, task.get("target2"))
     moving = sess.state.part_by_id(pid)
     if not (t1 and t2) or moving is None or len(moving.ports) < 2:
@@ -526,14 +760,27 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
     }
     fixed1 = sess.state.part_by_id(t1)
     fixed2 = sess.state.part_by_id(t2)
+    st_b = sess.state.step_by_number(task["step"])
+    hint_b = f"{task.get('target') or ''} {task.get('target2') or ''} {task.get('text') or ''} {st_b.title if st_b else ''}"
+    axes_b = _dir_axes(hint_b)
+
+    def _side(i: Any, p: Any, port_name: str) -> float:
+        if not (i.transform and p and p.ports):
+            return 0.0
+        fp = next((q for q in p.ports if q.name == port_name), None)
+        wp = _world_pos(i.transform, fp.pos) if fp else _world_pos(
+            i.transform, [(p.bbox_min[k] + p.bbox_max[k]) / 2 for k in range(3)]
+        )
+        return sum(sg * wp[ax] for ax, sg in axes_b)
+
     best: tuple[float, list, dict, dict] | None = None
     for i1 in targets[t1]:
         for i2 in targets[t2]:
             p1s = solver.find_matching_ports(
-                moving, fixed1, used_fixed_ports=_used(sess, i1)
+                moving, fixed1, used_fixed_ports=_used(sess, i1), include_mismatch=True
             )[:4]
             p2s = solver.find_matching_ports(
-                moving, fixed2, used_fixed_ports=_used(sess, i2)
+                moving, fixed2, used_fixed_ports=_used(sess, i2), include_mismatch=True
             )[:4]
             for p1 in p1s:
                 for p2 in p2s:
@@ -560,8 +807,15 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
                         fp2,
                         np.asarray(i2.transform),
                     )[0]
-                    if best is None or res < best[0]:
-                        best = (res, m, (i1, p1), (i2, p2))
+                    # side words ("linkes Rohr … linkes oberes Rohr")
+                    # disambiguate which INSTANCE pair the bridge closes —
+                    # without this a left-side bridge grabbed the right pipe
+                    side = _side(i1, fixed1, p1["fixed_port"]) + _side(
+                        i2, fixed2, p2["fixed_port"]
+                    )
+                    key = res - 25.0 * side
+                    if best is None or key < best[0]:
+                        best = (key, m, (i1, p1), (i2, p2))
     if best is None:
         return None
     _res, m, (i1, p1), (i2, p2) = best
@@ -582,16 +836,19 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
             "candidate_id": cid,
             "step": task["step"],
             "substep_idx": task["substep_idx"],
+            "premount": bool(task.get("premount")),
         },
     )
     if not res.get("ok"):
         return None
+    insts = sess.state.assembly.instances
+    iid = insts[-1].instance_id if insts else None
     sess.state.assembly.joints.append(
         {
             "step": task["step"],
             "moving_part": pid,
             "fixed_part": i2.part_id,
-            "moving_instance": res.get("instance_id"),
+            "moving_instance": iid,
             "fixed_instance": i2.instance_id,
             "moving_port": p2["moving_port"],
             "fixed_port": p2["fixed_port"],
@@ -599,12 +856,11 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
             "bridge": True,
         }
     )
-    return res.get("instance_id")
+    return iid
 
 
 def _used(sess: GuideToolSession, inst: Any) -> set[str]:
-    fp = sess.state.part_by_id(inst.part_id)
-    return {p.name for p in (fp.ports if fp else [])} - _free_port_names(sess, inst)
+    return _used_port_names(sess, inst)
 
 
 async def _try_attach(
@@ -612,6 +868,7 @@ async def _try_attach(
     task: dict[str, Any],
     pid: str,
     next_axes: tuple[list[tuple[int, float]], str | None] = ([], None),
+    feed_perp: int | None = None,
 ) -> str | None:
     """Port-driven attach onto the best target instance; None if nothing
     works (no pairs / all candidates collide).
@@ -633,7 +890,15 @@ async def _try_attach(
     # direction words live in the sub-step prose ("vertikales Rohr", "nach
     # oben öffnen"), the target name alone rarely carries them
     hint_text = f"{task['target'] or ''} {task.get('text') or ''} {st.title if st else ''}"
+    # location axes rank the FIXED port's world position; "nach <dir>"
+    # opening phrases instead constrain THIS part's free ports
     axes = _dir_axes(hint_text)
+    open_axes = _open_axes(hint_text)
+    # the accessible side is +Y (AGENTS frame contract: +Y = front) —
+    # manuals that don't say front/back mean the working side; a weak
+    # bias breaks front/rear ties without overriding explicit words
+    if not any(a == 1 for a, _ in axes):
+        axes = [*axes, (1, 0.3)]
     orient = _orient_word(hint_text)
     inst_by_iid = {
         (i.instance_id or i.part_id): i for i in sess.state.assembly.instances
@@ -674,10 +939,20 @@ async def _try_attach(
     for group in groups:
         if not group:
             continue
+        anchor_iid = (
+            sess.state.assembly.instances[0].instance_id
+            if sess.state.assembly.instances
+            else None
+        )
         for iid in group:
+            # the perpendicular-port rule applies where a bridge-feeding
+            # chain STARTS — the host port — not mid-chain, where a
+            # vertical pipe legitimately mates an upward socket
             scored.extend(
                 _score_pairs_for_instance(
-                    sess, moving, inst_by_iid.get(iid), iid, axes, orient, iid == picked_iid
+                    sess, moving, inst_by_iid.get(iid), iid, axes, open_axes, orient,
+                    feed_perp if iid == anchor_iid else None,
+                    iid == picked_iid,
                 )
             )
         if scored:
@@ -700,6 +975,24 @@ async def _try_attach(
         # orientation-aware pick among the roll/variant candidates: the
         # first collision-free one is NOT automatically the readable build.
         # Rows strip "transform" (kept in _preview_cache by candidate_id)
+        fixed_inst = inst_by_iid.get(target_iid)
+        fixed_part = sess.state.part_by_id(fixed_inst.part_id) if fixed_inst else None
+        fp = next(
+            (p for p in (fixed_part.ports if fixed_part else []) if p.name == pair.get("fixed_port")),
+            None,
+        )
+        fp_world = _world_pos(fixed_inst.transform, fp.pos) if (fixed_inst and fp) else [0.0] * 3
+        host_center = (
+            _world_pos(
+                fixed_inst.transform,
+                [
+                    (fixed_part.bbox_min[i] + fixed_part.bbox_max[i]) / 2
+                    for i in range(3)
+                ],
+            )
+            if fixed_inst and fixed_part
+            else [0.0] * 3
+        )
         cands = [c for c in prev.get("candidates", []) if c.get("collision_free", True)]
         cands.sort(
             key=lambda c: (
@@ -710,9 +1003,24 @@ async def _try_attach(
                         "transform"
                     )
                     or [],
-                    axes,
+                    open_axes or axes,
                     orient,
                     next_axes,
+                )
+                + (
+                    2.0
+                    * _outward_free_score(
+                        moving,
+                        pair.get("moving_port", ""),
+                        (sess._preview_cache.get(c.get("candidate_id") or "") or {}).get(
+                            "transform"
+                        )
+                        or [],
+                        fp_world,
+                        host_center,
+                    )
+                    if _mounted_on_host(sess, fixed_inst)
+                    else 0.0
                 ),
                 -_cluster_bbox_growth(
                     sess,
@@ -739,6 +1047,7 @@ async def _try_attach(
                     "candidate_id": cand["candidate_id"],
                     "step": task["step"],
                     "substep_idx": task["substep_idx"],
+                    "premount": bool(task.get("premount")),
                 },
             )
             if res.get("ok"):
@@ -747,9 +1056,146 @@ async def _try_attach(
     return None
 
 
-async def _place_anchor(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
+def _rot_from_to(a: list[float], b: list[float]) -> list[list[float]]:
+    """Rotation matrix (3x3) mapping unit-ish vector a onto unit-ish b."""
+    va = np.asarray(a, dtype=float)
+    vb = np.asarray(b, dtype=float)
+    va /= np.linalg.norm(va) or 1.0
+    vb /= np.linalg.norm(vb) or 1.0
+    v = np.cross(va, vb)
+    c = float(np.dot(va, vb))
+    if c < -0.999999:
+        # antiparallel: rotate 180° about any perpendicular axis
+        perp = np.cross(va, [1.0, 0.0, 0.0])
+        if np.linalg.norm(perp) < 1e-6:
+            perp = np.cross(va, [0.0, 1.0, 0.0])
+        perp /= np.linalg.norm(perp)
+        return (2.0 * np.outer(perp, perp) - np.eye(3)).tolist()
+    k = np.array([[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]])
+    return (np.eye(3) + k + k @ k * (1.0 / (1.0 + c))).tolist()
+
+
+async def _place_premount_ref(
+    sess: GuideToolSession,
+    task: dict[str, Any],
+    pid: str,
+    axes: list[tuple[int, float]],
+    feed_perp: int | None = None,
+) -> str | None:
+    """Reference placement for initial-state hardware that does NOT sit on
+    a host port (e.g. fittings pre-mounted on the device body, beside or
+    below the casing): place the part under the host port where its chain
+    closes back to the host, at floor level, with its leading free port
+    pointing outward."""
+    part = sess.state.part_by_id(pid)
+    host_inst = sess.state.assembly.instances[0] if sess.state.assembly.instances else None
+    # host = the instance the premount target resolved to, else the anchor
+    if task.get("target"):
+        tp = _resolve_name(sess, task["target"])
+        for i in sess.state.assembly.instances:
+            if i.part_id == tp:
+                host_inst = i
+                break
+    if part is None or host_inst is None or not host_inst.transform:
+        return None
+    host = sess.state.part_by_id(host_inst.part_id)
+    if host is None:
+        return None
+    # reference point: the host port the chain closes at — side words give
+    # left/right (the vertical word only means "on the floor"); when the
+    # chain feeds a bridge, the closable port wins over the side score
+    xy_axes = [(a, s) for a, s in axes if a < 2]
+    center_local = [(host.bbox_min[i] + host.bbox_max[i]) / 2 for i in range(3)]
+    center_w = _world_pos(host_inst.transform, center_local)
+    best_fp = _pick_host_port(host, xy_axes, feed_perp)
+    best_p = _world_pos(host_inst.transform, best_fp.pos) if best_fp is not None else None
+    if best_p is not None:
+        ref_xy = best_p[:2]
+    else:
+        d = [0.0, 0.0, 0.0]
+        for ax, sg in xy_axes:
+            d[ax] += sg
+        n = float(np.sqrt(d[0] ** 2 + d[1] ** 2)) or 1.0
+        d = [d[0] / n, d[1] / n, 0.0]
+        ext = [(host.bbox_max[i] - host.bbox_min[i]) / 2 for i in range(3)]
+        t_min = min((ext[i] / abs(d[i])) for i in range(3) if abs(d[i]) > 1e-6)
+        ref_xy = [center_w[i] + d[i] * t_min for i in range(3)][:2]
+    # outward = the host port's own horizontal facing (the direction the
+    # connection opens toward); fall back to radial from the host centre
+    if best_fp is not None and abs(_world_dir(host_inst.transform, best_fp.axis)[2]) < 0.7:
+        fa = _world_dir(host_inst.transform, best_fp.axis)
+        out = [fa[0], fa[1], 0.0]
+    else:
+        out = [ref_xy[0] - center_w[0], ref_xy[1] - center_w[1], 0.0]
+    n = float(np.sqrt(out[0] ** 2 + out[1] ** 2)) or 1.0
+    out = [out[0] / n, out[1] / n, 0.0]
+    # height: a "lower" hint drops the fitting to the ground plane — the
+    # missing host body (e.g. the heat pump under its casing) can't be
+    # invented, so the floor is the stable documented reference
+    below = any(sg < 0 for ax, sg in axes if ax == 2)
+    # outward-facing port = the one sticking out most along its own axis
+    ports = part.ports or []
+    out_port = (
+        max(ports, key=lambda p: sum(p.pos[i] * p.axis[i] for i in range(3)))
+        if ports
+        else None
+    )
+    out_axis = out_port.axis if out_port else [1.0, 0.0, 0.0]
+    r = _rot_from_to(list(out_axis), out)
+    # rotate the part bbox to measure the footprint; the outward port's own
+    # position defines the "free end" that must stay outside the host
+    corners_l = _bbox_corners_world(part.bbox_min, part.bbox_max, [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]])
+    corners_w = [
+        [sum(r[i][c] * p[c] for c in range(3)) for i in range(3)]
+        for p in corners_l
+    ]
+    min_z = min(p[2] for p in corners_w)
+    z_target = (-min_z + 1.0) if below else (best_p[2] if best_p else 0.0)
+    # keep the part just outside the host silhouette: its INNER face sits
+    # gap mm past the reference point — the centre offset is the rotated
+    # extent along `out`, not the bare gap
+    pl = [(part.bbox_min[i] + part.bbox_max[i]) / 2 for i in range(3)]
+    pc = [sum(r[i][c] * pl[c] for c in range(3)) for i in range(3)]
+    face_in = min(sum(out[k] * p[k] for k in range(3)) for p in corners_w)
+    off = 3.0 - face_in
+    tr = [
+        r[0] + [ref_xy[0] + out[0] * off - pc[0]],
+        r[1] + [ref_xy[1] + out[1] * off - pc[1]],
+        r[2] + [z_target - pc[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    cid = f"premount-ref-{pid}-{task['step']}"
+    sess._preview_cache[cid] = {
+        "transform": tr,
+        "collision_free": True,
+        "candidate_id": cid,
+    }
+    res = await place_instance(
+        sess,
+        {
+            "part_id": pid,
+            "candidate_id": cid,
+            "step": task["step"],
+            "substep_idx": task["substep_idx"],
+            "premount": True,
+        },
+    )
+    if not res.get("ok"):
+        return None
+    insts = sess.state.assembly.instances
+    return insts[-1].instance_id if insts else None
+
+
+async def _place_anchor(
+    sess: GuideToolSession,
+    task: dict[str, Any],
+    pid: str,
+    lift: float = 0.0,
+) -> str | None:
     """The base/host part rests upright at the origin — env-hint previews
-    drifted it into open space when nothing else was placed yet."""
+    drifted it into open space when nothing else was placed yet. `lift`
+    raises it above the floor when lower premounted hardware needs the
+    vertical room (host on a device, fittings below it)."""
     part = sess.state.part_by_id(pid)
     if part is None:
         return None
@@ -758,7 +1204,7 @@ async def _place_anchor(sess: GuideToolSession, task: dict[str, Any], pid: str) 
         "transform": [
             [1.0, 0.0, 0.0, 0.0],
             [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, -float(part.bbox_min[2])],
+            [0.0, 0.0, 1.0, -float(part.bbox_min[2]) + lift],
             [0.0, 0.0, 0.0, 1.0],
         ],
         "collision_free": True,
@@ -771,9 +1217,13 @@ async def _place_anchor(sess: GuideToolSession, task: dict[str, Any], pid: str) 
             "candidate_id": cid,
             "step": task["step"],
             "substep_idx": task["substep_idx"],
+            "premount": bool(task.get("premount")),
         },
     )
-    return res.get("instance_id") if res.get("ok") else None
+    if not res.get("ok"):
+        return None
+    insts = sess.state.assembly.instances
+    return insts[-1].instance_id if insts else None
 
 
 async def _try_env(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
@@ -795,6 +1245,7 @@ async def _try_env(sess: GuideToolSession, task: dict[str, Any], pid: str) -> st
                 "candidate_id": cand["candidate_id"],
                 "step": task["step"],
                 "substep_idx": task["substep_idx"],
+                "premount": bool(task.get("premount")),
             },
         )
         if res.get("ok"):
