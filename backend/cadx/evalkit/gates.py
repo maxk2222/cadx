@@ -1230,6 +1230,40 @@ def _gate_outcome(  # noqa: C901
             expected={"all": g.get("all"), "min": g.get("min")},
         )
 
+    if name == "guide_mate_quality":
+        # physical joint audit emitted per joint — the deterministic
+        # evidence that mates are actually closed and no part is buried
+        # inside another's cavity (topology alone proved insufficient:
+        # an antiparallel joint can still hide the part inside a bore)
+        doc = outcome.extras.get("guide")
+        if not isinstance(doc, dict):
+            return GateResult(
+                name,
+                None,
+                detail="no unity_guide.json on the outcome — guide emit never ran",
+            )
+        joints = [j for j in doc.get("joints") or [] if isinstance(j, dict)]
+        max_gap = float(g.get("max_gap_mm", 25.0))
+        min_nd = float(g.get("min_normal_dot", -0.95))  # require nd ≤ this
+        bad = []
+        for j in joints:
+            gap = j.get("gap_mm")
+            nd = j.get("normal_dot")
+            if gap is not None and float(gap) > max_gap:
+                bad.append(f"{j.get('moving_instance')}→{j.get('fixed_instance')}: gap {gap}")
+            if nd is not None and float(nd) > min_nd:
+                bad.append(f"{j.get('moving_instance')}→{j.get('fixed_instance')}: nd {nd}")
+            if j.get("buried"):
+                bad.append(
+                    f"{j.get('moving_instance')}: buried {j.get('buried_frac')}"
+                )
+        return GateResult(
+            name,
+            not bad,
+            measured={"n_joints": len(joints), "bad": bad or None},
+            expected={"max_gap_mm": max_gap, "min_normal_dot": min_nd, "buried": False},
+        )
+
     if name in ("guide_steps", "guide_parts", "guide_placed", "guide_score"):
         # anleitungsbuilder evidence — parsed unity_guide.json the driver
         # stored on extras["guide"]; absent → inconclusive, never silently ok

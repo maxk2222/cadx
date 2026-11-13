@@ -161,6 +161,61 @@ def _bore_measure(
     return max(seat, 0.0), float(inner)
 
 
+def _nested_stub(
+    mesh, center: np.ndarray, axis: np.ndarray, lip_r: float, seat: float
+) -> tuple[np.ndarray, float, float] | None:
+    """Union-nut stub INSIDE a bounded socket: radial rays at depth
+    stations inside the bore hit [stub bore wall, stub outer wall, nut
+    wall] — an inner surface below the lip radius at consistent stations
+    means a recessed tube the outer rim alone can't express (the real
+    Außengewinde-Interface of a union fitting). The stub can start
+    BEHIND the measured seat — stations scan to ~2.2x the seat.
+    Returns (tip_pos, inner_r, outer_r) of the stub mouth, else None."""
+    if not (4.0 <= seat < 400.0) or lip_r <= 3.0:
+        return None
+    ref = np.array([1.0, 0.0, 0.0])
+    if abs(float(np.dot(axis, ref))) > 0.9:
+        ref = np.array([0.0, 1.0, 0.0])
+    t1 = np.cross(axis, ref)
+    t1 /= max(np.linalg.norm(t1), 1e-9)
+    t2 = np.cross(axis, t1)
+    ang = np.linspace(0, 2 * np.pi, 10, endpoint=False)
+    dirs = np.stack([t1 * np.cos(a) + t2 * np.sin(a) for a in ang])
+    stations = np.linspace(seat * 0.5, min(seat * 2.2, 80.0), 8)
+    shell_t: list[float] = []
+    inner_r = outer_r = 0.0
+    for t in stations:
+        o = center - axis * t
+        try:
+            locs, rays, _tris = mesh.ray.intersects_location(
+                np.tile(o, (len(dirs), 1)), dirs, multiple_hits=True
+            )
+        except Exception:
+            return None
+        firsts: list[float] = []
+        seconds: list[float] = []
+        locs = np.asarray(locs).reshape(-1, 3)
+        for k in range(len(dirs)):
+            hits = locs[np.asarray(rays) == k]
+            if len(hits) == 0:
+                continue
+            d = np.sort(np.linalg.norm(hits - o, axis=1))
+            if d[0] < lip_r * 0.8:
+                firsts.append(float(d[0]))
+                if len(d) >= 2 and d[1] < lip_r * 1.15:
+                    seconds.append(float(d[1]))
+        if len(firsts) < 5:
+            continue
+        shell_t.append(float(t))
+        inner_r = float(np.median(firsts))
+        outer_r = float(np.median(seconds)) if seconds else inner_r
+    if not shell_t:
+        return None
+    tip = min(shell_t)  # station closest to the mouth = stub's free end
+    tip_pos = center - axis * tip
+    return tip_pos, inner_r, outer_r
+
+
 def _rim_ports(mesh, part: GuidePart) -> list[PortInfo]:
     """Ports from closed sharp-edge rim loops — detects socket mouths and
     spigot tips that planar-normal clustering misses on curved fittings
@@ -194,7 +249,37 @@ def _rim_ports(mesh, part: GuidePart) -> list[PortInfo]:
         partner = _concentric_partner(circles, i, used)
         if partner is not None:
             used[partner] = True
-        ports.append(_rim_port(mesh, circles, i, partner, len(ports)))
+        port = _rim_port(mesh, circles, i, partner, len(ports))
+        ports.append(port)
+        # union nut / recessed boss: a bounded socket can hide a male
+        # stub inside — without it, fittings land in the nut's void
+        # instead of on the actual threaded tube
+        if port.kind == "cylinder" and 4.0 <= port.depth < 400.0:
+            stub = _nested_stub(
+                mesh,
+                np.asarray(port.pos, dtype=float),
+                np.asarray(port.axis, dtype=float),
+                port.radius,
+                port.depth,
+            )
+            if stub is not None:
+                tip_pos, stub_in, stub_out = stub
+                # emitted as a MALE tube end — the Außengewinde stub is a
+                # plug a fitting wraps; marking it a socket would let a
+                # plug sink unboundedly into the nut's through-bore
+                ports.append(
+                    PortInfo(
+                        name=f"rim_{len(ports)}",
+                        kind="cylinder",
+                        pos=[round(float(v), 4) for v in tip_pos],
+                        axis=list(port.axis),
+                        gender="male",
+                        radius=round(stub_out, 3),
+                        inner_radius=round(stub_in, 3),
+                        outer_radius=round(stub_out, 3),
+                        depth=0.0,
+                    )
+                )
     return ports
 
 

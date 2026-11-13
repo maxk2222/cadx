@@ -183,12 +183,14 @@ def _part_err(s: GuideToolSession) -> str:
     return f"part not found — valid part_ids: {ids}"
 
 
-def _resolve_name(s: GuideToolSession, name: str) -> str | None:
+def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | None:
     """Resolve a manual label to a part id: alias → exact name/id →
     containment. Manuals attach qualifiers to part names ("Gehäuse, linker
     oberer Anschluss", "Adapter links oben") — containment on the LONGEST
     matching alias/name keeps that usable instead of collapsing to free
-    placement."""
+    placement. ``context`` (e.g. the parent step text) breaks token ties:
+    "Anschluss 2x außen" matches both elbow names equally, but the step's
+    "(Muffe auf Muffe)" confirms which one's tokens are actually meant."""
     n = _norm2(name)
     if not n:
         return None
@@ -206,13 +208,20 @@ def _resolve_name(s: GuideToolSession, name: str) -> str | None:
     # tokens even with no alias/containment — ≥2 shared tokens keeps it
     # specific, longest key breaks ties toward the richer name
     nt = _tokset(n)
-    scored = [
-        (len(_tokset(k) & nt), len(k), pid)
-        for k, pid in cands
-        if len(_tokset(k) & nt) >= 2
-    ]
+    ctx = _tokset(context)
+    scored = []
+    for k, pid in cands:
+        overlap = len(_tokset(k) & nt)
+        if overlap < 2:
+            continue
+        # context confirms distinctive tokens: "Anschluss 2x außen" ties
+        # on rohrbogen/dn/22 for both elbows — the step's "(Muffe auf
+        # Muffe)" leaves spitzende's token UNCONFIRMED → fewer unconfirmed
+        # tokens = the meant part. Bare names keep longest-key.
+        tie = -len(_tokset(k) - nt - ctx) if ctx else 0
+        scored.append((overlap, tie, len(k), pid))
     if scored:
-        return max(scored)[2]
+        return max(scored)[3]
     return None
 
 
@@ -242,12 +251,16 @@ def _step_requirements(s: GuideToolSession) -> dict[int, dict[str, int]]:
         for ss in st.sub_steps:
             if ss.action not in _PLACE_ACTIONS:
                 continue
-            pid = _resolve_name(s, ss.part)
+            # the step prose carries the discriminating qualifier — two
+            # elbow types tie on rohrbogen/dn/22; "(Muffe auf Muffe)" in
+            # the same sentence decides, so requirements must resolve
+            # with context like the planner's _rp does
+            pid = _resolve_name(s, ss.part, context=f"{ss.text or ''} {st.text} {st.title}")
             if pid:
                 counts[pid] = counts.get(pid, 0) + 1
         if not counts:
             for n in st.required_parts:
-                pid = _resolve_name(s, n)
+                pid = _resolve_name(s, n, context=f"{st.text} {st.title}")
                 counts[pid or _norm2(n) + " (unresolved)"] = (
                     counts.get(pid or _norm2(n) + " (unresolved)", 0) + 1
                 )
@@ -727,14 +740,58 @@ async def check_collisions(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
     return {"ok": True, **sc.all_pairs_collision_report()}
 
 
-async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
+    """Deterministic physical audit — shared by the validator tool, the
+    review-write guard and the emit path so every gate sees THE SAME
+    numbers.
+
+    Beyond gap/alignment this catches what boolean collision cannot:
+    a part swallowed inside another part's cavity (pipe inside a union
+    nut inside the casing wall intersects NO solid — but its AABB sits
+    inside the union of the others)."""
     insts = {i.instance_id: i for i in s.state.assembly.instances}
-    insts.update({i.part_id: i for i in s.state.assembly.instances})  # legacy joints
-    rows = []
-    bad = []
+    # legacy joints may reference part_id instead of instance_id — resolve
+    # those keys to the (first) instance of that part so every key below
+    # is an INSTANCE id; duplicating instances under their part key would
+    # count each part as a foreign host containing itself
+    part_to_iid: dict[str, str] = {}
+    for i in s.state.assembly.instances:
+        part_to_iid.setdefault(i.part_id, i.instance_id)
+
+    def _ikey(ref: Any) -> str:
+        k = str(ref or "")
+        return k if k in insts else part_to_iid.get(k, k)
+
+    bboxes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for iid, inst in insts.items():
+        part = s.state.part_by_id(inst.part_id)
+        if part is None or inst.transform is None:
+            continue
+        bboxes[iid] = solver.world_bbox(
+            part.bbox_min, part.bbox_max, np.asarray(inst.transform, dtype=float)
+        )
+    # burial = inside the union of instances it is NOT jointed to — the
+    # mate partner legitimately swallows the plug by the engagement depth;
+    # any OTHER host containing the part means it tunneled somewhere
+    # it was never connected to (pipe through a nut into the casing wall)
+    partners: dict[str, set[str]] = {}
     for j in s.state.assembly.joints:
-        mv = insts.get(str(j.get("moving_instance") or j.get("moving_part") or ""))
-        fx = insts.get(str(j.get("fixed_instance") or j.get("fixed_part") or ""))
+        a = _ikey(j.get("moving_instance") or j.get("moving_part"))
+        b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
+        partners.setdefault(a, set()).add(b)
+        partners.setdefault(b, set()).add(a)
+    buried: list[dict[str, Any]] = []
+    for iid, (mn, mx) in bboxes.items():
+        excl = {iid} | partners.get(iid, set())
+        others = [bb for k, bb in bboxes.items() if k not in excl]
+        frac = solver.union_containment(mn, mx, others)
+        if frac > 0.45:
+            buried.append({"instance": iid, "buried_frac": round(frac, 3)})
+    rows: list[dict[str, Any]] = []
+    bad: list[dict[str, Any]] = []
+    for j in s.state.assembly.joints:
+        mv = insts.get(_ikey(j.get("moving_instance") or j.get("moving_part")))
+        fx = insts.get(_ikey(j.get("fixed_instance") or j.get("fixed_part")))
         if mv is None or fx is None:
             continue
         mp = _named_port(s, mv.part_id, j.get("moving_port"))
@@ -747,23 +804,40 @@ async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> 
             tp,
             np.asarray(fx.transform, dtype=float).reshape(4, 4),
         )
-        ok = gap < solver.GAP_GATE_MM * 20 and ndot <= -0.95  # post-hoc tolerance wider than gate
-        rows.append(
-            {
-                "joint": f"{mv.instance_id or mv.part_id}→{fx.instance_id or fx.part_id}",
-                "gap_mm": round(gap, 4),
-                "normal_dot": round(ndot, 4),
-                "ok": ok,
-            }
-        )
+        # plug-in-socket joints stay engaged as long as the plug tip is
+        # inside the bore — a union nut never bottoms out. Tolerance =
+        # the receiving socket's depth (whichever side is female); face
+        # joints (both flush) keep the tight post-hoc limit.
+        socket_depth = 0.0
+        if str(getattr(tp, "gender", "")) == "female":
+            socket_depth = float(getattr(tp, "depth", 0.0) or 0.0)
+        elif str(getattr(mp, "gender", "")) == "female":
+            socket_depth = float(getattr(mp, "depth", 0.0) or 0.0)
+        allow = max(solver.GAP_GATE_MM * 20, min(socket_depth, 30.0))
+        ok = gap < allow and ndot <= -0.95  # post-hoc tolerance wider than gate
+        row = {
+            "joint": f"{mv.instance_id or mv.part_id}→{fx.instance_id or fx.part_id}",
+            "gap_mm": round(gap, 4),
+            "normal_dot": round(ndot, 4),
+            "allow_mm": round(allow, 2),
+            "ok": ok,
+        }
+        rows.append(row)
         if not ok:
-            bad.append(rows[-1])
+            bad.append(row)
+    return {"joints": rows, "bad_joints": bad, "buried_instances": buried}
+
+
+async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    audit = joint_geometry_audit(s)
     col = _scene(s).all_pairs_collision_report()
     return {
-        "ok": not bad and col["ok"],
-        "joints": rows,
-        "bad_joints": bad,
+        "ok": not audit["bad_joints"] and col["ok"] and not audit["buried_instances"],
+        **audit,
         "collisions": col["collisions"],
+        # a part buried inside another's AABB is WRONG even when boolean
+        # collision sees no intersection (cavity-hidden = invisible to
+        # manifold intersection but physically impossible)
     }
 
 

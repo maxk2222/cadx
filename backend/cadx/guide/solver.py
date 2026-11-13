@@ -123,10 +123,28 @@ def _port_roll_reference(port: PortInfo, part: GuidePart) -> np.ndarray | None:
 
 def _engage_mm(moving_port: PortInfo, fixed_port: PortInfo) -> float:
     """How deep the plug enters the socket along the joint axis — the
-    deeper bore is the receiver; the plug bottoms out near its end
-    (85% of depth, capped). 0 for unmeasured ports keeps flush mating."""
-    d = max(_socket_depth(moving_port), _socket_depth(fixed_port))
-    return min(d * 0.85, 40.0) if d > 0.0 else 0.0
+    RECEIVING port's measured seat only. Two refinements over the naive
+    'deepest bore wins' model:
+
+    - using the PLUG's own bore depth sank the moving part past the seat
+      into the host body (a union-nut adapter vanished ~20mm into the
+      nut cavity)
+    - a LOOSE fit (collar bore ≫ plug — union nuts, flange bosses) means
+      the plug rests at the mouth/seat face, not buried to full seat
+      depth; only snug fits travel to the seat (spigot into muffe)
+
+    0 for unmeasured ports keeps flush mating."""
+    sock, plug = _receiver(moving_port, fixed_port)
+    if sock is None:
+        return 0.0
+    d = _socket_depth(sock)
+    if d <= 0.0:
+        return 0.0
+    deep = min(d * 0.85, 40.0)
+    margin = _inner_r(sock) - _outer_r(plug)
+    # margin ≤2mm → true socket fit (deep); ≥10mm → collar/nut mate (shallow)
+    t = min(max((margin - 2.0) / 8.0, 0.0), 1.0)
+    return deep * (1.0 - t) + min(deep, 6.0) * t
 
 
 def transform_port_to_target(
@@ -277,7 +295,14 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
             # still hard-reject a plug that can't physically enter
             if _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug):
                 return -1.0  # socket can't swallow the plug
-            score += min(_inner_r(sock) / max(_outer_r(plug), 1e-9), 1.0)
+            # SNUGNESS: the right interface is the TIGHTEST legal fit —
+            # a union nut's clear bore and a recessed shoulder are both
+            # legal receivers but the fitting's actual seat has the
+            # smallest margin. Reward the smallest inner-outer gap
+            # (threads = near-zero margins score best), so a plug never
+            # lands in a much larger opening that "also fits".
+            margin = _inner_r(sock) - _outer_r(plug)
+            score += max(0.0, 1.0 - max(margin, 0.0) / max(_outer_r(plug), 8.0))
         else:
             ratio = min(a.radius, b.radius) / max(a.radius, b.radius)
             if ratio < 0.5:
@@ -320,6 +345,24 @@ def _is_collar(port: PortInfo, part: GuidePart, *, moving_side: bool) -> bool:
     return False
 
 
+def _port_exposure(part: GuidePart) -> dict[str, float]:
+    """Recession depth of each port's mouth below the part's silhouette
+    along its own axis. A shoulder INSIDE a through-bore (adapter rim_3)
+    scores high — the real openings sit at the part's extremes. Reaching
+    a recessed mouth requires tunneling through the part's other
+    openings, which is physically wrong for a fresh mate."""
+    mn, mx = _v(part.bbox_min), _v(part.bbox_max)
+    corners = np.array(
+        [[x, y, z] for x in (mn[0], mx[0]) for y in (mn[1], mx[1]) for z in (mn[2], mx[2])]
+    )
+    out: dict[str, float] = {}
+    for p in part.ports:
+        a = _unit(_v(p.axis))
+        extreme = float((corners @ a).max())
+        out[p.name] = max(extreme - float(np.dot(_v(p.pos), a)), 0.0)
+    return out
+
+
 def find_matching_ports(
     moving: GuidePart,
     fixed: GuidePart,
@@ -327,6 +370,8 @@ def find_matching_ports(
     include_mismatch: bool = False,
 ) -> list[dict[str, Any]]:
     """Deterministic ranked port-pair candidates (no transforms yet)."""
+    exp_m = _port_exposure(moving)
+    exp_f = _port_exposure(fixed)
     out = []
     for mp in moving.ports:
         mp_collar = _is_collar(mp, moving, moving_side=True)
@@ -340,6 +385,14 @@ def find_matching_ports(
                 continue
             if mp_collar or _is_collar(tp, fixed, moving_side=False):
                 sc = -0.6  # collar edges rank below every real interface
+            elif sc > 0.0:
+                # recessed mouths lose to exposed ones among REAL
+                # candidates — approaching an interior shoulder means
+                # tunneling through the part's own openings; an exposed
+                # alternative (the fitting's other end) is almost always
+                # the intended interface. Last-resort/collar scores are
+                # informational — don't sink them below the gate.
+                sc -= min((exp_m.get(mp.name, 0.0) + exp_f.get(tp.name, 0.0)) / 25.0, 0.55)
             out.append(
                 {
                     "moving_port": mp.name,
@@ -360,6 +413,61 @@ def _port(part: GuidePart, name: str) -> PortInfo | None:
         if p.name == name:
             return p
     return None
+
+
+# --------------------------------------------------------------------------- #
+# burial / containment audit
+# --------------------------------------------------------------------------- #
+#
+# Mesh-boolean collision is structurally blind to parts hidden inside
+# hollow cavities (a pipe slid through a union nut into the casing wall
+# intersects NO solid — it lives inside the bore). The general test is
+# volumetric: how much of a placed part's world AABB sits inside the
+# union of every other part's AABB. A correctly mated part overlaps its
+# host only by the engagement length; a swallowed part scores near 1.0.
+# --------------------------------------------------------------------------- #
+
+
+def world_bbox(
+    bbox_min: Any, bbox_max: Any, transform: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """World-space AABB of a local bbox under a 4x4 transform."""
+    mn, mx = _v(bbox_min), _v(bbox_max)
+    corners = np.array(
+        [[x, y, z] for x in (mn[0], mx[0]) for y in (mn[1], mx[1]) for z in (mn[2], mx[2])]
+    )
+    t = np.asarray(transform, dtype=float).reshape(4, 4)
+    w = corners @ t[0:3, 0:3].T + t[0:3, 3]
+    return w.min(axis=0), w.max(axis=0)
+
+
+def union_containment(
+    mn: np.ndarray,
+    mx: np.ndarray,
+    others: list[tuple[np.ndarray, np.ndarray]],
+    *,
+    grid: int = 8,
+) -> float:
+    """Fraction of the part's AABB volume covered by the UNION of other
+    AABBs — sampled on a coarse grid (exact AABB∩AABB per cell)."""
+    if not others:
+        return 0.0
+    span = mx - mn
+    if float(np.prod(span)) <= 1e-9:
+        return 0.0
+    # cell centers over the moving bbox
+    qs = [np.linspace(mn[i] + span[i] / (2 * grid), mx[i] - span[i] / (2 * grid), grid)
+          for i in range(3)]
+    inside = 0
+    for x in qs[0]:
+        for y in qs[1]:
+            for z in qs[2]:
+                p = np.array([x, y, z])
+                for omn, omx in others:
+                    if bool(np.all(p >= omn) and np.all(p <= omx)):
+                        inside += 1
+                        break
+    return inside / (grid ** 3)
 
 
 def solve_attachment(

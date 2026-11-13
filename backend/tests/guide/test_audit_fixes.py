@@ -392,3 +392,268 @@ def test_llm_outage_is_clean_mission_failure_not_crash(monkeypatch) -> None:
     assert out is not None and out.status == "failed"
     assert "llm_error: HTTP 502" in out.error
     assert "steps" in state.missions_failed
+
+
+# --------------------------------------------------------------------- #
+# physical port-model regressions (adapter-in-nut / buried pipe bug)
+# --------------------------------------------------------------------- #
+
+
+def _phys_part(pid: str, ports: list[PortInfo], bbox=((-20, -20, -20), (20, 20, 20))) -> GuidePart:
+    return GuidePart(
+        id=pid, name=pid, ports=ports,
+        bbox_min=list(bbox[0]), bbox_max=list(bbox[1]),
+    )
+
+
+def _sock(name: str, *, axis=(0, 0, -1), pos=(0, 0, 0), lip=11.0, inner=9.9,
+          seat=18.0, outer=12.8) -> PortInfo:
+    return PortInfo(
+        name=name, kind="cylinder", pos=list(pos), axis=list(axis),
+        radius=lip, inner_radius=inner, outer_radius=outer,
+        depth=seat, gender="female",
+    )
+
+
+def _plug(name: str, *, axis=(0, 0, 1), pos=(0, 0, 0), outer=11.0) -> PortInfo:
+    return PortInfo(
+        name=name, kind="cylinder", pos=list(pos), axis=list(axis),
+        radius=outer, inner_radius=0.0, outer_radius=outer,
+        depth=0.0, gender="male",
+    )
+
+
+def test_snug_socket_beats_loose_bore() -> None:
+    """A plug mates the TIGHTEST legal receiver — the union nut's wide
+    clear bore (inner 27) used to win over the actual seat (inner ~21),
+    sinking the adapter into the nut cavity."""
+    plug = _phys_part("adapter", [_plug("end", outer=15.5)])
+    host = _phys_part(
+        "casing",
+        [
+            _sock("nut", inner=27.0, seat=15.0, outer=0.0, lip=30.0),
+            _sock("stub_socket", inner=21.4, seat=15.0, outer=0.0, lip=22.0),
+        ],
+    )
+    cands = solver.find_matching_ports(plug, host, include_mismatch=True)
+    assert cands and cands[0]["fixed_port"] == "stub_socket"
+
+
+def test_exposed_mouth_beats_recessed_shoulder() -> None:
+    """A shoulder inside a through-bore (same radius as the mouth) must
+    lose to the exposed opening — otherwise the pipe tunnels through
+    the fitting's own bore into the casing wall."""
+    pipe = _phys_part("pipe", [_plug("end", outer=11.0)])
+    adapter = _phys_part(
+        "adapter",
+        [
+            _sock("mouth", pos=(0, 0, 20), inner=9.9),
+            _sock("shoulder", pos=(0, 0, 5), inner=9.9),  # 15mm recessed
+        ],
+        bbox=((-20, -20, -20), (20, 20, 20)),
+    )
+    cands = solver.find_matching_ports(pipe, adapter, include_mismatch=True)
+    assert cands and cands[0]["fixed_port"] == "mouth"
+
+
+def test_engage_is_receiver_side_not_max() -> None:
+    """Loose collar mate (nut bore 27 ≫ plug 15.5) stays at the mouth —
+    the old max(both-depths) rule sank the plug 20mm into the cavity."""
+    plug = _phys_part("adapter", [_plug("end", outer=15.5)])
+    nut = _phys_part("casing", [_sock("nut", inner=27.0, seat=15.0, lip=30.0)])
+    cands = solver.find_matching_ports(plug, nut, include_mismatch=True)
+    assert cands and cands[0]["engage_mm"] <= 7.0
+    # snug fit (inner 11 ≥ plug 11, margin ~0) travels to the seat
+    snug = _phys_part("elbow", [_sock("muffe", inner=11.0, seat=24.0)])
+    cands = solver.find_matching_ports(plug, snug, include_mismatch=True)
+    assert cands and cands[0]["engage_mm"] > 15.0
+
+
+def test_joint_audit_part_alias_is_not_a_foreign_host(tmp_path) -> None:
+    """Instances keyed by BOTH instance_id and part_id counted themselves
+    as foreign hosts → every part flagged 100% buried. Partner exclusion:
+    a plug inside its own mate is legitimate; only a non-jointed host
+    counts as burial."""
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import joint_geometry_audit
+    from cadx.guide.state import AssemblyInstance, AssemblyState
+
+    state = GuideState(output_dir=str(tmp_path))
+    host = _phys_part("host", [_sock("m", inner=11.0)], bbox=((-50, -50, 0), (50, 50, 100)))
+    pipe = _phys_part("pipe", [_plug("e", outer=11.0)], bbox=((-5, -5, 0), (5, 5, 70)))
+    # shell encloses ONLY the pipe's region — the host stays outside it
+    shell = _phys_part("shell", [], bbox=((190, -10, -5), (210, 10, 75)))
+    state.parts = [host, pipe, shell]
+    tp = np.eye(4)
+    tp[0, 3] = 200.0  # pipe placed inside the shell, away from the host
+    asm = AssemblyState()
+    asm.instances = [
+        AssemblyInstance(
+            part_id="host", instance_id="host#1", transform=np.eye(4).tolist()
+        ),
+        AssemblyInstance(
+            part_id="pipe", instance_id="pipe#1", transform=tp.tolist(),
+        ),
+        AssemblyInstance(
+            part_id="shell", instance_id="shell#1", transform=np.eye(4).tolist()
+        ),
+    ]
+    asm.joints = [
+        {
+            "step": 1, "moving_instance": "pipe#1", "fixed_instance": "host#1",
+            "moving_port": "e", "fixed_port": "m",
+        }
+    ]
+    state.assembly = asm
+    s = SimpleNamespace(state=state)
+    audit = joint_geometry_audit(s)
+    buried_ids = {b["instance"] for b in audit["buried_instances"]}
+    # the non-jointed shell fully contains the pipe → buried
+    assert "pipe#1" in buried_ids
+    # hosts never flag themselves via part-keyed alias duplicates —
+    # the containment check only counts OTHER instances' AABBs
+    assert "host#1" not in buried_ids and "shell#1" not in buried_ids
+
+
+def test_joint_audit_socket_depth_is_engagement_allowance(tmp_path) -> None:
+    """A plug 8mm from flush in a 24mm socket is still engaged (union
+    nuts never bottom out); the same 8mm on a face joint is detached."""
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import joint_geometry_audit
+    from cadx.guide.state import AssemblyInstance, AssemblyState
+
+    def _state(gap: float, sock_seat: float) -> GuideState:
+        state = GuideState(output_dir=str(tmp_path))
+        fixed = _phys_part(
+            "elbow",
+            [_sock("m", pos=(0, 0, 50), axis=(0, 0, -1), seat=sock_seat)],
+            bbox=((-20, -20, 0), (20, 20, 60)),
+        )
+        moving = _phys_part(
+            "pipe", [_plug("e", axis=(0, 0, 1), outer=11.0)],
+            bbox=((-5, -5, -60), (5, 5, 0)),
+        )
+        state.parts = [fixed, moving]
+        # the engaged mate point sits engage_mm INSIDE the bore (behind
+        # the mouth); 'gap' = how far the plug tip is short of it
+        engage = solver._engage_mm(moving.ports[0], fixed.ports[0])
+        tm = np.eye(4)
+        tm[2, 3] = 50.0 + engage - gap
+        asm = AssemblyState()
+        asm.instances = [
+            AssemblyInstance(part_id="elbow", instance_id="elbow#1", transform=np.eye(4).tolist()),
+            AssemblyInstance(part_id="pipe", instance_id="pipe#1", transform=tm.tolist()),
+        ]
+        asm.joints = [
+            {"step": 1, "moving_instance": "pipe#1", "fixed_instance": "elbow#1",
+             "moving_port": "e", "fixed_port": "m"}
+        ]
+        state.assembly = asm
+        return state
+
+    # deep socket: 8mm short of flush = partially engaged → ok
+    s = SimpleNamespace(state=_state(gap=8.0, sock_seat=24.0))
+    assert not joint_geometry_audit(s)["bad_joints"]
+    # face joint (seat≈0): same 8mm = detached
+    s = SimpleNamespace(state=_state(gap=8.0, sock_seat=0.5))
+    assert joint_geometry_audit(s)["bad_joints"]
+
+
+def test_resolve_name_context_breaks_part_ties() -> None:
+    """Two elbow types share rohrbogen/dn/22 — bare name keeps the
+    longest-key convention; the step's '(Muffe auf Muffe)' qualifier
+    picks the muffe-muffe variant."""
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import _resolve_name
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        _phys_part("spigot_elbow", [], bbox=((0, 0, 0), (1, 1, 1))),
+        _phys_part("muffe_elbow", [], bbox=((0, 0, 0), (1, 1, 1))),
+    ]
+    state.parts[0].name = "Rohrbogen DN 22, Muffe auf Spitzende"
+    state.parts[1].name = "Rohrbogen DN 22, Muffe auf Muffe"
+    s = SimpleNamespace(state=state, _aliases_store={})
+    # bare: longest key wins (deterministic, no context bleed)
+    assert _resolve_name(s, "Rohrbogen DN 22, Anschluss 1x außen 1x innen") == "spigot_elbow"
+    # context names the muffe-muffe variant
+    got = _resolve_name(
+        s,
+        "Rohrbogen DN 22, Anschluss 2x außen",
+        context="Rohrbogen (Muffe auf Muffe) auf das Rohr stecken",
+    )
+    assert got == "muffe_elbow"
+
+
+def test_step_requirements_resolve_with_step_context(tmp_path) -> None:
+    """_step_requirements counted the bare-name winner while the planner
+    resolved with context → 'not required by any step' quota rejection."""
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import _step_requirements
+    from cadx.guide.state import GuideStep, GuideSubStep
+
+    state = GuideState(output_dir=str(tmp_path))
+    a = _phys_part("spigot_elbow", [])
+    b = _phys_part("muffe_elbow", [])
+    a.name = "Rohrbogen DN 22, Muffe auf Spitzende"
+    b.name = "Rohrbogen DN 22, Muffe auf Muffe"
+    state.parts = [a, b]
+    state.steps = [
+        GuideStep(
+            number=11, action_type="assembly",
+            text="Rohrbogen (Muffe auf Muffe) auf Rohr 500 und Rohr 70 stecken",
+            sub_steps=[
+                GuideSubStep(
+                    action="attach",
+                    part="Rohrbogen DN 22, Anschluss 2x außen",
+                    target="Rohr 500", target2="Rohr 70",
+                )
+            ],
+        )
+    ]
+    s = SimpleNamespace(state=state, _aliases_store={})
+    reqs = _step_requirements(s)
+    assert reqs[11] == {"muffe_elbow": 1}
+
+
+def test_review_report_rejects_high_score_on_bad_audit(tmp_path) -> None:
+    """Score 9 over a detached joint must fail — the reviewer's eyeball
+    verdict cannot overrule measured geometry."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide.review_tools import write_review_report
+    from cadx.guide.state import AssemblyInstance, AssemblyState
+
+    state = GuideState(output_dir=str(tmp_path))
+    fixed = _phys_part(
+        "elbow", [_sock("m", pos=(0, 0, 50), axis=(0, 0, -1), seat=2.0)],
+        bbox=((-20, -20, 0), (20, 20, 60)),
+    )
+    moving = _phys_part(
+        "pipe", [_plug("e", axis=(0, 0, 1), outer=11.0)],
+        bbox=((-5, -5, -60), (5, 5, 0)),
+    )
+    state.parts = [fixed, moving]
+    tm = np.eye(4)
+    tm[2, 3] = 42.0  # 8mm gap on a face joint → detached
+    state.assembly = AssemblyState(
+        instances=[
+            AssemblyInstance(part_id="elbow", instance_id="elbow#1", transform=np.eye(4).tolist()),
+            AssemblyInstance(part_id="pipe", instance_id="pipe#1", transform=tm.tolist()),
+        ],
+        joints=[
+            {"step": 1, "moving_instance": "pipe#1", "fixed_instance": "elbow#1",
+             "moving_port": "e", "fixed_port": "m"}
+        ],
+    )
+    s = SimpleNamespace(state=state)
+    r = asyncio.run(write_review_report(s, {"score": 9.0, "findings": []}))
+    assert not r["ok"], "score ≥8 must be rejected while the audit reports findings"
+    # an honest low score goes through
+    r = asyncio.run(write_review_report(s, {"score": 5.0, "findings": []}))
+    assert r["ok"] and r.get("audit_ok") is False

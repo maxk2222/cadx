@@ -44,6 +44,17 @@ from cadx.guide.session import GuideToolSession
 log = structlog.get_logger("guide.preassembly")
 
 
+def _rp(sess: GuideToolSession, name: str | None, step_no: int) -> str | None:
+    """Resolve a manual part name with the parent step's text as context —
+    token ties (the two elbow types share rohrbogen/dn/22) break toward
+    the part the step text actually names."""
+    if not name:
+        return None
+    st = sess.state.step_by_number(step_no)
+    ctx = f"{st.text} {st.title}" if st else ""
+    return _resolve_name(sess, name, context=ctx)
+
+
 def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Ordered placement tasks: {step, substep_idx, part, target}.
 
@@ -58,20 +69,18 @@ def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
     referenced: dict[str, int] = {}  # resolved pid -> earliest step referencing it
 
-    def _ref(name: str | None, step_no: int) -> None:
-        if not name:
-            return
-        pid = _resolve_name(sess, name)
+    def _ref(name: str | None, step_no: int, *, ctx: bool = False) -> None:
+        pid = _rp(sess, name, step_no) if ctx else _resolve_name(sess, name or "")
         if pid and pid not in referenced:
             referenced[pid] = step_no
 
     for st in sorted(sess.state.steps, key=lambda s: s.number):
         # every mention counts toward anchor detection — even on non-assembly steps
         for ss in st.sub_steps:
-            _ref(ss.part, st.number)
+            _ref(ss.part, st.number, ctx=True)
             _ref(ss.target, st.number)
         for name in st.required_parts:
-            _ref(name, st.number)
+            _ref(name, st.number, ctx=True)
         if st.action_type != "assembly":
             continue
         subs = [(i, ss) for i, ss in enumerate(st.sub_steps) if ss.action in _PLACE_ACTIONS]
@@ -90,7 +99,7 @@ def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
         else:
             for i, name in enumerate(st.required_parts):
                 tasks.append({"step": st.number, "substep_idx": i, "part": name, "target": ""})
-    planned = {_resolve_name(sess, t["part"]) for t in tasks}
+    planned = {_rp(sess, t["part"], t["step"]) for t in tasks}
     anchors = [
         {"step": step_no, "substep_idx": -1, "part": pid, "target": "", "anchor": True}
         for pid, step_no in referenced.items()
@@ -167,7 +176,7 @@ def _spawn_premounts(
     # side words (an upper-left adapter is not a lower-left one)
     planned_sigs: dict[str, list[frozenset[str]]] = {}
     for t in tasks:
-        pid = _resolve_name(sess, t["part"])
+        pid = _rp(sess, t["part"], t["step"])
         if pid:
             planned_sigs.setdefault(pid, []).append(frozenset(_ref_sides(t)))
     extra: list[dict[str, Any]] = []
@@ -175,7 +184,7 @@ def _spawn_premounts(
         if task.get("anchor") or task.get("premount"):
             continue
         tpid = _resolve_name(sess, task.get("target"))
-        if not tpid or tpid in (_resolve_name(sess, task["part"]), host_pid):
+        if not tpid or tpid in (_rp(sess, task["part"], task["step"]), host_pid):
             continue
         ref = _ref_sides(task)
         if not ref:
@@ -279,7 +288,7 @@ def _chain_height(sess: GuideToolSession, tasks: list[dict[str, Any]], prem_idx:
     graph tip→tip (sibling sides share part ids and stay out); stop at a
     bridge task (it closes the loop, adds no height) or when a task
     re-targets the host."""
-    tip = _resolve_name(sess, tasks[prem_idx]["part"])
+    tip = _rp(sess, tasks[prem_idx]["part"], tasks[prem_idx]["step"])
     chain_pids = [tip] if tip else []
     for t in tasks[prem_idx + 1 :]:
         if t.get("premount"):
@@ -291,7 +300,7 @@ def _chain_height(sess: GuideToolSession, tasks: list[dict[str, Any]], prem_idx:
             continue
         if str(t.get("target2") or "").strip():
             break  # bridge task — the chain terminates here
-        pp = _resolve_name(sess, t["part"])
+        pp = _rp(sess, t["part"], t["step"])
         if pp:
             chain_pids.append(pp)
             tip = pp
@@ -352,7 +361,7 @@ def _anchor_lift(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> float:
     for ti, t in enumerate(tasks):
         if _resolve_name(sess, t.get("target") or "") != host_pid:
             continue
-        tpid = _resolve_name(sess, t["part"])
+        tpid = _rp(sess, t["part"], t["step"])
         feed_perp = _feeds_bridge_axis(sess, tasks, ti, tpid) if tpid else None
         st = sess.state.step_by_number(t["step"])
         hint = f"{t.get('target') or ''} {t.get('text') or ''} {st.title if st else ''}"
@@ -370,7 +379,7 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
     tasks = _plan(sess)
     lift = _anchor_lift(sess, tasks)
     for ti, task in enumerate(tasks):
-        pid = _resolve_name(sess, task["part"])
+        pid = _rp(sess, task["part"], task["step"])
         if not pid:
             report["failed"].append({**task, "reason": f"unresolved part '{task['part']}'"})
             continue
@@ -490,7 +499,7 @@ def _feeds_bridge_axis(
     Rohr"); absent a word, chains build upward → assume Z."""
     downstream = {pid}
     for t in tasks[ti + 1 :]:
-        pp = _resolve_name(sess, t["part"])
+        pp = _rp(sess, t["part"], t["step"])
         tp = _resolve_name(sess, t.get("target") or "")
         t2 = _resolve_name(sess, t.get("target2"))
         if t2 and (tp in downstream or t2 in downstream):
@@ -558,7 +567,7 @@ def _lookahead(
     target resolves to this part or to nothing (chain fallback); a target
     resolving elsewhere constrains that part, not this one."""
     for nxt in tasks[ti + 1 :]:
-        npid = _resolve_name(sess, nxt["part"])
+        npid = _rp(sess, nxt["part"], nxt["step"])
         if not npid or npid == pid:
             continue
         tpid = _resolve_name(sess, nxt.get("target") or "")
@@ -1130,7 +1139,7 @@ def _walk_premount_chain(
 ) -> tuple[list[str], dict[str, Any] | None]:
     """(mid part ids, bridge task) of the chain a premount task feeds —
     same walk as _chain_height, stopping at the bridge that closes it."""
-    tip = _resolve_name(sess, tasks[prem_idx]["part"])
+    tip = _rp(sess, tasks[prem_idx]["part"], tasks[prem_idx]["step"])
     mids: list[str] = []
     for t in tasks[prem_idx + 1 :]:
         if t.get("premount"):
@@ -1140,7 +1149,7 @@ def _walk_premount_chain(
             continue
         if str(t.get("target2") or "").strip():
             return mids, t
-        pp = _resolve_name(sess, t["part"])
+        pp = _rp(sess, t["part"], t["step"])
         if not pp:
             break
         mids.append(pp)
@@ -1191,7 +1200,7 @@ def _chain_out_correction(
     if bridge is None:
         return 0.0
     tip_out = _partner_tip_out(sess, _resolve_name(sess, bridge.get("target2") or ""), out)
-    bpart = sess.state.part_by_id(_resolve_name(sess, bridge["part"]) or "")
+    bpart = sess.state.part_by_id(_rp(sess, bridge["part"], bridge["step"]) or "")
     if tip_out is None or bpart is None:
         return 0.0
     # the column must stand so the secondary socket's mouth lands ~one

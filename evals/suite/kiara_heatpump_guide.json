@@ -74,6 +74,11 @@
           "min": 10
         },
         {
+          "type": "guide_mate_quality",
+          "max_gap_mm": 30.0,
+          "min_normal_dot": -0.95
+        },
+        {
           "type": "guide_joints",
           "min": 9,
           "all": [

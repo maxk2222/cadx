@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from cadx.guide.solver import _unit
+from cadx.guide.solver import _unit, evaluate_mate, union_containment, world_bbox
 
 # spatial change-of-basis (unit vectors); det = -1 → RH→LH
 _M = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
@@ -95,6 +95,73 @@ def _mat_to_quat(r: np.ndarray) -> list[float]:
 # --------------------------------------------------------------------------- #
 
 _GUIDE_VERSION = "1.0"
+
+
+def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float]]:
+    """Physical audit numbers per joint index + buried-fraction per
+    instance — emitted into the doc as durable mate evidence so gates
+    and downstream tooling verify geometry, not just topology."""
+    parts = {p.id: p for p in state.parts}
+    insts = {i.instance_id: i for i in state.assembly.instances}
+    # legacy joints key by part_id — resolve to the first instance of the
+    # part; never duplicate instances under the part key (each would count
+    # itself as a foreign host → false buried flags everywhere)
+    part_to_iid: dict[str, str] = {}
+    for i in state.assembly.instances:
+        part_to_iid.setdefault(i.part_id, i.instance_id)
+
+    def _ikey(ref: Any) -> str:
+        k = str(ref or "")
+        return k if k in insts else part_to_iid.get(k, k)
+
+    bboxes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for iid, inst in insts.items():
+        part = parts.get(inst.part_id)
+        if part is None or inst.transform is None:
+            continue
+        bboxes[iid] = world_bbox(
+            part.bbox_min, part.bbox_max, np.asarray(inst.transform, dtype=float)
+        )
+    partners: dict[str, set[str]] = {}
+    for j in state.assembly.joints:
+        a = _ikey(j.get("moving_instance") or j.get("moving_part"))
+        b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
+        partners.setdefault(a, set()).add(b)
+        partners.setdefault(b, set()).add(a)
+    buried: dict[str, float] = {}
+    for iid, (mn, mx) in bboxes.items():
+        excl = {iid} | partners.get(iid, set())
+        others = [bb for k, bb in bboxes.items() if k not in excl]
+        frac = union_containment(mn, mx, others)
+        if frac > 0.0:
+            buried[iid] = round(frac, 3)
+    metrics: dict[int, dict] = {}
+    for idx, j in enumerate(state.assembly.joints):
+        mv = insts.get(_ikey(j.get("moving_instance") or j.get("moving_part")))
+        fx = insts.get(_ikey(j.get("fixed_instance") or j.get("fixed_part")))
+        mp = next(
+            (p for p in (parts.get(mv.part_id).ports if mv else []) if p.name == j.get("moving_port")),
+            None,
+        )
+        tp = next(
+            (p for p in (parts.get(fx.part_id).ports if fx else []) if p.name == j.get("fixed_port")),
+            None,
+        )
+        m: dict[str, Any] = {}
+        if mv is not None and fx is not None and mp is not None and tp is not None:
+            gap, ndot = evaluate_mate(
+                mp,
+                np.asarray(mv.transform, dtype=float).reshape(4, 4),
+                tp,
+                np.asarray(fx.transform, dtype=float).reshape(4, 4),
+            )
+            m = {"gap_mm": round(gap, 3), "normal_dot": round(ndot, 3)}
+            key = mv.instance_id or mv.part_id
+            if key in buried:
+                m["buried_frac"] = buried[key]
+                m["buried"] = buried[key] > 0.45
+        metrics[idx] = m
+    return metrics, buried
 
 
 def _joint_arrows(joints: list[dict], inst_by_id: dict, parts: dict) -> list[dict]:
@@ -213,6 +280,7 @@ def build_unity_guide(state) -> dict[str, Any]:
     doc_name = ""
     if state.document is not None and state.document.pdf_path:
         doc_name = state.document.pdf_path.rsplit("/", 1)[-1]
+    joint_metrics, _buried = _joint_metrics(state)
     return {
         "guide_version": _GUIDE_VERSION,
         "title": doc_name.replace(".pdf", "") or "AR Assembly Guide",
@@ -235,20 +303,23 @@ def build_unity_guide(state) -> dict[str, Any]:
         # not derived arrows or free-text claims
         "joints": [
             {
-                k: j.get(k)
-                for k in (
-                    "step",
-                    "moving_part",
-                    "fixed_part",
-                    "moving_instance",
-                    "fixed_instance",
-                    "moving_port",
-                    "fixed_port",
-                    "bridge",
-                )
-                if j.get(k) is not None
+                **{
+                    k: j.get(k)
+                    for k in (
+                        "step",
+                        "moving_part",
+                        "fixed_part",
+                        "moving_instance",
+                        "fixed_instance",
+                        "moving_port",
+                        "fixed_port",
+                        "bridge",
+                    )
+                    if j.get(k) is not None
+                },
+                **joint_metrics.get(idx, {}),
             }
-            for j in state.assembly.joints
+            for idx, j in enumerate(state.assembly.joints)
         ],
         "review": {"score": state.review.score, "iterations": state.review.iteration},
     }

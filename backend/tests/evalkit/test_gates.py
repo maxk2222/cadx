@@ -1221,3 +1221,45 @@ def test_guide_joints_gate():
     doc["joints"] = []
     gates = run_gates([{"type": "guide_joints", "min": 1}], o, wall_s=1.0)
     assert gates[0].ok is False
+
+
+def test_guide_mate_quality_gate():
+    """The deterministic joint metrics emitted into unity_guide.json are
+    the hard quality gate — an antiparallel-but-buried or detached joint
+    fails even when the topology gate passes."""
+    o = _out()
+    doc = _guide_doc()
+    doc["joints"] = [
+        {
+            "moving_part": "adapter", "fixed_part": "casing", "step": 2,
+            "gap_mm": 0.0, "normal_dot": -1.0,
+        },
+        {
+            "moving_part": "pipe_l70", "fixed_part": "adapter", "step": 4,
+            "gap_mm": 8.2, "normal_dot": -1.0,  # partial socket engagement
+        },
+    ]
+    o.extras["guide"] = doc
+    gates = run_gates(
+        [{"type": "guide_mate_quality", "max_gap_mm": 30.0, "min_normal_dot": -0.95}],
+        o,
+        wall_s=1.0,
+    )
+    assert gates[0].ok is True, gates[0].measured
+
+    # a detached joint (gap beyond the socket allowance) fails hard
+    doc["joints"][1]["gap_mm"] = 18.4
+    gates = run_gates(
+        [{"type": "guide_mate_quality", "max_gap_mm": 10.0}],
+        o,
+        wall_s=1.0,
+    )
+    assert gates[0].ok is False and gates[0].measured["bad"]
+
+    # a buried part fails regardless of gaps
+    doc["joints"][1]["gap_mm"] = 0.0
+    doc["joints"][1]["buried"] = True
+    doc["joints"][1]["buried_frac"] = 0.9
+    gates = run_gates([{"type": "guide_mate_quality"}], o, wall_s=1.0)
+    assert gates[0].ok is False
+    assert any("buried" in b for b in gates[0].measured["bad"])

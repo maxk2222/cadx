@@ -77,11 +77,42 @@ async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[st
             )
         except Exception:
             continue
+    # deterministic backstop: the SAME joint/burial audit the validator
+    # reports runs here — a reviewer cannot wave through geometry that
+    # measurably fails (buried parts, misaligned/open joints). Passing
+    # score while physical findings exist is a contradiction — return
+    # ok:false and force an honest verdict instead.
+    audit_ok = True
+    audit_evidence: list[str] = []
+    try:
+        from cadx.guide.assembly_tools import joint_geometry_audit
+
+        audit = joint_geometry_audit(s)
+        for b in audit["bad_joints"]:
+            audit_evidence.append(
+                f"joint {b['joint']}: gap={b['gap_mm']}mm nd={b['normal_dot']}"
+            )
+        for b in audit["buried_instances"]:
+            audit_evidence.append(
+                f"{b['instance']} is {round(b['buried_frac'] * 100)}% inside other parts"
+            )
+        if audit_evidence:
+            audit_ok = False
+    except Exception:
+        pass  # audit stays advisory if the scene can't be built
+    if score >= 8.0 and not audit_ok:
+        return {
+            "ok": False,
+            "error": "score ≥8 contradicts the physical audit — these are "
+            "BLOCKER findings against mission 'assembly'; report them "
+            "honestly (score ≤7): " + "; ".join(audit_evidence[:5]),
+            "bad_joints": audit_evidence,
+        }
     it = int(s.state.review.iteration) + 1
     s.state.review = ReviewReport(
         score=score,
         findings=findings,
-        geometry_ok=bool(a["geometry_ok"]) if a.get("geometry_ok") is not None else None,
+        geometry_ok=bool(a["geometry_ok"]) if a.get("geometry_ok") is not None else audit_ok,
         iteration=it,
     )
     return {
@@ -89,6 +120,7 @@ async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[st
         "score": score,
         "iteration": it,
         "blockers": sum(1 for f in findings if f.severity == "blocker"),
+        "audit_ok": audit_ok,
         "note": "done_mission ends the review — the runner decides whether a "
         "repair iteration is needed (score/blockers vs bounds)",
     }
