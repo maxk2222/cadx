@@ -247,12 +247,28 @@ def test_premount_for_uncovered_side_signature() -> None:
 
 def test_chain_height_single_chain_stops_at_bridge() -> None:
     """Anchor lift follows the ONE chain growing from the premount —
-    sibling sides and bridge tasks never inflate it."""
+    sibling sides and bridge tasks never inflate it. Reach is physical:
+    the premount root contributes its mid-body port height, each later
+    part its port-to-port span minus one engagement."""
     parts = [
         _part("base"),
         _part("adapter", bbox=((-5, -5, 0), (5, 5, 20))),
-        _part("elbow", bbox=((-5, -5, 0), (5, 5, 30))),
-        _part("pipe", bbox=((-5, -5, 0), (5, 5, 500))),
+        _part(
+            "elbow",
+            bbox=((-5, -5, 0), (5, 5, 30)),
+            ports=[
+                PortInfo(name="a", kind="cylinder", pos=[0, 0, 0], axis=[0, -1, 0], radius=9),
+                PortInfo(name="b", kind="cylinder", pos=[0, 0, 40], axis=[0, 0, 1], radius=9),
+            ],
+        ),
+        _part(
+            "pipe",
+            bbox=((-5, -5, 0), (5, 5, 500)),
+            ports=[
+                PortInfo(name="e0", kind="cylinder", pos=[0, 0, 0], axis=[0, 0, -1], radius=9),
+                PortInfo(name="e1", kind="cylinder", pos=[0, 0, 500], axis=[0, 0, 1], radius=9),
+            ],
+        ),
         _part("bridge_elbow", bbox=((-5, -5, 0), (5, 5, 30))),
     ]
     sess = _sess(parts)
@@ -266,8 +282,8 @@ def test_chain_height_single_chain_stops_at_bridge() -> None:
         {"step": 5, "substep_idx": 0, "part": "bridge_elbow", "target": "pipe", "target2": "base"},
     ]
     h = pa._chain_height(sess, tasks, 0, "base")
-    # premount's own part (adapter 20) + elbow 30 + pipe 500; bridge stops
-    assert h == pytest.approx(550.0)
+    # root adapter: 20/2=10; elbow port-span 40-15=25; pipe span 500-15=485
+    assert h == pytest.approx(10 + 25 + 485)
 
 
 def test_coincident_ports_share_occupancy() -> None:

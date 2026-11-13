@@ -27,7 +27,7 @@ from cadx.guide.session import GuideToolSession
 from cadx.guide.state import GuideState
 
 
-def _load_state(state_path: Path) -> tuple[GuideState, Path]:
+def _load_state(state_path: Path, *, reextract_ports: bool = False) -> tuple[GuideState, Path]:
     raw = json.loads(state_path.read_text())
     # container paths (/data/...) resolve against the repo data root, not
     # backend/data — this sim always runs from the checkout
@@ -36,6 +36,8 @@ def _load_state(state_path: Path) -> tuple[GuideState, Path]:
         mp = part.get("mesh_path") or ""
         if mp.startswith("/data/"):
             part["mesh_path"] = str(data_root / mp[len("/data/") :])
+    if reextract_ports:
+        _reextract(raw)
     raw.setdefault("assembly", {})["instances"] = []
     raw["assembly"]["joints"] = []
     raw["assembly"]["placements"] = []
@@ -44,6 +46,27 @@ def _load_state(state_path: Path) -> tuple[GuideState, Path]:
     state = GuideState.load(tmp)
     assert state is not None
     return state, tmp
+
+
+def _reextract(raw: dict) -> None:
+    """Re-run rim extraction on the part meshes — states saved before the
+    bore/seat measurement model carry stale port metadata."""
+    import trimesh
+
+    from cadx.guide.cadmeta import _rim_ports
+    from cadx.guide.state import GuidePart
+
+    for p in raw.get("parts", []):
+        mp = p.get("mesh_path")
+        if not mp or not Path(mp).exists():
+            continue
+        m = trimesh.load(mp)
+        if hasattr(m, "to_geometry"):
+            m = m.to_geometry()
+        elif hasattr(m, "geometry"):
+            m = trimesh.util.concatenate(list(m.geometry.values()))
+        stub = GuidePart(id=p["id"], name=p.get("name", ""))
+        p["ports"] = [pi.model_dump() for pi in _rim_ports(m, stub)]
 
 
 def _dump(state: GuideState) -> None:
@@ -82,7 +105,8 @@ def _check_invariants(state: GuideState) -> list[str]:
 
 def main() -> int:
     state_path = Path(sys.argv[1])
-    state, tmp = _load_state(state_path)
+    reextract = "--reextract" in sys.argv[2:]
+    state, tmp = _load_state(state_path, reextract_ports=reextract)
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(
         guide_image_budget=4,

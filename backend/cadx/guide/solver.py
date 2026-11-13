@@ -121,6 +121,14 @@ def _port_roll_reference(port: PortInfo, part: GuidePart) -> np.ndarray | None:
     return x if float(np.linalg.norm(x)) > 1e-6 else None
 
 
+def _engage_mm(moving_port: PortInfo, fixed_port: PortInfo) -> float:
+    """How deep the plug enters the socket along the joint axis — the
+    deeper bore is the receiver; the plug bottoms out near its end
+    (85% of depth, capped). 0 for unmeasured ports keeps flush mating."""
+    d = max(_socket_depth(moving_port), _socket_depth(fixed_port))
+    return min(d * 0.85, 40.0) if d > 0.0 else 0.0
+
+
 def transform_port_to_target(
     moving: GuidePart,
     moving_port: PortInfo,
@@ -128,6 +136,7 @@ def transform_port_to_target(
     fixed_port: PortInfo,
     fixed_part: GuidePart,
     rotation_degrees: float = 0.0,
+    engage_mm: float | None = None,
 ) -> np.ndarray:
     """4x4 world transform placing ``moving`` so that ``moving_port`` mates
     ``fixed_port`` (KIARA _compute_transform_from_port_to_target).
@@ -136,10 +145,16 @@ def transform_port_to_target(
     FLIPPED normal (mates face each other). Symmetric roll convention:
     if either side lacks a roll reference both fall back to the world
     convention — a hint on only one side was KIARA's RC-2 bug.
+
+    ``engage_mm`` shifts the mate point INTO the fixed port along its
+    inward axis — a spigot lands at the bottom of the socket, not
+    floating at its rim.
     """
+    if engage_mm is None:
+        engage_mm = _engage_mm(moving_port, fixed_port)
     t_r = fixed_transform[0:3, 0:3]
     t_t = fixed_transform[0:3, 3]
-    tp_pos = t_r @ _v(fixed_port.pos) + t_t
+    tp_pos = t_r @ (_v(fixed_port.pos) - _v(fixed_port.axis) * engage_mm) + t_t
     tp_norm = t_r @ _v(fixed_port.axis)
 
     new_roll = _port_roll_reference(moving_port, moving)
@@ -169,14 +184,19 @@ def evaluate_mate(
     moving_transform: np.ndarray,
     fixed_port: PortInfo,
     fixed_transform: np.ndarray,
+    *,
+    engage_mm: float | None = None,
 ) -> tuple[float, float]:
     """(joint_gap_mm, normal_dot) of a mated port pair. normal_dot = -1 is a
-    perfect antiparallel mate."""
+    perfect antiparallel mate. Gap is measured to the ENGAGED mate point —
+    a plug seated inside a socket still counts as closed."""
+    if engage_mm is None:
+        engage_mm = _engage_mm(moving_port, fixed_port)
     t = np.asarray(moving_transform, dtype=float).reshape(4, 4)
     tp = np.asarray(fixed_transform, dtype=float).reshape(4, 4)
     mp_world = t[0:3, 0:3] @ _v(moving_port.pos) + t[0:3, 3]
     mn_world = t[0:3, 0:3] @ _v(moving_port.axis)
-    fp_world = tp[0:3, 0:3] @ _v(fixed_port.pos) + tp[0:3, 3]
+    fp_world = tp[0:3, 0:3] @ (_v(fixed_port.pos) - _v(fixed_port.axis) * engage_mm) + tp[0:3, 3]
     fn_world = tp[0:3, 0:3] @ _v(fixed_port.axis)
     gap = float(np.linalg.norm(mp_world - fp_world))
     normal_dot = float(np.dot(_unit(mn_world), _unit(fn_world)))
@@ -196,6 +216,45 @@ def _gender_ok(a: PortInfo, b: PortInfo) -> bool:
     return {a.gender, b.gender} != {"male"}
 
 
+def _socket_depth(p: PortInfo) -> float:
+    """Effective grip depth that makes a port a SOCKET — either a measured
+    seat (boss, nut, shoulder) or a clear through-bore (push-fit coupler:
+    nominal grip ≈ 2x clear radius). A solid face (inner_r=0, seat<4mm)
+    receives nothing."""
+    d = p.depth
+    if 4.0 <= d < 400.0:
+        return d
+    if d >= 400.0 and p.inner_radius > 0.0:
+        return min(2.0 * p.inner_radius, 30.0)
+    return 0.0
+
+
+def _inner_r(p: PortInfo) -> float:
+    """Clear radius the socket accepts (bore), else the rim radius."""
+    return p.inner_radius or p.radius
+
+
+def _outer_r(p: PortInfo) -> float:
+    """Outer envelope radius the port presents to a socket (tube OD)."""
+    return p.outer_radius or p.radius
+
+
+def _measured(p: PortInfo) -> bool:
+    """Ports carrying bore measurements get the physical socket model;
+    unmeasured (BRep/executor ports, legacy states) keep the soft rules."""
+    return p.depth > 0.0 or p.inner_radius > 0.0
+
+
+def _receiver(a: PortInfo, b: PortInfo) -> tuple[PortInfo | None, PortInfo | None]:
+    """(socket, plug) — which side physically receives the other."""
+    sa, sb = _socket_depth(a) > 0.0, _socket_depth(b) > 0.0
+    if not sa and not sb:
+        return None, None
+    if sa and sb:  # two sockets: the wider bore swallows the smaller feature
+        return (a, b) if _inner_r(a) >= _inner_r(b) else (b, a)
+    return (a, b) if sa else (b, a)
+
+
 def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
     # different port KINDS can never mate — a flat face can't accept a
     # pipe, a rim can't seat on a plane. Mixed pairs only ever produced
@@ -205,16 +264,31 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
         return -1.0
     score = 0.1
     if a.kind == "cylinder" and b.kind == "cylinder" and min(a.radius, b.radius) > 0:
-        ratio = min(a.radius, b.radius) / max(a.radius, b.radius)
-        if ratio < 0.5:
-            if not include_mismatch:
-                return -1.0  # reject: radii can't mate
-            # radius mismatch stays a LAST-RESORT candidate, not a reject:
-            # rim extraction can measure a collar instead of the stub, and
-            # instruction kits are representative — the manual may call a
-            # joint the measured radii can't prove
-            return -0.5
-        score += ratio
+        if _measured(a) and _measured(b):
+            # physical connection model: a joint needs a SOCKET receiving a
+            # plug whose outer envelope fits its bore — open end on open
+            # end (pipe-on-pipe), or a socket narrower than the plug, is
+            # physically impossible. Threads are just small-clearance
+            # versions of the same fit — no thread detection needed.
+            sock, plug = _receiver(a, b)
+            if sock is None or plug is None:
+                return -1.0
+            # clear radius is ray-measured ~10% low — accept with slack,
+            # still hard-reject a plug that can't physically enter
+            if _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug):
+                return -1.0  # socket can't swallow the plug
+            score += min(_inner_r(sock) / max(_outer_r(plug), 1e-9), 1.0)
+        else:
+            ratio = min(a.radius, b.radius) / max(a.radius, b.radius)
+            if ratio < 0.5:
+                if not include_mismatch:
+                    return -1.0  # reject: radii can't mate
+                # radius mismatch stays a LAST-RESORT candidate, not a reject:
+                # rim extraction can measure a collar instead of the stub, and
+                # instruction kits are representative — the manual may call a
+                # joint the measured radii can't prove
+                return -0.5
+            score += ratio
     g = {a.gender, b.gender}
     if g == {"male", "female"}:
         score += 0.5
@@ -274,6 +348,7 @@ def find_matching_ports(
                     "moving_gender": mp.gender,
                     "fixed_gender": tp.gender,
                     "radius_mm": [mp.radius, tp.radius],
+                    "engage_mm": round(_engage_mm(mp, tp), 2),
                 }
             )
     out.sort(key=lambda c: (-c["score"], c["moving_port"], c["fixed_port"]))
@@ -351,7 +426,7 @@ def solve_multi_attachment(
     mp = _port(moving, port_pairs[0][0])
     if tp is None or mp is None:
         return base.tolist()
-    pivot = tf[0:3, 0:3] @ _v(tp.pos) + tf[0:3, 3]
+    pivot = tf[0:3, 0:3] @ (_v(tp.pos) - _v(tp.axis) * _engage_mm(mp, tp)) + tf[0:3, 3]
     axis = tf[0:3, 0:3] @ _v(tp.axis)
     best, best_res = base, float("inf")
     for deg in np.linspace(0.0, 360.0, 72, endpoint=False):
@@ -391,7 +466,7 @@ def solve_bridge_attachment(
     mp0 = _port(moving, mp0_name)
     if tp0 is None or mp0 is None:
         return base.tolist()
-    pivot = tf0[0:3, 0:3] @ _v(tp0.pos) + tf0[0:3, 3]
+    pivot = tf0[0:3, 0:3] @ (_v(tp0.pos) - _v(tp0.axis) * _engage_mm(mp0, tp0)) + tf0[0:3, 3]
     axis = tf0[0:3, 0:3] @ _v(tp0.axis)
     best, best_res = base, float("inf")
     for deg in np.linspace(0.0, 360.0, 72, endpoint=False):

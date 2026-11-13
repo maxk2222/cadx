@@ -280,11 +280,32 @@ def _chain_height(sess: GuideToolSession, tasks: list[dict[str, Any]], prem_idx:
         if pp:
             chain_pids.append(pp)
             tip = pp
-    return sum(
-        float(p.bbox_max[2] - p.bbox_min[2])
-        for cpid in chain_pids
-        if (p := sess.state.part_by_id(cpid)) is not None
-    )
+    # physical reach, not bbox sums: the premount root contributes its
+    # free port height (fittings carry it mid-body); every later part adds
+    # the distance between its chain-in and chain-out ports minus one
+    # engagement (a plug seats ~15mm inside the socket, not on its lip)
+    h = 0.0
+    for i, cpid in enumerate(chain_pids):
+        p = sess.state.part_by_id(cpid)
+        if p is None:
+            continue
+        span = float(p.bbox_max[2] - p.bbox_min[2])
+        if i == 0:
+            h += span / 2.0
+            continue
+        cyl = [pp for pp in p.ports if pp.kind == "cylinder"]
+        if len(cyl) >= 2:
+            best = max(
+                float(
+                    np.linalg.norm(np.asarray(a.pos, dtype=float) - np.asarray(b.pos, dtype=float))
+                )
+                for x, a in enumerate(cyl)
+                for b in cyl[x + 1 :]
+            )
+            h += max(best - 15.0, span * 0.5)
+        else:
+            h += span
+    return h
 
 
 def _anchor_lift(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> float:
@@ -349,7 +370,9 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
             # a fake joint to an incompatible rim
             st0 = sess.state.step_by_number(task["step"])
             hint0 = f"{task.get('target') or ''} {task.get('text') or ''} {st0.title if st0 else ''}"
-            placed = await _place_premount_ref(sess, task, pid, _dir_axes(hint0), feed_perp)
+            placed = await _place_premount_ref(
+                sess, task, pid, _dir_axes(hint0), feed_perp, tasks=tasks, ti=ti
+            )
             if not placed:
                 placed = await _try_attach(sess, task, pid, lookahead, feed_perp)
         else:
@@ -1075,12 +1098,113 @@ def _rot_from_to(a: list[float], b: list[float]) -> list[list[float]]:
     return (np.eye(3) + k + k @ k * (1.0 / (1.0 + c))).tolist()
 
 
+def _horiz_port_span(part: Any) -> float:
+    """Largest distance between two cylinder ports projected onto the
+    horizontal plane — an elbow's sideways leg length."""
+    cyl = [p for p in (part.ports or []) if p.kind == "cylinder"]
+    best = 0.0
+    for i, a in enumerate(cyl):
+        for b in cyl[i + 1 :]:
+            d = float(np.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1]))
+            best = max(best, d)
+    return best
+
+
+def _walk_premount_chain(
+    sess: GuideToolSession, tasks: list[dict[str, Any]], prem_idx: int
+) -> tuple[list[str], dict[str, Any] | None]:
+    """(mid part ids, bridge task) of the chain a premount task feeds —
+    same walk as _chain_height, stopping at the bridge that closes it."""
+    tip = _resolve_name(sess, tasks[prem_idx]["part"])
+    mids: list[str] = []
+    for t in tasks[prem_idx + 1 :]:
+        if t.get("premount"):
+            continue
+        tp = _resolve_name(sess, t.get("target") or "")
+        if tp != tip:
+            continue
+        if str(t.get("target2") or "").strip():
+            return mids, t
+        pp = _resolve_name(sess, t["part"])
+        if not pp:
+            break
+        mids.append(pp)
+        tip = pp
+    return mids, None
+
+
+def _partner_tip_out(
+    sess: GuideToolSession, t2: str, out: list[float]
+) -> float | None:
+    """Outward coordinate of the bridge partner's free end — a placed
+    instance port whose axis points ~along +out."""
+    part2 = sess.state.part_by_id(t2)
+    if part2 is None:
+        return None
+    best: float | None = None
+    for inst in sess.state.assembly.instances:
+        if inst.part_id != t2 or not inst.transform:
+            continue
+        used = _used_port_names(sess, inst)
+        for p in part2.ports:
+            if p.kind != "cylinder" or p.name in used:
+                continue
+            wa = _world_dir(inst.transform, p.axis)
+            if wa[0] * out[0] + wa[1] * out[1] < 0.6:
+                continue
+            wp = _world_pos(inst.transform, p.pos)
+            s = wp[0] * out[0] + wp[1] * out[1]
+            if best is None or s > best:
+                best = s
+    return best
+
+
+def _chain_out_correction(
+    sess: GuideToolSession,
+    tasks: list[dict[str, Any]],
+    prem_idx: int,
+    out: list[float],
+    ref_out: float,
+    part: Any,
+) -> float:
+    """Back-substitute the premount's outward offset from the bridge it
+    must close: the chain's column has to stand so the top elbow's
+    secondary socket can land just beyond the partner's free tip. Without
+    the correction the column sits next to the host and the bridge ends
+    ~half a fitting short — the residual the solver can't roll away."""
+    mids, bridge = _walk_premount_chain(sess, tasks, prem_idx)
+    if bridge is None:
+        return 0.0
+    tip_out = _partner_tip_out(sess, _resolve_name(sess, bridge.get("target2") or ""), out)
+    bpart = sess.state.part_by_id(_resolve_name(sess, bridge["part"]) or "")
+    if tip_out is None or bpart is None:
+        return 0.0
+    # the column must stand so the secondary socket's mouth lands ~one
+    # engagement depth BEHIND the tip plane (the pipe end inserts INTO
+    # the socket, it doesn't stop at its face)
+    column_needed = tip_out + max(_horiz_port_span(bpart) * 0.7, 25.0) - 14.0
+    # where the column lands with the default offset: reference + the
+    # premount's half-extent + each mid part's horizontal leg
+    half = max(
+        float(part.bbox_max[i] - part.bbox_min[i]) * abs(out[i]) for i in range(3)
+    ) / 2.0
+    column_default = ref_out + half + 3.0 + sum(
+        _horiz_port_span(mp) * 0.7
+        for mpid in mids
+        if (mp := sess.state.part_by_id(mpid)) is not None
+    )
+    return max(0.0, column_needed - column_default)
+
+
 async def _place_premount_ref(
     sess: GuideToolSession,
     task: dict[str, Any],
     pid: str,
     axes: list[tuple[int, float]],
     feed_perp: int | None = None,
+    *,
+    tasks: list[dict[str, Any]] | None = None,
+    ti: int = 0,
 ) -> str | None:
     """Reference placement for initial-state hardware that does NOT sit on
     a host port (e.g. fittings pre-mounted on the device body, beside or
@@ -1158,6 +1282,9 @@ async def _place_premount_ref(
     pc = [sum(r[i][c] * pl[c] for c in range(3)) for i in range(3)]
     face_in = min(sum(out[k] * p[k] for k in range(3)) for p in corners_w)
     off = 3.0 - face_in
+    if tasks is not None:
+        ref_out = ref_xy[0] * out[0] + ref_xy[1] * out[1]
+        off += _chain_out_correction(sess, tasks, ti, out, ref_out, part)
     tr = [
         r[0] + [ref_xy[0] + out[0] * off - pc[0]],
         r[1] + [ref_xy[1] + out[1] * off - pc[1]],

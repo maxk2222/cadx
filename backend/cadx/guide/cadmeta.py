@@ -116,12 +116,58 @@ def _loop_circle(mesh, loop: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]
     return ctr, normal, r
 
 
+def _bore_measure(
+    mesh, center: np.ndarray, axis: np.ndarray, lip_r: float
+) -> tuple[float, float]:
+    """Probe the bore with rings of inward rays: the closest hit across
+    all rings is the SEAT depth (a nut face / socket shoulder / bore
+    bottom); `inner_r` is the largest ring radius that still reaches the
+    seat — the clear radius a plug may occupy. Through-bores and open
+    tube ends report depth=500 (unbounded → not a socket)."""
+    ref = np.array([1.0, 0.0, 0.0])
+    if abs(float(np.dot(axis, ref))) > 0.9:
+        ref = np.array([0.0, 1.0, 0.0])
+    t1 = np.cross(axis, ref)
+    t1 /= max(np.linalg.norm(t1), 1e-9)
+    t2 = np.cross(axis, t1)
+    radii = [lip_r * f for f in (0.3, 0.55, 0.75, 0.9)]
+    origins = np.stack(
+        [
+            center + axis * 1.5 + t1 * (r * np.cos(a)) + t2 * (r * np.sin(a))
+            for r in radii
+            for a in np.linspace(0, 2 * np.pi, 6, endpoint=False)
+        ]
+    )
+    ring_idx = np.repeat(np.arange(len(radii)), 6)
+    try:
+        locs, rays, _tris = mesh.ray.intersects_location(
+            origins, np.tile(-axis, (len(origins), 1)), multiple_hits=True
+        )
+        dist = np.linalg.norm(locs - origins[rays], axis=1) - 1.5
+        ring_hit = np.full(len(radii), 500.0)
+        for i in range(len(radii)):
+            d = dist[ring_idx[rays] == i]
+            if len(d):
+                ring_hit[i] = float(np.min(d))
+    except Exception:
+        ring_hit = np.full(len(radii), 500.0)
+    seat = float(np.min(ring_hit))
+    if seat >= 400.0:
+        return 500.0, lip_r * 0.9
+    # clear radius = largest ring that still reaches ~the seat; a solid
+    # face (seat≈0) blocks every ring early → no clear bore at all
+    reachable = [r for r, h in zip(radii, ring_hit, strict=True) if h >= max(seat * 0.8, 4.0)]
+    inner = max(reachable) if reachable else 0.0
+    return max(seat, 0.0), float(inner)
+
+
 def _rim_ports(mesh, part: GuidePart) -> list[PortInfo]:
     """Ports from closed sharp-edge rim loops — detects socket mouths and
     spigot tips that planar-normal clustering misses on curved fittings
     (elbows, reducers). Gender: a rim with a concentric LARGER partner loop
     on the same axis bounds an annular face = socket mouth (female); a
-    solo rim is a tube/spigot end (male)."""
+    solo rim is a tube/spigot end (male) UNLESS a bore recedes inward —
+    a recessed lip (boss opening, captive nut) is a socket too."""
     if not mesh.is_watertight:
         mesh = mesh.copy()
         mesh.merge_vertices(merge_tex=True, merge_norm=True)
@@ -141,38 +187,66 @@ def _rim_ports(mesh, part: GuidePart) -> list[PortInfo]:
     # plane); the INNER rim is the bore mouth — that's the port
     used = [False] * len(circles)
     ports: list[PortInfo] = []
-    for i, (c, n, r) in enumerate(circles):
+    for i in range(len(circles)):
         if used[i]:
             continue
         used[i] = True
-        partner = None
-        for j in range(i + 1, len(circles)):
-            if used[j]:
-                continue
-            c2, n2, r2 = circles[j]
-            if abs(float(np.dot(n, n2))) < 0.98:
-                continue
-            if np.linalg.norm(c - c2) < max(r, r2) * 0.6:
-                partner = j
-                used[j] = True
-                break
-        gender = "female" if partner is not None else "male"
-        if partner is not None and circles[partner][2] < r:
-            c, n, r = circles[partner]  # inner rim wins for sockets
-        # outward axis: away from the part's centroid
-        away = c - np.asarray(mesh.bounds, dtype=float).mean(axis=0)
-        nn = n if float(np.dot(n, away)) >= 0 else -n
-        ports.append(
-            PortInfo(
-                name=f"rim_{len(ports)}",
-                kind="cylinder",
-                pos=[round(float(v), 4) for v in c],
-                axis=[round(float(v), 4) for v in nn],
-                gender=gender,
-                radius=round(r, 3),
-            )
-        )
+        partner = _concentric_partner(circles, i, used)
+        if partner is not None:
+            used[partner] = True
+        ports.append(_rim_port(mesh, circles, i, partner, len(ports)))
     return ports
+
+
+def _concentric_partner(
+    circles: list[tuple[np.ndarray, np.ndarray, float]], i: int, used: list[bool]
+) -> int | None:
+    c, n, r = circles[i]
+    for j in range(i + 1, len(circles)):
+        if used[j]:
+            continue
+        c2, n2, r2 = circles[j]
+        if abs(float(np.dot(n, n2))) < 0.98:
+            continue
+        if np.linalg.norm(c - c2) < max(r, r2) * 0.6:
+            return j
+    return None
+
+
+def _rim_port(
+    mesh,
+    circles: list[tuple[np.ndarray, np.ndarray, float]],
+    i: int,
+    partner: int | None,
+    idx: int,
+) -> PortInfo:
+    c, n, r = circles[i]
+    outer_r = 0.0
+    if partner is not None:
+        outer_r = max(r, circles[partner][2])
+        if circles[partner][2] < r:
+            c, n, r = circles[partner]  # inner rim wins for sockets
+    # outward axis: away from the part's centroid
+    away = c - np.asarray(mesh.bounds, dtype=float).mean(axis=0)
+    nn = n if float(np.dot(n, away)) >= 0 else -n
+    depth, inner_r = _bore_measure(mesh, c, nn, r)
+    if partner is not None:
+        gender = "female"
+    elif 4.0 <= depth < 400.0:
+        gender = "female"  # bounded seat inside = socket (boss, nut, shoulder)
+    else:
+        gender = "male"  # solid stub end OR open tube end (through-bore)
+    return PortInfo(
+        name=f"rim_{idx}",
+        kind="cylinder",
+        pos=[round(float(v), 4) for v in c],
+        axis=[round(float(v), 4) for v in nn],
+        gender=gender,
+        radius=round(r, 3),
+        depth=round(depth, 2),
+        inner_radius=round(inner_r, 3) if inner_r else 0.0,
+        outer_radius=round(outer_r, 3) if outer_r else 0.0,
+    )
 
 
 def _cylinder_ports_worker(mesh, part: GuidePart) -> list[PortInfo]:

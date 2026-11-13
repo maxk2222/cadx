@@ -26,3 +26,10 @@ Zwei vormontierte Adapter UNTERHALB des Gehäuses (links+rechts) gehören zum Au
 - Aus den PDF-Figuren: die „oberen" Gehäuse-Anschlüsse sind die waagerechten Stutzen an der FRONT-Seite (Adapters + L70 ragen horizontal heraus); die unteren Gehäuse-Stutzen (rim_19/20, hinten unten) sind Referenzpunkte für die vormontierten Adapter — die Adapter selbst gehören aber zur Pumpe: Referenz-Platzierung, keine erfundene Pumpen-Geometrie.
 - Höhenlogik: Adapter unten (~Bodenniveau) + Bogen + L500 → L500-Top landet in der Höhe der Gehäuse-Front-Anschlüsse; dort verbindet der Muffe-Muffe-Bogen vertikal↔horizontal.
 - Adapter-Seiten (Auftraggeber): eine Seite hat ein INNENGEWINDE → schraubt auf die Gewinde-Stutzen am Gehäuse; die andere Seite ist die FEMALE-AUFNAHME für das L70-Rohr. Der Adapter ist also richtungsgebunden: Gewinde→Stutzen, Aufnahme→Rohr.
+
+## Port-Modell (solver/cadmeta, 2026-11-13)
+- Jeder Rim-Port misst: `radius` (Lippe), `inner_radius` (lichter Radius bis zum Seat), `outer_radius` (Hüllkurve), `depth` (Seat-Tiefe; 500=Durchgangsbohrung/offenes Rohrende; <4=feste Fläche).
+- Verbindungsregel: ein Joint braucht einen SOCKET (Seat ≥4mm ODER durchgehende klare Bohrung für Push-Fit) + einen PLUG dessen `outer_radius ≤ socket.inner_radius·1.15+0.5`. Rohr-auf-Rohr (zwei offene Enden ohne Socket) ist physikalisch unmöglich → hart abgelehnt, auch mit `include_mismatch`.
+- Engagement: der Plug sitzt ~85% der Seat-Tiefe IN der Muffe — `joint_gap_mm` misst den eingelegten Mate-Punkt, nicht die Lippe.
+- Casing-Front-Anschlüsse (rim_21–24): r30-Kragen mit eingesetzter Überwurfmutter — Seat ~15mm, lichter Radius ~27 → nimmt das Adapter-Ende (outer ~15.5) auf; die schlanken Seitenöffnungen (inner ~9.7) lehnen es physikalisch ab.
+- Adapter ist richtungsgebunden: Innengewinde-Ende → Gehäuse-Boss, Muffen-Ende ← L70.

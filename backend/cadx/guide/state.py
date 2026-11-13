@@ -28,10 +28,12 @@ class PortInfo(BaseModel):
     name: str
     pos: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])  # mm, part-local
     axis: list[float] = Field(default_factory=lambda: [0.0, 0.0, 1.0])  # unit, outward
-    radius: float = 0.0  # mm
+    radius: float = 0.0  # mm — rim lip radius (bore mouth for sockets)
     gender: str = "unknown"  # male | female | flat | unknown
     kind: str = "cylinder"  # cylinder | plane | slot
-    depth: float = 0.0  # female ports: usable depth mm
+    depth: float = 0.0  # measured bore depth inward (0 = solid/unknown)
+    inner_radius: float = 0.0  # clear bore radius inside the port (0 = unmeasured)
+    outer_radius: float = 0.0  # rim's outer lip (tube OD / collar OD; 0 = unmeasured)
 
 
 class GuidePart(BaseModel):
