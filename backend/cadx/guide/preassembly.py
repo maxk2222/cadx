@@ -24,7 +24,9 @@ Deterministic choices, in order:
 
 from __future__ import annotations
 
+import itertools
 import re
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -338,7 +340,215 @@ def _chain_height(sess: GuideToolSession, tasks: list[dict[str, Any]], prem_idx:
     return h
 
 
-def _anchor_lift(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> float:
+_ROT_CUBE: list[np.ndarray] | None = None
+
+
+def _cube_rotations() -> list[np.ndarray]:
+    """The 24 orientation-preserving axis permutations. Identity first so
+    argmax keeps the asset frame whenever orientations tie."""
+    global _ROT_CUBE
+    if _ROT_CUBE is None:
+        rots = [np.eye(3)]
+        for perm in itertools.permutations(range(3)):
+            p = np.zeros((3, 3))
+            for i, j in enumerate(perm):
+                p[i, j] = 1.0
+            for signs in itertools.product((1.0, -1.0), repeat=3):
+                r = np.diag(signs) @ p
+                if round(float(np.linalg.det(r))) == 1 and not np.allclose(r, np.eye(3)):
+                    rots.append(r)
+        _ROT_CUBE = rots
+    return _ROT_CUBE
+
+
+def _rotated_bbox(mn: Any, mx: Any, rot: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    corners = np.array(
+        [[x, y, z] for x in (mn[0], mx[0]) for y in (mn[1], mx[1]) for z in (mn[2], mx[2])]
+    )
+    w = corners @ rot.T
+    return w.min(axis=0), w.max(axis=0)
+
+
+def _world_part_view(inst: Any, part: Any) -> SimpleNamespace:
+    """Ports/bbox of a placed instance in WORLD frame — for picking a host
+    port by the task's world-space direction words regardless of the
+    instance's local frame."""
+    tr = inst.transform
+    ports = [
+        p.model_copy(
+            update={
+                "pos": _world_pos(tr, p.pos),
+                "axis": _world_dir(tr, p.axis),
+            }
+        )
+        for p in part.ports
+    ]
+    mn, mx = solver.world_bbox(
+        part.bbox_min, part.bbox_max, np.asarray(tr, dtype=float).reshape(4, 4)
+    )
+    return SimpleNamespace(ports=ports, bbox_min=mn, bbox_max=mx)
+
+
+def _rotated_part_view(part: Any, rot: np.ndarray) -> SimpleNamespace:
+    """Part-like view (ports/bbox only) under a rotation — lets
+    _pick_host_port & lift math run on the candidate orientation."""
+    ports = [
+        p.model_copy(
+            update={
+                "pos": [float(x) for x in rot @ np.asarray(p.pos, dtype=float)],
+                "axis": [float(x) for x in rot @ np.asarray(p.axis, dtype=float)],
+            }
+        )
+        for p in part.ports
+    ]
+    mn, mx = _rotated_bbox(part.bbox_min, part.bbox_max, rot)
+    return SimpleNamespace(ports=ports, bbox_min=mn, bbox_max=mx)
+
+
+def _anchor_orientation(sess: GuideToolSession, part: Any, tasks: list[dict[str, Any]]) -> np.ndarray:
+    """Rotate the host so the manual's attach tasks find compatible,
+    laterally reachable interfaces. The asset frame is arbitrary — a
+    host port pointing straight up/down forces an impossible
+    over-the-top or under-floor mate; a host's connection hardware faces
+    the assembly's working side (+Y front by frame contract). Scores the
+    first few host-bound tasks under every cube rotation by pair
+    legality (the solver's fit) + lateral reach + the task's side words,
+    then picks the best orientation."""
+    host_ports = [p for p in part.ports if p.kind == "cylinder"]
+    if not host_ports:
+        return np.eye(3)
+    attach: list[tuple[dict[str, Any], Any]] = []
+    for t in tasks:
+        if t.get("anchor") or t.get("premount"):
+            continue
+        if _resolve_name(sess, t.get("target") or "") != part.id:
+            continue
+        mpid = _rp(sess, t["part"], t["step"])
+        moving = sess.state.part_by_id(mpid) if mpid else None
+        if moving is not None and moving.id != part.id:
+            attach.append((t, moving))
+        if len(attach) >= 4:
+            break
+    if not attach:
+        return np.eye(3)
+    low_bias = _below_chain(sess, tasks)
+    best_rot, best_s = np.eye(3), -1e18
+    for rot in _cube_rotations():
+        ports_r = [
+            (
+                rot @ np.asarray(p.pos, dtype=float),
+                rot @ np.asarray(p.axis, dtype=float),
+                p,
+            )
+            for p in host_ports
+        ]
+        mn_r, mx_r = _rotated_bbox(part.bbox_min, part.bbox_max, rot)
+        center = (mn_r + mx_r) / 2.0
+        span = float((mx_r - mn_r).max()) or 1.0
+        span_z = float(mx_r[2] - mn_r[2]) or 1.0
+        corners_r = np.array(
+            [
+                [x, y, z]
+                for x in (mn_r[0], mx_r[0])
+                for y in (mn_r[1], mx_r[1])
+                for z in (mn_r[2], mx_r[2])
+            ]
+        )
+        # recession depth of each port below the rotated silhouette along
+        # its own axis — a mouth 100mm inside the body can't be reached
+        # without tunneling through the part's other openings
+        exposure = [
+            max(float((corners_r @ solver._unit(ax_w)).max() - float(np.dot(pos_w, solver._unit(ax_w)))), 0.0)
+            for pos_w, ax_w, _ in ports_r
+        ]
+        # an opening aimed at the floor is unreachable — no mate can
+        # approach through the ground plane the host rests on
+        s = -1.0 * sum(1 for _, ax_w, _ in ports_r if float(ax_w[2]) < -0.8)
+        for t, moving in attach:
+            st = sess.state.step_by_number(t["step"])
+            hint = f"{t.get('target') or ''} {t.get('text') or ''} {st.title if st else ''}"
+            task_best = -1e18
+            for (pos_w, ax_w, fp), exp in zip(ports_r, exposure, strict=True):
+                if exp > 60.0:
+                    continue  # recessed past any fitting's reach — an
+                    # interior junction, not a mount interface
+                cand = _interface_score(
+                    moving, fp, pos_w, ax_w, exp,
+                    _dir_axes(hint), span, center, pos_w[2], mn_r[2], span_z,
+                    low_bias,
+                )
+                task_best = max(task_best, cand)
+            if task_best > -1e18:
+                s += task_best
+        if np.allclose(rot, np.eye(3)):
+            s += 0.01  # keep the asset frame when no orientation wins outright
+        if s > best_s:
+            best_rot, best_s = rot, s
+    return best_rot
+
+
+def _interface_score(
+    moving: Any,
+    fp: Any,
+    pos_w: np.ndarray,
+    ax_w: np.ndarray,
+    exposure: float,
+    axes: list[tuple[int, float]],
+    span: float,
+    center: np.ndarray,
+    pos_z: float,
+    mn_z: float,
+    span_z: float,
+    low_bias: bool,
+) -> float:
+    """How usable one host port is for an attach task: solver pair fit,
+    minus recession, plus lateral reach (front > side > back >> vertical),
+    plus the task's side words, plus the low-on-body prior when the chain
+    grows from below."""
+    fit = max(
+        (
+            solver._score_pair(mp, fp, include_mismatch=False)
+            for mp in moving.ports
+            if mp.kind == "cylinder"
+        ),
+        default=-1.0,
+    )
+    if fit <= 0.0:
+        return -1e18
+    fit -= min(exposure / 25.0, 0.55)
+    az = abs(float(ax_w[2]))
+    reach = (
+        1.0 + 0.5 * float(ax_w[1])
+        if az < 0.35
+        else (-1.0 if az > 0.8 else 0.0)
+    )
+    pos_hint = (
+        0.15 * sum(sg * float(pos_w[a] - center[a]) for a, sg in axes) / span
+    )
+    low = 0.5 * (1.0 - float(pos_z - mn_z) / span_z) if low_bias else 0.0
+    return fit + reach + pos_hint + low
+
+
+def _below_chain(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> bool:
+    """True when the manual mounts hardware BELOW the host (a premount
+    chain growing from the floor) — then the host's interfaces belong to
+    its lower body region."""
+    for t in tasks:
+        if not t.get("premount"):
+            continue
+        st = sess.state.step_by_number(t["step"])
+        hint = (
+            f"{t.get('target') or ''} {t.get('text') or ''} "
+            f"{st.title if st else ''}"
+        )
+        if any(sg < 0 for ax, sg in _dir_axes(hint) if ax == 2):
+            return True
+    return False
+
+
+def _anchor_lift(
+    sess: GuideToolSession, tasks: list[dict[str, Any]], rot: np.ndarray | None = None
+) -> float:
     """When the manual mounts hardware BELOW the host (e.g. fittings
     pre-mounted on a device the casing covers), the anchor can't sit on
     the floor — the chain from the floor-level premounts (fitting → elbow
@@ -356,26 +566,61 @@ def _anchor_lift(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> float:
     host = sess.state.part_by_id(host_pid) if host_pid else None
     if host is None:
         return 0.0
+    host_view = _rotated_part_view(host, rot) if rot is not None else host
     chain_h = _chain_height(sess, tasks, prem_idx, host_pid)
     if chain_h <= 0:
         return 0.0
-    # host port the first host-bound task aims at — same preference the
-    # attach solver applies: side words plus, when the chain later feeds
-    # a bridge, ports PERPENDICULAR to the incoming leg (a vertical pipe
-    # can't elbow onto a vertical stub)
+    # host port the first host-bound task will actually mate to — the
+    # fit/reach interface the anchor orientation was chosen for (side
+    # words alone can pick a positionally-matching port the joint can
+    # never use)
     port_local_z = 0.0
-    for ti, t in enumerate(tasks):
+    low_bias = _below_chain(sess, tasks)
+    mn_v = np.asarray(host_view.bbox_min, dtype=float)
+    mx_v = np.asarray(host_view.bbox_max, dtype=float)
+    center_v = (mn_v + mx_v) / 2.0
+    span_v = float((mx_v - mn_v).max()) or 1.0
+    span_z = float(mx_v[2] - mn_v[2]) or 1.0
+    corners_v = np.array(
+        [
+            [x, y, z]
+            for x in (mn_v[0], mx_v[0])
+            for y in (mn_v[1], mx_v[1])
+            for z in (mn_v[2], mx_v[2])
+        ]
+    )
+    for t in tasks:
         if _resolve_name(sess, t.get("target") or "") != host_pid:
             continue
         tpid = _rp(sess, t["part"], t["step"])
-        feed_perp = _feeds_bridge_axis(sess, tasks, ti, tpid) if tpid else None
+        moving = sess.state.part_by_id(tpid) if tpid else None
+        if moving is None:
+            continue
         st = sess.state.step_by_number(t["step"])
         hint = f"{t.get('target') or ''} {t.get('text') or ''} {st.title if st else ''}"
-        fp = _pick_host_port(host, _dir_axes(hint), feed_perp)
-        if fp is not None:
-            port_local_z = float(fp.pos[2])
+        axes = _dir_axes(hint)
+        best_s, best_p = -1e18, None
+        for fp in host_view.ports:
+            if fp.kind != "cylinder":
+                continue
+            ax_w = np.asarray(fp.axis, dtype=float)
+            pos_w = np.asarray(fp.pos, dtype=float)
+            exp = max(
+                float((corners_v @ solver._unit(ax_w)).max() - float(np.dot(pos_w, solver._unit(ax_w)))),
+                0.0,
+            )
+            if exp > 60.0:
+                continue
+            sc = _interface_score(
+                moving, fp, pos_w, ax_w, exp, axes, span_v, center_v,
+                float(pos_w[2]), float(mn_v[2]), span_z, low_bias,
+            )
+            if sc > best_s:
+                best_s, best_p = sc, fp
+        if best_p is not None:
+            port_local_z = float(best_p.pos[2])
         break
-    unlifted_port_z = port_local_z - float(host.bbox_min[2])
+    unlifted_port_z = port_local_z - float(host_view.bbox_min[2])
     return max(0.0, chain_h - unlifted_port_z)
 
 
@@ -383,7 +628,14 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
     """Place what the step plan determines — returns (and persists) a report."""
     report: dict[str, Any] = {"placed": [], "skipped": [], "failed": []}
     tasks = _plan(sess)
-    lift = _anchor_lift(sess, tasks)
+    anchor_pid = next(
+        (_rp(sess, t["part"], t["step"]) for t in tasks if t.get("anchor")), None
+    )
+    anchor_part = sess.state.part_by_id(anchor_pid) if anchor_pid else None
+    anchor_rot = (
+        _anchor_orientation(sess, anchor_part, tasks) if anchor_part is not None else None
+    )
+    lift = _anchor_lift(sess, tasks, anchor_rot)
     for ti, task in enumerate(tasks):
         pid = _rp(sess, task["part"], task["step"])
         if not pid:
@@ -410,7 +662,7 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
         if not placed:
             placed = await _try_attach(sess, task, pid, lookahead, feed_perp)
         if not placed and task.get("anchor"):
-            placed = await _place_anchor(sess, task, pid, lift)
+            placed = await _place_anchor(sess, task, pid, lift, anchor_rot)
         if not placed:
             placed = await _try_env(sess, task, pid)
         if placed:
@@ -1257,12 +1509,15 @@ async def _place_premount_ref(
         return None
     # reference point: the host port the chain closes at — side words give
     # left/right (the vertical word only means "on the floor"); when the
-    # chain feeds a bridge, the closable port wins over the side score
+    # chain feeds a bridge, the closable port wins over the side score.
+    # The pick must run on WORLD positions — under an anchor rotation a
+    # local "left" port can land on the world right.
     xy_axes = [(a, s) for a, s in axes if a < 2]
     center_local = [(host.bbox_min[i] + host.bbox_max[i]) / 2 for i in range(3)]
     center_w = _world_pos(host_inst.transform, center_local)
-    best_fp = _pick_host_port(host, xy_axes, feed_perp)
-    best_p = _world_pos(host_inst.transform, best_fp.pos) if best_fp is not None else None
+    host_view = _world_part_view(host_inst, host)
+    best_fp = _pick_host_port(host_view, xy_axes, feed_perp)
+    best_p = list(best_fp.pos) if best_fp is not None else None
     if best_p is not None:
         ref_xy = best_p[:2]
     else:
@@ -1276,9 +1531,8 @@ async def _place_premount_ref(
         ref_xy = [center_w[i] + d[i] * t_min for i in range(3)][:2]
     # outward = the host port's own horizontal facing (the direction the
     # connection opens toward); fall back to radial from the host centre
-    if best_fp is not None and abs(_world_dir(host_inst.transform, best_fp.axis)[2]) < 0.7:
-        fa = _world_dir(host_inst.transform, best_fp.axis)
-        out = [fa[0], fa[1], 0.0]
+    if best_fp is not None and abs(best_fp.axis[2]) < 0.7:
+        out = [best_fp.axis[0], best_fp.axis[1], 0.0]
     else:
         out = [ref_xy[0] - center_w[0], ref_xy[1] - center_w[1], 0.0]
     n = float(np.sqrt(out[0] ** 2 + out[1] ** 2)) or 1.0
@@ -1348,20 +1602,25 @@ async def _place_anchor(
     task: dict[str, Any],
     pid: str,
     lift: float = 0.0,
+    rot: np.ndarray | None = None,
 ) -> str | None:
     """The base/host part rests upright at the origin — env-hint previews
     drifted it into open space when nothing else was placed yet. `lift`
     raises it above the floor when lower premounted hardware needs the
-    vertical room (host on a device, fittings below it)."""
+    vertical room (host on a device, fittings below it). `rot` re-orients
+    the host first when the manual's attach tasks need its interfaces on
+    a different side — asset frames are arbitrary."""
     part = sess.state.part_by_id(pid)
     if part is None:
         return None
+    r = rot if rot is not None else np.eye(3)
+    mn_r, _ = _rotated_bbox(part.bbox_min, part.bbox_max, r)
     cid = f"anchor-{pid}-{task['step']}"
     sess._preview_cache[cid] = {
         "transform": [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, -float(part.bbox_min[2]) + lift],
+            [float(r[0][0]), float(r[0][1]), float(r[0][2]), 0.0],
+            [float(r[1][0]), float(r[1][1]), float(r[1][2]), 0.0],
+            [float(r[2][0]), float(r[2][1]), float(r[2][2]), -float(mn_r[2]) + lift],
             [0.0, 0.0, 0.0, 1.0],
         ],
         "collision_free": True,

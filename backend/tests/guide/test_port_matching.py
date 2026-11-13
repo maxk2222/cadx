@@ -96,7 +96,11 @@ def test_pipe_end_on_pipe_end_is_no_joint() -> None:
 
 def test_plug_too_big_for_bore_rejected() -> None:
     """Adapter shell (outer ~15.5) cannot enter a small casing hole
-    (inner ~9.7) — the 'adapter thread floating inside an opening' bug."""
+    (inner ~9.7) — the 'adapter thread floating inside an opening' bug.
+    The receiver model makes the adapter's nut mouth the SOCKET here:
+    the only legal direction is nut-wrapping-rim (adapter outside),
+    never shell-inside-bore. A pair where the adapter is the PLUG into
+    a bore it can't enter must still hard-reject."""
     adapter_end = PortInfo(
         name="thread_end",
         kind="cylinder",
@@ -109,9 +113,16 @@ def test_plug_too_big_for_bore_rejected() -> None:
         gender="female",
     )
     small_hole = _socket(lip=10.8, inner=9.7, seat=46.7)
+    sock, plug = solver._receiver(adapter_end, small_hole)
+    # the adapter's wider bore receives — it is never the plug that
+    # would have to squeeze its shell into the smaller hole
+    assert sock is adapter_end and plug is small_hole
     moving = _part("adapter", [adapter_end])
     fixed = _part("casing", [small_hole])
-    assert solver.find_matching_ports(moving, fixed, include_mismatch=True) == []
+    cands = solver.find_matching_ports(moving, fixed, include_mismatch=True)
+    # nut-over-rim mate: rim envelope enters the mouth, nut lands ~at
+    # the mouth seat — the adapter's body stays OUTSIDE the face
+    assert cands and cands[0]["engage_mm"] <= 22.0
 
 
 def test_male_male_still_rejected() -> None:
@@ -142,9 +153,11 @@ def test_spigot_into_socket() -> None:
 
 
 def test_adapter_end_on_union_boss() -> None:
-    """The casing front boss (recessed nut, inner ~27, seat ~15) accepts
-    the adapter's threaded end (outer ~15.5) — while the slim side holes
-    reject it. Both openings measured, decision is physical."""
+    """A union nut must WRAP the pipe stub, not sink into the oversized
+    boss opening. The casing's funnel (inner ~27) legally swallows the
+    nut shell — the 'adapter drowned in the opening' bug — while the
+    tube-end rim (bore ~9.7, wall ~12.2) is the snug thread interface
+    the nut actually seats on. Both measured; ranking is physical."""
     adapter_end = PortInfo(
         name="thread_end",
         kind="cylinder",
@@ -157,11 +170,18 @@ def test_adapter_end_on_union_boss() -> None:
         gender="female",
     )
     boss = _socket(lip=30.0, inner=27.0, seat=15.0, outer=0.0)
-    side_hole = _socket(name="hole", lip=10.8, inner=9.7, seat=46.7, outer=12.2)
+    tube_end = _socket(name="hole", lip=10.8, inner=9.7, seat=46.7, outer=12.2)
     adapter = _part("adapter", [adapter_end])
-    casing = _part("casing", [side_hole, boss])
+    casing = _part("casing", [tube_end, boss])
     cands = solver.find_matching_ports(adapter, casing, include_mismatch=True)
-    assert cands and cands[0]["fixed_port"] == "sock"  # only the boss qualifies
+    # the union nut WRAPS the tube-end rim (bore 10.8 over OD 12.2) — a
+    # snug female-female thread fit. The oversized boss socket (inner 27)
+    # is legal but loose: sinking the nut shell into the funnel pocket is
+    # exactly the 'adapter drowned in the opening' bug, so it must rank
+    # strictly worse.
+    assert cands and cands[0]["fixed_port"] == "hole"
+    boss_cand = next(c for c in cands if c["fixed_port"] == "sock")
+    assert boss_cand["score"] < cands[0]["score"]
 
 
 def test_through_bore_coupler_accepts_pipe() -> None:

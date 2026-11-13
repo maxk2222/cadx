@@ -245,12 +245,14 @@ def _gender_ok(a: PortInfo, b: PortInfo) -> bool:
 def _socket_depth(p: PortInfo) -> float:
     """Effective grip depth that makes a port a SOCKET — either a measured
     seat (boss, nut, shoulder) or a clear through-bore (push-fit coupler:
-    nominal grip ≈ 2x clear radius). A solid face (inner_r=0, seat<4mm)
-    receives nothing."""
+    nominal grip ≈ 2x clear radius). A female port whose bore was measured
+    IS a receiver even when the depth probe only caught the mouth lip — a
+    union nut's seat reads a few tenths deep yet its bore still swallows
+    the stub's tube end. A solid face (inner_r=0) receives nothing."""
     d = p.depth
     if 4.0 <= d < 400.0:
         return d
-    if d >= 400.0 and p.inner_radius > 0.0:
+    if p.inner_radius > 0.0 and (d >= 400.0 or p.gender == "female"):
         return min(2.0 * p.inner_radius, 30.0)
     return 0.0
 
@@ -318,14 +320,14 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
             if sock is None or plug is None:
                 seat = _thread_seat(a, b)
                 if seat is not None:
-                    return 0.5 if _socket_depth(a) < 4.0 else 0.35
+                    return 0.5 if a.depth < 4.0 else 0.35
                 return -1.0
             # clear radius is ray-measured ~10% low — accept with slack,
             # still hard-reject a plug that can't physically enter
             if _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug):
                 seat = _thread_seat(a, b)
                 if seat is not None:
-                    return 0.5 if _socket_depth(a) < 4.0 else 0.35
+                    return 0.5 if a.depth < 4.0 else 0.35
                 return -1.0  # socket can't swallow the plug
             # SNUGNESS: the right interface is the TIGHTEST legal fit —
             # a union nut's clear bore and a recessed shoulder are both
@@ -336,6 +338,20 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
             margin = _inner_r(sock) - _outer_r(plug)
             score += max(0.0, 1.0 - max(margin, 0.0) / max(_outer_r(plug), 8.0))
         else:
+            sock, plug = _receiver(a, b)
+            # one side carries real bore/envelope measurements — the
+            # drawn radius of the unmeasured side is still its outer
+            # envelope: a plug fatter than the measured bore can never
+            # enter, no matter how the manual phrases the joint
+            if (
+                sock is not None
+                and plug is not None
+                and _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug)
+            ):
+                seat = _thread_seat(a, b)
+                if seat is not None:
+                    return 0.5 if a.depth < 4.0 else 0.35
+                return -1.0
             ratio = min(a.radius, b.radius) / max(a.radius, b.radius)
             if ratio < 0.5:
                 if not include_mismatch:

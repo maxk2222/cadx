@@ -96,6 +96,20 @@ async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[st
             audit_evidence.append(
                 f"{b['instance']} is {round(b['buried_frac'] * 100)}% inside other parts"
             )
+        # a joint on a SYNTHESIZED thread site (nested stub emitted inside an
+        # enclosing socket when the mesh models no real threaded end) is
+        # geometrically legal but semantically unverified — the classic
+        # wrong-interface failure (fitting sunk into an oversized opening
+        # instead of seated on the pipe end) passes gap/alignment cleanly.
+        # It cannot earn a ship-grade score without the reviewer explicitly
+        # judging it against the manual figure.
+        for ap in audit.get("approximated_joints", []):
+            audit_evidence.append(
+                f"joint {ap['joint']}: approximated thread-site interface "
+                f"(nested stub inside an enclosing socket) — verify against "
+                f"the manual figure; if the fitting sits inside an oversized "
+                f"opening this is a blocker on 'assembly'"
+            )
         if audit_evidence:
             audit_ok = False
     except Exception:

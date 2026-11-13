@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from cadx.guide import preassembly as pa
@@ -26,6 +27,7 @@ from cadx.guide.state import (
     AssemblyState,
     GuidePart,
     GuideState,
+    GuideStep,
     PortInfo,
 )
 
@@ -384,3 +386,126 @@ def test_port_qualifier_words_do_not_poison_side_signature() -> None:
     prems = [t for t in out if t.get("premount")]
     # only the two lower adapter premounts — NO elbow premounts
     assert len(prems) == 2 and all(t["part"] == "adapter" for t in prems)
+
+
+# --------------------------------------------------------------------- #
+# interface semantics: union-nut socket, physical reject, orientation
+# --------------------------------------------------------------------- #
+
+
+def test_shallow_bore_female_port_is_still_a_socket() -> None:
+    """A union nut's extracted depth probe only catches the mouth lip
+    (~0.3mm) — depth that shallow used to demote the port to a PLUG, so
+    the solver rejected the real pipe tip and fell back to a recessed
+    opening. A female port with a measured bore always receives."""
+    nut = PortInfo(
+        name="rim_2", kind="cylinder", pos=[0, 0, 0], axis=[1, 0, 0],
+        radius=15.5, inner_radius=11.06, outer_radius=15.5, depth=0.29,
+        gender="female",
+    )
+    assert solver._socket_depth(nut) > 0.0
+    solid = PortInfo(
+        name="face", kind="cylinder", pos=[0, 0, 0], axis=[1, 0, 0],
+        radius=15.5, inner_radius=0.0, depth=0.29, gender="female",
+    )
+    assert solver._socket_depth(solid) == 0.0
+
+
+def test_unmeasured_oversize_plug_rejected_against_measured_socket() -> None:
+    """The soft (unmeasured) path let a Ø35 bottom stub 'mate' a Ø22 union
+    nut — its drawn radius is still its outer envelope and can never enter
+    the measured bore. One measured side is enough for the physical reject."""
+    nut = PortInfo(
+        name="nut", kind="cylinder", pos=[0, 0, 0], axis=[0, 1, 0],
+        radius=15.5, inner_radius=11.06, outer_radius=15.5, depth=0.29,
+        gender="female",
+    )
+    fat_stub = PortInfo(
+        name="stub", kind="cylinder", pos=[0, 0, 0], axis=[0, -1, 0],
+        radius=17.4, inner_radius=0.0, depth=0.0, gender="male",
+    )
+    assert solver._score_pair(nut, fat_stub, include_mismatch=True) < 0.0
+    # ...while a genuinely fitting stub stays legal
+    slim = fat_stub.model_copy(update={"radius": 12.0})
+    assert solver._score_pair(nut, slim, include_mismatch=False) > 0.0
+
+
+def test_anchor_orientation_turns_connection_hardware_to_front() -> None:
+    """The asset frame is arbitrary — a host whose pipe stubs point UP in
+    local space must be rotated so they face the working side (+Y). The
+    old identity placement left the real interfaces on top and let the
+    adapters sink into whatever opening happened to face forward."""
+    host = _part(
+        "gehaeuse",
+        [
+            # exposed pipe tip pointing UP in the asset frame
+            PortInfo(
+                name="stub", kind="cylinder", pos=[46.0, 50.0, 70.0],
+                axis=[0, 0, 1], radius=13.0, inner_radius=10.7,
+                outer_radius=13.0, depth=0.0, gender="male",
+            ),
+            # a loose funnel mouth facing front — legal but the wrong interface
+            PortInfo(
+                name="funnel", kind="cylinder", pos=[0.0, 50.0, 0.0],
+                axis=[0, 1, 0], radius=30.0, inner_radius=27.0,
+                depth=15.0, gender="female",
+            ),
+        ],
+        bbox=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)),
+    )
+    host.name = "Gehäuse"
+    adapter = _part(
+        "adapter",
+        [
+            PortInfo(
+                name="nut", kind="cylinder", pos=[10.0, 0, 0],
+                axis=[1, 0, 0], radius=15.5, inner_radius=14.0,
+                outer_radius=15.5, depth=0.3, gender="female",
+            )
+        ],
+        bbox=((0.0, -16.0, -16.0), (16.0, 16.0, 16.0)),
+    )
+    sess = _sess([host, adapter])
+    sess.state.steps = [GuideStep(number=1, title="Adapter montieren")]
+    tasks = [
+        {"step": 1, "part": "adapter", "target": "Anschluss am Gehäuse",
+         "text": "Adapter auf den Anschluss schrauben"},
+    ]
+    rot = pa._anchor_orientation(sess, host, tasks)
+    stub_w = rot @ np.array([0.0, 0.0, 1.0])
+    assert np.allclose(stub_w, [0.0, 1.0, 0.0], atol=1e-6)
+
+
+def test_anchor_orientation_never_picks_recessed_port() -> None:
+    """A mouth 100mm inside the body is an interior junction, not a mount
+    interface — no fitting reaches it without tunneling through the part.
+    If it is the ONLY fit, orientation must not rotate for it."""
+    host = _part(
+        "gehaeuse",
+        [
+            PortInfo(
+                name="inner", kind="cylinder", pos=[0.0, 0.0, 0.0],
+                axis=[0, 0, 1], radius=12.0, inner_radius=11.0,
+                depth=100.0, gender="female",
+            ),
+        ],
+        bbox=((-100.0, -100.0, -100.0), (100.0, 100.0, 100.0)),
+    )
+    host.name = "Gehäuse"
+    plug_part = _part(
+        "rohr",
+        [
+            PortInfo(
+                name="spigot", kind="cylinder", pos=[0, 0, 0],
+                axis=[0, 0, 1], radius=10.0, gender="male",
+            )
+        ]
+    )
+    sess = _sess([host, plug_part])
+    sess.state.steps = [GuideStep(number=1)]
+    tasks = [
+        {"step": 1, "part": "rohr", "target": "Gehäuse",
+         "text": "Rohr in den Anschluss"},
+    ]
+    rot = pa._anchor_orientation(sess, host, tasks)
+    assert np.allclose(rot, np.eye(3))

@@ -797,6 +797,7 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
             buried.append({"instance": iid, "buried_frac": round(frac, 3)})
     rows: list[dict[str, Any]] = []
     bad: list[dict[str, Any]] = []
+    approx: list[dict[str, Any]] = []
     for j in s.state.assembly.joints:
         mv = insts.get(_ikey(j.get("moving_instance") or j.get("moving_part")))
         fx = insts.get(_ikey(j.get("fixed_instance") or j.get("fixed_part")))
@@ -830,10 +831,32 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
             "allow_mm": round(allow, 2),
             "ok": ok,
         }
+        # a joint seated on a SYNTHESIZED thread site (a stub nested inside
+        # an enclosing socket, emitted when the mesh doesn't model the real
+        # threaded end) is an approximation — geometrically legal but the
+        # connection is inferred, not measured. The reviewer must verify it
+        # against the manual figure: a fitting sunk inside an oversized
+        # opening is the classic wrong-interface result this flag exists for.
+        if getattr(tp, "nested_in", None) or getattr(mp, "nested_in", None):
+            row["approximated_interface"] = True
+            approx.append(
+                {
+                    **row,
+                    "note": "joint seats on an approximated thread site inside "
+                    "an enclosing socket — verify against the manual figure "
+                    "that this is the intended connection, not a fitting "
+                    "sunk into an oversized opening",
+                }
+            )
         rows.append(row)
         if not ok:
             bad.append(row)
-    return {"joints": rows, "bad_joints": bad, "buried_instances": buried}
+    return {
+        "joints": rows,
+        "bad_joints": bad,
+        "buried_instances": buried,
+        "approximated_joints": approx,
+    }
 
 
 async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:

@@ -464,8 +464,9 @@ def test_engage_is_receiver_side_not_max() -> None:
     cands = solver.find_matching_ports(plug, nut, include_mismatch=True)
     assert cands and cands[0]["engage_mm"] <= 7.0
     # snug fit (inner 11 ≥ plug 11, margin ~0) travels to the seat
+    slim_plug = _phys_part("adapter", [_plug("end", outer=11.0)])
     snug = _phys_part("elbow", [_sock("muffe", inner=11.0, seat=24.0)])
-    cands = solver.find_matching_ports(plug, snug, include_mismatch=True)
+    cands = solver.find_matching_ports(slim_plug, snug, include_mismatch=True)
     assert cands and cands[0]["engage_mm"] > 15.0
 
 
