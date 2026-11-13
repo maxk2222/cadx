@@ -831,13 +831,17 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
             "allow_mm": round(allow, 2),
             "ok": ok,
         }
-        # a joint seated on a SYNTHESIZED thread site (a stub nested inside
-        # an enclosing socket, emitted when the mesh doesn't model the real
-        # threaded end) is an approximation — geometrically legal but the
-        # connection is inferred, not measured. The reviewer must verify it
-        # against the manual figure: a fitting sunk inside an oversized
-        # opening is the classic wrong-interface result this flag exists for.
-        if getattr(tp, "nested_in", None) or getattr(mp, "nested_in", None):
+        # a joint seated on a SYNTHESIZED thread site is an approximation —
+        # but only when the seat tier actually fired: a female mouth onto a
+        # male stub nested in a socket whose drawn OD the bore can't take
+        # (the stub stands in for a thread the mesh doesn't model). A slim
+        # nested stub that really fits the bore is a plain spigot joint —
+        # extraction just emitted the tube end as nested, nothing inferred.
+        if (
+            mp is not None
+            and solver._thread_seat(mp, tp) is not None
+            and solver._inner_r(mp) * 1.15 + 0.5 < solver._outer_r(tp)
+        ):
             row["approximated_interface"] = True
             approx.append(
                 {
