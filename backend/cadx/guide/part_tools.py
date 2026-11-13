@@ -82,6 +82,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "integer",
                 "description": "copies in the parts list (Menge) — omit if the manual gives none",
             },
+            "force": _b(
+                "set true ONLY when match_required_parts/alias cannot map any "
+                "registered part to this manual name — generation is slow"
+            ),
             "wait": _b("wait for the job to finish (default true)"),
         },
         ["part_id", "name", "description"],
@@ -358,9 +362,16 @@ async def alias_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "alias": alias, "part_id": part.id}
 
 
-async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+def _generation_guard(
+    s: GuideToolSession, name: str, force: bool
+) -> dict[str, Any] | None:
+    """Pre-flight for generation: disabled runs refuse outright; enabled runs
+    must not spawn a codegen job when a registered part plausibly IS this
+    manual name — generation is the most expensive path in the pipeline and
+    manuals rename fittings aggressively ("Muffe auf Muffe" == "socket to
+    socket"), so a same-category/size candidate is almost certainly the
+    same part: the right move is alias_part, not a redundant generation."""
     if not s.state.allow_part_generation:
-        name = str(a.get("name", "")) or str(a.get("part_id", ""))
         sugg = _suggest_parts(s, name)
         return {
             "ok": False,
@@ -370,6 +381,23 @@ async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
             "fitting between parts list and step text) or ask_user.",
             **({"suggested_part_ids": sugg} if sugg else {}),
         }
+    if force:
+        return None
+    sugg = _suggest_parts(s, name)
+    if not sugg:
+        return None
+    return {
+        "ok": False,
+        "suggested_part_ids": sugg,
+        "error": f"registered part(s) {sugg} look like the same category/"
+        "size — try alias_part(part_id, '<manual name>') first. If "
+        "you verified they are genuinely different parts (e.g. "
+        "different end types the alias can't capture), re-call "
+        "generate_missing_part with force=true",
+    }
+
+
+async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     pid = _slug(str(a.get("part_id", "")))
     if not pid:
         return {"ok": False, "error": "part_id must be a non-empty slug"}
@@ -385,6 +413,9 @@ async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
     desc = str(a.get("description", "")).strip()
     if len(desc) < 20:
         return {"ok": False, "error": "description too short — the generator needs real geometry"}
+    err = _generation_guard(s, str(a.get("name", "")) or pid, bool(a.get("force")))
+    if err:
+        return err
 
     from cadx.db.models import Project
     from cadx.db.session import session_scope
