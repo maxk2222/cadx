@@ -98,7 +98,71 @@ def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
     # anchors first within their step — other tasks may attach onto them
     tasks.extend(anchors)
     tasks.sort(key=lambda t: (t["step"], not t.get("anchor")))
-    return tasks
+    # pre-mounted duplicates: a place-task whose TARGET text carries a
+    # side qualifier ("unterer linker Adapter") refers to an instance at
+    # THAT side — when the part's own placements all happen later or at
+    # other sides, the manual means a pre-mounted piece the steps never
+    # place. Spawn a mount task for it onto the earliest referenceable
+    # host before the referencing step.
+    return _spawn_premounts(sess, tasks)
+
+
+_SIDE_WORDS = {
+    "links", "link", "left", "rechts", "recht", "right",
+    "unten", "unter", "lower", "bottom", "oben", "ober", "upper", "top",
+}
+
+
+def _side_words(text: str) -> set[str]:
+    toks = (text or "").lower().split()
+    return {w for w in _SIDE_WORDS for tok in toks if tok.startswith(w)}
+
+
+def _spawn_premounts(
+    sess: GuideToolSession, tasks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Side-qualified targets ("unterer linker Adapter") mean an instance
+    at THAT side — when the part's planned placements cover other sides
+    only, the manual means a pre-mounted piece the steps never place:
+    spawn a mount task for it onto the earliest host part, before the
+    referencing step."""
+    host_pid = next((t["part"] for t in tasks if t.get("anchor")), None)
+    if host_pid is None:
+        host_pid = tasks[0]["part"] if tasks else ""
+    planned_sides: dict[str, set[str]] = {}
+    for t in tasks:
+        pid = _resolve_name(sess, t["part"])
+        if pid:
+            planned_sides.setdefault(pid, set()).update(
+                _side_words(f"{t.get('target') or ''} {t.get('text') or ''}")
+            )
+    extra: list[dict[str, Any]] = []
+    for task in tasks:
+        if task.get("anchor") or task.get("premount"):
+            continue
+        tpid = _resolve_name(sess, task.get("target"))
+        if not tpid or tpid == _resolve_name(sess, task["part"]):
+            continue
+        missing = _side_words(task.get("target") or "") - planned_sides.get(tpid, set())
+        missing -= {s for _, s in ((e["part"], e.get("text")) for e in extra) if _ == tpid for s in _side_words(s or "")}
+        if not missing:
+            continue
+        extra.append(
+            {
+                "step": task["step"],
+                "substep_idx": -1,
+                "part": tpid,
+                "target": host_pid,
+                "target2": "",
+                "text": task.get("target") or "",
+                "premount": True,
+            }
+        )
+        planned_sides.setdefault(tpid, set()).update(missing)
+    return sorted(
+        tasks + extra,
+        key=lambda t: (t["step"], not t.get("anchor"), not t.get("premount")),
+    )
 
 
 def _already_satisfied(sess: GuideToolSession, step_no: int, pid: str) -> bool:
