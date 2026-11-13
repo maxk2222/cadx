@@ -2136,7 +2136,12 @@ class ToolSession:
             sent = (
                 f" — you sent keys: {sorted(args)}"
                 if isinstance(args, dict) and args
-                else ""
+                # empty args on a tool that requires them = the call was
+                # truncated to nothing upstream — say so, or the model
+                # believes it sent a valid payload and retries verbatim
+                else " — your call arrived with NO arguments at all "
+                "(payload was lost/truncated upstream — resend it "
+                "COMPLETE, split large payloads)"
             )
             result = {
                 "ok": False,
