@@ -767,3 +767,46 @@ def test_side_words_canonical_inflections() -> None:
     assert _side_words("(links oben)") == _side_words("linken oberen")
     assert _side_words("rechts unten") == _side_words("rechter unterer")
     assert _side_words("obere Öffnung des linken unteren Rohrbogens") == {"u", "l", "d"}
+
+
+def test_assembly_snapshot_survives_preassembly(monkeypatch, tmp_path) -> None:
+    """Snapshot ordering: taken BEFORE run_preassembly, a failed LLM refine
+    restored the EMPTY pre-preassembly state and destroyed 15 deterministic
+    placements (observed in the 19:19 eval run). The snapshot must be taken
+    after preassembly so the deterministic floor is what gets restored."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide import guide_runner
+    from cadx.guide.state import AssemblyInstance, GuideState
+
+    state = GuideState(output_dir=str(tmp_path))
+    state.missions_done = ["doc", "steps", "parts"]
+
+    async def fake_preassembly(sess) -> None:
+        state.assembly.instances.append(
+            AssemblyInstance(instance_id="pipe#1", part_id="pipe")
+        )
+        state.assembly.planner = {"ran": True}
+
+    async def fake_session(*a, **kw):
+        # the LLM refine strips the instance, then dies — restore must
+        # bring back the preassembly floor, not the empty pre-plan state
+        state.assembly.instances.clear()
+        return SimpleNamespace(end_reason="repeat_loop", tool_log=[])
+
+    monkeypatch.setattr(
+        "cadx.guide.preassembly.run_preassembly", fake_preassembly
+    )
+    monkeypatch.setattr(guide_runner, "run_session", fake_session)
+    sess = SimpleNamespace(parked=False, parked_questions=[], state=state)
+    ctx = SimpleNamespace(check_cancel=None)
+    out = asyncio.run(
+        guide_runner._run_mission(
+            "assembly", "", ctx=ctx, state=state, state_dir=tmp_path,
+            mk_session=lambda m: sess,
+        )
+    )
+    assert out is not None and out.status == "failed"
+    assert "assembly" in state.missions_failed
+    assert [i.instance_id for i in state.assembly.instances] == ["pipe#1"]

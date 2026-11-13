@@ -66,7 +66,7 @@ def _tool_failures(result: Any, limit: int = 6) -> list[str]:
             detail = None
             for key in ("error", "bad_joints", "buried_instances", "issues"):
                 m = re.search(rf'"{key}"\s*:\s*(\[.*?\]|"((?:[^"\\]|\\.)*)")', res)
-                if m:
+                if m and m.group(1) not in ("[]", '""'):
                     detail = f"{key}: {m.group(1)[:160]}"
                     break
             fails.append(f"{e.get('name')}: {detail or '(truncated failure)'}")
@@ -343,13 +343,11 @@ async def _run_mission(
     last_failures = ""
     last_reason = ""
     # the durable assembly is written per tool call — a mission that dies
-    # mid-repair must not leave a half-stripped scene behind, so keep a
-    # pre-session copy and restore it on failure. Covers both the first
-    # run (preassembly's deterministic placement survives a failed LLM
-    # refine) and a review-reopened repair (the scored assembly survives).
-    assembly_snapshot = (
-        state.assembly.model_copy(deep=True) if mission == "assembly" else None
-    )
+    # mid-repair must not leave a half-stripped scene behind, so keep one
+    # pre-session copy and restore it on ANY failure. Taken once, right
+    # after preassembly: a retry must restore the deterministic floor, not
+    # the half-stripped state the crashed first attempt left behind.
+    assembly_snapshot = None
     for attempt in (0, 1):
         sess = mk_session(mission)
         if mission == "assembly" and not state.assembly.planner.get("ran"):
@@ -362,6 +360,8 @@ async def _run_mission(
             except Exception:
                 log.exception("guide.preassembly.failed")
                 state.assembly.planner = {"ran": True, "error": "planner crashed — LLM assembles"}
+        if mission == "assembly" and assembly_snapshot is None:
+            assembly_snapshot = state.assembly.model_copy(deep=True)
         nudge = notes
         if attempt:
             cause = (
