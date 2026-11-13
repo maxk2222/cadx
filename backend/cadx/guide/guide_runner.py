@@ -354,8 +354,11 @@ async def _run_mission(
                 res = e.get("result")
                 if isinstance(res, dict):
                     if not res.get("ok", True):
+                        detail = res.get("error") or res.get("issues") or res.get(
+                            "bad_joints"
+                        ) or res.get("collisions") or "ok=false"
                         fails.append(
-                            f"{e.get('name')}: {str(res.get('error'))[:160]}"
+                            f"{e.get('name')}: {str(detail)[:160]}"
                         )
                 elif isinstance(res, str) and '"ok": false' in res:
                     # _truncate can stringify long results — still flag them

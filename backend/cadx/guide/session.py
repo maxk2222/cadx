@@ -266,6 +266,11 @@ class GuideToolSession(ToolSession):
             return None
         return doc.pages[n - 1]
 
+    def _page_err(self) -> dict[str, Any]:
+        doc = self._doc()
+        n = len(doc.pages) if doc else 0
+        return {"ok": False, "error": f"page not found — document has pages 1..{n}"}
+
     def _images_result(self, paths: list[str], **extra: Any) -> dict[str, Any]:
         out: dict[str, Any] = {"ok": True, **extra}
         if self.attach_images and self.image_left > 0 and paths:
@@ -321,7 +326,7 @@ class GuideToolSession(ToolSession):
     def _tool_get_page_text(self, a: dict[str, Any]) -> dict[str, Any]:
         p = self._page(int(a.get("page", 0)))
         if p is None:
-            return {"ok": False, "error": "page not found"}
+            return self._page_err()
         text = p.text or ""
         note = ""
         if len(text) > 2000:
@@ -360,12 +365,19 @@ class GuideToolSession(ToolSession):
     def _tool_get_figure_image(self, a: dict[str, Any]) -> dict[str, Any]:
         p = self._page(int(a.get("page", 0)))
         if p is None:
-            return {"ok": False, "error": "page not found"}
+            return self._page_err()
         idx = int(a.get("index", 0))
         for f in p.figures:
             if int(f.get("index", 0)) == idx and f.get("image_path"):
                 return self._images_result([str(f["image_path"])], page=p.page, index=idx)
-        return {"ok": False, "error": "figure not found"}
+        return {
+            "ok": False,
+            "error": (
+                f"figure not found — page {p.page} has figure indices "
+                f"{[int(f.get('index', 0)) for f in p.figures if f.get('image_path')]} "
+                "(call list_figures to inspect them)"
+            ),
+        }
 
     # -- state read tools -------------------------------------------------------- #
 

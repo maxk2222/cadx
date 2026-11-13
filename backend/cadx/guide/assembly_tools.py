@@ -466,8 +466,37 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     if step is None:
         return {"ok": False, "error": f"step {step_no} not found"}
     existing = _insts_of(s, pid)
-    need = sum(req.get(pid, 0) for req in _step_requirements(s).values())
-    cap = max(need, 2) + 4  # repeated fittings need >1 instance; bound runaway
+    reqs = _step_requirements(s)
+    need = sum(req.get(pid, 0) for req in reqs.values())
+    # per-step quota: a step that already holds its required count of this
+    # part must not absorb another — repairs go through unplace_instance,
+    # not through stacking extras into an already-satisfied step
+    need_here = reqs.get(step_no, {}).get(pid, 0)
+    have_here = sum(1 for i in existing if i.placed_in_step == step_no)
+    if need_here and have_here >= need_here:
+        still_open = [
+            st_no
+            for st_no, req in reqs.items()
+            if req.get(pid, 0)
+            > sum(1 for i in existing if i.placed_in_step == st_no and i.part_id == pid)
+        ]
+        hint = (
+            f" — step(s) {still_open} still need it" if still_open
+            else f" — all {need} required instance(s) already placed"
+        )
+        return {
+            "ok": False,
+            "error": f"step {step_no} already has its {have_here}/{need_here} "
+            f"required '{pid}' instance(s){hint} — use unplace_instance to "
+            "reposition instead of adding more",
+        }
+    if need and need_here == 0 and len(existing) >= need:
+        return {
+            "ok": False,
+            "error": f"all {need} required '{pid}' instance(s) already placed — "
+            "use unplace_instance to reposition instead of adding more",
+        }
+    cap = max(need, 2) + 2  # slack for manuals missing counts; bound runaway
     if len(existing) >= cap:
         return {
             "ok": False,
