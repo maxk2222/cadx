@@ -5,6 +5,7 @@ folded into the unity guide at emit time.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from cadx.guide.tools import _fn, _i, _s
@@ -63,26 +64,42 @@ _DIR_VECS = {
 }
 
 
+def _step_no(raw: Any) -> int:
+    """Forgiving step-number parse — models emit "step 4"/"4"/4.0 alike."""
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    m = re.search(r"\d+", str(raw or ""))
+    return int(m.group(0)) if m else 0
+
+
+def _resolve_arrow_part(s: GuideToolSession, raw: str) -> str | None:
+    """part_id | instance_id | slug | manual name → GuidePart.id."""
+    from cadx.guide.assembly_tools import _resolve_inst, _resolve_name
+
+    pid = str(raw or "").strip()
+    part = s.state.part_by_id(pid) or s.state.part_by_id(pid.split("#", 1)[0])
+    if part is not None:
+        return part.id
+    inst, _ = _resolve_inst(s, pid)
+    if inst is not None:
+        return inst.part_id
+    return _resolve_name(s, pid)
+
+
 async def add_arrow(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
-    step_no = int(a.get("step", 0))
+    step_no = _step_no(a.get("step", 0))
     if s.state.step_by_number(step_no) is None:
-        return {"ok": False, "error": f"step {step_no} not found"}
-    pid = str(a.get("part_id", ""))
-    part = s.state.part_by_id(pid)
-    if part is None:
-        # models pass instance ids ("pipe_l70#1") or near-miss slugs —
-        # strip the '#n' suffix, then report what actually exists
-        base = pid.split("#", 1)[0]
-        part = s.state.part_by_id(base)
-    if part is None:
+        nums = [st.number for st in s.state.steps]
+        return {"ok": False, "error": f"step {step_no} not found — valid steps: {nums}"}
+    pid = _resolve_arrow_part(s, str(a.get("part_id", "")))
+    if pid is None:
         ids = [p.id for p in s.state.parts][:15]
         insts = [i.instance_id for i in s.state.assembly.instances][:15]
         return {
             "ok": False,
-            "error": f"part '{pid}' not found — valid part_ids: {ids}; "
-            f"instance ids: {insts} (pass part_id, not instance_id)",
+            "error": f"part '{a.get('part_id')}' not found — valid part_ids: {ids}; "
+            f"instance ids: {insts} (names/aliases resolve too)",
         }
-    pid = part.id
     d = str(a.get("direction", "")).strip().lower()
     vec = _DIR_VECS.get(d)
     if vec is None:

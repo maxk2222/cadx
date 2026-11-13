@@ -360,3 +360,33 @@ def test_free_placement_spreads_beside() -> None:
     t = np.asarray(solve_free_placement(p, placed, ""), dtype=float).reshape(4, 4)
     assert t[0, 3] > 5.0  # pushed +X beside the placed part
     assert t[2, 3] == 0.0  # resting on the same level — not on top
+
+
+def test_add_arrow_resolves_forgiving_ids() -> None:
+    """Arrows must accept instance ids, names and manual labels — a 4x
+    error streak on resolvable ids killed live annotate runs."""
+    import asyncio
+
+    from cadx.guide.annotate_tools import add_arrow
+    from cadx.guide.state import AssemblyInstance, GuidePart, GuideStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts.append(
+        GuidePart(id="pipe_l70", name="Rohr DN22, l = 70 mm", mesh_path="/tmp/a.glb")
+    )
+    state.steps.append(GuideStep(number=2, text="t", display_text="d"))
+    state.assembly.instances.append(
+        AssemblyInstance(instance_id="pipe_l70#1", part_id="pipe_l70", placed_in_step=2)
+    )
+    sess = GuideToolSession(
+        ctx, mission="annotate", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,  # type: ignore[arg-type]
+    )
+    for pid in ("pipe_l70#1", "Rohr DN22", "pipe_l70"):
+        res = asyncio.run(add_arrow(sess, {"step": "step 2", "part_id": pid, "direction": "down"}))
+        assert res["ok"] is True, pid
+        assert state.annotations[-1]["part_id"] == "pipe_l70"
+    res = asyncio.run(add_arrow(sess, {"step": 99, "part_id": "pipe_l70", "direction": "down"}))
+    assert res["ok"] is False and "valid steps" in res["error"]

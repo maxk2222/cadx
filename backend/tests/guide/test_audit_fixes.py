@@ -304,3 +304,62 @@ def test_mission_retries_once_on_bare_final():
     src = inspect.getsource(guide_runner._run_mission)
     assert "for attempt in (0, 1)" in src and "CONTINUATION" in src
     assert "mission_retry" in src
+
+
+def test_optional_mission_failure_does_not_fail_job(monkeypatch) -> None:
+    """annotate is cosmetic — its error_streak must degrade to a durable
+    warning (missions_failed), never kill the 400s guide job."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide import guide_runner
+    from cadx.guide.state import GuideState
+
+    state = GuideState(output_dir="/tmp/x")
+    calls = {"n": 0}
+
+    async def fake_session(*a, **kw):
+        calls["n"] += 1
+        return SimpleNamespace(
+            end_reason="error_streak",
+            tool_log=[{"name": "add_arrow", "result": {"ok": False, "error": "boom"}}],
+        )
+
+    monkeypatch.setattr(guide_runner, "run_session", fake_session)
+    sess = SimpleNamespace(parked=False, parked_questions=[], state=state)
+    ctx = SimpleNamespace(check_cancel=None)
+    out = asyncio.run(
+        guide_runner._run_mission(
+            "annotate", "", ctx=ctx, state=state, state_dir=Path("/tmp/x"),
+            mk_session=lambda m: sess,
+        )
+    )
+    assert out is None  # mission loop continues to emit
+    assert "annotate" in state.missions_failed
+    assert calls["n"] == 2  # retry still bounded
+
+
+def test_required_mission_failure_still_fails(monkeypatch) -> None:
+    """Non-optional missions keep the hard-fail contract."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide import guide_runner
+    from cadx.guide.state import GuideState
+
+    state = GuideState(output_dir="/tmp/x")
+
+    async def fake_session(*a, **kw):
+        return SimpleNamespace(end_reason="error_streak", tool_log=[])
+
+    monkeypatch.setattr(guide_runner, "run_session", fake_session)
+    sess = SimpleNamespace(parked=False, parked_questions=[], state=state)
+    ctx = SimpleNamespace(check_cancel=None)
+    out = asyncio.run(
+        guide_runner._run_mission(
+            "steps", "", ctx=ctx, state=state, state_dir=Path("/tmp/x"),
+            mk_session=lambda m: sess,
+        )
+    )
+    assert out is not None and out.status == "failed"
+    assert "steps" in state.missions_failed

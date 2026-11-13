@@ -37,6 +37,30 @@ log = get_logger(__name__)
 
 MISSION_ORDER = ["doc", "steps", "parts", "assembly", "review", "annotate"]
 _MAX_CALLS = {"doc": 24, "steps": 60, "parts": 40, "assembly": 80, "review": 24, "annotate": 24}
+# missions whose failure degrades to a warning instead of killing the
+# whole job — annotations are cosmetic overlays; the review verdict is
+# the real quality gate and already ran by the time annotate executes
+_OPTIONAL = {"annotate"}
+
+
+def _tool_failures(result: Any, limit: int = 6) -> list[str]:
+    """Readable ok:false tool results from a finished session — fed into
+    the retry nudge AND the failure log so diagnostics survive."""
+    fails = []
+    for e in result.tool_log or []:
+        if not isinstance(e, dict):
+            continue
+        res = e.get("result")
+        if isinstance(res, dict):
+            if not res.get("ok", True):
+                detail = res.get("error") or res.get("issues") or res.get("bad_joints") or res.get(
+                    "collisions"
+                ) or "ok=false"
+                fails.append(f"{e.get('name')}: {str(detail)[:160]}")
+        elif isinstance(res, str) and '"ok": false' in res:
+            # _truncate can stringify long results — still flag them
+            fails.append(f"{e.get('name')}: (truncated failure)")
+    return fails[-limit:]
 
 
 def _calls_budget(mission: str, state: GuideState) -> int:
@@ -350,34 +374,35 @@ async def _run_mission(
             return early
         if mission in state.missions_done:
             return None
+        fails = _tool_failures(result)
+        last_reason = result.end_reason or ""
         if attempt == 0:
-            fails = []
-            for e in result.tool_log or []:
-                if not isinstance(e, dict):
-                    continue
-                res = e.get("result")
-                if isinstance(res, dict):
-                    if not res.get("ok", True):
-                        detail = res.get("error") or res.get("issues") or res.get(
-                            "bad_joints"
-                        ) or res.get("collisions") or "ok=false"
-                        fails.append(
-                            f"{e.get('name')}: {str(detail)[:160]}"
-                        )
-                elif isinstance(res, str) and '"ok": false' in res:
-                    # _truncate can stringify long results — still flag them
-                    fails.append(f"{e.get('name')}: (truncated failure)")
-            last_failures = "\n".join(f"- {f}" for f in fails[-6:])
-            last_reason = result.end_reason or ""
+            last_failures = "\n".join(f"- {f}" for f in fails)
             log.info(
                 "guide.mission_retry",
                 mission=mission,
-                reason=result.end_reason,
-                failures=fails[-6:],
+                reason=last_reason,
+                failures=fails,
             )
             continue
         state.mark_failed(mission)
         state.save(state_dir)
+        if mission in _OPTIONAL:
+            # an optional mission that never finished degrades to a durable
+            # warning — the review verdict already gated quality
+            log.warning(
+                "guide.mission_skipped",
+                mission=mission,
+                reason=last_reason,
+                failures=fails,
+            )
+            return None
+        log.warning(
+            "guide.mission_failed",
+            mission=mission,
+            reason=last_reason,
+            failures=fails,
+        )
         return RunOutcome(
             status="failed",
             error=f"mission '{mission}' ended without done_mission "
