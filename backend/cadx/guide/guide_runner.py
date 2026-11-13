@@ -45,6 +45,19 @@ _MAX_CALLS = {"doc": 24, "steps": 60, "parts": 40, "assembly": 80, "review": 24,
 _OPTIONAL = {"annotate"}
 
 
+def _persist_tool_log(state_dir: Any, mission: str, attempt: int, result: Any) -> None:
+    """Durable failure forensics: the per-call tool log dies with the
+    session — persist it per mission+attempt so a repeat_loop or budget
+    death can be audited from the actual call sequence."""
+    try:
+        p = Path(state_dir) / f"tool_log_{mission}_{attempt}.jsonl"
+        with p.open("w", encoding="utf-8") as fh:
+            for e in result.tool_log or []:
+                fh.write(json.dumps(e, ensure_ascii=False, default=str)[:8000] + "\n")
+    except Exception:
+        log.warning("guide.tool_log_persist_failed", mission=mission)
+
+
 def _tool_failures(result: Any, limit: int = 6) -> list[str]:
     """Readable ok:false tool results from a finished session — fed into
     the retry nudge AND the failure log so diagnostics survive."""
@@ -408,6 +421,7 @@ async def _run_mission(
                 end_reason=f"llm_error: {str(exc)[:120]}",
                 tool_log=[],
             )
+        _persist_tool_log(state_dir, mission, attempt, result)
         early = await _mission_early(sess, ctx, state, state_dir)
         if early is not None:
             return early
