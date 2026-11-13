@@ -31,5 +31,10 @@ Zwei vormontierte Adapter UNTERHALB des Gehäuses (links+rechts) gehören zum Au
 - Jeder Rim-Port misst: `radius` (Lippe), `inner_radius` (lichter Radius bis zum Seat), `outer_radius` (Hüllkurve), `depth` (Seat-Tiefe; 500=Durchgangsbohrung/offenes Rohrende; <4=feste Fläche).
 - Verbindungsregel: ein Joint braucht einen SOCKET (Seat ≥4mm ODER durchgehende klare Bohrung für Push-Fit) + einen PLUG dessen `outer_radius ≤ socket.inner_radius·1.15+0.5`. Rohr-auf-Rohr (zwei offene Enden ohne Socket) ist physikalisch unmöglich → hart abgelehnt, auch mit `include_mismatch`.
 - Engagement: der Plug sitzt ~85% der Seat-Tiefe IN der Muffe — `joint_gap_mm` misst den eingelegten Mate-Punkt, nicht die Lippe.
-- Casing-Front-Anschlüsse (rim_21–24): r30-Kragen mit eingesetzter Überwurfmutter — Seat ~15mm, lichter Radius ~27 → nimmt das Adapter-Ende (outer ~15.5) auf; die schlanken Seitenöffnungen (inner ~9.7) lehnen es physikalisch ab.
-- Adapter ist richtungsgebunden: Innengewinde-Ende → Gehäuse-Boss, Muffen-Ende ← L70.
+- Casing-Front-Anschlüsse (rim_21–24): r30-Überwurfmutter — DAHINTER liegt der eigentliche Interface-Stutzen (male, outer ~21.4, beginnt ~16mm hinter der Mündung). `_nested_stub` emittiert ihn als eigenen MALE-Port (rim_33–36): das Adapter-Innengewinde schraubt auf diesen Stub, NICHT in die Mutternbohrung. Enge Passung schlägt große Bores (snug-fit), exponierte Mündungen schlagen innenliegende Schultern (exposure tie-break).
+- Engagement: nur die EMPFANGENDE Socket-Tiefe zählt — lose Kragen-Mates (Bore ≫ Plug) sitzen am Mund (~≤6mm), enge Fits fahren bis zum Seat (~85%).
+- Adapter ist richtungsgebunden: Innengewinde-Ende → Gehäuse-Boss/-Stub, Muffen-Ende ← L70.
+
+## Physikalisches Audit (deterministisch, 2026-11-13)
+- `joint_geometry_audit`: pro Joint `gap_mm`/`normal_dot` mit Socket-Tiefe als Eingriffs-Toleranz (Überwurfmutter sitzt nie plan — Rest ≤ Tiefe = noch im Eingriff); `buried_frac` = Union-Containment der Welt-AABB gegen Nicht-Partner-Hosts (Boolean-Kollision ist blind für Teile in Hohlräumen — Rohr in der Mutterbohrung schneidet nichts).
+- Derselbe Audit speist: `validate_assembly_geometry` (Tool), `write_review_report` (verweigert score ≥8 bei offenen Findings), `unity_guide.json` Joint-Metriken, Evalkit `guide_mate_quality`-Gate.
