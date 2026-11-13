@@ -410,7 +410,8 @@ class GuideToolSession(ToolSession):
     def _tool_get_step(self, a: dict[str, Any]) -> dict[str, Any]:
         s = self.state.step_by_number(int(a.get("number", 0)))
         if s is None:
-            return {"ok": False, "error": "step not found"}
+            nums = sorted(st.number for st in self.state.steps)
+            return {"ok": False, "error": f"step {a.get('number')} not found — valid steps: {nums}"}
         return {"ok": True, "step": s.model_dump()}
 
     def _tool_list_parts(self, a: dict[str, Any]) -> dict[str, Any]:
@@ -436,7 +437,8 @@ class GuideToolSession(ToolSession):
     def _tool_get_part_features(self, a: dict[str, Any]) -> dict[str, Any]:
         p = self.state.part_by_id(str(a.get("part_id", "")))
         if p is None:
-            return {"ok": False, "error": "part not found"}
+            ids = [x.id for x in self.state.parts][:15]
+            return {"ok": False, "error": f"part '{a.get('part_id')}' not found — valid part_ids: {ids}"}
         return {"ok": True, "part": p.model_dump()}
 
     def _tool_list_assets(self, a: dict[str, Any]) -> dict[str, Any]:

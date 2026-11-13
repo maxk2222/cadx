@@ -163,13 +163,23 @@ def _resolve_inst(s: GuideToolSession, x: str) -> tuple[AssemblyInstance | None,
     inst = _inst_by_id(s, x)
     if inst is not None:
         return inst, None
+    # a "part#N" reference to a non-existent instance must NOT silently
+    # resolve to a different instance — name the real candidates instead
+    if "#" in x:
+        siblings = _insts_of(s, x.split("#")[0])
+        ids = [i.instance_id for i in siblings]
+        return None, (
+            f"instance '{x}' does not exist — "
+            + (f"placed instances of that part: {ids}" if ids else f"part '{x.split('#')[0]}' has NO placed instances")
+        )
     insts = _insts_of(s, x)
     if len(insts) == 1:
         return insts[0], None
     if insts:
         ids = [i.instance_id for i in insts]
         return None, f"'{x}' has {len(insts)} placed instances — pass instance_id: {ids}"
-    return None, f"no placed instance '{x}'"
+    placed = [i.instance_id for i in s.state.assembly.instances][:15]
+    return None, f"no placed instance '{x}' — placed: {placed}"
 
 
 def _name_index(s: GuideToolSession) -> dict[str, str]:
@@ -519,14 +529,15 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             > sum(1 for i in existing if i.placed_in_step == st_no and i.part_id == pid)
         ]
         hint = (
-            f" — step(s) {still_open} still need it" if still_open
+            f" — step(s) {still_open} still need it: call place_instance "
+            f"with step={still_open[0]} (or unplace_instance first to move "
+            "an existing one)" if still_open
             else f" — all {need} required instance(s) already placed"
         )
         return {
             "ok": False,
             "error": f"step {step_no} already has its {have_here}/{need_here} "
-            f"required '{pid}' instance(s){hint} — use unplace_instance to "
-            "reposition instead of adding more",
+            f"required '{pid}' instance(s){hint}",
         }
     if not premount and need and need_here == 0 and len(existing) >= need:
         return {

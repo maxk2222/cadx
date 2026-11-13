@@ -484,8 +484,35 @@ async def run_guide(
 
     iterations = 0
     repair_notes = ""
+    lint_cycles = 0
     while True:
         for mission in MISSION_ORDER:
+            # deterministic plan lint before assembly spends its budget:
+            # unresolvable refs / ordering bugs are routed back to the
+            # owning mission (steps|parts) with the lint text as notes —
+            # a degenerate extraction gets fixed, not faithfully placed
+            if mission == "assembly" and mission not in state.missions_done:
+                from cadx.guide.planlint import plan_lint
+
+                lint_sess = _session("assembly")
+                blockers = [
+                    f for f in plan_lint(lint_sess) if f["severity"] == "blocker"
+                ]
+                if blockers and lint_cycles < 2:
+                    lint_cycles += 1
+                    flagged = {f["mission"] for f in blockers}
+                    for m in flagged:
+                        if m in state.missions_done:
+                            state.missions_done.remove(m)
+                    repair_notes = "\n".join(f"- {f['text']}" for f in blockers)
+                    state.save(state_dir)
+                    log.info(
+                        "guide.plan_lint_reopen",
+                        cycle=lint_cycles,
+                        reopen=sorted(flagged),
+                        blockers=len(blockers),
+                    )
+                    break  # restart the mission order at the owning mission
             # findings go to the missions that actually re-run — a skipped
             # (already-done) mission must not consume them
             notes = repair_notes if mission not in state.missions_done else ""
