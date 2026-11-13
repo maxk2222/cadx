@@ -373,5 +373,7 @@
   "guide_lang_it": "Итальянский",
   "guide_lang_other": "Другой…",
   "guide_findings": "Результаты проверки",
-  "guide_review_iter": "итерация {{n}}"
+  "guide_review_iter": "итерация {{n}}",
+  "guide_step_add": "Добавить шаг после",
+  "guide_step_delete": "Удалить шаг"
 }

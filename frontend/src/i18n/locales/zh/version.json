@@ -358,5 +358,7 @@
   "guide_lang_it": "意大利语",
   "guide_lang_other": "其他…",
   "guide_findings": "审查结果",
-  "guide_review_iter": "迭代 {{n}}"
+  "guide_review_iter": "迭代 {{n}}",
+  "guide_step_add": "在此后添加步骤",
+  "guide_step_delete": "删除步骤"
 }

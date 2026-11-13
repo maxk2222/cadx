@@ -236,6 +236,16 @@ export const api = {
       `/versions/${vid}/guide/variant`,
       json({ key })
     ),
+  addGuideStep: (vid: string, body: { insert_at?: number; title?: string; text?: string; display_text?: string }) =>
+    req<{ ok: boolean; step: GuideStepDetail }>(
+      `/versions/${vid}/guide/steps`,
+      json(body)
+    ),
+  deleteGuideStep: (vid: string, n: number) =>
+    req<{ ok: boolean; deleted: number; steps: number }>(
+      `/versions/${vid}/guide/steps/${n}`,
+      { method: "DELETE" }
+    ),
   patchGuideInstance: (vid: string, iid: string, body: GuideInstancePatch) =>
     req<{ ok: boolean; id: string; transform: number[][] }>(
       `/versions/${vid}/guide/instances/${encodeURIComponent(iid)}`,

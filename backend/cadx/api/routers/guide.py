@@ -392,6 +392,91 @@ async def patch_step(
     return _step_out(step)
 
 
+class StepCreate(BaseModel):
+    insert_at: int | None = None  # step number to insert BEFORE; None = append
+    title: str = ""
+    text: str = ""
+    display_text: str = ""
+
+
+def _renumber(state: GuideState, delta: int, from_no: int) -> None:
+    """Shift step numbers >= from_no by delta — plus every reference that
+    addresses a step (instances, step_instances map, annotations)."""
+    for s in state.steps:
+        if s.number >= from_no:
+            s.number += delta
+    for i in state.assembly.instances:
+        if i.placed_in_step >= from_no:
+            i.placed_in_step += delta
+    state.assembly.step_instances = {
+        str(int(k) + delta if int(k) >= from_no else int(k)): v
+        for k, v in state.assembly.step_instances.items()
+    }
+    for an in state.annotations:
+        if int(an.get("step", 0)) >= from_no:
+            an["step"] = int(an["step"]) + delta
+
+
+@router.post("/versions/{version_id}/guide/steps")
+async def add_step(
+    version_id: uuid.UUID,
+    body: StepCreate,
+    db: AsyncSession = Depends(get_session),
+):
+    from cadx.guide.state import GuideStep
+
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    if body.insert_at is None:
+        no = max((s.number for s in state.steps), default=0) + 1
+    else:
+        no = body.insert_at
+        if no < 1 or no > max((s.number for s in state.steps), default=0) + 1:
+            raise HTTPException(400, f"insert_at must be 1..{len(state.steps) + 1}")
+        _renumber(state, +1, no)
+    state.steps.append(
+        GuideStep(
+            number=no,
+            title=body.title or f"Schritt {no}",
+            text=body.text,
+            display_text=body.display_text,
+        )
+    )
+    state.steps.sort(key=lambda s: s.number)
+    state.save(guide_dir)
+    _regen_unity(state, guide_dir)
+    return {"ok": True, "step": _step_out(state.step_by_number(no))}
+
+
+@router.delete("/versions/{version_id}/guide/steps/{number}")
+async def delete_step(
+    version_id: uuid.UUID,
+    number: int,
+    db: AsyncSession = Depends(get_session),
+):
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    step = _step_by_no(state, number)
+    state.steps.remove(step)
+    # parts first placed by the deleted step stay visible from the step
+    # before — deleting must not orphan placed instances
+    for i in state.assembly.instances:
+        if i.placed_in_step == number:
+            i.placed_in_step = max(1, number - 1)
+    state.assembly.step_instances.pop(str(number), None)
+    for an in state.annotations:
+        if int(an.get("step", 0)) == number:
+            an["step"] = max(1, number - 1)
+    _renumber(state, -1, number + 1)
+    state.save(guide_dir)
+    _regen_unity(state, guide_dir)
+    return {"ok": True, "deleted": number, "steps": len(state.steps)}
+
+
 class RewriteIn(BaseModel):
     audience: str = Field(pattern="^(beginner|intermediate|pro)$")
     language: str = ""  # free-form target language; "" = keep original

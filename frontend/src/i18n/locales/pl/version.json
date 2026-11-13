@@ -373,5 +373,7 @@
   "guide_lang_it": "Włoski",
   "guide_lang_other": "Inny…",
   "guide_findings": "Wyniki przeglądu",
-  "guide_review_iter": "iteracja {{n}}"
+  "guide_review_iter": "iteracja {{n}}",
+  "guide_step_add": "Dodaj krok po",
+  "guide_step_delete": "Usuń krok"
 }

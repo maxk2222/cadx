@@ -450,7 +450,7 @@ export default function GuideEditor({
   docRef.current = doc;
   baseRef.current = base;
 
-  useEffect(() => {
+  const reloadDoc = useCallback(() => {
     api
       .getGuide(versionId)
       .then((g) => {
@@ -461,6 +461,8 @@ export default function GuideEditor({
       })
       .catch((e) => setLoadErr(errMsg(e)));
   }, [versionId]);
+
+  useEffect(reloadDoc, [reloadDoc]);
 
   const flash = (msg: string) => {
     setFeedback(msg);
@@ -807,6 +809,40 @@ export default function GuideEditor({
               <Btn size="sm" disabled={cur >= steps.length - 1} onClick={() => goto(cur + 1)}>
                 <ChevronRight className="h-3.5 w-3.5" />
               </Btn>
+            </div>
+            <div className="mb-2 flex gap-1">
+              <IconBtn
+                title={t("guide_step_add")}
+                className="flex-1"
+                onClick={() => {
+                  const at = (step?.number ?? steps.length) + 1;
+                  api
+                    .addGuideStep(versionId, { insert_at: at })
+                    .then(() => {
+                      reloadDoc();
+                      setCur(Math.min(at - 1, steps.length));
+                    })
+                    .catch((e) => setFeedback(errMsg(e)));
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </IconBtn>
+              <IconBtn
+                title={t("guide_step_delete")}
+                className="flex-1 text-red-400"
+                onClick={() => {
+                  if (!step || steps.length <= 1) return;
+                  api
+                    .deleteGuideStep(versionId, step.number)
+                    .then(() => {
+                      reloadDoc();
+                      setCur(Math.max(0, cur - 1));
+                    })
+                    .catch((e) => setFeedback(errMsg(e)));
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </IconBtn>
             </div>
             {step && (
               <div className="flex flex-col gap-1.5">

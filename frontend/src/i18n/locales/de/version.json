@@ -363,5 +363,7 @@
   "guide_lang_it": "Italienisch",
   "guide_lang_other": "Andere…",
   "guide_findings": "Review-Findings",
-  "guide_review_iter": "Iteration {{n}}"
+  "guide_review_iter": "Iteration {{n}}",
+  "guide_step_add": "Schritt danach einfügen",
+  "guide_step_delete": "Schritt löschen"
 }

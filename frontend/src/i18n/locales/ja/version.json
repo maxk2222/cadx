@@ -358,5 +358,7 @@
   "guide_lang_it": "イタリア語",
   "guide_lang_other": "その他…",
   "guide_findings": "レビュー所見",
-  "guide_review_iter": "反復 {{n}}"
+  "guide_review_iter": "反復 {{n}}",
+  "guide_step_add": "次にステップを追加",
+  "guide_step_delete": "ステップを削除"
 }

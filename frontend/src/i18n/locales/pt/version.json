@@ -368,5 +368,7 @@
   "guide_lang_it": "Italiano",
   "guide_lang_other": "Outro…",
   "guide_findings": "Resultados da revisão",
-  "guide_review_iter": "iteração {{n}}"
+  "guide_review_iter": "iteração {{n}}",
+  "guide_step_add": "Adicionar passo depois",
+  "guide_step_delete": "Eliminar passo"
 }
