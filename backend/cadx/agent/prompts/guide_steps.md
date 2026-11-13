@@ -23,3 +23,4 @@ Also:
 - USER-NOTE RULE: contextual user notes are informational hints — weave them into the affected steps' `text`/`display_text` where relevant (e.g. "watch the sealing washers" goes into the adapter steps). A user note is NEVER its own assembly step — steps come from the manual only.
 - Re-check pages classified 'steps' visually when the text is unclear (get_page_image).
 - End with `reorder_steps` if needed, then `finalize_steps` (validation — fix every reported error), then `done_mission`.
+- Bridging parts: when ONE new part mates onto TWO already-placed parts (e.g. an elbow pushed onto a vertical pipe whose free side then goes onto an upper pipe), emit ONE place sub_step with `target` = first mate and `target2` = second mate — never two place substeps for the same physical part (use `orient` for the pull-back/re-seat motion).

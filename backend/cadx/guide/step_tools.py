@@ -78,6 +78,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                                     "action": {"type": "string", "enum": _SUB_ACTIONS},
                                     "part": _s("part name/id"),
                                     "target": _s("parent part/target, '' if base"),
+                                    "target2": _s("second mate when the part bridges two existing parts (e.g. elbow onto pipe A AND pipe B), '' otherwise"),
                                     "text": _s("internal detail"),
                                     "side": _s("left/right/top/bottom/front/back, '' if n/a"),
                                 },
@@ -127,6 +128,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "action": {"type": "string", "enum": _SUB_ACTIONS},
             "part": _s("part name/id this sub-step acts on"),
             "target": _s("parent part or step reference it attaches to, '' if base"),
+            "target2": _s("second mate for bridging parts, '' otherwise"),
             "text": _s("internal detail for the placement solver"),
             "side": _s("spatial hint: left/right/top/bottom/front/back, '' if n/a"),
         },
@@ -277,6 +279,7 @@ async def add_sub_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
             action=action,
             part=part,
             target=str(a.get("target", "")),
+            target2=str(a.get("target2", "")),
             text=str(a.get("text", "")),
             side=str(a.get("side", "")),
         )

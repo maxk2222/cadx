@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import structlog
 
 from cadx.guide import solver
@@ -80,6 +81,7 @@ def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
                     "substep_idx": i,
                     "part": ss.part,
                     "target": ss.target,
+                    "target2": getattr(ss, "target2", ""),
                     "text": ss.text,
                 }
                 for i, ss in subs
@@ -169,7 +171,11 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
         if _already_satisfied(sess, task["step"], pid):
             report["skipped"].append({**task, "reason": "already satisfied"})
             continue
-        placed = await _try_attach(sess, task, pid, _lookahead(sess, tasks, ti, pid))
+        placed = await _try_bridge(sess, task, pid)
+        if not placed:
+            placed = await _try_attach(sess, task, pid, _lookahead(sess, tasks, ti, pid))
+        if not placed and task.get("anchor"):
+            placed = await _place_anchor(sess, task, pid)
         if not placed:
             placed = await _try_env(sess, task, pid)
         if placed:
@@ -422,6 +428,121 @@ def _score_pairs_for_instance(
     return out
 
 
+def _free_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
+    used = {
+        str(j.get("fixed_port"))
+        for j in sess.state.assembly.joints
+        if j.get("fixed_instance") == inst.instance_id
+        or (not j.get("fixed_instance") and j.get("fixed_part") == inst.part_id)
+    } | {
+        str(j.get("moving_port"))
+        for j in sess.state.assembly.joints
+        if j.get("moving_instance") == inst.instance_id
+    }
+    fp = sess.state.part_by_id(inst.part_id)
+    return {p.name for p in (fp.ports if fp else [])} - used
+
+
+async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
+    """Two-sided mate for bridging parts (elbow joining pipe A to pipe B):
+    when the sub-step names a second target and the part has >=2 ports,
+    solve both mates simultaneously — the roll around the primary axis is
+    chosen so the SECOND mate also closes."""
+    t1, t2 = _resolve_name(sess, task["target"]), _resolve_name(sess, task.get("target2"))
+    moving = sess.state.part_by_id(pid)
+    if not (t1 and t2) or moving is None or len(moving.ports) < 2:
+        return None
+    insts = {
+        iid: i
+        for i in sess.state.assembly.instances
+        for iid in [i.instance_id or i.part_id]
+    }
+    targets = {
+        t: [i for i in insts.values() if i.part_id == t] for t in (t1, t2)
+    }
+    fixed1 = sess.state.part_by_id(t1)
+    fixed2 = sess.state.part_by_id(t2)
+    best: tuple[float, list, dict, dict] | None = None
+    for i1 in targets[t1]:
+        for i2 in targets[t2]:
+            p1s = solver.find_matching_ports(
+                moving, fixed1, used_fixed_ports=_used(sess, i1)
+            )[:4]
+            p2s = solver.find_matching_ports(
+                moving, fixed2, used_fixed_ports=_used(sess, i2)
+            )[:4]
+            for p1 in p1s:
+                for p2 in p2s:
+                    if p1["moving_port"] == p2["moving_port"]:
+                        continue
+                    m = solver.solve_bridge_attachment(
+                        moving,
+                        [
+                            (p1["moving_port"], fixed1, i1.transform, p1["fixed_port"]),
+                            (p2["moving_port"], fixed2, i2.transform, p2["fixed_port"]),
+                        ],
+                    )
+                    if m is None:
+                        continue
+                    mp2 = next(
+                        p for p in moving.ports if p.name == p2["moving_port"]
+                    )
+                    fp2 = next(
+                        p for p in fixed2.ports if p.name == p2["fixed_port"]
+                    )
+                    res = solver.evaluate_mate(
+                        mp2,
+                        np.asarray(m),
+                        fp2,
+                        np.asarray(i2.transform),
+                    )[0]
+                    if best is None or res < best[0]:
+                        best = (res, m, (i1, p1), (i2, p2))
+    if best is None:
+        return None
+    _res, m, (i1, p1), (i2, p2) = best
+    cid = f"bridge-{pid}-{task['step']}-{task['substep_idx']}"
+    sess._preview_cache[cid] = {
+        "transform": m,
+        "collision_free": True,
+        "moving_port": p1["moving_port"],
+        "fixed_port": p1["fixed_port"],
+        "fixed_part": i1.part_id,
+        "fixed_instance": i1.instance_id,
+        "candidate_id": cid,
+    }
+    res = await place_instance(
+        sess,
+        {
+            "part_id": pid,
+            "candidate_id": cid,
+            "step": task["step"],
+            "substep_idx": task["substep_idx"],
+        },
+    )
+    if not res.get("ok"):
+        return None
+    sess.state.assembly.joints.append(
+        {
+            "step": task["step"],
+            "moving_part": pid,
+            "fixed_part": i2.part_id,
+            "moving_instance": res.get("instance_id"),
+            "fixed_instance": i2.instance_id,
+            "moving_port": p2["moving_port"],
+            "fixed_port": p2["fixed_port"],
+            "approach_axis": p2.get("axis") or [0.0, 0.0, 1.0],
+            "bridge": True,
+        }
+    )
+    return res.get("instance_id")
+
+
+def _used(sess: GuideToolSession, inst: Any) -> set[str]:
+    fp = sess.state.part_by_id(inst.part_id)
+    return {p.name for p in (fp.ports if fp else [])} - _free_port_names(sess, inst)
+
+
 async def _try_attach(
     sess: GuideToolSession,
     task: dict[str, Any],
@@ -560,6 +681,35 @@ async def _try_attach(
                 insts = [i for i in sess.state.assembly.instances if i.part_id == pid]
                 return insts[-1].instance_id if insts else None
     return None
+
+
+async def _place_anchor(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:
+    """The base/host part rests upright at the origin — env-hint previews
+    drifted it into open space when nothing else was placed yet."""
+    part = sess.state.part_by_id(pid)
+    if part is None:
+        return None
+    cid = f"anchor-{pid}-{task['step']}"
+    sess._preview_cache[cid] = {
+        "transform": [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, -float(part.bbox_min[2])],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        "collision_free": True,
+        "candidate_id": cid,
+    }
+    res = await place_instance(
+        sess,
+        {
+            "part_id": pid,
+            "candidate_id": cid,
+            "step": task["step"],
+            "substep_idx": task["substep_idx"],
+        },
+    )
+    return res.get("instance_id") if res.get("ok") else None
 
 
 async def _try_env(sess: GuideToolSession, task: dict[str, Any], pid: str) -> str | None:

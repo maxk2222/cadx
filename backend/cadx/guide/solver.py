@@ -331,6 +331,48 @@ def solve_multi_attachment(
     return [[float(v) for v in row] for row in best.tolist()]
 
 
+def solve_bridge_attachment(
+    moving: GuidePart,
+    pairs: list[tuple[str, GuidePart, list[list[float]], str]],
+) -> list[list[float]] | None:
+    """Multi-mate across DIFFERENT fixed instances: each tuple is
+    (moving_port, fixed_part, fixed_transform, fixed_port). The primary
+    pair fixes the frame; the roll angle around the primary axis minimises
+    the residual gap of every remaining pair — bridging parts (an elbow
+    joining a vertical pipe to a riser) need both ends mated, not one."""
+    if len(pairs) < 2:
+        return None
+    mp0_name, fx0, tf0_list, fp0_name = pairs[0]
+    primary = solve_attachment(
+        moving, mp0_name, fx0, tf0_list, fp0_name, rotation_snaps=[0.0]
+    )
+    if not primary:
+        return None
+    base = np.asarray(primary[0]["transform"], dtype=float).reshape(4, 4)
+    tf0 = np.asarray(tf0_list, dtype=float).reshape(4, 4)
+    tp0 = _port(fx0, fp0_name)
+    mp0 = _port(moving, mp0_name)
+    if tp0 is None or mp0 is None:
+        return base.tolist()
+    pivot = tf0[0:3, 0:3] @ _v(tp0.pos) + tf0[0:3, 3]
+    axis = tf0[0:3, 0:3] @ _v(tp0.axis)
+    best, best_res = base, float("inf")
+    for deg in np.linspace(0.0, 360.0, 72, endpoint=False):
+        m = delta_about_pivot(axis, float(deg), pivot) @ base
+        res = 0.0
+        for mpn, fxn, tfn_list, fpn in pairs[1:]:
+            sp = _port(moving, mpn)
+            tpp = _port(fxn, fpn)
+            if sp is None or tpp is None:
+                continue
+            res += evaluate_mate(
+                sp, m, tpp, np.asarray(tfn_list, dtype=float).reshape(4, 4)
+            )[0] ** 2
+        if res < best_res:
+            best, best_res = m, res
+    return [[float(v) for v in row] for row in best.tolist()]
+
+
 # --------------------------------------------------------------------------- #
 # free / environment placement (bbox heuristics — KIARA solve_free/env)
 # --------------------------------------------------------------------------- #

@@ -57,6 +57,7 @@ class GuideSubStep(BaseModel):
     action: str  # place | attach | orient | insert | fasten | check
     part: str = ""  # GuidePart.id or free label
     target: str = ""
+    target2: str = ""  # second mate for bridging parts (elbow across two pipes)
     text: str = ""
     side: str = ""
 
