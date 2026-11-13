@@ -7,7 +7,6 @@ import {
   Move3d,
   Plus,
   Redo2,
-  RefreshCw,
   Rotate3d,
   Trash2,
   Undo2,
@@ -32,7 +31,7 @@ import {
   TransformControls,
 } from "@react-three/drei";
 import { Canvas, useLoader } from "@react-three/fiber";
-import { GLTFLoader } from "three-stdlib";
+import { GLTFLoader, type OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { api, errMsg } from "../../lib/api";
 import type {
   GuideDetail,
@@ -41,6 +40,7 @@ import type {
   GuideStepDetail,
 } from "../../lib/types";
 import SafeImg from "../SafeImg";
+import { CameraFit } from "./GuideScene";
 import { Btn, IconBtn, Spinner } from "../ui";
 
 /**
@@ -199,11 +199,20 @@ function Scene({
     [versionId, meshParts],
   );
   const key = urls.join("|");
+  const [ctxLost, setCtxLost] = useState(0);
   return (
     <Canvas
-      key={key}
+      key={`${key}:${ctxLost}`}
+      frameloop="demand"
+      dpr={[1, 2]}
       camera={{ position: [220, 200, 260], fov: 40 }}
       onPointerMissed={onMiss}
+      onCreated={({ gl }) => {
+        gl.domElement.addEventListener("webglcontextlost", (e) => {
+          e.preventDefault();
+          setCtxLost((n) => n + 1);
+        });
+      }}
       gl={{ antialias: true, powerPreference: "high-performance", alpha: false, stencil: false }}
     >
       <color attach="background" args={["#181818"]} />
@@ -239,7 +248,6 @@ function SceneInner({
   meshParts,
   instances,
   sel,
-  primary,
   mode,
   gizmoDrag,
   onSelect,
@@ -273,8 +281,9 @@ function SceneInner({
   const [pivotObj, setPivotObj] = useState<THREE.Group | null>(null);
   const pivotStart = useRef(new THREE.Matrix4());
   const itemStart = useRef<Record<string, THREE.Matrix4>>({});
-  const controlsRef = useRef<any>(null);
+  const controlsRef = useRef<OrbitControlsImpl | null>(null);
 
+  const contentRef = useRef<THREE.Group>(null);
   const visibleIds = useMemo(() => new Set(instances.map((i) => i.id)), [instances]);
   const liveSel = useMemo(
     () => new Set([...sel].filter((i) => visibleIds.has(i))),
@@ -344,25 +353,28 @@ function SceneInner({
 
   return (
     <>
-      {instances.map((i) => (
-        <PartObject
-          key={i.id}
-          scene={scenes[i.part_id] ?? new THREE.Group()}
-          inst={i}
-          selected={liveSel.has(i.id)}
-          innerRef={(g) => {
-            refs.current[i.id] = g;
-          }}
-          onSelect={(e) => {
-            e.stopPropagation();
-            onSelect(
-              i.id,
-              !!(e.ctrlKey || e.metaKey || e.shiftKey),
-            );
-          }}
-          onContext={onContext}
-        />
-      ))}
+      <group ref={contentRef}>
+        {instances.map((i) => (
+          <PartObject
+            key={i.id}
+            scene={scenes[i.part_id] ?? new THREE.Group()}
+            inst={i}
+            selected={liveSel.has(i.id)}
+            innerRef={(g) => {
+              refs.current[i.id] = g;
+            }}
+            onSelect={(e) => {
+              e.stopPropagation();
+              onSelect(
+                i.id,
+                !!(e.ctrlKey || e.metaKey || e.shiftKey),
+              );
+            }}
+            onContext={onContext}
+          />
+        ))}
+      </group>
+      <CameraFit content={contentRef} fitKey={urls.length} />
 
       {showGizmo && (
         <>
@@ -399,7 +411,7 @@ function SceneInner({
           )}
         </>
       )}
-      <OrbitControls makeDefault ref={controlsRef} />
+      <OrbitControls makeDefault ref={controlsRef} enableDamping dampingFactor={0.1} zoomToCursor />
     </>
   );
 }
@@ -771,21 +783,6 @@ export default function GuideEditor({
           {t(`guide_save_${saveState}`)}
         </span>
         <div className="flex-1" />
-        <RewriteControls
-          versionId={versionId}
-          onDone={(steps2) =>
-            mutate((d) => {
-              for (const s of steps2) {
-                const x = d.steps.find((y) => y.number === s.number);
-                if (x) {
-                  x.title = s.title;
-                  x.text = s.text;
-                  x.display_text = s.display_text;
-                }
-              }
-            })
-          }
-        />
         {feedback && <span className="text-[11px] text-emerald-400">{feedback}</span>}
         <IconBtn title={t("close")} onClick={close}>
           <X className="h-4 w-4" />
@@ -1277,54 +1274,6 @@ function NumericTransform({
   );
 }
 
-function RewriteControls({
-  versionId,
-  onDone,
-}: {
-  versionId: string;
-  onDone: (steps: GuideStepDetail[]) => void;
-}) {
-  const { t } = useTranslation("version");
-  const [audience, setAudience] = useState("beginner");
-  const [lang, setLang] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  return (
-    <span className="flex items-center gap-1.5">
-      <select
-        className="input py-0.5 text-[11px]"
-        value={audience}
-        onChange={(e) => setAudience(e.target.value)}
-        aria-label={t("guide_audience")}
-      >
-        <option value="beginner">{t("guide_audience_beginner")}</option>
-        <option value="intermediate">{t("guide_audience_intermediate")}</option>
-        <option value="pro">{t("guide_audience_pro")}</option>
-      </select>
-      <input
-        className="input w-24 py-0.5 text-[11px]"
-        value={lang}
-        onChange={(e) => setLang(e.target.value)}
-        placeholder={t("guide_language_ph")}
-        aria-label={t("guide_language_ph")}
-      />
-      <Btn
-        size="sm"
-        busy={busy}
-        title={err ?? t("guide_rewrite_hint")}
-        onClick={() => {
-          setBusy(true);
-          setErr(null);
-          api
-            .rewriteGuide(versionId, audience, lang)
-            .then((r) => onDone(r.steps))
-            .catch((e) => setErr(errMsg(e)))
-            .finally(() => setBusy(false));
-        }}
-      >
-        <RefreshCw className="h-3 w-3" /> {t("guide_rewrite")}
-      </Btn>
-    </span>
-  );
-}
+
+
 

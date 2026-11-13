@@ -362,5 +362,16 @@
   "guide_save_error": "Błąd",
   "guide_notes": "Uwagi",
   "close": "Zamknij",
-  "back": "Wstecz"
+  "back": "Wstecz",
+  "guide_variant": "Wariant tekstu",
+  "guide_variant_original": "Oryginał",
+  "guide_variant_hint": "Który wariant tekstu przewodnik dostarcza / eksportuje AR",
+  "guide_lang_de": "Niemiecki",
+  "guide_lang_en": "Angielski",
+  "guide_lang_fr": "Francuski",
+  "guide_lang_es": "Hiszpański",
+  "guide_lang_it": "Włoski",
+  "guide_lang_other": "Inny…",
+  "guide_findings": "Wyniki przeglądu",
+  "guide_review_iter": "iteracja {{n}}"
 }

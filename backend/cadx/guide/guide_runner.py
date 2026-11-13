@@ -501,7 +501,9 @@ async def run_guide(
     artifacts = await _emit_artifacts(state, state_dir, ctx.executor)
     outcome = RunOutcome(
         status="succeeded",
-        score=round(state.review.score),
+        # review.score is 0..10; version.score (and every other outcome
+        # score) is 0..100 — scale or the header renders "9/100"
+        score=round(state.review.score * 10),
         iterations=iterations,
         plan={
             "missions_done": state.missions_done,

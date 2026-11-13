@@ -1514,11 +1514,28 @@ export interface GuideInstancePatch {
   opacity?: number;
 }
 
+export interface GuideVariantStep {
+  number: number;
+  title: string;
+  text: string;
+  display_text: string;
+}
+
+export interface GuideAnnotation {
+  kind: string; // "arrow"
+  step: number;
+  part_id: string;
+  approach_axis: number[];
+  label?: string;
+}
+
 export interface GuideDetail {
   steps: GuideStepDetail[];
   media: string[];
   master_notes: string[];
   missions_done: string[];
+  variants: Record<string, GuideVariantStep[]>;
+  annotations: GuideAnnotation[];
   review: {
     score: number;
     iteration: number;
@@ -1541,6 +1558,14 @@ export interface GuideStepPatch {
 export interface GuideRewriteResult {
   ok: boolean;
   audience: string;
+  variant: string;
   rewritten: number;
+  steps: GuideStepDetail[];
+}
+
+export interface GuideVariantResult {
+  ok: boolean;
+  variant: string;
+  applied: number;
   steps: GuideStepDetail[];
 }

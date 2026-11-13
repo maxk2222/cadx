@@ -352,5 +352,16 @@
   "guide_save_error": "Fehler",
   "guide_notes": "Hinweise",
   "close": "Schließen",
-  "back": "Zurück"
+  "back": "Zurück",
+  "guide_variant": "Textvariante",
+  "guide_variant_original": "Original",
+  "guide_variant_hint": "Welche Textvariante die Anleitung ausliefert / AR exportiert",
+  "guide_lang_de": "Deutsch",
+  "guide_lang_en": "Englisch",
+  "guide_lang_fr": "Französisch",
+  "guide_lang_es": "Spanisch",
+  "guide_lang_it": "Italienisch",
+  "guide_lang_other": "Andere…",
+  "guide_findings": "Review-Findings",
+  "guide_review_iter": "Iteration {{n}}"
 }

@@ -171,6 +171,11 @@ class GuideState(BaseModel):
     assembly: AssemblyState = Field(default_factory=AssemblyState)
     review: ReviewReport = Field(default_factory=ReviewReport)
     annotations: list[dict] = Field(default_factory=list)
+    # rewritten text variants — key "<audience>:<language>" (plus
+    # "_original": the pre-rewrite snapshot), each a list of
+    # {number,title,text,display_text}. The canonical steps always carry
+    # the LAST applied variant so unity_guide.json stays current.
+    variants: dict[str, list[dict]] = Field(default_factory=dict)
     missions_done: list[str] = Field(default_factory=list)
     missions_failed: list[str] = Field(default_factory=list)
     output_dir: str = ""

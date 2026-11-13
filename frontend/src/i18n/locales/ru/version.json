@@ -362,5 +362,16 @@
   "guide_save_error": "Ошибка",
   "guide_notes": "Заметки",
   "close": "Закрыть",
-  "back": "Назад"
+  "back": "Назад",
+  "guide_variant": "Вариант текста",
+  "guide_variant_original": "Оригинал",
+  "guide_variant_hint": "Какой вариант текста поставляет руководство / экспортируется в AR",
+  "guide_lang_de": "Немецкий",
+  "guide_lang_en": "Английский",
+  "guide_lang_fr": "Французский",
+  "guide_lang_es": "Испанский",
+  "guide_lang_it": "Итальянский",
+  "guide_lang_other": "Другой…",
+  "guide_findings": "Результаты проверки",
+  "guide_review_iter": "итерация {{n}}"
 }

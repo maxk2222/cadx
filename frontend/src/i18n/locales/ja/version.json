@@ -347,5 +347,16 @@
   "guide_save_error": "エラー",
   "guide_notes": "メモ",
   "close": "じる",
-  "back": "る"
+  "back": "る",
+  "guide_variant": "テキストバリアント",
+  "guide_variant_original": "オリジナル",
+  "guide_variant_hint": "ガイドが / ARエクスポートするテキストバリアント",
+  "guide_lang_de": "ドイツ語",
+  "guide_lang_en": "英語",
+  "guide_lang_fr": "フランス語",
+  "guide_lang_es": "スペイン語",
+  "guide_lang_it": "イタリア語",
+  "guide_lang_other": "その他…",
+  "guide_findings": "レビュー所見",
+  "guide_review_iter": "反復 {{n}}"
 }

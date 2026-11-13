@@ -99,6 +99,8 @@ async def get_guide(version_id: uuid.UUID, db: AsyncSession = Depends(get_sessio
         "media": _media_files(guide_dir),
         "master_notes": state.master_notes,
         "missions_done": state.missions_done,
+        "variants": state.variants,
+        "annotations": state.annotations,
         "review": {
             "score": state.review.score,
             "iteration": state.review.iteration,
@@ -458,8 +460,21 @@ async def rewrite_guide(
         log.warning("guide.rewrite_failed", error=str(exc)[:300])
         raise HTTPException(502, f"rewrite failed: {str(exc)[:200]}") from exc
 
+    # snapshot the pre-rewrite text once — the variant picker must be
+    # able to return to the untranslated original
+    if "_original" not in state.variants:
+        state.variants["_original"] = [
+            {
+                "number": s.number,
+                "title": s.title,
+                "text": s.text,
+                "display_text": s.display_text,
+            }
+            for s in state.steps
+        ]
     by_no = {s.number: s for s in out.steps}
     applied = 0
+    variant_rows: list[dict] = []
     for s in state.steps:
         r = by_no.get(s.number)
         if r is None:
@@ -470,12 +485,58 @@ async def rewrite_guide(
             s.text = r.text.strip()
         if r.display_text.strip():
             s.display_text = r.display_text.strip()
+        variant_rows.append(
+            {
+                "number": s.number,
+                "title": s.title,
+                "text": s.text,
+                "display_text": s.display_text,
+            }
+        )
         applied += 1
+    key = f"{body.audience}:{(body.language.strip() or 'original').lower()}"
+    state.variants[key] = variant_rows
     state.save(guide_dir)
     _regen_unity(state, guide_dir)
     return {
         "ok": True,
         "audience": body.audience,
+        "variant": key,
         "rewritten": applied,
         "steps": [_step_out(s) for s in state.steps],
     }
+
+
+class VariantIn(BaseModel):
+    key: str  # e.g. "beginner:en" or "_original"
+
+
+@router.post("/versions/{version_id}/guide/variant")
+async def apply_variant(
+    version_id: uuid.UUID,
+    body: VariantIn,
+    db: AsyncSession = Depends(get_session),
+):
+    """Re-apply a stored rewrite variant to the canonical steps — the
+    shipped unity_guide.json mirrors whichever variant is active."""
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    rows = state.variants.get(body.key)
+    if rows is None:
+        raise HTTPException(404, f"unknown variant '{body.key}'")
+    by_no = {int(r["number"]): r for r in rows}
+    applied = 0
+    for s in state.steps:
+        r = by_no.get(s.number)
+        if r is None:
+            continue
+        s.title = str(r.get("title") or s.title)
+        s.text = str(r.get("text") or s.text)
+        s.display_text = str(r.get("display_text") or s.display_text)
+        applied += 1
+    state.save(guide_dir)
+    _regen_unity(state, guide_dir)
+    return {"ok": True, "variant": body.key, "applied": applied,
+            "steps": [_step_out(s) for s in state.steps]}

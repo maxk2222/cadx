@@ -352,5 +352,16 @@
   "guide_save_error": "Erreur",
   "guide_notes": "Remarques",
   "close": "Fermer",
-  "back": "Retour"
+  "back": "Retour",
+  "guide_variant": "Variante de texte",
+  "guide_variant_original": "Original",
+  "guide_variant_hint": "Quelle variante de texte le guide livre / exporte en RA",
+  "guide_lang_de": "Allemand",
+  "guide_lang_en": "Anglais",
+  "guide_lang_fr": "Français",
+  "guide_lang_es": "Espagnol",
+  "guide_lang_it": "Italien",
+  "guide_lang_other": "Autre…",
+  "guide_findings": "Constats de révision",
+  "guide_review_iter": "itération {{n}}"
 }

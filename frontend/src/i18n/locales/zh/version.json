@@ -347,5 +347,16 @@
   "guide_save_error": "",
   "guide_notes": "",
   "close": "",
-  "back": ""
+  "back": "",
+  "guide_variant": "文本变体",
+  "guide_variant_original": "原始",
+  "guide_variant_hint": "指南发布 / AR 导出的文本变体",
+  "guide_lang_de": "德语",
+  "guide_lang_en": "英语",
+  "guide_lang_fr": "法语",
+  "guide_lang_es": "西班牙语",
+  "guide_lang_it": "意大利语",
+  "guide_lang_other": "其他…",
+  "guide_findings": "审查结果",
+  "guide_review_iter": "迭代 {{n}}"
 }

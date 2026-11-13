@@ -17,6 +17,7 @@ import type {
   GuideRewriteResult,
   GuideStepDetail,
   GuideStepPatch,
+  GuideVariantResult,
   Job,
   JobListItem,
   LibraryPart,
@@ -229,6 +230,11 @@ export const api = {
     req<GuideRewriteResult>(
       `/versions/${vid}/guide/rewrite`,
       json({ audience, language })
+    ),
+  applyGuideVariant: (vid: string, key: string) =>
+    req<GuideVariantResult>(
+      `/versions/${vid}/guide/variant`,
+      json({ key })
     ),
   patchGuideInstance: (vid: string, iid: string, body: GuideInstancePatch) =>
     req<{ ok: boolean; id: string; transform: number[][] }>(
