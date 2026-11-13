@@ -206,13 +206,21 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
     # token-overlap fallback: feature phrases ("Rohrbogen am linken
     # Anschluss", "vertikales Rohr 500mm") share a part's distinctive
     # tokens even with no alias/containment — ≥2 shared tokens keeps it
-    # specific, longest key breaks ties toward the richer name
+    # specific, longest key breaks ties toward the richer name. A SINGLE
+    # shared token also resolves when it's distinctive — used by exactly
+    # one part ("Gehäuse" in "linker oberer Anschluss am Gehäuse");
+    # generic tokens shared by several parts ("rohr") still need 2 hits.
     nt = _tokset(n)
     ctx = _tokset(context)
+    tok_owners: dict[str, set[str]] = {}
+    for k, pid in cands:
+        for t in _tokset(k):
+            tok_owners.setdefault(t, set()).add(pid)
     scored = []
     for k, pid in cands:
-        overlap = len(_tokset(k) & nt)
-        if overlap < 2:
+        shared = _tokset(k) & nt
+        overlap = len(shared)
+        if overlap < 2 and not any(len(tok_owners.get(t, set())) == 1 for t in shared):
             continue
         # context confirms distinctive tokens: "Anschluss 2x außen" ties
         # on rohrbogen/dn/22 for both elbows — the step's "(Muffe auf

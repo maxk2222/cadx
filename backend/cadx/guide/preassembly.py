@@ -117,15 +117,21 @@ def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
     return _spawn_premounts(sess, tasks)
 
 
+# canonical side keys — inflected surface forms of the same direction
+# must collapse ("(links oben)" vs "linken oberen" produced disjoint
+# token sets {link,links,oben} vs {link,ober} and phantom premounts)
 _SIDE_WORDS = {
-    "links", "link", "left", "rechts", "recht", "right",
-    "unten", "unter", "lower", "bottom", "oben", "ober", "upper", "top",
+    "links": "l", "link": "l", "left": "l",
+    "rechts": "r", "recht": "r", "right": "r",
+    "unten": "d", "unter": "d", "lower": "d", "bottom": "d",
+    "oben": "u", "ober": "u", "upper": "u", "top": "u",
 }
 
 
 def _side_words(text: str) -> set[str]:
-    toks = (text or "").lower().split()
-    return {w for w in _SIDE_WORDS for tok in toks if tok.startswith(w)}
+    # word tokens only — "(links" must match like "links"
+    toks = re.findall(r"[a-zäöüß]+", (text or "").lower())
+    return {side for w, side in _SIDE_WORDS.items() for tok in toks if tok.startswith(w)}
 
 
 def _spawn_premounts(

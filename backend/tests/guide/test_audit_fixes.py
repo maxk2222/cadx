@@ -729,3 +729,40 @@ def test_deep_socket_seats_below_thread_mouth() -> None:
         c for c in cands if c["moving_port"] == "muffe" and c["fixed_port"] == "stub"
     )
     assert muffe["score"] < cands[0]["score"]
+
+
+def test_resolve_name_distinctive_single_token() -> None:
+    """A feature phrase sharing ONE token with a part resolves when that
+    token names exactly one part — 'linker oberer Anschluss am Gehäuse'
+    must reach the casing so the planner anchors it. Generic tokens
+    ('rohr') shared by several parts still can't resolve alone."""
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import _resolve_name
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        _phys_part("casing", [], bbox=((0, 0, 0), (1, 1, 1))),
+        _phys_part("adapter", [], bbox=((0, 0, 0), (1, 1, 1))),
+        _phys_part("pipe_l70", [], bbox=((0, 0, 0), (1, 1, 1))),
+        _phys_part("pipe_l500", [], bbox=((0, 0, 0), (1, 1, 1))),
+    ]
+    state.parts[0].name = "Gehäuse / Verkleidung (Casing)"
+    state.parts[1].name = "Adapter DN22, Innengewinde/Muffe"
+    state.parts[2].name = "Rohr DN22, l = 70 mm"
+    state.parts[3].name = "Rohr DN22, l = 500 mm"
+    s = SimpleNamespace(state=state, _aliases_store={})
+    assert _resolve_name(s, "linker oberer Anschluss am Gehäuse") == "casing"
+    assert _resolve_name(s, "rechter oberer Anschluss am Gehäuse") == "casing"
+    # 'rohr' lives on two parts — no distinctive token → stays unresolved
+    assert _resolve_name(s, "Anschluss am Rohr") is None
+
+
+def test_side_words_canonical_inflections() -> None:
+    """'(links oben)' and 'linken oberen' are the same side signature —
+    mixed inflection vocab produced disjoint sets and phantom premounts."""
+    from cadx.guide.preassembly import _side_words
+
+    assert _side_words("(links oben)") == _side_words("linken oberen")
+    assert _side_words("rechts unten") == _side_words("rechter unterer")
+    assert _side_words("obere Öffnung des linken unteren Rohrbogens") == {"u", "l", "d"}
