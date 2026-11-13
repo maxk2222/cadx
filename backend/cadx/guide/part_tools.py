@@ -31,12 +31,20 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "register_uploaded_part": _fn(
         "register_uploaded_part",
         "Register ONE uploaded CAD file as a guide part. Give it a short "
-        "unique id (slug) and the display name. Ports/bbox are extracted "
-        "deterministically (STEP via the executor, meshes locally).",
+        "unique id (slug), the display name, and the parts-list quantity "
+        "(Stückliste 'Menge' — total copies the kit ships, premounted "
+        "included) so the plan can be checked against it. Ports/bbox are "
+        "extracted deterministically (STEP via the executor, meshes "
+        "locally). Re-registering the same part_id+asset updates the "
+        "fields instead of failing.",
         {
             "part_id": _s("short unique slug, e.g. 'base_plate'"),
             "name": _s("display name — prefer the manual's term"),
             "asset_id": _s("asset UUID or uploaded filename from list_assets"),
+            "quantity": {
+                "type": "integer",
+                "description": "copies in the parts list (Menge), e.g. 2 — omit if the manual gives none",
+            },
         },
         ["part_id", "name", "asset_id"],
     ),
@@ -70,6 +78,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 "detailed geometric spec: shape, dimensions mm, holes, threads — "
                 "everything the manual states plus user answers"
             ),
+            "quantity": {
+                "type": "integer",
+                "description": "copies in the parts list (Menge) — omit if the manual gives none",
+            },
             "wait": _b("wait for the job to finish (default true)"),
         },
         ["part_id", "name", "description"],
@@ -124,12 +136,18 @@ def _resolve_asset(s: GuideToolSession, ref: str, *, part_id: str, name: str) ->
     return asset
 
 
+def _int_or_none(v: Any) -> int | None:
+    try:
+        return int(v) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     pid = _slug(str(a.get("part_id", "")))
     if not pid:
         return {"ok": False, "error": "part_id must be a non-empty slug"}
-    if s.state.part_by_id(pid) is not None:
-        return {"ok": False, "error": f"part_id '{pid}' already registered"}
+    quantity = _int_or_none(a.get("quantity"))
     aid = str(a.get("asset_id", ""))
     asset = _resolve_asset(
         s, aid, part_id=str(a.get("part_id") or ""), name=str(a.get("name") or "")
@@ -153,12 +171,39 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
         (p for p in s.state.parts if p.asset_id and p.asset_id == aid), None
     )
     if existing is not None:
+        if existing.id == pid:
+            # idempotent upsert — re-registering the same part_id+asset
+            # refreshes name/quantity instead of erroring
+            existing.name = str(a.get("name", "")).strip() or existing.name
+            if quantity is not None:
+                existing.quantity = quantity
+            return {
+                "ok": True,
+                "part_id": existing.id,
+                "updated": True,
+                "quantity": existing.quantity,
+            }
+        # the agent re-registered the same FILE under a new id — the
+        # semantic intent is "make this name resolve", which is exactly an
+        # alias; fulfilling it beats a dead-end error the model retries
+        # verbatim until error_streak (observed: parts mission death).
+        new_name = str(a.get("name", "")).strip()
+        made: list[str] = []
+        for alias in {new_name, pid} - {existing.name, existing.id, ""}:
+            na = _norm(alias)
+            if na:
+                s._aliases_store[na] = existing.id
+                made.append(alias)
+        if quantity is not None:
+            existing.quantity = quantity
         return {
-            "ok": False,
-            "error": f"asset already registered as part '{existing.id}' "
-            f"({existing.name}) — a second registration duplicates the same "
-            "physical file. Use alias_part to map more manual names onto it.",
-            "existing_part_id": existing.id,
+            "ok": True,
+            "part_id": existing.id,
+            "aliased_to": existing.id,
+            "aliases_added": made,
+            "note": f"asset was already registered as '{existing.id}' — "
+            f"mapped {made or ['<none>']} onto it; use part_id "
+            f"'{existing.id}' from here",
         }
     if not path.exists():  # noqa: ASYNC240
         return {"ok": False, "error": f"asset file missing: {path}"}
@@ -181,6 +226,7 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
         asset_id=aid,
         step_path=str(path) if ext in cadmeta._BREP_EXTS else None,
         mesh_path=mesh_path,
+        quantity=quantity,
     )
     part = await cadmeta.ensure_metadata(part, s.executor)
     s.state.parts.append(part)
@@ -432,6 +478,7 @@ async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
         version_id=str(v.id),
         step_path=str(step) if step else None,
         mesh_path=str(mesh) if mesh else None,
+        quantity=_int_or_none(a.get("quantity")),
     )
     part = await cadmeta.ensure_metadata(part, s.executor)
     s.state.parts.append(part)

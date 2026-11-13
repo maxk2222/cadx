@@ -507,3 +507,101 @@ async def test_solve_attachment_empty_ports_names_fix() -> None:
     )
     assert res["ok"] is False
     assert "get_part_features" in res["error"]
+
+
+def test_register_duplicate_part_id_upserts_quantity() -> None:
+    """Re-registering the same part_id+asset is an idempotent update — the
+    parts agent re-issues the call after reading the Stückliste and must
+    not eat an error for it."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.part_tools import register_uploaded_part
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import GuidePart, GuideState
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts.append(GuidePart(id="pipe", name="Rohr", asset_id="a1"))
+    sess = GuideToolSession(
+        ctx, mission="parts", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[{"id": "a1", "filename": "pipe.glb", "path": "/nope/pipe.glb"}],
+        executor=None,
+    )
+    r = asyncio.run(
+        register_uploaded_part(
+            sess, {"part_id": "pipe", "name": "Rohr DN22", "asset_id": "a1", "quantity": 2}
+        )
+    )
+    assert r["ok"] and r.get("updated") and state.parts[0].quantity == 2, r
+
+
+def test_register_duplicate_asset_auto_aliases() -> None:
+    """Same FILE under a new id — the agent's real intent is 'make this
+    name resolve'; fulfilling it as an alias beats the error-streak death
+    spiral observed in the bare eval."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.part_tools import register_uploaded_part
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import GuidePart, GuideState
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts.append(GuidePart(id="pipe_l70", name="Rohr DN22, l = 70 mm", asset_id="a1"))
+    sess = GuideToolSession(
+        ctx, mission="parts", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[{"id": "a1", "filename": "pipe.glb", "path": "/nope/pipe.glb"}],
+        executor=None,
+    )
+    r = asyncio.run(
+        register_uploaded_part(
+            sess, {"part_id": "rohr_70", "name": "Rohr 70mm", "asset_id": "a1"}
+        )
+    )
+    assert r["ok"] and r["aliased_to"] == "pipe_l70" and "Rohr 70mm" in r["aliases_added"], r
+    assert len(state.parts) == 1  # no duplicate part row
+    from cadx.guide.part_tools import _norm
+
+    assert sess._aliases_store.get(_norm("Rohr 70mm")) == "pipe_l70"
+
+
+def test_place_instance_respects_quantity() -> None:
+    """Kit quantity is a hard bound — the error must route the cause to
+    the plan, not invite blind unplacing."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.assembly_tools import place_instance
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import GuidePart, GuideState, GuideStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts.append(GuidePart(id="elbow", name="Bogen", quantity=1))
+    state.steps.append(
+        GuideStep(
+            number=1, text="t", display_text="d",
+            required_parts=["Bogen"],
+            sub_steps=[{"action": "attach", "part": "Bogen", "target": ""}],
+        )
+    )
+    sess = GuideToolSession(
+        ctx, mission="assembly", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    cand = {"transform": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]}
+    sess._preview_cache["c1"] = dict(cand)
+    sess._preview_cache["c2"] = dict(cand)
+    r1 = asyncio.run(place_instance(sess, {"part_id": "elbow", "candidate_id": "c1", "step": 1}))
+    assert r1["ok"], r1
+    # step quota also fires first (1/1 filled) — use premount path to hit
+    # the kit bound directly: a second premounted copy exceeds quantity=1
+    r2 = asyncio.run(
+        place_instance(sess, {"part_id": "elbow", "candidate_id": "c2", "step": 1, "premount": True})
+    )
+    assert r2["ok"] is False and "ships only 1x" in r2["error"], r2

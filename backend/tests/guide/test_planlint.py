@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from cadx.guide.planlint import plan_lint
-from cadx.guide.state import AssemblyState, GuideState, GuideStep, GuideSubStep, GuidePart
+from cadx.guide.state import AssemblyState, GuidePart, GuideState, GuideStep, GuideSubStep
 
 
 def _part(pid: str) -> GuidePart:
@@ -110,3 +110,35 @@ def test_empty_assembly_step_warns_only() -> None:
     fs = plan_lint(sess)
     assert not [f for f in fs if f["severity"] == "blocker"]
     assert any(f["severity"] == "warning" for f in fs)
+
+
+def test_quantity_overflow_routes_to_steps() -> None:
+    """Kiara bare failure shape: the plan mapped the 2-piece elbow onto
+    five steps — no geometry repair can satisfy it, the steps mission owns
+    the fix (wrong part mapping / phantom occurrences)."""
+    elbow = _part("elbow_ss")
+    elbow.quantity = 2
+    sess = _sess(
+        [elbow],
+        [
+            _step(n, [{"action": "attach", "part": "elbow_ss", "target": ""}])
+            for n in (1, 2, 3, 4, 5)
+        ],
+    )
+    b = [f for f in plan_lint(sess) if f["severity"] == "blocker"]
+    assert any(
+        f["mission"] == "steps" and "5x 'elbow_ss'" in f["text"] and "only 2" in f["text"]
+        for f in b
+    ), b
+
+
+def test_quantity_none_unbounded() -> None:
+    """Unknown quantity must not lint — many manuals list no counts."""
+    sess = _sess(
+        [_part("pipe")],
+        [
+            _step(n, [{"action": "attach", "part": "pipe", "target": ""}])
+            for n in (1, 2, 3, 4, 5, 6)
+        ],
+    )
+    assert not [f for f in plan_lint(sess) if "requires" in f["text"]]

@@ -456,6 +456,7 @@ class GuideToolSession(ToolSession):
                     "name": p.name,
                     "source": p.source,
                     "ports": len(p.ports),
+                    "quantity": p.quantity,
                     "bbox": [p.bbox_min, p.bbox_max],
                     "placed": p.id in insts_by_part,
                     "instances": insts_by_part.get(p.id, []),

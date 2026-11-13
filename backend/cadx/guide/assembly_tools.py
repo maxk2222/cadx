@@ -575,6 +575,16 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             "error": f"'{pid}' is already placed and not required by any "
             f"assembly step — it is the fixed host, not a mountable part{hint}",
         }
+    # Stückliste quantity is a hard bound — the kit ships exactly N copies
+    # (premounts count inside it); a plan overflowing it is a steps bug,
+    # not a geometry problem, and the error must say so
+    if part.quantity is not None and len(existing) >= part.quantity:
+        return {
+            "ok": False,
+            "error": f"parts list ships only {part.quantity}x '{pid}' — all "
+            "placed. The plan requires more copies than the kit has: fix "
+            "the step plan (wrong part mapping), or unplace_instance one first",
+        }
     cap = max(need, 2) + 2  # slack for manuals missing counts; bound runaway
     if len(existing) >= cap:
         return {

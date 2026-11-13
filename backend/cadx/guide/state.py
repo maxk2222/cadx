@@ -53,6 +53,10 @@ class GuidePart(BaseModel):
     bbox_max: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
     status: str = "registered"  # registered | analyzed | error
     error: str = ""
+    # Stückliste "Menge" — total copies the kit ships (premounted included).
+    # None = unknown/unbounded; when set it bounds plan requirements and
+    # placed instances deterministically (plan_lint + place_instance quota).
+    quantity: int | None = None
 
 
 class GuideSubStep(BaseModel):

@@ -162,6 +162,35 @@ def _lint_order(
     return findings
 
 
+def _lint_quantities(sess: GuideToolSession) -> list[dict[str, Any]]:
+    """Stückliste 'Menge' bounds the total copies a plan may consume — a
+    plan needing 5 of a 2-piece part maps the wrong part onto steps (the
+    kiara bare run: socket-socket elbows on steps 1/2/5/6/10) and no
+    geometry repair can fix that; it is a steps-mission plan bug."""
+    from cadx.guide.assembly_tools import _step_requirements
+
+    totals: dict[str, int] = {}
+    for counts in _step_requirements(sess).values():
+        for pid, n in counts.items():
+            totals[pid] = totals.get(pid, 0) + n
+    findings: list[dict[str, Any]] = []
+    for p in sess.state.parts:
+        if p.quantity is None:
+            continue
+        need = totals.get(p.id, 0)
+        if need > p.quantity:
+            findings.append(
+                {
+                    "mission": "steps",
+                    "severity": "blocker",
+                    "text": f"plan requires {need}x '{p.id}' but the parts "
+                    f"list ships only {p.quantity} — wrong part mapping or "
+                    "phantom occurrences; fix the step sub_steps",
+                }
+            )
+    return findings
+
+
 def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Plan-vs-registry contradictions, deterministically detected.
 
@@ -172,6 +201,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     steps = sorted(sess.state.steps, key=lambda s: s.number)
     findings, first_place, anchor_step = _lint_refs(sess, steps)
     findings += _lint_order(sess, steps, first_place, anchor_step)
+    findings += _lint_quantities(sess)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
     log.info(
         "guide.plan_lint",
