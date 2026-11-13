@@ -363,3 +363,32 @@ def test_required_mission_failure_still_fails(monkeypatch) -> None:
     )
     assert out is not None and out.status == "failed"
     assert "steps" in state.missions_failed
+
+
+def test_llm_outage_is_clean_mission_failure_not_crash(monkeypatch) -> None:
+    """HTTP 502 from the LLM backend must not traceback-crash run_guide —
+    it becomes a mission failure with the outage named in the error."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide import guide_runner
+    from cadx.guide.state import GuideState
+    from cadx.llm.client import LLMError
+
+    state = GuideState(output_dir="/tmp/x")
+
+    async def fake_session(*a, **kw):
+        raise LLMError("HTTP 502")
+
+    monkeypatch.setattr(guide_runner, "run_session", fake_session)
+    sess = SimpleNamespace(parked=False, parked_questions=[], state=state)
+    ctx = SimpleNamespace(check_cancel=None)
+    out = asyncio.run(
+        guide_runner._run_mission(
+            "steps", "", ctx=ctx, state=state, state_dir=Path("/tmp/x"),
+            mk_session=lambda m: sess,
+        )
+    )
+    assert out is not None and out.status == "failed"
+    assert "llm_error: HTTP 502" in out.error
+    assert "steps" in state.missions_failed

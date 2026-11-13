@@ -26,11 +26,12 @@ from typing import Any
 from cadx import storage
 from cadx.agent.context import system_prompt
 from cadx.agent.orchestrator import RunOutcome
-from cadx.agent.toolloop import run_session
+from cadx.agent.toolloop import SessionResult, run_session
 from cadx.agent.types import AgentCtx
 from cadx.guide import scene, unity
 from cadx.guide.session import GuideToolSession
 from cadx.guide.state import GuideState
+from cadx.llm.client import LLMError
 from cadx.logging import get_logger
 
 log = get_logger(__name__)
@@ -360,15 +361,30 @@ async def _run_mission(
                     "do NOT repeat the same calls verbatim:\n" + last_failures
                 )
         calls_budget = _calls_budget(mission, state)
-        result = await run_session(
-            ctx,
-            role="vision",
-            messages=_mission_prompt(mission, state, nudge, sess),
-            session=sess,
-            max_calls=calls_budget,
-            turn_budget=calls_budget,  # ~1 tool call per turn — the call cap is the real bound
-            step=f"guide_{mission}",
-        )
+        try:
+            result = await run_session(
+                ctx,
+                role="vision",
+                messages=_mission_prompt(mission, state, nudge, sess),
+                session=sess,
+                max_calls=calls_budget,
+                turn_budget=calls_budget,  # ~1 tool call per turn — the call cap is the real bound
+                step=f"guide_{mission}",
+            )
+        except LLMError as exc:
+            # infrastructure failure, not a model failure: the durable state
+            # survives (saved per tool call) — record the outage as this
+            # attempt's reason so the retry nudge + failure log name it
+            log.warning(
+                "guide.mission_llm_error",
+                mission=mission,
+                attempt=attempt,
+                error=str(exc)[:200],
+            )
+            result = SessionResult(
+                end_reason=f"llm_error: {str(exc)[:120]}",
+                tool_log=[],
+            )
         early = await _mission_early(sess, ctx, state, state_dir)
         if early is not None:
             return early
