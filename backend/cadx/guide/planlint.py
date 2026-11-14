@@ -300,6 +300,56 @@ def _lint_order(
     return findings
 
 
+def _lint_phantom_sizes(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
+    """A size-marked name whose length exists in NO detected part name and
+    NO registered part is a dimension/cut-length callout, not a kit part
+    (observed: figure lengths l=100/200mm became phantom steps + generated
+    pipe_l100/pipe_l200 — the Stückliste only ships l=70/500). The repair
+    lives in the plan, so it routes to ``steps``."""
+    from cadx.guide.part_tools import _sig
+
+    kit_sizes: set[str] = set()
+    doc = getattr(sess.state, "document", None)
+    for n in (getattr(doc, "detected_part_names", None) or []):
+        _, t = _sig(n)
+        kit_sizes |= {x for x in t if x.startswith("l")}
+    # registered parts count as kit evidence only when they carry a real
+    # uploaded asset — a generated part can itself BE the phantom this
+    # check hunts (l=200 pipe generated from a figure dimension)
+    for p in sess.state.parts:
+        if p.asset_id:
+            _, t = _sig(f"{p.name} {p.id}")
+            kit_sizes |= {x for x in t if x.startswith("l")}
+    if not kit_sizes:
+        return []
+    findings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for st in steps:
+        names = list(st.required_parts or [])
+        for ss in st.sub_steps or []:
+            names += [ss.part, ss.target, ss.target2]
+        for name in names:
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            _, toks = _sig(name)
+            phantom = {t for t in toks if t.startswith("l")} - kit_sizes
+            if phantom:
+                findings.append(
+                    {
+                        "mission": "steps",
+                        "severity": "blocker",
+                        "text": f"step {st.number}: '{name}' carries size "
+                        f"{sorted(phantom)} that no Stückliste part has "
+                        f"(kit sizes: {sorted(kit_sizes)}) — it is a "
+                        "dimension/cut-length callout, not a part. Remove "
+                        "the substep/required_parts entry; do not alias "
+                        "or generate it",
+                    }
+                )
+    return findings
+
+
 def _lint_quantities(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Stückliste 'Menge' bounds the total copies a plan may consume — a
     plan needing 5 of a 2-piece part maps the wrong part onto steps (the
@@ -390,6 +440,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings, first_place, anchor_step = _lint_refs(sess, steps)
     findings += _lint_order(sess, steps, first_place, anchor_step)
     findings += _lint_quantities(sess)
+    findings += _lint_phantom_sizes(sess, steps)
     findings += _lint_anchor(sess, steps)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
     log.info(
