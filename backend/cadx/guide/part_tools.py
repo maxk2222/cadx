@@ -190,14 +190,21 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
         # the agent re-registered the same FILE under a new id — the
         # semantic intent is "make this name resolve", which is exactly an
         # alias; fulfilling it beats a dead-end error the model retries
-        # verbatim until error_streak (observed: parts mission death).
+        # verbatim until error_streak (observed: parts mission death). The
+        # auto-alias goes through the same size/category sanity as
+        # alias_part — 'Rohr l=500' must never resolve to the l=70 part.
         new_name = str(a.get("name", "")).strip()
         made: list[str] = []
+        blocked: list[str] = []
         for alias in {new_name, pid} - {existing.name, existing.id, ""}:
             na = _norm(alias)
-            if na:
-                s._aliases_store[na] = existing.id
-                made.append(alias)
+            if not na:
+                continue
+            if _name_part_conflict(alias, existing.name, existing.id):
+                blocked.append(alias)
+                continue
+            s._aliases_store[na] = existing.id
+            made.append(alias)
         if quantity is not None:
             existing.quantity = quantity
         return {
@@ -205,9 +212,17 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
             "part_id": existing.id,
             "aliased_to": existing.id,
             "aliases_added": made,
+            "aliases_blocked": blocked,
             "note": f"asset was already registered as '{existing.id}' — "
-            f"mapped {made or ['<none>']} onto it; use part_id "
-            f"'{existing.id}' from here",
+            f"mapped {made or ['<none>']} onto it"
+            + (
+                f"; refused {blocked} (size/category contradicts "
+                f"'{existing.name}') — if the manual really means that "
+                "name, it belongs to a different part"
+                if blocked
+                else ""
+            )
+            + f"; use part_id '{existing.id}' from here",
         }
     # part_id uniqueness is a hard invariant — a second asset under an
     # existing id orphans it (part_by_id finds only the first). Observed:
@@ -380,13 +395,46 @@ async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[s
     }
 
 
+def _name_part_conflict(alias: str, part_name: str, part_id: str) -> str | None:
+    """An alias must rename the SAME physical part: 'Rohr DN22 l=500mm' on
+    the 70mm part corrupts every downstream resolution (targets,
+    requirements, lint). Blocks on contradictory size markers present on
+    both sides, and on specific-vs-specific category clashes (an elbow
+    name onto a pipe part is nearly always a wrong mapping)."""
+    acat, atoks = _sig(alias)
+    pcat, ptoks = _sig(f"{part_name} {part_id}")
+    for fam in ("dn", "l"):
+        a_vals = {t for t in atoks if t.startswith(fam)}
+        p_vals = {t for t in ptoks if t.startswith(fam)}
+        if a_vals and p_vals and a_vals != p_vals:
+            return (
+                f"carries different size markers {sorted(a_vals | p_vals)} "
+                f"than part '{part_id}' ('{part_name}')"
+            )
+    if acat != "other" and pcat != "other" and acat != pcat:
+        return (
+            f"looks like a {acat} but part '{part_id}' ('{part_name}') is "
+            f"a {pcat} — aliasing across categories means a different "
+            "physical part"
+        )
+    return None
+
+
 async def alias_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     part = s.state.part_by_id(_slug(str(a.get("part_id", ""))))
     if part is None:
         return {"ok": False, "error": "part not registered"}
-    alias = _norm(str(a.get("alias", "")))
+    raw_alias = str(a.get("alias", ""))
+    alias = _norm(raw_alias)
     if not alias:
         return {"ok": False, "error": "alias required"}
+    conflict = _name_part_conflict(raw_alias, part.name, part.id)
+    if conflict:
+        return {
+            "ok": False,
+            "error": f"alias '{raw_alias}' {conflict}. Check whether the "
+            "manual name belongs to another registered part instead.",
+        }
     s._aliases_store[alias] = part.id
     return {"ok": True, "alias": alias, "part_id": part.id}
 

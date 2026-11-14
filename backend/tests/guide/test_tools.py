@@ -706,3 +706,38 @@ def test_place_instance_skips_target_check_for_env_targets() -> None:
         place_instance(sess, {"part_id": "adapter", "candidate_id": "c", "step": 1})
     )
     assert r["ok"], r
+
+
+def test_alias_part_rejects_contradictory_size_and_category() -> None:
+    """'Rohr DN22 l=500mm' aliased onto the 70mm part silently corrupts
+    every later resolution — the alias must rename the SAME part."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.part_tools import alias_part
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import GuidePart, GuideState
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts.append(GuidePart(id="rohr_70", name="Rohr DN22, l = 70 mm"))
+    sess = GuideToolSession(
+        ctx, mission="parts", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    # different length marker → reject
+    r = asyncio.run(
+        alias_part(sess, {"part_id": "rohr_70", "alias": "Rohr DN22, l = 500 mm"})
+    )
+    assert r["ok"] is False and "size" in r["error"], r
+    # elbow name onto a pipe part → reject
+    r2 = asyncio.run(
+        alias_part(sess, {"part_id": "rohr_70", "alias": "Rohrbogen DN22 Muffe"})
+    )
+    assert r2["ok"] is False and "elbow" in r2["error"], r2
+    # same-size same-cat rename → allowed
+    r3 = asyncio.run(
+        alias_part(sess, {"part_id": "rohr_70", "alias": "kurzes Rohr DN22"})
+    )
+    assert r3["ok"], r3
