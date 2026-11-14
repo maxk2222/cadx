@@ -127,7 +127,11 @@ def _calls_budget(mission: str, state: GuideState) -> int:
 
 
 def _mission_prompt(
-    mission: str, state: GuideState, repair_notes: str = "", sess: Any = None
+    mission: str,
+    state: GuideState,
+    repair_notes: str = "",
+    sess: Any = None,
+    ctx: Any = None,
 ) -> str:
     sys_p = system_prompt(f"guide_{mission}.md")
     parts = [{"role": "system", "content": sys_p}]
@@ -170,7 +174,7 @@ def _mission_prompt(
         )
     if mission == "steps" and not state.allow_part_generation:
         kit = ", ".join(
-            a["filename"] for a in _guide_assets(ctx) if a["kind"] != "pdf"
+            a["filename"] for a in (_guide_assets(ctx) if ctx else []) if a["kind"] != "pdf"
         ) or "(no CAD uploads)"
         ctx_lines.append(
             "PART GENERATION IS DISABLED for this run — the kit is fixed "
@@ -429,7 +433,7 @@ async def _run_mission(
             result = await run_session(
                 ctx,
                 role="vision",
-                messages=_mission_prompt(mission, state, nudge, sess),
+                messages=_mission_prompt(mission, state, nudge, sess, ctx),
                 session=sess,
                 max_calls=calls_budget,
                 turn_budget=calls_budget,  # ~1 tool call per turn — the call cap is the real bound
