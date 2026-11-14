@@ -211,6 +211,23 @@ def _stream_tail_degenerate(text_parts: list[str], tool_acc: _StreamToolAcc) -> 
     return _looks_degenerate("".join(text_parts)[-384:]) or _looks_degenerate(args_tail[-384:])
 
 
+_SAMPLING_KEYS = (
+    "top_p",
+    "top_k",
+    "min_p",
+    "presence_penalty",
+    "repetition_penalty",
+    "frequency_penalty",
+    "seed",
+)
+
+
+def _merge_sampling(payload: dict[str, Any], profile: dict[str, Any]) -> None:
+    for k in _SAMPLING_KEYS:
+        if k in profile:
+            payload[k] = profile[k]
+
+
 def _chunk_has_reasoning(chunk: dict[str, Any]) -> bool:
     for ch in chunk.get("choices") or []:
         delta = ch.get("delta") or {}
@@ -286,6 +303,21 @@ class LLMClient:
                     log.warning("llm.extra_body.not_object")
             except json.JSONDecodeError:
                 log.warning("llm.extra_body.invalid_json")
+        # per-model sampling profiles (llm_sampling_profiles): model-name
+        # substring -> payload params; matched case-insensitively, longest
+        # pattern wins
+        self.sampling_profiles: dict[str, dict[str, Any]] = {}
+        if settings.llm_sampling_profiles:
+            try:
+                parsed = json.loads(settings.llm_sampling_profiles)
+                if isinstance(parsed, dict):
+                    self.sampling_profiles = {
+                        str(k).lower(): v for k, v in parsed.items() if isinstance(v, dict)
+                    }
+                else:
+                    log.warning("llm.sampling_profiles.not_object")
+            except json.JSONDecodeError:
+                log.warning("llm.sampling_profiles.invalid_json")
         self.total_usage = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
@@ -300,6 +332,17 @@ class LLMClient:
         self._caps_cb = caps_cb
         self.context_len: dict[Role, int | None] = {}
         self._probed_roles: set[Role] = set()
+
+    def _sampling_for(self, model: str) -> dict[str, Any]:
+        """Longest case-insensitive substring match of the model id against
+        llm_sampling_profiles patterns — e.g. 'qwen3.8-flash-next' beats a
+        broader 'qwen3.8' entry. Empty config -> no overrides."""
+        m = model.lower()
+        best: tuple[int, dict[str, Any]] | None = None
+        for pattern, params in self.sampling_profiles.items():
+            if pattern and pattern in m and (best is None or len(pattern) > best[0]):
+                best = (len(pattern), params)
+        return best[1] if best else {}
 
     async def _ensure_caps(self, role: Role) -> None:
         """Resolve this role's context window once: manual setting > cached
@@ -692,14 +735,18 @@ class LLMClient:
         model = self.models[role]
         await self._ensure_caps(role)
         eff_max = self._eff_max_tokens(role, model, messages, max_tokens)
+        profile = self._sampling_for(model)
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": (
-                self.runtime_settings.llm_temperature_code if temperature is None else temperature
+                profile.get("temperature", self.runtime_settings.llm_temperature_code)
+                if temperature is None
+                else temperature
             ),
             "max_tokens": eff_max,
         }
+        _merge_sampling(payload, profile)
         payload.update(self.extra_body)
         # per-call body (e.g. the adaptive thinking dialect) is merged LAST —
         # on key conflicts it wins over the client-wide llm_extra_body

@@ -54,6 +54,14 @@ class RuntimeSettings(BaseModel):
     # a degeneration mode the byte-progress watchdog cannot see
     llm_degenerate_stall_s: float = Field(default=60, gt=0)
     llm_extra_body: str = ""
+    # per-model sampling overrides: JSON object mapping a model-name
+    # substring (case-insensitive, longest match wins) to sampling params —
+    # {"qwen3.8-27b": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+    #  "qwen3.8-flash-next": {"temperature": 1.0, "top_p": 0.95, "top_k": 20}}
+    # Supported keys: temperature (overrides llm_temperature_code when the
+    # caller did not pass an explicit temperature), top_p, top_k, min_p,
+    # presence_penalty, repetition_penalty, frequency_penalty, seed.
+    llm_sampling_profiles: str = ""
     llm_tools: Literal["auto", "on", "off"] = "auto"
     # adaptive reasoning escalation: "auto" merges llm_thinking_body_on into
     # the request payload for hard steps and after stall triggers, "always"
