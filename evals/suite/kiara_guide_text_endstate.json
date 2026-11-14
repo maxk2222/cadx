@@ -1,0 +1,92 @@
+{
+  "name": "kiara_guide_text_endstate",
+  "project": "eval:kiara-guide-text-endstate",
+  "difficulty": 4,
+  "description": "Ablation: manual reduced to plain extracted text (no step figures, no layout) + ONE reference image of the final assembled state. Tests whether the pipeline builds a correct guide from text-only instructions plus a single end-state visual.",
+  "stages": [
+    {
+      "id": "guide",
+      "type": "guide",
+      "timeout_s": 5400,
+      "pdf": "evals/assets/kiara_heatpump/KIARA_text_only_endstate.pdf",
+      "cad_parts": [
+        "evals/assets/kiara_heatpump/Casing.glb",
+        "evals/assets/kiara_heatpump/Adapter_rn22_internal_thread_to_plain.glb",
+        "evals/assets/kiara_heatpump/Pipe_l70.glb",
+        "evals/assets/kiara_heatpump/Pipe_l500.glb",
+        "evals/assets/kiara_heatpump/Elbow_90deg_RN22_socket_to_spigot.glb",
+        "evals/assets/kiara_heatpump/Elbow_90deg_RN22_soket_to_socket.glb"
+      ],
+      "prompt": "AR-Montageanleitung fuer den KIARA-Waermepumpen-Demonstrator erstellen. Die Anleitung liegt als reiner Text vor (keine Schritt-Abbildungen) — einziges visuelles Referenzbild ist der Endzustand auf der letzten Seite. Vormontierte Komponenten (Verkleidung, Anschlussrohre, vormontierte Adapter) gehoeren zur Waermepumpe bzw. zum Ausgangszustand — sie werden nicht als eigene Parts generiert, sondern als Orte/Target im Schritttext referenziert bzw. auf das Gehaeuse gealiast.\n\nWICHTIG: Dichtungsscheiben/Dichtringe sind KEINE eigenen CAD-Teile — sie werden nur im Schritttext als Hinweis erwaehnt, niemals als Part generiert oder registriert.",
+      "answers": [
+        "Die vormontierten Komponenten gehoeren zum Ausgangszustand — positioniere sie plausibel laut Text und Endzustands-Bild und dokumentiere die Annahme.",
+        "Nutze das Endzustands-Referenzbild; bei Unsicherheit waehle die geometrisch konsistenteste Loesung und dokumentiere sie."
+      ],
+      "allow_generation": false,
+      "attach_images": true,
+      "max_resumes": 3,
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "guide_steps",
+          "min": 8,
+          "all": [
+            "adapter",
+            [
+              "pipe",
+              "rohr"
+            ],
+            [
+              "elbow",
+              "bogen"
+            ]
+          ]
+        },
+        {
+          "type": "guide_parts",
+          "min": 5,
+          "all": [
+            [
+              "casing",
+              "gehause",
+              "gehäuse",
+              "housing"
+            ],
+            "adapter",
+            [
+              "elbow",
+              "bogen",
+              "rohrbogen"
+            ]
+          ],
+          "none": [
+            "dicht",
+            "seal",
+            "washer",
+            "o-ring",
+            "oring"
+          ]
+        },
+        {
+          "type": "guide_placed",
+          "min": 8
+        },
+        {
+          "type": "guide_mate_quality",
+          "max_gap_mm": 30.0,
+          "min_normal_dot": -0.95
+        },
+        {
+          "type": "guide_score",
+          "min": 6.0
+        }
+      ]
+    }
+  ]
+}

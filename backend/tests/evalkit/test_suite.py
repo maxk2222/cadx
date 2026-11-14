@@ -44,11 +44,12 @@ def test_shipped_suite_loads_and_validates():
         "robot_arm_mount",
         "robot_arm_mount_autonomous",
         "kiara_guide_bare",
+        "kiara_guide_text_endstate",
         "kiara_guide_textonly",
         "kiara_guide_missing_part",
     ]
     assert [c.difficulty for c in cases] == [
-        1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 5
+        1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 5
     ]
     for c in cases:
         assert c.project.startswith("eval:")
@@ -144,6 +145,7 @@ def test_suite_files_present():
         "kiara_guide_bare.json",
         "kiara_guide_missing_part.json",
         "kiara_guide_no_pipes.json",
+        "kiara_guide_text_endstate.json",
         "kiara_guide_textonly.json",
         "kiara_guide_two_pipes.json",
         "kiara_heatpump_guide.json",
