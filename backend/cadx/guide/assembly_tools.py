@@ -51,6 +51,8 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "moving_port": _s("port name on the moving part"),
             "target_part_id": _s("placed target — part_id or instance_id (adapter#1)"),
             "target_port": _s("port name on the target part"),
+            "step": _i("step number — its text drives the growth-direction hint"),
+            "substep_idx": _i("index within the step's sub_steps (default 0)"),
         },
         ["part_id", "moving_port", "target_part_id", "target_port"],
     ),
@@ -180,7 +182,12 @@ def _resolve_inst(s: GuideToolSession, x: str) -> tuple[AssemblyInstance | None,
         ids = [i.instance_id for i in siblings]
         return None, (
             f"instance '{x}' does not exist — "
-            + (f"placed instances of that part: {ids}" if ids else f"part '{x.split('#')[0]}' has NO placed instances")
+            + (
+                f"placed instances of that part: {ids}"
+                if ids
+                else f"part '{x.split('#')[0]}' has NO placed instances "
+                f"(placed now: {[i.instance_id for i in s.state.assembly.instances]})"
+            )
         )
     insts = _insts_of(s, x)
     if len(insts) == 1:
@@ -516,33 +523,7 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
         str(a.get("target_port", "")),
     )
     if not cands:
-        # self-healing error: name the valid ports AND the compatible pairs so
-        # the next call succeeds instead of guessing port names blindly
-        err_out: dict[str, Any] = {
-            "ok": False,
-            "error": "no candidates for those port names",
-            "moving_ports": [p.name for p in moving.ports],
-            "fixed_ports": [p.name for p in fixed.ports],
-        }
-        empty = []
-        if not moving.ports:
-            empty.append(moving.id)
-        if not fixed.ports:
-            empty.append(fixed.id)
-        if empty:
-            err_out["error"] = (
-                f"{empty} have no extracted ports — run get_part_features "
-                "on them first, then retry"
-            )
-            err_out["next_action"] = f"get_part_features({empty[0]!r})"
-            return err_out
-        auto = solver.find_matching_ports(moving, fixed, include_mismatch=True)
-        if auto:
-            err_out["compatible_pairs"] = auto[:6]
-            err_out["hint"] = (
-                "retry with moving_port/target_port from compatible_pairs"
-            )
-        return err_out
+        return _no_cand_err(moving, fixed)
     # collision-check each candidate against the placed set; also expose the
     # burial fraction so the LLM can prefer a candidate whose body stays
     # OUTSIDE foreign parts instead of discovering the sink only at commit
@@ -575,8 +556,28 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
             c["rejected_reason"] = (
                 f"lands on top of '{si}' ({round(sf * 100)}% enveloped)"
             )
+    # growth-direction hint from the step/sub-step text ("vertikal nach
+    # unten") — deterministic candidate ranking so the pipe leaves the
+    # fitting downward, not sideways through the casing wall
+    gvec, gspec = _grow_dir_hint(s, a)
+    if gspec:
+        for c in cands:
+            gdir = solver.candidate_grow_dir(
+                moving,
+                c["transform"],
+                fixed,
+                fixed_inst.transform or solver.identity_transform(),
+                str(a.get("target_port", "")),
+            )
+            c["dir_match"] = round(
+                solver.grow_dir_score(gdir, gspec, gvec), 3
+            )
     cands.sort(
-        key=lambda c: (not c["geometry_ok"], c.get("joint_gap_mm") or 0.0)
+        key=lambda c: (
+            not c["geometry_ok"],
+            -(c.get("dir_match") or 0.5),
+            c.get("joint_gap_mm") or 0.0,
+        )
     )
     out: dict[str, Any] = {
         "ok": True,
@@ -585,9 +586,56 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
         "geometry_ok=false are pre-rejected (buried/swallowing); pick a "
         "geometry_ok=true candidate or a different port pair",
     }
+    if gspec:
+        hint_txt = f"grow_dir '{gspec}'"
+        if gvec is not None:
+            hint_txt += f" {[round(v, 2) for v in gvec]}"
+        out["grow_dir"] = hint_txt + " — prefer high dir_match"
     if not any(c["geometry_ok"] for c in cands):
         _add_alternative_pairs(out, s, moving, fixed, a)
     return out
+
+
+def _no_cand_err(moving: Any, fixed: Any) -> dict[str, Any]:
+    # self-healing error: name the valid ports AND the compatible pairs so
+    # the next call succeeds instead of guessing port names blindly
+    err_out: dict[str, Any] = {
+        "ok": False,
+        "error": "no candidates for those port names",
+        "moving_ports": [p.name for p in moving.ports],
+        "fixed_ports": [p.name for p in fixed.ports],
+    }
+    empty = []
+    if not moving.ports:
+        empty.append(moving.id)
+    if not fixed.ports:
+        empty.append(fixed.id)
+    if empty:
+        err_out["error"] = (
+            f"{empty} have no extracted ports — run get_part_features "
+            "on them first, then retry"
+        )
+        err_out["next_action"] = f"get_part_features({empty[0]!r})"
+        return err_out
+    auto = solver.find_matching_ports(moving, fixed, include_mismatch=True)
+    if auto:
+        err_out["compatible_pairs"] = auto[:6]
+        err_out["hint"] = "retry with moving_port/target_port from compatible_pairs"
+    return err_out
+
+
+def _grow_dir_hint(s: GuideToolSession, a: dict[str, Any]) -> tuple[Any, str]:
+    """(vector|None, spec) — direction intent parsed from the referenced
+    sub_step (+step) text. No hint when step/substep are absent or the
+    prose carries no directional word."""
+    st = s.state.step_by_number(int(a.get("step") or 0))
+    if st is None:
+        return None, ""
+    idx = int(a.get("substep_idx") or 0)
+    ss_txt = ""
+    if 0 <= idx < len(st.sub_steps):
+        ss_txt = st.sub_steps[idx].text or ""
+    return solver.direction_hint(f"{ss_txt} {st.text or ''} {st.title or ''}")
 
 
 def _add_alternative_pairs(
@@ -1250,6 +1298,25 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         )
     buried = _buried_instances_audit(s, bboxes, _ikey)
     disconnected = _connectivity_audit(s, bboxes, _ikey)
+    # world-space dominant axis per instance — layout evidence for the
+    # reviewer ("pipe vertical" is checkable against the manual, not
+    # vibes): a 500mm pipe must not report horizontal when the figure
+    # shows it hanging down
+    axis_profiles = []
+    for iid, (mn, mx) in bboxes.items():
+        span = np.asarray(mx, dtype=float) - np.asarray(mn, dtype=float)
+        tot = float(span.sum())
+        if tot <= 0:
+            continue
+        i = int(np.argmax(span))
+        axis_profiles.append(
+            {
+                "instance": iid,
+                "dominant_axis": ("x", "y", "z")[i],
+                "extent_mm": round(float(span[i]), 1),
+                "axis_share": round(float(span[i]) / tot, 2),
+            }
+        )
     rows: list[dict[str, Any]] = []
     bad: list[dict[str, Any]] = []
     approx: list[dict[str, Any]] = []
@@ -1319,6 +1386,7 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         "bad_joints": bad,
         "buried_instances": buried,
         "disconnected_instances": disconnected,
+        "axis_profiles": axis_profiles,
         "approximated_joints": approx,
     }
 

@@ -1264,6 +1264,33 @@ def _gate_outcome(  # noqa: C901
             expected={"max_gap_mm": max_gap, "min_normal_dot": min_nd, "buried": False},
         )
 
+    if name == "guide_connected":
+        # the emitted end-state audit snapshot — every placed instance must
+        # reach the anchor host via joints and none may sit buried inside
+        # foreign parts. Reads doc["audit"], never a re-derivation.
+        doc = outcome.extras.get("guide")
+        if not isinstance(doc, dict):
+            return GateResult(
+                name,
+                None,
+                detail="no unity_guide.json on the outcome — guide emit never ran",
+            )
+        audit = doc.get("audit") or {}
+        disconnected = audit.get("disconnected_instances") or []
+        buried = audit.get("buried_instances") or []
+        bad = [d["instance"] for d in disconnected] + [
+            f"{b['instance']} buried {b['buried_frac']}" for b in buried
+        ]
+        return GateResult(
+            name,
+            not bad,
+            measured={
+                "disconnected": disconnected or None,
+                "buried": buried or None,
+            },
+            expected={"disconnected": [], "buried": []},
+        )
+
     if name in ("guide_steps", "guide_parts", "guide_placed", "guide_score"):
         # anleitungsbuilder evidence — parsed unity_guide.json the driver
         # stored on extras["guide"]; absent → inconclusive, never silently ok

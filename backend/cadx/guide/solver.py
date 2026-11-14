@@ -467,6 +467,77 @@ def _port_exposure(part: GuidePart) -> dict[str, float]:
     return out
 
 
+# --------------------------------------------------------------------------- #
+# grow-direction hints — "vertikal nach unten" in the manual is a physical
+# requirement, not flavour text: candidates whose body grows in the hinted
+# direction rank first. Only unambiguous directional words parse —
+# 'links'/'rechts' usually name WHICH branch, not a growth direction.
+# --------------------------------------------------------------------------- #
+
+_DIR_WORDS: tuple[tuple[tuple[str, ...], tuple[float, float, float]], ...] = (
+    (("nach unten", "vertikal nach unten", "senkrecht nach unten", "downward", "downwards"), (0.0, 0.0, -1.0)),
+    (("nach oben", "vertikal nach oben", "senkrecht nach oben", "upward", "upwards"), (0.0, 0.0, 1.0)),
+)
+# axis-any-sign words — "vertikal" alone still demands a vertical part
+_AXIS_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("vertikal", "senkrecht", "vertical", "vertically", "lotrecht"), "z"),
+    (("horizontal", "waagrecht", "waagerecht", "horizontally", "quer"), "xy"),
+)
+
+
+def direction_hint(text: str) -> tuple[np.ndarray | None, str]:
+    """Parse a coarse growth direction from step/sub-step prose.
+    Returns (unit_vector|None, 'x|y|z|xy|tag'|'') — vector for explicit
+    directions, axis spec for 'vertikal'/'horizontal', ('',None) → no hint."""
+    t = (text or "").lower()
+    for words, vec in _DIR_WORDS:
+        if any(w in t for w in words):
+            return np.asarray(vec, dtype=float), "dir"
+    for words, spec in _AXIS_WORDS:
+        if any(w in t for w in words):
+            return None, spec
+    return None, ""
+
+
+def candidate_grow_dir(
+    moving: GuidePart,
+    cand_transform: Any,
+    fixed: GuidePart,
+    fixed_transform: Any,
+    fixed_port_name: str,
+) -> np.ndarray | None:
+    """Unit direction the candidate's body grows in: from the FIXED port's
+    world position toward the moving part's world bbox centre."""
+    fp = next((p for p in fixed.ports if p.name == fixed_port_name), None)
+    if fp is None:
+        return None
+    ft = np.asarray(fixed_transform, dtype=float).reshape(4, 4)
+    port_w = ft[0:3, 0:3] @ np.asarray(fp.pos, dtype=float) + ft[0:3, 3]
+    mn, mx = world_bbox(
+        moving.bbox_min, moving.bbox_max, np.asarray(cand_transform, dtype=float)
+    )
+    d = (mn + mx) / 2.0 - port_w
+    n = float(np.linalg.norm(d))
+    return d / n if n > 1e-6 else None
+
+
+def grow_dir_score(gdir: np.ndarray | None, spec: str, vec: np.ndarray | None) -> float:
+    """0..1 alignment of the candidate's growth direction with the hint —
+    0.5 when the hint can't be evaluated (no spec or degenerate dir)."""
+    if gdir is None or not spec:
+        return 0.5
+    if spec == "dir" and vec is not None:
+        return float(max(0.0, np.dot(gdir, vec)))
+    if spec == "z":
+        return float(abs(gdir[2]))
+    if spec == "xy":
+        return float(1.0 - abs(gdir[2]))
+    if spec in ("x", "y"):
+        i = 0 if spec == "x" else 1
+        return float(abs(gdir[i]))
+    return 0.5
+
+
 def port_loc(p: PortInfo, part: GuidePart) -> str:
     """Coarse spatial label for a port — '+z|min-y' style — so the agent can
     pick the casing's front-edge stub instead of 'cyl_13' blind. The axis

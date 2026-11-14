@@ -16,5 +16,7 @@ Hard rules:
 - Every part occurrence in the step's required_parts must end up placed in that step.
 - Keep sub_steps order; a part may target an already-placed part only.
 - Ports named male→female mate best; matching radii matter.
+- CONNECTIVITY: every placed instance must be reachable from the anchor host (enclosure/largest part) through the joint graph — a fitting cluster floating next to the casing is BLOCKED at done_mission, no matter how clean the joints look.
+- GROWTH DIRECTION: pass `step`/`substep_idx` to solve_attachment_preview — when the step says "vertikal nach unten" the solver ranks candidates by dir_match; pick the candidate whose body grows the way the manual shows, not just the first legal mate.
 - Finish with `validate_assembly_geometry` + `validate_assembly_completeness`; fix every reported issue, then `done_mission`.
 - Every ASSUMPTION you had to make (virtual anchor points, missing host geometry, guessed positions from figures) gets an `add_master_note` call in the guide's language — these become the durable masternotes shown to the guide user; never hide assumptions silently.

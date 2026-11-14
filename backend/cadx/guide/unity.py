@@ -170,9 +170,28 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[
                 m["buried_frac"] = buried[key]
                 m["buried"] = buried[key] > 0.45
         metrics[idx] = m
+    # world dominant axis per instance — layout evidence durable in the
+    # doc so gates/reviewers check "pipe hangs vertical" against numbers,
+    # not renders alone
+    axis_profiles = []
+    for iid, (mn, mx) in bboxes.items():
+        span = np.asarray(mx, dtype=float) - np.asarray(mn, dtype=float)
+        tot = float(span.sum())
+        if tot <= 0:
+            continue
+        i = int(np.argmax(span))
+        axis_profiles.append(
+            {
+                "instance": iid,
+                "dominant_axis": ("x", "y", "z")[i],
+                "extent_mm": round(float(span[i]), 1),
+                "axis_share": round(float(span[i]) / tot, 2),
+            }
+        )
     audit = {
         "buried_instances": buried_rows,
         "disconnected_instances": disconnected_rows,
+        "axis_profiles": axis_profiles,
     }
     return metrics, buried, audit
 

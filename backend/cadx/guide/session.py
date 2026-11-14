@@ -337,7 +337,23 @@ class GuideToolSession(ToolSession):
     def _images_result(self, paths: list[str], **extra: Any) -> dict[str, Any]:
         out: dict[str, Any] = {"ok": True, **extra}
         if self.attach_images and self.image_left > 0 and paths:
-            out["_images"] = paths[: self.image_left]
+            # dedup-aware budget: the transport stubs byte-identical
+            # re-sends anyway, so only FRESH bytes cost a slot — otherwise
+            # two each_step render batches starve the reviewer mid-
+            # comparison (observed: 'image budget/role unavailable' while
+            # the visual_comparison was still open)
+            import hashlib
+
+            seen = self._sent_image_hashes
+            fresh: list[str] = []
+            for p in paths:
+                try:
+                    d = hashlib.sha1(Path(p).read_bytes()).hexdigest()
+                except Exception:
+                    d = ""
+                if not d or d not in seen:
+                    fresh.append(p)
+            out["_images"] = fresh[: self.image_left]
             self.image_left -= len(out["_images"])
         elif paths:
             out["images_suppressed"] = "image budget/role unavailable"

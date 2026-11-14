@@ -185,6 +185,14 @@ def _mission_prompt(
             "`target` as context — NEVER in required_parts or a sub_step "
             "`part`."
         )
+    if mission == "steps":
+        detected = getattr(state.document, "detected_part_qty", None) or {}
+        if detected:
+            ctx_lines.append(
+                "Stückliste quantities the manual itself states — the plan "
+                "must NEVER consume more copies of a part than this count: "
+                + ", ".join(f"{k}={v}x" for k, v in detected.items())
+            )
     if mission == "parts" and not state.allow_part_generation:
         ctx_lines.append(
             "PART GENERATION IS DISABLED for this run: every required name "

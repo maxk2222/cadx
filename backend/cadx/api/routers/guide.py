@@ -144,7 +144,16 @@ async def guide_part_mesh(
 
     def _resolve() -> Path | None:
         p = Path(part.mesh_path).resolve() if part and part.mesh_path else None
-        if p is None or guide_dir.resolve() not in p.parents or not p.is_file():
+        if p is None or not p.is_file():
+            return None
+        # durable location is guide_dir/parts — but runs emitted before the
+        # copy-in fix recorded generated meshes under their source version's
+        # exports dir; both live inside the data root, which is the real
+        # trust boundary (state-recorded paths, files we wrote)
+        if p.suffix.lower() not in (".glb", ".gltf", ".stl", ".step", ".stp"):
+            return None
+        root = storage.data_root().resolve()
+        if guide_dir.resolve() not in p.parents and root not in p.parents:
             return None
         return p
 

@@ -79,6 +79,9 @@
           "min_normal_dot": -0.95
         },
         {
+          "type": "guide_connected"
+        },
+        {
           "type": "guide_joints",
           "min": 9,
           "all": [

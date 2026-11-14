@@ -147,3 +147,49 @@ def test_free_placement_on_table_and_top() -> None:
     )
     mn, _ = solver.transform_bbox(part, stacked)
     assert abs(mn[2] - 42.0) < 1e-6  # on top (40) + 2mm gap
+
+
+def test_direction_hint_parses_vertical_down() -> None:
+    vec, spec = solver.direction_hint("Rohr vertikal nach unten führen")
+    assert spec == "dir"
+    assert vec is not None and list(vec) == [0.0, 0.0, -1.0]
+
+
+def test_direction_hint_axis_words() -> None:
+    vec, spec = solver.direction_hint("vertikal montieren")
+    assert vec is None and spec == "z"
+    vec, spec = solver.direction_hint("horizontal verlegen")
+    assert vec is None and spec == "xy"
+
+
+def test_direction_hint_none_on_plain_text() -> None:
+    vec, spec = solver.direction_hint("Schraube M8 anziehen")
+    assert vec is None and spec == ""
+
+
+def test_grow_dir_score_alignment() -> None:
+    down = np.array([0.0, 0.0, -1.0])
+    assert solver.grow_dir_score(down, "dir", down) == 1.0
+    assert solver.grow_dir_score(-down, "dir", down) == 0.0
+    assert solver.grow_dir_score(np.array([1.0, 0, 0]), "z", None) == 0.0
+    assert solver.grow_dir_score(down, "z", None) == 1.0
+    assert solver.grow_dir_score(down, "xy", None) == 0.0
+    # unknown spec / degenerate dir → neutral 0.5
+    assert solver.grow_dir_score(None, "dir", down) == 0.5
+
+
+def test_candidate_grow_dir_from_port_to_body() -> None:
+    moving = _part("pipe", [], bbox=((0, 0, -500), (10, 10, 0)))
+    fixed = _part(
+        "elbow",
+        [PortInfo(name="out", kind="socket", pos=[5, 5, 0], axis=[0, 0, -1], radius=8)],
+    )
+    gdir = solver.candidate_grow_dir(
+        moving,
+        np.eye(4),
+        fixed,
+        np.eye(4),
+        "out",
+    )
+    assert gdir is not None
+    assert gdir[2] < -0.9  # body centre far below the port → −z growth
