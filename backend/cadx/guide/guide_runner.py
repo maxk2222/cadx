@@ -19,6 +19,7 @@ mission-scoped ``GuideToolSession``:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from pathlib import Path
@@ -167,6 +168,14 @@ def _mission_prompt(
             "register_uploaded_part on a covered asset errors): "
             + ", ".join(f"{p.id} ({p.name})" for p in state.parts[:30])
         )
+    if mission == "steps" and not state.allow_part_generation:
+        ctx_lines.append(
+            "PART GENERATION IS DISABLED for this run: the kit is fixed to "
+            "the uploaded parts — check list_parts before writing "
+            "required_parts. A manual step that installs a part the kit "
+            "does not contain keeps that part in `text`/`target` as "
+            "context — NEVER in required_parts or a sub_step `part`."
+        )
     if mission == "parts" and not state.allow_part_generation:
         ctx_lines.append(
             "PART GENERATION IS DISABLED for this run: every required name "
@@ -274,15 +283,24 @@ async def _emit_assembly_artifacts(
 
 
 def _load_or_init_state(
-    ctx: AgentCtx, state_dir: Path, resume_state: dict[str, Any], allow_generation: bool
+    ctx: AgentCtx,
+    state_dir: Path,
+    resume_state: dict[str, Any],
+    allow_generation: bool,
+    language: str = "",
+    audience: str = "",
 ) -> GuideState:
     state = GuideState.load(state_dir)
     if state is None:
+        lang = language.strip().lower()
         state = GuideState(
             project_id=str(ctx.project_id or ""),
             guide_version_id=str(ctx.version_id),
             output_dir=str(state_dir),
             allow_part_generation=allow_generation,
+            language=lang or "de",
+            language_locked=bool(lang),
+            audience=audience.strip(),
         )
         # the user's request is durable context for EVERY mission —
         # without this the prompt only lives on the version row and the
@@ -472,6 +490,38 @@ async def _run_mission(
     return None
 
 
+async def _maybe_apply_audience_rewrite(
+    state: GuideState, state_dir: Path, ctx: AgentCtx
+) -> None:
+    """Spawn-time audience choice: rewrite the step text BEFORE emit so
+    the shipped unity_guide.json already carries the variant. One extra
+    LLM call — a failure must never kill a finished guide, ship the
+    original."""
+    if not state.audience:
+        return
+    if ctx.emit is not None:
+        with contextlib.suppress(Exception):
+            await ctx.emit("guide_rewrite", 0, f"rewrite: {state.audience}")
+    try:
+        from cadx.guide.rewrite import apply_rewrite
+
+        rw = await apply_rewrite(
+            state,
+            audience=state.audience,
+            language=state.language,
+            llm=ctx.llm,
+        )
+        log.info(
+            "guide.audience_rewritten",
+            audience=state.audience,
+            variant=rw["key"],
+            applied=rw["applied"],
+        )
+    except Exception as exc:
+        log.warning("guide.audience_rewrite_failed", error=str(exc)[:300])
+    state.save(state_dir)
+
+
 async def run_guide(
     ctx: AgentCtx,
     *,
@@ -479,12 +529,16 @@ async def run_guide(
     resume_state: dict[str, Any],
     allow_generation: bool = True,
     attach_images: bool = True,
+    language: str = "",
+    audience: str = "",
     park_job: Any = None,
 ) -> RunOutcome:
     """Mission loop. ``park_job`` (optional) is invoked with the question
     payload when a mission calls ask_user — it persists job.questions etc;
     either way the runner returns waiting_for_input."""
-    state = _load_or_init_state(ctx, state_dir, resume_state, allow_generation)
+    state = _load_or_init_state(
+        ctx, state_dir, resume_state, allow_generation, language, audience
+    )
     assets = _guide_assets(ctx)
     rt = ctx.runtime_settings
     score_target = float(getattr(rt, "guide_review_score_target", 8.0))
@@ -579,6 +633,8 @@ async def run_guide(
         state.assembly = best_assembly
         state.review.score = best_score
         state.save(state_dir)
+
+    await _maybe_apply_audience_rewrite(state, state_dir, ctx)
 
     artifacts = await _emit_artifacts(state, state_dir, ctx.executor)
     outcome = RunOutcome(
