@@ -567,6 +567,27 @@ def world_bbox(
     return w.min(axis=0), w.max(axis=0)
 
 
+def enclosure_hosts(
+    boxes: dict[str, tuple[np.ndarray, np.ndarray]],
+) -> set[str]:
+    """Instances acting as ENCLOSURES — hollow hosts whose AABB legitimately
+    contains the assembly (a casing shell around the port stack). Detected
+    structurally, not by fragile mesh-volume guesses: two or more placed
+    instances sitting ≥50% inside a host's box means its interior is
+    workspace, not material — AABB containment there is cavity placement
+    and the solid-intersection collision check is the governing test."""
+    hosts: set[str] = set()
+    for hid, hb in boxes.items():
+        inside = sum(
+            1
+            for k, bb in boxes.items()
+            if k != hid and union_containment(bb[0], bb[1], [hb]) > 0.5
+        )
+        if inside >= 2:
+            hosts.add(hid)
+    return hosts
+
+
 def union_containment(
     mn: np.ndarray,
     mx: np.ndarray,

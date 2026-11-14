@@ -16,7 +16,13 @@ from typing import Any
 
 import numpy as np
 
-from cadx.guide.solver import _unit, evaluate_mate, union_containment, world_bbox
+from cadx.guide.solver import (
+    _unit,
+    enclosure_hosts,
+    evaluate_mate,
+    union_containment,
+    world_bbox,
+)
 
 # spatial change-of-basis (unit vectors); det = -1 → RH→LH
 _M = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
@@ -128,11 +134,32 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float]]:
         b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
         partners.setdefault(a, set()).add(b)
         partners.setdefault(b, set()).add(a)
+    # same tiered rules as joint_geometry_audit: direct partners are
+    # engagement, chain-2 neighbours share the engagement space below
+    # 0.85 (plugged chains overlap), enclosures never count — a casing
+    # shell legitimately contains the assembly it's mounted around
+    enclosures = enclosure_hosts(bboxes)
     buried: dict[str, float] = {}
     for iid, (mn, mx) in bboxes.items():
-        excl = {iid} | partners.get(iid, set())
-        others = [bb for k, bb in bboxes.items() if k not in excl]
-        frac = union_containment(mn, mx, others)
+        direct = partners.get(iid, set())
+        chain2 = set()
+        for p in direct:
+            chain2 |= partners.get(p, set()) - direct - {iid}
+        far_frac = union_containment(
+            mn,
+            mx,
+            [
+                bb
+                for k, bb in bboxes.items()
+                if k not in direct and k not in chain2
+                and k != iid and k not in enclosures
+            ],
+        )
+        chain_worst = max(
+            (union_containment(mn, mx, [bboxes[k]]) for k in chain2 - enclosures),
+            default=0.0,
+        )
+        frac = max(far_frac, chain_worst if chain_worst > 0.85 else 0.0)
         if frac > 0.0:
             buried[iid] = round(frac, 3)
     metrics: dict[int, dict] = {}
@@ -149,6 +176,11 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float]]:
         )
         m: dict[str, Any] = {}
         if mv is not None and fx is not None and mp is not None and tp is not None:
+            if j.get("axis_flipped"):
+                # joint was committed under the flipped moving-axis
+                # convention — evaluate with the same convention or a
+                # valid mate reads normal_dot=+1
+                mp = mp.model_copy(update={"axis": [-a for a in mp.axis]})
             gap, ndot = evaluate_mate(
                 mp,
                 np.asarray(mv.transform, dtype=float).reshape(4, 4),
