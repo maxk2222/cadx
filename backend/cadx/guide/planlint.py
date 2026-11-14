@@ -34,6 +34,7 @@ from cadx.guide.assembly_tools import (
     _name_index,
     _norm2,
     _resolve_name,
+    _tokset,
 )
 from cadx.guide.session import GuideToolSession
 
@@ -61,6 +62,89 @@ def _suggest(sess: GuideToolSession, name: str) -> str:
         return f" — did you mean '{pid or close[0]}'?"
     ids = [p.id for p in sess.state.parts][:8]
     return f" — registered parts: {ids}"
+
+
+# positional/ordinal qualifiers that turn a part noun into an INSTANCE
+# reference — "linkes vertikales Rohr" = the pipe already standing on the
+# left, not a new part name
+_INSTANCE_QUALIFIERS = {
+    "links",
+    "linkes",
+    "linker",
+    "linke",
+    "rechts",
+    "rechtes",
+    "rechter",
+    "rechte",
+    "oben",
+    "oberes",
+    "oberer",
+    "obere",
+    "unten",
+    "unteres",
+    "unterer",
+    "untere",
+    "vorne",
+    "vorderes",
+    "vorderer",
+    "hinten",
+    "hinteres",
+    "hinterer",
+    "hintere",
+    "vertikal",
+    "vertikales",
+    "vertikaler",
+    "vertikale",
+    "horizontal",
+    "horizontales",
+    "mittlerer",
+    "mittleres",
+    "seitlich",
+    "seitliches",
+    "linken",
+    "rechten",
+    "oberen",
+    "unteren",
+    "vorderen",
+    "hinteren",
+    "seitlicher",
+    "left",
+    "right",
+    "upper",
+    "lower",
+    "top",
+    "bottom",
+    "front",
+    "rear",
+    "back",
+    "vertical",
+    "middle",
+    "side",
+    "inner",
+    "outer",
+    "first",
+    "second",
+    "third",
+    "erste",
+    "zweite",
+    "dritte",
+    "erster",
+    "zweiter",
+    "dritter",
+}
+
+
+def _is_instance_ref(sess: GuideToolSession, name: str) -> bool:
+    """A qualifier + part-noun phrase that names a placed instance by
+    position rather than a registered part — placement resolves it via
+    the direction words against placed instances."""
+    toks = _tokset(name)
+    if not (toks & _INSTANCE_QUALIFIERS):
+        return False
+    part_toks: set[str] = set()
+    for k in _name_index(sess):
+        part_toks |= _tokset(k)
+    return bool(toks & part_toks)
 
 
 def _lint_refs(
@@ -98,17 +182,35 @@ def _lint_refs(
                         }
                     )
                 elif not _resolve_name(sess, name):
-                    findings.append(
-                        {
-                            "mission": "parts",
-                            "severity": "blocker",
-                            "text": f"step {st.number} sub {i}: target '{name}' "
-                            "matches no registered part"
-                            + _suggest(sess, name)
-                            + " — alias_part the name onto the host part "
-                            "or register a missed asset",
-                        }
-                    )
+                    if _is_instance_ref(sess, name):
+                        # "linkes vertikales Rohr" references a PLACED
+                        # instance by position, not a part name — the
+                        # direction words pick the instance at placement
+                        # time (preassembly groups fall through to every
+                        # placed instance). Not repairable by alias: the
+                        # qualifier is the whole point. Warn, don't block.
+                        findings.append(
+                            {
+                                "mission": "steps",
+                                "severity": "warning",
+                                "text": f"step {st.number} sub {i}: target "
+                                f"'{name}' is an instance-style reference "
+                                "(positional qualifier + part noun) — it "
+                                "resolves per position at placement",
+                            }
+                        )
+                    else:
+                        findings.append(
+                            {
+                                "mission": "parts",
+                                "severity": "blocker",
+                                "text": f"step {st.number} sub {i}: target '{name}' "
+                                "matches no registered part"
+                                + _suggest(sess, name)
+                                + " — alias_part the name onto the host part "
+                                "or register a missed asset",
+                            }
+                        )
             if ss.action in _PLACE_ACTIONS:
                 pid = _resolve_part(sess, ss.part, st.number)
                 if pid:
@@ -233,9 +335,7 @@ def _lint_quantities(sess: GuideToolSession) -> list[dict[str, Any]]:
     return findings
 
 
-def _lint_anchor(
-    sess: GuideToolSession, steps: list[Any]
-) -> list[dict[str, Any]]:
+def _lint_anchor(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
     """The biggest registered part is the assembly's host/base — a plan that
     neither places it nor mates anything to it builds a satellite assembly
     disconnected from the host (observed: adapters stacked on each other,
