@@ -556,29 +556,9 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
             c["rejected_reason"] = (
                 f"lands on top of '{si}' ({round(sf * 100)}% enveloped)"
             )
-    # growth-direction hint from the step/sub-step text ("vertikal nach
-    # unten") — deterministic candidate ranking so the pipe leaves the
-    # fitting downward, not sideways through the casing wall
     gvec, gspec = _grow_dir_hint(s, a)
-    if gspec:
-        for c in cands:
-            gdir = solver.candidate_grow_dir(
-                moving,
-                c["transform"],
-                fixed,
-                fixed_inst.transform or solver.identity_transform(),
-                str(a.get("target_port", "")),
-            )
-            c["dir_match"] = round(
-                solver.grow_dir_score(gdir, gspec, gvec), 3
-            )
-    cands.sort(
-        key=lambda c: (
-            not c["geometry_ok"],
-            -(c.get("dir_match") or 0.5),
-            c.get("joint_gap_mm") or 0.0,
-        )
-    )
+    ovec, ospec = _out_dir_hint(s, a, moving)
+    _rank_candidates(s, a, cands, moving, fixed, fixed_inst, gvec, gspec, ovec, ospec)
     out: dict[str, Any] = {
         "ok": True,
         "candidates": _cache_candidates(s, cands),
@@ -591,9 +571,92 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
         if gvec is not None:
             hint_txt += f" {[round(v, 2) for v in gvec]}"
         out["grow_dir"] = hint_txt + " — prefer high dir_match"
+    if ospec:
+        out["out_dir"] = (
+            f"next part grows '{ospec}'"
+            + (f" {[round(v, 2) for v in ovec]}" if ovec is not None else "")
+            + " — prefer high out_dir_match (free port faces the follower)"
+        )
     if not any(c["geometry_ok"] for c in cands):
         _add_alternative_pairs(out, s, moving, fixed, a)
     return out
+
+
+def _rank_candidates(
+    s: GuideToolSession,
+    a: dict[str, Any],
+    cands: list[dict[str, Any]],
+    moving: Any,
+    fixed: Any,
+    fixed_inst: Any,
+    gvec: Any,
+    gspec: str,
+    ovec: Any,
+    ospec: str,
+) -> None:
+    """Direction-aware candidate ordering (in place).
+
+    ``dir_match`` — the moving body's growth direction vs the step text
+    ("vertikal nach unten"). ``out_dir_match`` — the direction of this
+    part's best FREE port vs where the NEXT part grows: a 90° elbow's
+    free socket must face the "vertikale Röhre" coming after it — the
+    roll chosen HERE is where verticality is actually decided (a pipe
+    seated in a socket has no roll freedom left). Geometry verdicts
+    always outrank both; the hints only order legal candidates."""
+    ft = fixed_inst.transform or solver.identity_transform()
+    for c in cands:
+        if gspec:
+            gdir = solver.candidate_grow_dir(
+                moving, c["transform"], fixed, ft, str(a.get("target_port", ""))
+            )
+            c["dir_match"] = round(solver.grow_dir_score(gdir, gspec, gvec), 3)
+        if ospec:
+            mt = np.asarray(c["transform"], dtype=float).reshape(4, 4)
+            best = 0.0
+            for p in moving.ports:
+                if p.name == str(a.get("moving_port", "")):
+                    continue
+                wa = mt[0:3, 0:3] @ np.asarray(p.axis, dtype=float)
+                n = float(np.linalg.norm(wa))
+                if n > 1e-6:
+                    best = max(best, solver.grow_dir_score(wa / n, ospec, ovec))
+            c["out_dir_match"] = round(best, 3)
+    cands.sort(
+        key=lambda c: (
+            not c["geometry_ok"],
+            -(c.get("out_dir_match") or 0.5),
+            -(c.get("dir_match") or 0.5),
+            c.get("joint_gap_mm") or 0.0,
+        )
+    )
+
+
+def _out_dir_hint(s: GuideToolSession, a: dict[str, Any], moving: Any) -> tuple[Any, str]:
+    """Direction the NEXT part grows — found on the first sub_step AFTER
+    the current one (plan order) that targets the moving part. Its text
+    describes the follow-on part's insertion ("unteren Seite in die
+    Muffe" → the follower grows +z), which is exactly where THIS part's
+    free port must face. Only sub_steps after (step, substep_idx) count —
+    earlier mates don't constrain this fitting's remaining sockets."""
+    step_no = int(a.get("step") or 0)
+    ss_idx = int(a.get("substep_idx") or 0)
+    if not step_no:
+        return None, ""
+    for st in sorted(s.state.steps, key=lambda x: x.number):
+        for i, ss in enumerate(st.sub_steps):
+            if (st.number, i) <= (step_no, ss_idx):
+                continue
+            refs = (
+                (ss.target or "").split("(")[0].strip(),
+                (ss.target2 or "").split("(")[0].strip(),
+            )
+            if moving.id not in refs:
+                continue
+            vec, spec = solver.direction_hint(ss.text or "")
+            if spec:
+                return vec, spec
+            return None, ""  # targeted mate without direction words — no hint
+    return None, ""
 
 
 def _no_cand_err(moving: Any, fixed: Any) -> dict[str, Any]:
