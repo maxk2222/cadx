@@ -87,9 +87,10 @@ def test_solve_attachment_candidates() -> None:
     cands = solver.solve_attachment(
         moving, "tip", fixed, solver.identity_transform(), "hole", rotation_snaps=[0, 90]
     )
-    assert len(cands) == 2
+    assert len(cands) == 4  # 2 rolls x 2 axis conventions (rim axes are sign-ambiguous)
     assert all(c["geometry_ok"] for c in cands)
     assert cands[0]["joint_gap_mm"] < 0.05
+    assert {c["axis_flipped"] for c in cands} == {False, True}
 
 
 def test_gender_and_radius_gates() -> None:

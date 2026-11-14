@@ -606,27 +606,44 @@ def solve_attachment(
     rotation_snaps: list[float] | None = None,
 ) -> list[dict[str, Any]]:
     """Candidate transforms for a port pair across roll snaps — the LLM
-    picks one via place_instance (KIARA solve_attachment shape)."""
+    picks one via place_instance (KIARA solve_attachment shape).
+
+    Extracted rim axes are direction-ambiguous: the extractor can emit a
+    port normal pointing INTO the moving body, and the standard mate
+    then sinks the whole part into the host — no roll angle fixes that.
+    So every roll snap is generated under BOTH conventions of the moving
+    port axis (the flipped variant mirrors the body across the mate
+    plane); downstream legality checks (burial/collision gates in the
+    preview) decide which side is real."""
     mp = _port(moving, moving_port_name)
     tp = _port(fixed, fixed_port_name)
     if mp is None or tp is None:
         return []
+    mp_flip = mp.model_copy(update={"axis": [-a for a in mp.axis]})
     tf = np.asarray(fixed_transform, dtype=float).reshape(4, 4)
     out = []
     for rot in rotation_snaps or DEFAULT_SNAPS:
-        m = transform_port_to_target(moving, mp, tf, tp, fixed, rotation_degrees=rot)
-        gap, ndot = evaluate_mate(mp, m, tp, tf)
-        out.append(
-            {
-                "transform": [[round(float(v), 8) for v in row] for row in m.tolist()],
-                "rotation_degrees": rot,
-                "joint_gap_mm": round(gap, 6),
-                "normal_dot": round(ndot, 6),
-                "geometry_ok": bool(gap < GAP_GATE_MM and ndot <= NORMAL_DOT_GATE),
-                "moving_port": mp.name,
-                "fixed_port": tp.name,
-            }
-        )
+        for mpv, flipped in ((mp, False), (mp_flip, True)):
+            m = transform_port_to_target(
+                moving, mpv, tf, tp, fixed, rotation_degrees=rot
+            )
+            gap, ndot = evaluate_mate(mpv, m, tp, tf)
+            out.append(
+                {
+                    "transform": [
+                        [round(float(v), 8) for v in row] for row in m.tolist()
+                    ],
+                    "rotation_degrees": rot,
+                    "joint_gap_mm": round(gap, 6),
+                    "normal_dot": round(ndot, 6),
+                    "geometry_ok": bool(
+                        gap < GAP_GATE_MM and ndot <= NORMAL_DOT_GATE
+                    ),
+                    "moving_port": mp.name,
+                    "fixed_port": tp.name,
+                    "axis_flipped": flipped,
+                }
+            )
     out.sort(key=lambda c: (not c["geometry_ok"], c["joint_gap_mm"], c["rotation_degrees"]))
     return out
 
