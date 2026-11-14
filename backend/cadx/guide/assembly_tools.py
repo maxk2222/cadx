@@ -202,6 +202,15 @@ def _resolve_inst(s: GuideToolSession, x: str) -> tuple[AssemblyInstance | None,
 def _name_index(s: GuideToolSession) -> dict[str, str]:
     index = {_norm2(p.name): p.id for p in s.state.parts}
     index.update({_norm2(p.id): p.id for p in s.state.parts})
+    # upload filenames are identifiers too — steps name parts after the
+    # CAD asset ("Elbow_90deg_RN22_socket_to_spigot"), which shares no
+    # tokens with the manual's display name ("Rohrbogen Muffe/Spitzende")
+    for p in s.state.parts:
+        stem = Path(str(p.mesh_path or "")).stem
+        stem = re.sub(r"^[0-9a-f-]{8,}__", "", stem)  # asset-uuid prefix
+        stem = re.sub(r"_mm$", "", stem)
+        if stem:
+            index.setdefault(_norm2(stem), p.id)
     return index
 
 
@@ -249,6 +258,25 @@ def _host_part_id(s: GuideToolSession) -> str | None:
     return vols[0][1] if vols else None
 
 
+def _fuzzy_pid(n: str, cands: list[tuple[str, str]]) -> str | None:
+    """Best full-name fuzzy match ≥0.92, or None. The cutoff sits above
+    the one-token-swap band (socket→spigot ≈0.91) but below real typos
+    (soket→socket ≈0.98); best-of rather than first-hit keeps sibling
+    names deterministic."""
+    import difflib
+
+    best_pid, best_ratio = None, 0.0
+    seen_pid: set[str] = set()
+    for k, pid in cands:
+        if pid in seen_pid:
+            continue
+        seen_pid.add(pid)
+        r = difflib.SequenceMatcher(None, n, k).ratio()
+        if r > best_ratio:
+            best_ratio, best_pid = r, pid
+    return best_pid if best_pid is not None and best_ratio >= 0.92 else None
+
+
 def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | None:
     """Resolve a manual label to a part id: alias → exact name/id →
     containment. Manuals attach qualifiers to part names ("Gehäuse, linker
@@ -264,6 +292,15 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
     if hit:
         return hit
     cands = list(s._aliases_store.items()) + list(_name_index(s).items())
+    # typo-robust match for long names — registered part names come from
+    # upload filenames and carry the SOURCE'S typos ("soket_to_socket");
+    # the plan spells the word correctly and then ties against the wrong
+    # sibling name on token overlap. A high-ratio fuzzy hit on the whole
+    # normalized name is stronger evidence than token ties.
+    if len(n) >= 12:
+        hit = _fuzzy_pid(n, cands)
+        if hit:
+            return hit
     # keys shorter than 3 chars would containment-match almost anything
     hits = [(k, pid) for k, pid in cands if len(k) >= 3 and (k in n or n in k)]
     # token-overlap fallback: feature phrases ("Rohrbogen am linken
