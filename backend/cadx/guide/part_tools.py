@@ -68,8 +68,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "generate_missing_part",
         "Generate a missing CAD part through the normal CADX pipeline "
         "(sandboxed build123d codegen — same path as 'generate this part' "
-        "in chat). Include ALL geometric detail from the manual in the "
-        "description. Blocks until the generation job finishes. "
+        "in chat). Describe the SIMPLE functional form: primary shape, "
+        "mm dimensions, mating interfaces (bores/threads/sockets) — never "
+        "decorative detail (no crimp rings, knurls, logos, cosmetic "
+        "fillets). Blocks until the generation job finishes. "
         f"Hard cap: {_MAX_GENERATED} generated parts per guide.",
         {
             "part_id": _s("short unique slug for the new part"),
@@ -527,17 +529,14 @@ async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
     if err:
         return err
 
+    from cadx.agent.context import read_prompt
     from cadx.db.models import Project
     from cadx.db.session import session_scope
     from cadx.spawn import SpawnError, spawn_generate, wait_job_terminal
 
     name = str(a.get("name", "")).strip() or pid
-    prompt = (
-        f"{name}: {desc}\n\n"
-        "Context: this part is generated for a step-by-step assembly guide. "
-        "Model it exactly per the description, in millimetres, Z-up, resting "
-        "on the XY plane. Keep interfaces (bores, threads, tabs) faithful — "
-        "other parts must mate with them."
+    prompt = read_prompt("guide_generate.md").replace(
+        "{prompt}", f"{name}: {desc}"
     )
     try:
         async with session_scope() as db:
