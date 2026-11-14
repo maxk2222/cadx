@@ -156,6 +156,7 @@ class ReviewReport(BaseModel):
     findings: list[ReviewFinding] = Field(default_factory=list)
     geometry_ok: bool | None = None
     iteration: int = 0
+    visual_comparison: str = ""  # mandatory render↔manual-figure evidence
 
 
 class GuideState(BaseModel):
@@ -164,6 +165,13 @@ class GuideState(BaseModel):
     project_id: str = ""
     guide_version_id: str = ""  # state-dir key — stable across job resumes
     language: str = "de"
+    # spawn-time language pin: the user chose the output language in the
+    # wizard — detect_language must not overwrite it with PDF autodetect
+    language_locked: bool = False
+    # spawn-time text-variant choice ("beginner"|"intermediate"|"pro"):
+    # the runner applies the rewrite before emit so the shipped
+    # unity_guide.json already carries the picked audience
+    audience: str = ""
     user_notes: list[str] = Field(default_factory=list)
     # agent-authored masternotes (tips/assumptions/extra info for the guide
     # user) — emitted as a project "note" asset at job end

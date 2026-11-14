@@ -467,6 +467,31 @@ def _port_exposure(part: GuidePart) -> dict[str, float]:
     return out
 
 
+def port_loc(p: PortInfo, part: GuidePart) -> str:
+    """Coarse spatial label for a port — '+z|min-y' style — so the agent can
+    pick the casing's front-edge stub instead of 'cyl_13' blind. The axis
+    tag names the face the mate approaches; positional tags distinguish
+    ports sharing an axis (top vs bottom edge)."""
+    axis = np.asarray(p.axis, dtype=float)
+    i = int(np.abs(axis).argmax())
+    axis_tag = f"{'+-'[int(axis[i] < 0)]}{('x', 'y', 'z')[i]}"
+    mn, mx = np.asarray(part.bbox_min, dtype=float), np.asarray(part.bbox_max, dtype=float)
+    span = mx - mn
+    pos = np.asarray(p.pos, dtype=float)
+    lows = ("min-x", "min-y", "min-z")
+    highs = ("max-x", "max-y", "max-z")
+    tags: list[str] = []
+    for k in range(3):
+        if span[k] <= 0:
+            continue
+        r = (pos[k] - mn[k]) / span[k]
+        if r < 0.2:
+            tags.append(lows[k])
+        elif r > 0.8:
+            tags.append(highs[k])
+    return f"{axis_tag}|{'-'.join(tags) or 'mid'}"
+
+
 def find_matching_ports(
     moving: GuidePart,
     fixed: GuidePart,
@@ -522,6 +547,8 @@ def find_matching_ports(
                     "moving_port": mp.name,
                     "fixed_port": tp.name,
                     "score": round(sc, 4),
+                    "moving_loc": port_loc(mp, moving),
+                    "fixed_loc": port_loc(tp, fixed),
                     "moving_gender": mp.gender,
                     "fixed_gender": tp.gender,
                     "radius_mm": [mp.radius, tp.radius],
@@ -615,6 +642,97 @@ def union_containment(
                         inside += 1
                         break
     return inside / (grid ** 3)
+
+
+def buried_instances(
+    boxes: dict[str, tuple[np.ndarray, np.ndarray]],
+    joint_pairs: list[tuple[str, str]],
+) -> list[dict[str, Any]]:
+    """Instances contained inside the union of UNRELATED placed boxes —
+    THE shared burial rule for the live audit, the done-gate and the
+    emitted doc (one implementation, no drift between gates).
+
+    Tiered by joint-graph distance:
+      distance 1 (direct partner)  — any containment is engagement
+      distance 2 (partner's mate)  — partial overlap allowed, >0.85 is a tunnel
+      distance ≥3 (unrelated)      — flag at 0.45
+      enclosure host               — never counts (cavity is workspace)
+    """
+    partners: dict[str, set[str]] = {}
+    for a, b in joint_pairs:
+        partners.setdefault(a, set()).add(b)
+        partners.setdefault(b, set()).add(a)
+    enclosures = enclosure_hosts(boxes)
+    buried: list[dict[str, Any]] = []
+    for iid, (mn, mx) in boxes.items():
+        direct = partners.get(iid, set())
+        chain2 = set()
+        for p in direct:
+            chain2 |= partners.get(p, set()) - direct - {iid}
+        far_frac = union_containment(
+            mn, mx, [bb for k, bb in boxes.items()
+                     if k not in direct and k not in chain2
+                     and k != iid and k not in enclosures]
+        )
+        chain_worst = 0.0
+        chain_host = None
+        for k in chain2 - enclosures:
+            f = union_containment(mn, mx, [boxes[k]])
+            if f > chain_worst:
+                chain_worst, chain_host = f, k
+        if far_frac > 0.45:
+            buried.append({"instance": iid, "buried_frac": round(far_frac, 3)})
+        elif chain_worst > 0.85:
+            buried.append({
+                "instance": iid,
+                "buried_frac": round(chain_worst, 3),
+                "buried_in": chain_host,
+            })
+    return buried
+
+
+def disconnected_instances(
+    boxes: dict[str, tuple[np.ndarray, np.ndarray]],
+    joint_pairs: list[tuple[str, str]],
+    placed_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Every placed instance must be reachable from the anchor host through
+    the joint graph — a fitting cluster assembled NEXT TO the casing is
+    topologically complete yet physically wrong.
+
+    Anchor: the enclosure host when present (the shell everything mounts
+    into/onto), else the largest placed bbox."""
+    if len(placed_ids) < 2 or not joint_pairs:
+        return []
+    adj: dict[str, set[str]] = {}
+    for a, b in joint_pairs:
+        adj.setdefault(a, set()).add(b)
+        adj.setdefault(b, set()).add(a)
+    enclosures = enclosure_hosts(boxes)
+    if enclosures:
+        anchor = sorted(enclosures)[0]
+    else:
+        def _vol(k: str) -> float:
+            mn, mx = boxes[k]
+            return float(np.prod(np.asarray(mx) - np.asarray(mn)))
+
+        anchor = max(boxes, key=_vol)
+    seen = {anchor}
+    stack = [anchor]
+    while stack:
+        for nb in adj.get(stack.pop(), ()):
+            if nb not in seen:
+                seen.add(nb)
+                stack.append(nb)
+    lost = sorted(i for i in placed_ids if i not in seen)
+    return [
+        {
+            "instance": i,
+            "issue": "not connected to the anchor host "
+            f"'{anchor}' via any joint — floating/debris component",
+        }
+        for i in lost
+    ]
 
 
 def solve_attachment(

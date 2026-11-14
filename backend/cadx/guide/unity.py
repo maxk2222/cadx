@@ -18,9 +18,9 @@ import numpy as np
 
 from cadx.guide.solver import (
     _unit,
-    enclosure_hosts,
+    buried_instances,
+    disconnected_instances,
     evaluate_mate,
-    union_containment,
     world_bbox,
 )
 
@@ -103,7 +103,7 @@ def _mat_to_quat(r: np.ndarray) -> list[float]:
 _GUIDE_VERSION = "1.0"
 
 
-def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float]]:
+def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[str, Any]]:
     """Physical audit numbers per joint index + buried-fraction per
     instance — emitted into the doc as durable mate evidence so gates
     and downstream tooling verify geometry, not just topology."""
@@ -128,40 +128,15 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float]]:
         bboxes[iid] = world_bbox(
             part.bbox_min, part.bbox_max, np.asarray(inst.transform, dtype=float)
         )
-    partners: dict[str, set[str]] = {}
+    joint_pairs: list[tuple[str, str]] = []
     for j in state.assembly.joints:
-        a = _ikey(j.get("moving_instance") or j.get("moving_part"))
-        b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
-        partners.setdefault(a, set()).add(b)
-        partners.setdefault(b, set()).add(a)
-    # same tiered rules as joint_geometry_audit: direct partners are
-    # engagement, chain-2 neighbours share the engagement space below
-    # 0.85 (plugged chains overlap), enclosures never count — a casing
-    # shell legitimately contains the assembly it's mounted around
-    enclosures = enclosure_hosts(bboxes)
-    buried: dict[str, float] = {}
-    for iid, (mn, mx) in bboxes.items():
-        direct = partners.get(iid, set())
-        chain2 = set()
-        for p in direct:
-            chain2 |= partners.get(p, set()) - direct - {iid}
-        far_frac = union_containment(
-            mn,
-            mx,
-            [
-                bb
-                for k, bb in bboxes.items()
-                if k not in direct and k not in chain2
-                and k != iid and k not in enclosures
-            ],
-        )
-        chain_worst = max(
-            (union_containment(mn, mx, [bboxes[k]]) for k in chain2 - enclosures),
-            default=0.0,
-        )
-        frac = max(far_frac, chain_worst if chain_worst > 0.85 else 0.0)
-        if frac > 0.0:
-            buried[iid] = round(frac, 3)
+        joint_pairs.append((
+            _ikey(j.get("moving_instance") or j.get("moving_part")),
+            _ikey(j.get("fixed_instance") or j.get("fixed_part")),
+        ))
+    buried_rows = buried_instances(bboxes, joint_pairs)
+    disconnected_rows = disconnected_instances(bboxes, joint_pairs, sorted(insts))
+    buried = {r["instance"]: r["buried_frac"] for r in buried_rows}
     metrics: dict[int, dict] = {}
     for idx, j in enumerate(state.assembly.joints):
         mv = insts.get(_ikey(j.get("moving_instance") or j.get("moving_part")))
@@ -195,7 +170,11 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float]]:
                 m["buried_frac"] = buried[key]
                 m["buried"] = buried[key] > 0.45
         metrics[idx] = m
-    return metrics, buried
+    audit = {
+        "buried_instances": buried_rows,
+        "disconnected_instances": disconnected_rows,
+    }
+    return metrics, buried, audit
 
 
 def _joint_arrows(joints: list[dict], inst_by_id: dict, parts: dict) -> list[dict]:
@@ -314,7 +293,7 @@ def build_unity_guide(state) -> dict[str, Any]:
     doc_name = ""
     if state.document is not None and state.document.pdf_path:
         doc_name = state.document.pdf_path.rsplit("/", 1)[-1]
-    joint_metrics, _buried = _joint_metrics(state)
+    joint_metrics, _buried, audit = _joint_metrics(state)
     return {
         "guide_version": _GUIDE_VERSION,
         "title": doc_name.replace(".pdf", "") or "AR Assembly Guide",
@@ -355,7 +334,17 @@ def build_unity_guide(state) -> dict[str, Any]:
             }
             for idx, j in enumerate(state.assembly.joints)
         ],
-        "review": {"score": state.review.score, "iterations": state.review.iteration},
+        # authoritative end-state audit snapshot — gates read THESE rows,
+        # never a re-derived private computation (emit↔audit consistency)
+        "audit": audit,
+        "review": {
+            "score": state.review.score,
+            "iterations": state.review.iteration,
+            "visual_comparison": state.review.visual_comparison,
+            "blockers": [
+                f.text for f in state.review.findings if f.severity == "blocker"
+            ],
+        },
     }
 
 

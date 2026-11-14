@@ -141,6 +141,11 @@ async def detect_language(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
         return err
     lang = str(a.get("language", "")).strip().lower()[:10] or "de"
     assert s.state.document is not None
+    if s.state.language_locked:
+        # the user pinned the output language at spawn — autodetect may
+        # only record the manual's own language, never the output one
+        s.state.document.language = s.state.language
+        return {"ok": True, "language": s.state.language, "locked": True}
     s.state.document.language = lang
     s.state.language = lang
     return {"ok": True, "language": lang}

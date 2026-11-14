@@ -1162,57 +1162,36 @@ async def check_collisions(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
     return {"ok": True, **sc.all_pairs_collision_report()}
 
 
+def _joint_pairs(s: GuideToolSession, _ikey: Any) -> list[tuple[str, str]]:
+    """Joint graph as (instance, instance) pairs, resolved through _ikey so
+    legacy part-keyed joints land on their first instance."""
+    pairs: list[tuple[str, str]] = []
+    for j in s.state.assembly.joints:
+        a = _ikey(j.get("moving_instance") or j.get("moving_part"))
+        b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
+        pairs.append((a, b))
+    return pairs
+
+
 def _buried_instances_audit(
     s: GuideToolSession,
     bboxes: dict[str, tuple[np.ndarray, np.ndarray]],
     _ikey: Any,
 ) -> list[dict[str, Any]]:
-    """Instances contained inside the union of UNRELATED placed boxes.
+    return solver.buried_instances(bboxes, _joint_pairs(s, _ikey))
 
-    The mate partner legitimately swallows the plug by the engagement
-    depth, so exclusion runs one hop further along the joint chain —
-    plugged chains share engagement space (an adapter seated in a boss is
-    legitimately overlapped by the elbow mating its pipe:
-    adapter→pipe→elbow). But FULL burial inside a chain-2 host is still
-    impossible — a pipe 100% inside the casing while jointed only to an
-    adapter tunneled THROUGH its partner. Per-host rules:
-      distance 1 (direct partner)  — any containment is engagement
-      distance 2 (partner's mate)  — partial overlap allowed, >0.85 is a tunnel
-      distance ≥3 (unrelated)      — flag at 0.45 like before
-    """
-    partners: dict[str, set[str]] = {}
-    for j in s.state.assembly.joints:
-        a = _ikey(j.get("moving_instance") or j.get("moving_part"))
-        b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
-        partners.setdefault(a, set()).add(b)
-        partners.setdefault(b, set()).add(a)
-    enclosures = _enclosure_hosts(bboxes)
-    buried: list[dict[str, Any]] = []
-    for iid, (mn, mx) in bboxes.items():
-        direct = partners.get(iid, set())
-        chain2 = set()
-        for p in direct:
-            chain2 |= partners.get(p, set()) - direct - {iid}
-        far_frac = solver.union_containment(
-            mn, mx, [bb for k, bb in bboxes.items()
-                     if k not in direct and k not in chain2
-                     and k != iid and k not in enclosures]
-        )
-        chain_worst = 0.0
-        chain_host = None
-        for k in chain2 - enclosures:
-            f = solver.union_containment(mn, mx, [bboxes[k]])
-            if f > chain_worst:
-                chain_worst, chain_host = f, k
-        if far_frac > 0.45:
-            buried.append({"instance": iid, "buried_frac": round(far_frac, 3)})
-        elif chain_worst > 0.85:
-            buried.append({
-                "instance": iid,
-                "buried_frac": round(chain_worst, 3),
-                "buried_in": chain_host,
-            })
-    return buried
+
+def _connectivity_audit(
+    s: GuideToolSession,
+    bboxes: dict[str, tuple[np.ndarray, np.ndarray]],
+    _ikey: Any,
+) -> list[dict[str, Any]]:
+    """Every placed instance must be reachable from the anchor host through
+    the joint graph — a fitting cluster assembled NEXT TO the casing is
+    topologically complete yet physically wrong (observed: heatpump run
+    joined 10 joints adapter→pipe→elbow, zero joints to the casing)."""
+    insts = {i.instance_id: i for i in s.state.assembly.instances}
+    return solver.disconnected_instances(bboxes, _joint_pairs(s, _ikey), sorted(insts))
 
 
 def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
@@ -1246,6 +1225,7 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
             part.bbox_min, part.bbox_max, np.asarray(inst.transform, dtype=float)
         )
     buried = _buried_instances_audit(s, bboxes, _ikey)
+    disconnected = _connectivity_audit(s, bboxes, _ikey)
     rows: list[dict[str, Any]] = []
     bad: list[dict[str, Any]] = []
     approx: list[dict[str, Any]] = []
@@ -1314,6 +1294,7 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         "joints": rows,
         "bad_joints": bad,
         "buried_instances": buried,
+        "disconnected_instances": disconnected,
         "approximated_joints": approx,
     }
 
@@ -1322,7 +1303,10 @@ async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> 
     audit = joint_geometry_audit(s)
     col = _scene(s).all_pairs_collision_report()
     return {
-        "ok": not audit["bad_joints"] and col["ok"] and not audit["buried_instances"],
+        "ok": not audit["bad_joints"]
+        and col["ok"]
+        and not audit["buried_instances"]
+        and not audit["disconnected_instances"],
         **audit,
         "collisions": col["collisions"],
         # a part buried inside another's AABB is WRONG even when boolean
@@ -1345,6 +1329,19 @@ def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
     issues = _completeness_issues(s)
     if issues:
         return {"ok": False, "error": "incomplete assembly: " + "; ".join(issues[:6])}
+    # physical gate: done must not ship a scene the audit calls wrong —
+    # bad joints, buried parts, floating clusters, real solid
+    # intersections. The reviewer reads the same numbers; the mission
+    # must fix them HERE, not explain them away.
+    audit = joint_geometry_audit(s)
+    col = _scene(s).all_pairs_collision_report()
+    probs: list[str] = []
+    probs += [f"bad joint {r['joint']}" for r in audit["bad_joints"][:4]]
+    probs += [f"{b['instance']} buried" for b in audit["buried_instances"][:4]]
+    probs += [d["issue"] for d in audit["disconnected_instances"][:4]]
+    probs += [f"collision {c}" for c in col["collisions"][:4]]
+    if probs:
+        return {"ok": False, "error": "unhealthy assembly: " + "; ".join(probs)}
     s.state.assembly.status = "complete"
     return None
 

@@ -327,17 +327,34 @@ def _load_or_init_state(
 
 def _review_verdict(
     state: GuideState, state_dir: Path, score_target: float, max_iter: int
-) -> tuple[bool, str]:
-    """(should_ship, repair_notes). Reopens flagged missions as a side
-    effect when a bounded repair iteration is warranted."""
+) -> tuple[str, str]:
+    """(verdict, repair_notes) — verdict ∈ ship|repair|fail.
+
+    Only a clean verdict ships: score ≥ target AND zero blockers. Anything
+    else is a bounded repair round (write_review_report's consistency gate
+    guarantees a sub-target score always carries blocker findings). At the
+    iteration cap with unresolved issues the verdict is FAIL — a guide that
+    never earned its score must not exit 'succeeded'."""
     rep = state.review
     blockers = [f for f in rep.findings if f.severity == "blocker"]
-    if (
-        rep.score >= score_target
-        or (not blockers and rep.iteration > 0)
-        or rep.iteration >= max_iter
-    ):
-        return True, ""
+    if rep.iteration == 0:
+        # review mission never produced a report — cannot judge, cannot
+        # ship; one repair round re-runs it (outer belt bounds this)
+        if "review" in state.missions_done:
+            state.missions_done.remove("review")
+        state.save(state_dir)
+        log.warning("guide.review_missing", missions_done=state.missions_done)
+        return "repair", "the review produced no report — re-run it and call write_review_report"
+    if rep.score >= score_target and not blockers:
+        return "ship", ""
+    if rep.iteration >= max_iter:
+        log.warning(
+            "guide.review_iter_cap",
+            iter=rep.iteration,
+            score=rep.score,
+            blockers=len(blockers),
+        )
+        return "fail", ""
     flagged = {f.mission for f in blockers if f.mission in MISSION_ORDER} or {"assembly"}
     notes = "\n".join(f"- [{f.severity}] {f.text}" for f in blockers)[:2000]
     # "review" must reopen too — the repaired assembly needs a FRESH verdict
@@ -347,8 +364,34 @@ def _review_verdict(
         if m in state.missions_done:
             state.missions_done.remove(m)
     state.save(state_dir)
-    log.info("guide.review_repair", iter=rep.iteration, score=rep.score, reopen=sorted(flagged))
-    return False, notes
+    log.info(
+        "guide.review_repair",
+        iter=rep.iteration,
+        score=rep.score,
+        blockers=len(blockers),
+        reopen=sorted(flagged),
+    )
+    return "repair", notes
+
+
+def _plan_lint_reopen(
+    lint_sess: Any, state: GuideState, state_dir: Path
+) -> str | None:
+    """Deterministic plan lint before assembly spends its budget —
+    unresolvable refs route back to the owning mission (steps|parts) with
+    the lint text as repair notes. Returns the notes text, or None."""
+    from cadx.guide.planlint import plan_lint
+
+    blockers = [f for f in plan_lint(lint_sess) if f["severity"] == "blocker"]
+    if not blockers:
+        return None
+    flagged = {f["mission"] for f in blockers}
+    for m in flagged:
+        if m in state.missions_done:
+            state.missions_done.remove(m)
+    state.save(state_dir)
+    log.info("guide.plan_lint_reopen", reopen=sorted(flagged), blockers=len(blockers))
+    return "\n".join(f"- {f['text']}" for f in blockers)
 
 
 async def _mission_early(
@@ -578,6 +621,7 @@ async def run_guide(
     lint_cycles = 0
     best_score = -1.0
     best_assembly = None
+    failed_review = False
     while True:
         for mission in MISSION_ORDER:
             # deterministic plan lint before assembly spends its budget:
@@ -585,26 +629,11 @@ async def run_guide(
             # owning mission (steps|parts) with the lint text as notes —
             # a degenerate extraction gets fixed, not faithfully placed
             if mission == "assembly" and mission not in state.missions_done:
-                from cadx.guide.planlint import plan_lint
-
-                lint_sess = _session("assembly")
-                blockers = [
-                    f for f in plan_lint(lint_sess) if f["severity"] == "blocker"
-                ]
-                if blockers and lint_cycles < 2:
+                notes = _plan_lint_reopen(_session("assembly"), state, state_dir)
+                if notes and lint_cycles < 2:
                     lint_cycles += 1
-                    flagged = {f["mission"] for f in blockers}
-                    for m in flagged:
-                        if m in state.missions_done:
-                            state.missions_done.remove(m)
-                    repair_notes = "\n".join(f"- {f['text']}" for f in blockers)
-                    state.save(state_dir)
-                    log.info(
-                        "guide.plan_lint_reopen",
-                        cycle=lint_cycles,
-                        reopen=sorted(flagged),
-                        blockers=len(blockers),
-                    )
+                    repair_notes = notes
+                    log.info("guide.plan_lint_cycle", cycle=lint_cycles)
                     break  # restart the mission order at the owning mission
             # findings go to the missions that actually re-run — a skipped
             # (already-done) mission must not consume them
@@ -615,20 +644,23 @@ async def run_guide(
             if early is not None:
                 return early
 
-        ship, repair_notes = _review_verdict(state, state_dir, score_target, max_iter)
+        verdict, repair_notes = _review_verdict(state, state_dir, score_target, max_iter)
         # keep the best-SCORED assembly across repair iterations — an LLM
         # repair that "succeeds" can still degrade the build (7.0 -> 4.0 in
         # eval round 5), and the failure-restore only guards mission death
         if state.assembly.instances and state.review.score > best_score:
             best_score = state.review.score
             best_assembly = state.assembly.model_copy(deep=True)
-        if ship:
+        if verdict == "ship":
             break
         iterations += 1
-        if iterations >= max_iter:
-            # belt: rep.iteration bounds this normally; if review can't
-            # complete a verdict we must not loop forever
-            log.warning("guide.repair_loop_cap", max_iter=max_iter)
+        if verdict == "fail" or iterations >= max_iter:
+            # iter-cap with open blockers, or the belt catching a review
+            # that never produced a verdict — either way the guide never
+            # earned its score and must not exit 'succeeded'
+            if verdict != "fail":
+                log.warning("guide.repair_loop_cap", max_iter=max_iter)
+            failed_review = True
             break
 
     # ship the best-scored geometry, not the last repair attempt — a
@@ -646,8 +678,13 @@ async def run_guide(
     await _maybe_apply_audience_rewrite(state, state_dir, ctx)
 
     artifacts = await _emit_artifacts(state, state_dir, ctx.executor)
+    unresolved = [
+        f.text for f in state.review.findings if f.severity == "blocker"
+    ][:8]
     outcome = RunOutcome(
-        status="succeeded",
+        # a review that never reached target with blockers open ships as
+        # needs_review — evidence stays, the verdict stays honest
+        status="needs_review" if failed_review else "succeeded",
         # review.score is 0..10; version.score (and every other outcome
         # score) is 0..100 — scale or the header renders "9/100"
         score=round(state.review.score * 10),
@@ -658,6 +695,7 @@ async def run_guide(
             "parts": len(state.parts),
             "instances": len(state.assembly.instances),
             "review_iterations": state.review.iteration,
+            "unresolved_blockers": unresolved,
         },
     )
     outcome.artifacts.update(artifacts)

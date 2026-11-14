@@ -77,12 +77,68 @@ def test_review_verdict_reopens_review_mission(tmp_path: Path) -> None:
     state.review.findings = [
         ReviewFinding(severity="blocker", mission="assembly", text="part floats")
     ]
-    ship, notes = _review_verdict(state, tmp_path, score_target=8.0, max_iter=3)
-    assert not ship and notes
+    verdict, notes = _review_verdict(state, tmp_path, score_target=8.0, max_iter=3)
+    assert verdict == "repair" and notes
     assert "review" not in state.missions_done, "review must re-run for a fresh verdict"
     assert "assembly" not in state.missions_done
     assert "annotate" not in state.missions_done
     assert "doc" in state.missions_done  # untouched
+
+
+def test_review_verdict_cap_is_fail_not_ship(tmp_path: Path) -> None:
+    """Iteration cap with open blockers must FAIL the run — the old
+    `iter >= max_iter → ship` shipped score 4.0 + blockers as succeeded."""
+    state = GuideState(output_dir=str(tmp_path))
+    state.missions_done = ["doc", "steps", "parts", "assembly", "review", "annotate"]
+    state.review.iteration = 3
+    state.review.score = 4.0
+    state.review.findings = [
+        ReviewFinding(severity="blocker", mission="parts", text="no host in kit")
+    ]
+    verdict, _ = _review_verdict(state, tmp_path, score_target=8.0, max_iter=3)
+    assert verdict == "fail"
+    # clean verdict still ships
+    state.review.score = 9.0
+    state.review.findings = []
+    verdict, _ = _review_verdict(state, tmp_path, score_target=8.0, max_iter=3)
+    assert verdict == "ship"
+
+
+def test_review_report_consistency_gates(tmp_path: Path) -> None:
+    """A sub-target score without blockers (or ≥8 with them, or without
+    visual evidence) is rejected — score 6.0 + only warnings used to
+    ship instantly via (no blockers, iter>0)."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide.review_tools import write_review_report
+
+    state = GuideState(output_dir=str(tmp_path))
+    s = SimpleNamespace(state=state)
+    vis = "pipe: expected vertical below casing — observed vertical — match. " * 2
+    res = asyncio.run(
+        write_review_report(
+            s, {"score": 6.0, "findings": [], "visual_comparison": vis}
+        )
+    )
+    assert not res["ok"] and "blocker" in res["error"]
+    res = asyncio.run(
+        write_review_report(
+            s,
+            {
+                "score": 9.0,
+                "findings": [
+                    {"severity": "blocker", "mission": "assembly", "text": "x"}
+                ],
+                "visual_comparison": vis,
+            },
+        )
+    )
+    assert not res["ok"] and "contradicts" in res["error"]
+    res = asyncio.run(
+        write_review_report(s, {"score": 9.0, "findings": [], "visual_comparison": ""})
+    )
+    assert not res["ok"] and "visual_comparison" in res["error"]
 
 
 def test_free_placement_front_is_positive_y() -> None:
@@ -653,10 +709,26 @@ def test_review_report_rejects_high_score_on_bad_audit(tmp_path) -> None:
         ],
     )
     s = SimpleNamespace(state=state)
-    r = asyncio.run(write_review_report(s, {"score": 9.0, "findings": []}))
+    vis = "pipe: expected seated on elbow — observed floating 8mm above — deviation"
+    r = asyncio.run(
+        write_review_report(
+            s, {"score": 9.0, "findings": [], "visual_comparison": vis}
+        )
+    )
     assert not r["ok"], "score ≥8 must be rejected while the audit reports findings"
-    # an honest low score goes through
-    r = asyncio.run(write_review_report(s, {"score": 5.0, "findings": []}))
+    # an honest low score goes through (blocker finding names the fault)
+    r = asyncio.run(
+        write_review_report(
+            s,
+            {
+                "score": 5.0,
+                "findings": [
+                    {"severity": "blocker", "mission": "assembly", "text": "detached joint"}
+                ],
+                "visual_comparison": vis,
+            },
+        )
+    )
     assert r["ok"] and r.get("audit_ok") is False
 
 

@@ -49,8 +49,16 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                 "type": "boolean",
                 "description": "did geometry validation pass (joints+collisions)",
             },
+            "visual_comparison": {
+                "type": "string",
+                "description": "MANDATORY: expected-vs-observed verdict from "
+                "comparing the end-state render with the manual figure(s) — "
+                "one line per branch/part-group: '<part>: expected <manual> — "
+                "observed <render> — match|deviation'. A score without this "
+                "evidence is rejected.",
+            },
         },
-        ["score", "findings"],
+        ["score", "findings", "visual_comparison"],
     ),
 }
 
@@ -77,6 +85,34 @@ async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[st
             )
         except Exception:
             continue
+    # mandatory visual evidence: a score without an explicit
+    # expected-vs-observed layout comparison is superficial judgement —
+    # exactly how a render showing pipes through the casing wall earned 8.0
+    visual = str(a.get("visual_comparison") or "").strip()
+    if len(visual) < 40:
+        return {
+            "ok": False,
+            "error": "missing visual_comparison — render the end state "
+            "(render_assembly), open the manual's overview figure "
+            "(get_figure_image/get_page_image) and write one "
+            "expected-vs-observed line per branch/part-group before "
+            "scoring",
+        }
+    n_blockers = sum(1 for f in findings if f.severity == "blocker")
+    if score < 8.0 and n_blockers == 0:
+        return {
+            "ok": False,
+            "error": "score below 8 must name at least one BLOCKER finding "
+            "with its owning mission — a low score without a flagged fault "
+            "is not actionable; mark the fault(s) severity='blocker'",
+        }
+    if score >= 8.0 and n_blockers:
+        return {
+            "ok": False,
+            "error": "score ≥8 contradicts open blocker findings — either "
+            "fix the score to <8 or downgrade the findings (severity "
+            "'warning'/'note')",
+        }
     # deterministic backstop: the SAME joint/burial audit the validator
     # reports runs here — a reviewer cannot wave through geometry that
     # measurably fails (buried parts, misaligned/open joints). Passing
@@ -96,6 +132,8 @@ async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[st
             audit_evidence.append(
                 f"{b['instance']} is {round(b['buried_frac'] * 100)}% inside other parts"
             )
+        for d in audit.get("disconnected_instances", []):
+            audit_evidence.append(d["issue"])
         # a joint on a SYNTHESIZED thread site (nested stub emitted inside an
         # enclosing socket when the mesh models no real threaded end) is
         # geometrically legal but semantically unverified — the classic
@@ -128,6 +166,7 @@ async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[st
         findings=findings,
         geometry_ok=bool(a["geometry_ok"]) if a.get("geometry_ok") is not None else audit_ok,
         iteration=it,
+        visual_comparison=visual[:2000],
     )
     return {
         "ok": True,
