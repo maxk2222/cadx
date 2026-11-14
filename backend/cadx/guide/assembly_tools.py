@@ -209,6 +209,29 @@ def _part_ref(s: GuideToolSession, ref: Any) -> Any:
     return None
 
 
+def _host_part_id(s: GuideToolSession) -> str | None:
+    """The largest-bbox registered part — the assembly's host/base. In a
+    multi-match target phrase the host name is almost always a locative
+    qualifier ("Adapter AM GEHÄUSE" mates to the adapter), so it loses
+    ties to any mountable part."""
+    vols: list[tuple[float, str]] = []
+    for p in s.state.parts:
+        if p.bbox_min is None or p.bbox_max is None:
+            continue
+        vol = float(
+            (p.bbox_max[0] - p.bbox_min[0])
+            * (p.bbox_max[1] - p.bbox_min[1])
+            * (p.bbox_max[2] - p.bbox_min[2])
+        )
+        vols.append((vol, p.id))
+    vols.sort(reverse=True)
+    # the host must be a real size outlier — among equal-sized parts the
+    # biggest is arbitrary (two elbows tie) and demoting it picks randomly
+    if len(vols) >= 2 and vols[0][0] < 3.0 * vols[1][0]:
+        return None
+    return vols[0][1] if vols else None
+
+
 def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | None:
     """Resolve a manual label to a part id: alias → exact name/id →
     containment. Manuals attach qualifiers to part names ("Gehäuse, linker
@@ -226,9 +249,6 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
     cands = list(s._aliases_store.items()) + list(_name_index(s).items())
     # keys shorter than 3 chars would containment-match almost anything
     hits = [(k, pid) for k, pid in cands if len(k) >= 3 and (k in n or n in k)]
-    if hits:
-        # longest containing/contained key wins — "rohrbogen dn22 muffe" beats "rohr"
-        return max(hits, key=lambda kv: len(kv[0]))[1]
     # token-overlap fallback: feature phrases ("Rohrbogen am linken
     # Anschluss", "vertikales Rohr 500mm") share a part's distinctive
     # tokens even with no alias/containment — ≥2 shared tokens keeps it
@@ -254,6 +274,18 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
         # tokens = the meant part. Bare names keep longest-key.
         tie = -len(_tokset(k) - nt - ctx) if ctx else 0
         scored.append((overlap, tie, len(k), pid))
+    # host demotion: a target phrase naming BOTH the biggest part and a
+    # mountable one mates to the mountable — "Adapter am Gehäuse" means
+    # the adapter, the casing is just where it sits. Only applies with a
+    # real alternative: a phrase naming ONLY the host still resolves to it
+    host = _host_part_id(s)
+    matched = {pid for _, pid in hits} | {t[3] for t in scored}
+    if host and host in matched and len(matched) > 1:
+        hits = [h for h in hits if h[1] != host]
+        scored = [t for t in scored if t[3] != host]
+    if hits:
+        # longest containing/contained key wins — "rohrbogen dn22 muffe" beats "rohr"
+        return max(hits, key=lambda kv: len(kv[0]))[1]
     if scored:
         return max(scored)[3]
     return None

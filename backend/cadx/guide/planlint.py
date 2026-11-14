@@ -205,18 +205,28 @@ def _lint_quantities(sess: GuideToolSession) -> list[dict[str, Any]]:
     for counts in _step_requirements(sess).values():
         for pid, n in counts.items():
             totals[pid] = totals.get(pid, 0) + n
+    # Stückliste quantities the doc mission captured bound the plan even
+    # when the register call omitted `quantity` (heatpump run: qty=None
+    # everywhere → 5x l500 placed for a 2-piece kit)
+    detected: dict[str, int] = {}
+    doc = getattr(sess.state, "document", None)
+    for nrm, qty in (getattr(doc, "detected_part_qty", None) or {}).items():
+        pid = sess._aliases_store.get(nrm) or _name_index(sess).get(nrm)
+        if pid:
+            detected[pid] = qty
     findings: list[dict[str, Any]] = []
     for p in sess.state.parts:
-        if p.quantity is None:
+        bound = p.quantity if p.quantity is not None else detected.get(p.id)
+        if bound is None:
             continue
         need = totals.get(p.id, 0)
-        if need > p.quantity:
+        if need > bound:
             findings.append(
                 {
                     "mission": "steps",
                     "severity": "blocker",
                     "text": f"plan requires {need}x '{p.id}' but the parts "
-                    f"list ships only {p.quantity} — wrong part mapping or "
+                    f"list ships only {bound} — wrong part mapping or "
                     "phantom occurrences; fix the step sub_steps",
                 }
             )
@@ -234,30 +244,22 @@ def _lint_anchor(
     part have nothing to flag either."""
     if len(sess.state.parts) < 2:
         return []  # a lone-part guide has nothing to mate to the base
-    biggest = None
-    best_vol = 0.0
-    for p in sess.state.parts:
-        if p.bbox_min is None or p.bbox_max is None:
-            continue
-        vol = float(
-            (p.bbox_max[0] - p.bbox_min[0])
-            * (p.bbox_max[1] - p.bbox_min[1])
-            * (p.bbox_max[2] - p.bbox_min[2])
-        )
-        if vol > best_vol:
-            best_vol, biggest = vol, p
-    if biggest is None:
-        return []
+    from cadx.guide.assembly_tools import _host_part_id
+
+    hid = _host_part_id(sess)
+    if hid is None:
+        return []  # no clear size outlier — no identifiable host to anchor to
+    biggest = next(p for p in sess.state.parts if p.id == hid)
     referenced = False
     for st in steps:
         for ss in st.sub_steps:
-            if ss.action in _PLACE_ACTIONS:
-                if _resolve_part(sess, ss.part, st.number) == biggest.id:
-                    return []  # the big part is itself mounted — a leaf
+            if ss.action not in _PLACE_ACTIONS:
+                continue
+            if _resolve_part(sess, ss.part, st.number) == biggest.id:
+                return []  # the big part is itself mounted — a leaf
             for name in (ss.target, ss.target2):
-                if name and ss.action in _PLACE_ACTIONS:
-                    if _resolve_name(sess, name) == biggest.id:
-                        referenced = True
+                if name and _resolve_name(sess, name) == biggest.id:
+                    referenced = True
     if referenced:
         return []
     return [

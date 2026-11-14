@@ -63,8 +63,13 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "set_detected_part_names": _fn(
         "set_detected_part_names",
         "Set the canonical part names referenced by the manual (from the "
-        "parts list page and step texts). These names drive CAD matching.",
-        {"names": _arr(_s("part name as written in the manual"), "part names")},
+        "parts list page and step texts). These names drive CAD matching. "
+        "Include the Stückliste quantity when the parts list gives one — "
+        "as '2x Rohr DN22', 'Rohr DN22 (2x)' or {name, qty}.",
+        {"names": _arr(
+            _s("part name as written in the manual, optionally with quantity"),
+            "part names",
+        )},
         ["names"],
     ),
 }
@@ -165,15 +170,57 @@ async def classify_pages(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     }
 
 
+def _split_name_qty(item: Any) -> tuple[str, int | None]:
+    """Accept '2x Rohr DN22', 'Rohr DN22 (2x)', 'Rohr DN22 x2',
+    'Rohr DN22 — 2 Stück' or {name, qty} — manuals write the Menge into
+    the line itself; keep the canonical name clean of the count."""
+    import re as _re
+
+    if isinstance(item, dict):
+        name = str(item.get("name", "")).strip()
+        try:
+            qty = int(item.get("qty") or item.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        return name, (qty if qty > 0 else None)
+    raw = str(item).strip()
+    for pat, qty_first in (
+        (r"^(\d+)\s*[x\u00d7]\s+(.+)$", True),  # "2x Rohr DN22"
+        (r"^(.+?)\s*[\(\[]\s*(\d+)\s*(?:x|\u00d7)\s*[\)\]]\s*$", False),  # "Rohr (2x)"
+        (r"^(.+?)\s*(?:x|\u00d7)\s*(\d+)\s*$", False),  # "Rohr x2"
+        (r"^(.+?)[\-\u2013\u2014:,]+\s*(\d+)\s*(?:St\u00fcck|Stk\.?|pcs?\.?|x)\s*$", False),  # "Rohr — 2 Stück"
+    ):
+        m = _re.match(pat, raw, _re.I)
+        if m:
+            name, qty = (m.group(2), m.group(1)) if qty_first else (m.group(1), m.group(2))
+            return name.strip(), int(qty)
+    return raw, None
+
+
 async def set_detected_part_names(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     if err := _doc_required(s):
         return err
-    names = [str(n).strip() for n in (a.get("names") or []) if str(n).strip()]
+    from cadx.guide.assembly_tools import _norm2
+
+    names: list[str] = []
+    qtys: dict[str, int] = {}
+    for item in a.get("names") or []:
+        name, qty = _split_name_qty(item)
+        if not name:
+            continue
+        names.append(name)
+        if qty:
+            qtys[_norm2(name)] = qty
     if not names:
         return {"ok": False, "error": "names list is empty"}
     assert s.state.document is not None
     s.state.document.detected_part_names = names[:60]
-    return {"ok": True, "detected_part_names": s.state.document.detected_part_names}
+    s.state.document.detected_part_qty.update(qtys)
+    return {
+        "ok": True,
+        "detected_part_names": s.state.document.detected_part_names,
+        "detected_part_qty": qtys or None,
+    }
 
 
 HANDLERS = {

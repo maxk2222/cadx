@@ -113,6 +113,9 @@ class DocumentIndex(BaseModel):
     doc_type: str = "assembly_manual"
     pages: list[PageSummary] = Field(default_factory=list)
     detected_part_names: list[str] = Field(default_factory=list)
+    # canonical name (normalized) → Stückliste quantity the manual states —
+    # bounds plan allocation when register calls omit `quantity`
+    detected_part_qty: dict[str, int] = Field(default_factory=dict)
 
 
 class AssemblyInstance(BaseModel):

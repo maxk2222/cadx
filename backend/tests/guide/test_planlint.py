@@ -186,3 +186,39 @@ def test_context_target_routes_to_parts_for_aliasing() -> None:
     fs = plan_lint(sess)
     ctx = [f for f in fs if "Anschlussrohr" in f["text"]]
     assert ctx and ctx[0]["mission"] == "parts", fs
+
+
+def test_detected_qty_bounds_plan_when_register_omits() -> None:
+    """Register calls that omit `quantity` still get bounded by the
+    Stückliste numbers the doc mission captured (heatpump: qty=None →
+    5x l500 placed for a 2-piece kit)."""
+    from cadx.guide.planlint import plan_lint
+    from cadx.guide.state import DocumentIndex
+
+    p = _part("pipe_l500")
+    p.name = "Rohr DN22, l = 500 mm"
+    sess = _sess(
+        [p],
+        [
+            _step(i, [{"action": "insert", "part": "pipe_l500", "target": "elbow"}])
+            for i in (1, 2, 3, 4)
+        ],
+    )
+    sess.state.document = DocumentIndex(
+        detected_part_names=["Rohr DN22, l = 500 mm"],
+        detected_part_qty={"rohr dn22 l 500 mm": 2},
+    )
+    fs = plan_lint(sess)
+    qf = [f for f in fs if "ships only" in f["text"]]
+    assert qf and "4x" in qf[0]["text"] and qf[0]["mission"] == "steps", fs
+
+
+def test_split_name_qty_variants() -> None:
+    from cadx.guide.doc_tools import _split_name_qty
+
+    assert _split_name_qty("2x Rohr DN22") == ("Rohr DN22", 2)
+    assert _split_name_qty("Rohr DN22 x2") == ("Rohr DN22", 2)
+    assert _split_name_qty("Rohr DN22 (2x)") == ("Rohr DN22", 2)
+    assert _split_name_qty("Adapter DN22 — 2 Stück") == ("Adapter DN22", 2)
+    assert _split_name_qty({"name": "Rohr", "qty": 3}) == ("Rohr", 3)
+    assert _split_name_qty("Rohr DN22, l = 500 mm") == ("Rohr DN22, l = 500 mm", None)
