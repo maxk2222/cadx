@@ -170,6 +170,39 @@ def _lint_required_context(sess: GuideToolSession, st: Any) -> list[dict[str, An
     return findings
 
 
+def _lint_required_resolvable(sess: GuideToolSession, st: Any) -> list[dict[str, Any]]:
+    """A required_part matching no registered part is unsatisfiable at
+    assembly: completeness counts it as a needed instance forever. The
+    plan must resolve it — alias onto a registered part, or drop it from
+    required_parts via update_step (kit lacks the part and generation is
+    off). Context-marked names already carry their own blocker."""
+    from cadx.guide.part_tools import _is_context
+
+    findings: list[dict[str, Any]] = []
+    for name in st.required_parts or []:
+        if not name or _is_context(sess, name) or _resolve_name(sess, name):
+            continue
+        remedy = (
+            "alias_part it onto a registered part or update_step to drop "
+            "it from required_parts"
+        )
+        if not getattr(sess.state, "allow_part_generation", True):
+            remedy += " (generation is disabled — the kit part must come "
+            "from an uploaded asset or the step text)"
+        findings.append(
+            {
+                "mission": "parts",
+                "severity": "blocker",
+                "text": f"step {st.number}: required_parts '{name}' "
+                "matches no registered part"
+                + _suggest(sess, name)
+                + " — "
+                + remedy,
+            }
+        )
+    return findings
+
+
 def _lint_refs(
     sess: GuideToolSession, steps: list[Any]
 ) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, int]]:
@@ -184,6 +217,7 @@ def _lint_refs(
 
     for st in steps:
         findings.extend(_lint_required_context(sess, st))
+        findings.extend(_lint_required_resolvable(sess, st))
         for i, ss in enumerate(st.sub_steps):
             # only PLACEMENT targets must resolve — check/orient targets are
             # context anchors (the pre-existing host, walls, "Wärmepumpe")

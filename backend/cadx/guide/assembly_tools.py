@@ -377,7 +377,14 @@ def _completeness_issues(s: GuideToolSession) -> list[str]:
                 if i.placed_in_step == st_no and i.part_id == pid
             ) + legs.get((st_no, pid), 0)
             if have < need:
-                issues.append(f"step {st_no}: '{pid}' needs {need} instance(s), has {have}")
+                msg = f"step {st_no}: '{pid}' needs {need} instance(s), has {have}"
+                if pid.endswith(" (unresolved)"):
+                    msg += (
+                        " — the name matches no registered part: "
+                        "alias_part it onto a registered part or "
+                        "update_step to drop it from required_parts"
+                    )
+                issues.append(msg)
     if not s.state.assembly.instances:
         issues.append("no parts placed at all")
     return issues
