@@ -7,6 +7,7 @@ tools/step_tools.py).
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from cadx.guide.state import GuideStep, GuideSubStep
@@ -210,12 +211,30 @@ def _step_fields(a: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _title_key(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", t.lower()).strip()
+
+
 async def create_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     num = int(a.get("number", 0))
     if num < 1:
         return {"ok": False, "error": "number must be ≥ 1"}
     if s.state.step_by_number(num) is not None:
         return {"ok": False, "error": f"step {num} already exists — use update_step"}
+    # runaway-guard: a step with the SAME title already exists — the manual's
+    # sequence is being re-created instead of refined (observed degeneration:
+    # duplicate batches re-numbering the same actions 14..37). Distinct
+    # left/right variants keep distinct titles and pass.
+    key = _title_key(str(a.get("title", "")))
+    if key:
+        for st in s.state.steps:
+            if _title_key(st.title) == key:
+                return {
+                    "ok": False,
+                    "error": f"step {st.number} already covers "
+                    f"'{st.title}' — use update_step {st.number} or "
+                    "finalize_steps instead of re-creating it",
+                }
     if err := _validate_dual_text(str(a.get("text", "")), str(a.get("display_text", ""))):
         return {"ok": False, "error": err}
     fields = _step_fields(a)

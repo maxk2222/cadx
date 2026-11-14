@@ -741,3 +741,118 @@ def test_alias_part_rejects_contradictory_size_and_category() -> None:
         alias_part(sess, {"part_id": "rohr_70", "alias": "kurzes Rohr DN22"})
     )
     assert r3["ok"], r3
+
+
+def test_place_instance_rejects_buried_candidate() -> None:
+    """A mate whose transform sinks the body inside a NON-partner instance is
+    physically wrong even when port gap/normals pass — the long pipe must not
+    slide through its fitting into the host behind it (observed: pipe_l500
+    100% inside the casing AABB after preassembly)."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.assembly_tools import place_instance
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts.append(
+        GuidePart(id="casing", name="Gehäuse", bbox_min=[0, 0, 0], bbox_max=[400, 300, 600])
+    )
+    state.parts.append(
+        GuidePart(id="adapter", name="Adapter", bbox_min=[0, 0, 0], bbox_max=[40, 40, 40])
+    )
+    state.parts.append(
+        GuidePart(id="pipe", name="Rohr", bbox_min=[0, 0, 0], bbox_max=[25, 25, 500])
+    )
+    ident = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+    state.assembly.instances.append(
+        AssemblyInstance(part_id="casing", instance_id="casing#1", transform=ident)
+    )
+    state.assembly.instances.append(
+        AssemblyInstance(
+            part_id="adapter",
+            instance_id="adapter#1",
+            transform=[[1, 0, 0, 800], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+        )
+    )
+    state.steps.append(
+        GuideStep(
+            number=1,
+            text="t",
+            display_text="d",
+            required_parts=["Rohr"],
+            sub_steps=[{"action": "insert", "part": "Rohr", "target": "Adapter"}],
+        )
+    )
+    sess = GuideToolSession(
+        ctx, mission="assembly", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    # candidate mated to the adapter (partner excluded from burial counting)
+    # but the pipe AABB lies entirely INSIDE the casing box
+    sess._preview_cache["cb"] = {
+        "transform": [[1, 0, 0, 50], [0, 1, 0, 50], [0, 0, 1, 50], [0, 0, 0, 1]],
+        "collision_free": True,
+        "moving_port": "rim_0",
+        "fixed_port": "rim_5",
+        "fixed_part": "adapter",
+        "fixed_instance": "adapter#1",
+    }
+    r = asyncio.run(
+        place_instance(sess, {"part_id": "pipe", "candidate_id": "cb", "step": 1})
+    )
+    assert r["ok"] is False and "buries" in r["error"] and "casing#1" in r["error"], r
+    # a candidate whose body stays outside passes the gate
+    sess._preview_cache["cg"] = {
+        "transform": [[1, 0, 0, 800], [0, 1, 0, 60], [0, 0, 1, 0], [0, 0, 0, 1]],
+        "collision_free": True,
+        "moving_port": "rim_0",
+        "fixed_port": "rim_5",
+        "fixed_part": "adapter",
+        "fixed_instance": "adapter#1",
+    }
+    r2 = asyncio.run(
+        place_instance(sess, {"part_id": "pipe", "candidate_id": "cg", "step": 1})
+    )
+    assert r2["ok"], r2
+
+
+def test_create_step_rejects_duplicate_title() -> None:
+    """Re-creating an identical-titled step is the observed degeneration
+    (duplicate batches re-numbering the same actions) — the tool must point
+    at the existing step instead of silently stacking duplicates."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import GuideState, GuideStep
+    from cadx.guide.step_tools import create_step
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.steps.append(
+        GuideStep(number=1, title="Adapter links schrauben", text="t", display_text="d")
+    )
+    sess = GuideToolSession(
+        ctx, mission="steps", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    r = asyncio.run(
+        create_step(
+            sess,
+            {"number": 5, "title": "Adapter links schrauben", "text": "t", "display_text": "d"},
+        )
+    )
+    assert r["ok"] is False and "step 1" in r["error"], r
+    # a different side keeps a distinct title → allowed
+    r2 = asyncio.run(
+        create_step(
+            sess,
+            {"number": 5, "title": "Adapter rechts schrauben", "text": "t", "display_text": "d"},
+        )
+    )
+    assert r2["ok"], r2

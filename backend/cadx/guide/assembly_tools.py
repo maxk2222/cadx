@@ -458,7 +458,9 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
                 "retry with moving_port/target_port from compatible_pairs"
             )
         return err_out
-    # collision-check each candidate against the placed set
+    # collision-check each candidate against the placed set; also expose the
+    # burial fraction so the LLM can prefer a candidate whose body stays
+    # OUTSIDE foreign parts instead of discovering the sink only at commit
     sc = _scene(s)
     for c in cands:
         c["fixed_part"] = fixed.id
@@ -467,6 +469,10 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
             rep = sc.collision_report(moving.id, moving.mesh_path, c["transform"])
             c["collision_free"] = rep["ok"]
             c["collisions"] = rep["collisions"][:3]
+        bf, bh = _candidate_burial(s, moving, c)
+        if bf > 0.05:
+            c["buried_frac"] = round(bf, 2)
+            c["buried_in"] = bh
     return {
         "ok": True,
         "candidates": _cache_candidates(s, cands),
@@ -563,6 +569,44 @@ def _target_mismatch(
     )
 
 
+def _candidate_burial(
+    s: GuideToolSession, part: Any, cand: dict[str, Any]
+) -> tuple[float, str | None]:
+    """Fraction of the moving part's world AABB inside placed instances it is
+    NOT mating to — the candidate's fixed instance legitimately swallows the
+    plug, anything else containing the body means the transform pushes it
+    into a foreign host (pipe sliding through a fitting into the casing).
+    Returns (frac, worst_offender_instance_id)."""
+    if part.bbox_min is None or part.bbox_max is None or cand.get("transform") is None:
+        return 0.0, None
+    mn, mx = solver.world_bbox(
+        part.bbox_min, part.bbox_max, np.asarray(cand["transform"], dtype=float)
+    )
+    partner = str(cand.get("fixed_instance") or "")
+    others: list[tuple[np.ndarray, np.ndarray]] = []
+    boxes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for inst in s.state.assembly.instances:
+        if inst.instance_id == partner or inst.transform is None:
+            continue
+        p2 = s.state.part_by_id(inst.part_id)
+        if p2 is None or p2.bbox_min is None or p2.bbox_max is None:
+            continue
+        bb = solver.world_bbox(
+            p2.bbox_min, p2.bbox_max, np.asarray(inst.transform, dtype=float)
+        )
+        others.append(bb)
+        boxes[inst.instance_id or inst.part_id] = bb
+    frac = solver.union_containment(mn, mx, others)
+    host = None
+    if frac > 0.0:
+        best = 0.0
+        for iid, bb in boxes.items():
+            f = solver.union_containment(mn, mx, [bb])
+            if f > best:
+                best, host = f, iid
+    return frac, host
+
+
 async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     pid = str(a.get("part_id", ""))
     part = s.state.part_by_id(pid)
@@ -652,6 +696,20 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             "ok": False,
             "error": "candidate collides with placed parts — pick another or rotate",
             "collisions": cand.get("collisions", []),
+        }
+    # burial gate: a mate whose transform sinks the body into an instance it
+    # is NOT connected to is physically wrong even when port gap/normals and
+    # mesh collision pass (long pipe through its fitting into the host
+    # behind it — invisible to boolean collision inside a hollow AABB)
+    buried_frac, buried_host = _candidate_burial(s, part, cand)
+    if buried_frac > 0.45:
+        return {
+            "ok": False,
+            "error": f"candidate buries {round(buried_frac * 100)}% of "
+            f"'{pid}' inside '{buried_host}' — it is not jointed to that "
+            "part. The mate direction points the body into a foreign host: "
+            "mate the OTHER end/port of the part or pick a different "
+            "port pair (find_matching_ports)",
         }
     # the candidate must mate to the part the plan declares — a solver
     # preview run against the wrong fixed part (e.g. casing instead of the
