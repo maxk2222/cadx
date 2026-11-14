@@ -693,6 +693,72 @@ def _out_dir_hint(s: GuideToolSession, a: dict[str, Any], moving: Any) -> tuple[
             if spec:
                 return vec, spec
             return None, ""  # targeted mate without direction words — no hint
+    return _sibling_out_hint(s, moving)
+
+
+def _sibling_out_hint(s: GuideToolSession, moving: Any) -> tuple[Any, str]:
+    """Free-port direction of an already-placed instance of the SAME part.
+    A parallel pair of elbows has parallel free sockets — the sibling's
+    proven roll is the strongest roll hint available."""
+    for inst in s.state.assembly.instances:
+        if inst.part_id != moving.id or inst.transform is None:
+            continue
+        j = next(
+            (
+                x
+                for x in s.state.assembly.joints
+                if str(x.get("fixed_instance")) == inst.instance_id
+            ),
+            None,
+        )
+        pname = (j or {}).get("fixed_port")
+        p = next((p for p in moving.ports if p.name == pname), None)
+        if p is None:
+            continue
+        mt = np.asarray(inst.transform, dtype=float).reshape(4, 4)
+        wa = mt[0:3, 0:3] @ np.asarray(p.axis, dtype=float)
+        n = float(np.linalg.norm(wa))
+        if n > 1e-6:
+            return wa / n, "dir"
+    return None, ""
+
+
+def _sibling_dir_hint(s: GuideToolSession, pid: str) -> tuple[Any, str]:
+    """Growth vector of an already-placed instance of the SAME part —
+    repeated fittings in a manual are almost always a parallel pair (two
+    vertical pipes, two symmetric rails). The sibling's measured growth
+    (fixed-port → body-centre direction) beats any text inference: the
+    first copy's proven build becomes the second copy's hint."""
+    insts = {i.instance_id: i for i in s.state.assembly.instances}
+    for inst in s.state.assembly.instances:
+        if inst.part_id != pid or inst.transform is None:
+            continue
+        j = next(
+            (
+                x
+                for x in s.state.assembly.joints
+                if str(x.get("moving_instance")) == inst.instance_id
+            ),
+            None,
+        )
+        fi = insts.get(str(j.get("fixed_instance"))) if j else None
+        fp_part = s.state.part_by_id(fi.part_id) if fi else None
+        fp = next(
+            (p for p in (fp_part.ports if fp_part else []) if p.name == (j or {}).get("fixed_port")),
+            None,
+        )
+        part = s.state.part_by_id(pid)
+        if not (fi and fi.transform and fp and part):
+            continue
+        ft = np.asarray(fi.transform, dtype=float).reshape(4, 4)
+        port_w = ft[0:3, 0:3] @ np.asarray(fp.pos, dtype=float) + ft[0:3, 3]
+        mn, mx = solver.world_bbox(
+            part.bbox_min, part.bbox_max, np.asarray(inst.transform, dtype=float)
+        )
+        d = (mn + mx) / 2.0 - port_w
+        n = float(np.linalg.norm(d))
+        if n > 1e-6:
+            return d / n, "dir"
     return None, ""
 
 
@@ -758,7 +824,7 @@ def _grow_dir_hint(s: GuideToolSession, a: dict[str, Any]) -> tuple[Any, str]:
                 vec, spec = solver.direction_hint(ss.text or "")
                 if spec:
                     return vec, spec
-    return None, ""
+    return _sibling_dir_hint(s, pid)
 
 
 def _add_alternative_pairs(
@@ -1440,6 +1506,12 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
                 "axis_share": round(float(span[i]) / tot, 2),
             }
         )
+    sib_pairs = solver.sibling_pairs(
+        bboxes,
+        {iid: i.part_id for iid, i in insts.items()},
+        {iid: i.transform for iid, i in insts.items() if i.transform is not None},
+        {p.id: p for p in s.state.parts},
+    )
     rows: list[dict[str, Any]] = []
     bad: list[dict[str, Any]] = []
     approx: list[dict[str, Any]] = []
@@ -1510,6 +1582,7 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         "buried_instances": buried,
         "disconnected_instances": disconnected,
         "axis_profiles": axis_profiles,
+        "sibling_pairs": sib_pairs,
         "approximated_joints": approx,
     }
 

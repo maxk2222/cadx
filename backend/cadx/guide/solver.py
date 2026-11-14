@@ -824,6 +824,50 @@ def disconnected_instances(
     ]
 
 
+def sibling_pairs(
+    boxes: dict[str, tuple[np.ndarray, np.ndarray]],
+    inst_part: dict[str, str],
+    inst_transform: dict[str, Any],
+    parts: dict[str, GuidePart],
+) -> list[dict[str, Any]]:
+    """Pairwise layout evidence for same-part instance groups — manuals
+    almost always mount repeated fittings as an adjacent parallel pair
+    (two vertical pipes, two symmetric rails). ``distance_mm`` separates
+    "adjacent pair" from "opposite sides of the machine"; ``axis_dot``
+    separates parallel from splayed/crossed copies. The long LOCAL axis
+    rotated to world is used — a bbox diagonal is always axis-aligned
+    and would fake a high dot."""
+    by_part: dict[str, list[str]] = {}
+    for iid in sorted(boxes):
+        pid = inst_part.get(iid)
+        if pid:
+            by_part.setdefault(pid, []).append(iid)
+    rows: list[dict[str, Any]] = []
+    for pid, ids in sorted(by_part.items()):
+        part = parts.get(pid)
+        if part is None or len(ids) < 2:
+            continue
+        ext = np.asarray(part.bbox_max, float) - np.asarray(part.bbox_min, float)
+        la = np.eye(3)[int(np.argmax(ext))]
+        for a_i, iid_a in enumerate(ids):
+            for iid_b in ids[a_i + 1 :]:
+                ca = (np.asarray(boxes[iid_a][0]) + np.asarray(boxes[iid_a][1])) / 2
+                cb = (np.asarray(boxes[iid_b][0]) + np.asarray(boxes[iid_b][1])) / 2
+                ra = np.asarray(inst_transform[iid_a], float).reshape(4, 4)[0:3, 0:3] @ la
+                rb = np.asarray(inst_transform[iid_b], float).reshape(4, 4)[0:3, 0:3] @ la
+                ra = ra / max(float(np.linalg.norm(ra)), 1e-9)
+                rb = rb / max(float(np.linalg.norm(rb)), 1e-9)
+                rows.append(
+                    {
+                        "part": pid,
+                        "instances": [iid_a, iid_b],
+                        "distance_mm": round(float(np.linalg.norm(cb - ca)), 1),
+                        "axis_dot": round(float(abs(np.dot(ra, rb))), 3),
+                    }
+                )
+    return rows
+
+
 def solve_attachment(
     moving: GuidePart,
     moving_port_name: str,

@@ -21,6 +21,7 @@ from cadx.guide.solver import (
     buried_instances,
     disconnected_instances,
     evaluate_mate,
+    sibling_pairs,
     world_bbox,
 )
 
@@ -188,10 +189,21 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[
                 "axis_share": round(float(span[i]) / tot, 2),
             }
         )
+    # sibling pairs — two copies of the same part are almost always a
+    # parallel/adjacent pair in the manual (two vertical pipes, two
+    # symmetric rails). Distance + axis alignment are durable numbers the
+    # review must quote instead of hand-waving "looks right".
+    sib_pairs = sibling_pairs(
+        bboxes,
+        {iid: i.part_id for iid, i in insts.items()},
+        {iid: i.transform for iid, i in insts.items() if i.transform is not None},
+        parts,
+    )
     audit = {
         "buried_instances": buried_rows,
         "disconnected_instances": disconnected_rows,
         "axis_profiles": axis_profiles,
+        "sibling_pairs": sib_pairs,
     }
     return metrics, buried, audit
 
