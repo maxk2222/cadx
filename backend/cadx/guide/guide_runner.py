@@ -347,6 +347,22 @@ def _review_verdict(
         return "repair", "the review produced no report — re-run it and call write_review_report"
     if rep.score >= score_target and not blockers:
         return "ship", ""
+    # every blocker is a kit-limitation the pipeline cannot repair — the
+    # parts mission cannot register hardware that is not in the kit and
+    # the steps mission cannot conjure it either. Fail fast into
+    # needs_review instead of burning 3 futile repair iterations
+    # (two_pipes: 800s of steps-mission thrash, still failed).
+    if blockers and all(
+        "kit" in (f.evidence or "").lower() and "limit" in (f.evidence or "").lower()
+        for f in blockers
+    ):
+        log.info(
+            "guide.review_kit_limited",
+            blockers=len(blockers),
+            score=rep.score,
+            iter=rep.iteration,
+        )
+        return "fail", ""
     if rep.iteration >= max_iter:
         log.warning(
             "guide.review_iter_cap",
