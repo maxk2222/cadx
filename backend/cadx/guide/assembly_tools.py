@@ -547,13 +547,41 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
     cands.sort(
         key=lambda c: (not c["geometry_ok"], c.get("joint_gap_mm") or 0.0)
     )
-    return {
+    out: dict[str, Any] = {
         "ok": True,
         "candidates": _cache_candidates(s, cands),
         "note": "pass one candidate_id to place_instance — candidates with "
         "geometry_ok=false are pre-rejected (buried/swallowing); pick a "
         "geometry_ok=true candidate or a different port pair",
     }
+    if not any(c["geometry_ok"] for c in cands):
+        _add_alternative_pairs(out, s, moving, fixed, a)
+    return out
+
+
+def _add_alternative_pairs(
+    out: dict[str, Any],
+    s: GuideToolSession,
+    moving: Any,
+    fixed: Any,
+    a: dict[str, Any],
+) -> None:
+    """All candidates for the probed pair are pre-rejected — name the pairs
+    that still have a chance so the next call succeeds instead of
+    re-probing this sink."""
+    auto = solver.find_matching_ports(moving, fixed, include_mismatch=True)
+    probed = (str(a.get("moving_port", "")), str(a.get("target_port", "")))
+    alt = [
+        p for p in auto
+        if (p.get("moving_port"), p.get("fixed_port")) != probed
+    ]
+    if alt:
+        out["alternative_pairs"] = alt[:6]
+        out["hint"] = (
+            "every candidate for this pair is pre-rejected — retry "
+            "solve_attachment_preview with a pair from alternative_pairs; "
+            "do NOT re-commit this pair"
+        )
 
 
 async def solve_free_preview(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
