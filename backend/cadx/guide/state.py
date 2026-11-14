@@ -192,6 +192,12 @@ class GuideState(BaseModel):
     missions_failed: list[str] = Field(default_factory=list)
     output_dir: str = ""
     unity_guide_path: str | None = None
+    # opaque placement candidates: solve_*_preview writes, place_instance
+    # consumes. Lives on the durable state — each tool-loop attempt builds
+    # a NEW session object, so a session-held cache invalidates every
+    # candidate_id a retrying agent was told to use (observed: six
+    # 'unknown/expired candidate_id' errors in a row after mission_retry).
+    preview_cache: dict[str, dict] = Field(default_factory=dict)
 
     # -- persistence -------------------------------------------------------- #
 

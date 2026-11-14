@@ -665,6 +665,64 @@ def _candidate_burial(
     return frac, host, swallow, swallowed
 
 
+def _burial_gate_error(
+    s: GuideToolSession, part: Any, pid: str, cand: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Rejection payload when a candidate's transform puts the part inside
+    foreign geometry — either direction (part swallowed by a host, or
+    landing on top of placed hardware)."""
+    buried_frac, buried_host, swallow_frac, swallowed_id = _candidate_burial(
+        s, part, cand
+    )
+    # enclosure exemption: a cover/host-scale part legitimately contains
+    # already-built hardware (last-step "Verkleidung über alles"); the
+    # swallow gate targets parts that duplicate a branch at the same spot
+    if swallow_frac > 0.6 and pid != _host_part_id(s):
+        return {
+            "ok": False,
+            "error": f"candidate lands on top of '{swallowed_id}' — "
+            f"{round(swallow_frac * 100)}% of that placed part ends up "
+            f"inside '{pid}'s box. This duplicates an already-built "
+            "branch at the same spot: mate to a port of that instance "
+            "instead (it is the physical continuation), or pick a "
+            "different target port",
+        }
+    if buried_frac <= 0.45:
+        return None
+    # name the actionable alternatives concretely — retrying the same
+    # candidate_id is the observed dead-loop; the fix is a DIFFERENT
+    # moving port (the part's other end) or a different target port
+    other_ports = [p.name for p in part.ports if p.name != cand.get("moving_port")]
+    hint = (
+        f"run solve_attachment_preview with a different moving_port "
+        f"(other ports of '{pid}': {other_ports[:6]}) or a different "
+        "target (find_matching_ports first)."
+    )
+    if str(cand.get("fixed_part") or "") == _host_part_id(s):
+        # the host shell itself is not a fitting — manuals name the
+        # device when they mean the hardware mounted ON it. The real
+        # mate is a placed non-host instance (adapter/socket).
+        fittings = [
+            i.instance_id
+            for i in s.state.assembly.instances
+            if i.part_id != _host_part_id(s)
+        ]
+        hint = (
+            f"'{cand.get('fixed_part')}' is the host SHELL, not a "
+            "fitting — parts never mate INTO it; they mate the "
+            f"hardware mounted on it. Placed fittings: {fittings[:8]}. "
+            "Preview against one of those instance ids instead."
+        )
+    return {
+        "ok": False,
+        "error": f"candidate buries {round(buried_frac * 100)}% of "
+        f"'{pid}' inside '{buried_host}' — it is not jointed to that "
+        "part. The mate direction points the body into a foreign "
+        f"host. Do NOT retry this candidate — {hint}",
+        "other_moving_ports": other_ports,
+    }
+
+
 def _kit_bound(s: GuideToolSession, part: Any) -> int | None:
     """Hard physical bound: the kit's shipped count for this part. The
     registered quantity wins; otherwise fall back to the Stückliste counts
@@ -775,38 +833,9 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     # is NOT connected to is physically wrong even when port gap/normals and
     # mesh collision pass (long pipe through its fitting into the host
     # behind it — invisible to boolean collision inside a hollow AABB)
-    buried_frac, buried_host, swallow_frac, swallowed_id = _candidate_burial(
-        s, part, cand
-    )
-    # enclosure exemption: a cover/host-scale part legitimately contains
-    # already-built hardware (last-step "Verkleidung über alles"); the
-    # swallow gate targets parts that duplicate a branch at the same spot
-    if swallow_frac > 0.6 and pid != _host_part_id(s):
-        return {
-            "ok": False,
-            "error": f"candidate lands on top of '{swallowed_id}' — "
-            f"{round(swallow_frac * 100)}% of that placed part ends up "
-            f"inside '{pid}'s box. This duplicates an already-built "
-            "branch at the same spot: mate to a port of that instance "
-            "instead (it is the physical continuation), or pick a "
-            "different target port",
-        }
-    if buried_frac > 0.45:
-        # name the actionable alternatives concretely — retrying the same
-        # candidate_id is the observed dead-loop; the fix is a DIFFERENT
-        # moving port (the part's other end) or a different target port
-        other_ports = [p.name for p in part.ports if p.name != cand.get("moving_port")]
-        return {
-            "ok": False,
-            "error": f"candidate buries {round(buried_frac * 100)}% of "
-            f"'{pid}' inside '{buried_host}' — it is not jointed to that "
-            "part. The mate direction points the body into a foreign "
-            "host. Do NOT retry this candidate — run "
-            "solve_attachment_preview with a different moving_port "
-            f"(other ports of '{pid}': {other_ports[:6]}) or a different "
-            "target (find_matching_ports first).",
-            "other_moving_ports": other_ports,
-        }
+    err = _burial_gate_error(s, part, pid, cand)
+    if err:
+        return err
     # the candidate must mate to the part the plan declares — a solver
     # preview run against the wrong fixed part (e.g. casing instead of the
     # adapter already seated on it) produces perfectly collision-free

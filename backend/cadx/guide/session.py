@@ -198,7 +198,10 @@ class GuideToolSession(ToolSession):
         self._park_fn = park_fn
         self._cancel_fn = check_cancel
         self._enqueue_fn = enqueue_fn
-        self._preview_cache: dict[str, dict[str, Any]] = {}
+        # preview candidates live on the durable state (see GuideState.
+        # preview_cache) — a fresh session object must still resolve the
+        # candidate_ids a previous attempt handed out
+        self._preview_cache = self.state.preview_cache
         self._aliases_store = self._load_aliases()
         self._bad_image_calls = 0
         self.parked = False
