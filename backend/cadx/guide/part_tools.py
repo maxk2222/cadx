@@ -548,6 +548,10 @@ async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
                 project,
                 prompt,
                 part_name=name,
+                # guide parts need functional geometry, not polish: cap the
+                # improve loop (build + one repair cycle) — a valid first
+                # candidate still exits early on 'all checks passed'
+                options={"max_iterations": 3},
                 enqueue_fn=s._enqueue_fn,
             )
     except SpawnError as e:
