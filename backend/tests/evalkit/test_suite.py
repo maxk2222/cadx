@@ -33,6 +33,8 @@ def test_shipped_suite_loads_and_validates():
         "sprocket_520_45t",
         "aircraft_wing",
         "bearing_bracket_topopt",
+        "kiara_guide_no_pipes",
+        "kiara_guide_two_pipes",
         "kiara_heatpump_guide",
         "marine_propeller",
         "marine_propeller_autonomous",
@@ -46,7 +48,7 @@ def test_shipped_suite_loads_and_validates():
         "kiara_guide_missing_part",
     ]
     assert [c.difficulty for c in cases] == [
-        1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 5
+        1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 5
     ]
     for c in cases:
         assert c.project.startswith("eval:")
@@ -141,7 +143,9 @@ def test_suite_files_present():
         "helical_pinion_shaft.json",
         "kiara_guide_bare.json",
         "kiara_guide_missing_part.json",
+        "kiara_guide_no_pipes.json",
         "kiara_guide_textonly.json",
+        "kiara_guide_two_pipes.json",
         "kiara_heatpump_guide.json",
         "l_bracket_rib.json",
         "m10_csk_screw.json",

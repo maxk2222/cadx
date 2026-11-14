@@ -1309,13 +1309,25 @@ def _gate_outcome(  # noqa: C901
                 for x in g.get("all") or []
             ]
             missing = [grp[0] for grp in needles if not any(x in h for x in grp for h in hay)]
+            # `none`: forbidden needles — a part name/id matching any of
+            # them must not appear (e.g. sealing washers must stay
+            # step-text hints, never generated parts)
+            forbidden = [str(v).lower() for v in g.get("none") or []]
+            present_forbidden = [v for v in forbidden if any(v in h for h in hay)]
             n_min = int(g.get("min") or 0)
-            ok = not missing and len(parts) >= n_min
+            n_max = g.get("max")
+            ok = not missing and not present_forbidden and len(parts) >= n_min
+            if n_max is not None:
+                ok = ok and len(parts) <= int(n_max)
             return GateResult(
                 name,
                 ok,
-                measured={"n_parts": len(parts), "missing": missing or None},
-                expected={"all": needles, "min": n_min},
+                measured={
+                    "n_parts": len(parts),
+                    "missing": missing or None,
+                    "forbidden_present": present_forbidden or None,
+                },
+                expected={"all": needles, "none": forbidden, "min": n_min, "max": n_max},
             )
         if name == "guide_placed":
             total = sum(len(s.get("placements") or []) for s in steps)

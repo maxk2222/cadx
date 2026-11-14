@@ -1,0 +1,52 @@
+{
+  "name": "kiara_guide_two_pipes",
+  "project": "eval:kiara-guide-two-pipes",
+  "difficulty": 3,
+  "description": "Anleitungsbuilder — minimal input: PDF + ONLY the two pipes (Pipe_l70, Pipe_l500). No casing/adapters/elbows, no part generation. Stress test: the guide pipeline must still extract steps and produce a guide without inventing or requiring the missing parts.",
+  "stages": [
+    {
+      "id": "guide",
+      "type": "guide",
+      "timeout_s": 5400,
+      "pdf": "evals/assets/kiara_heatpump/Montageanleitung_Demonstrator_KIARA_v2.pdf",
+      "cad_parts": [
+        "evals/assets/kiara_heatpump/Pipe_l70.glb",
+        "evals/assets/kiara_heatpump/Pipe_l500.glb"
+      ],
+      "prompt": "AR-Montageanleitung fuer den KIARA-Waermepumpen-Demonstrator aus der beigefuegten PDF erstellen.",
+      "answers": [
+        "Die vormontierten Komponenten gehoeren zum Ausgangszustand — positioniere sie plausibel laut PDF-Abbildungen und dokumentiere die Annahme.",
+        "Nutze die PDF-Abbildungen als Referenz; bei Unsicherheit waehle die geometrisch konsistenteste Loesung und dokumentiere sie."
+      ],
+      "allow_generation": false,
+      "max_resumes": 3,
+      "gates": [
+        {
+          "type": "status",
+          "expect": [
+            "succeeded",
+            "needs_review"
+          ]
+        },
+        {
+          "type": "guide_steps",
+          "min": 8
+        },
+        {
+          "type": "guide_parts",
+          "min": 2,
+          "all": [
+            [
+              "pipe",
+              "rohr"
+            ]
+          ]
+        },
+        {
+          "type": "guide_placed",
+          "min": 1
+        }
+      ]
+    }
+  ]
+}
