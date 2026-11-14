@@ -921,3 +921,60 @@ def test_place_instance_rejects_swallowing_candidate() -> None:
         place_instance(sess, {"part_id": "elbow", "candidate_id": "sw", "step": 1})
     )
     assert r["ok"] is False and "lands on top of" in r["error"], r
+
+
+def test_create_steps_upserts_existing_numbers() -> None:
+    """A reopened steps mission resends the whole plan — each existing
+    number must UPDATE (fields + fresh sub_steps), not error and leave a
+    half-stacked plan (observed: 13→19 duplicated steps, then
+    set_step_order fights)."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import GuideState, GuideStep
+    from cadx.guide.step_tools import create_steps
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    st = GuideStep(number=1, title="Adapter links", text="old", display_text="old")
+    st.sub_steps.append(
+        __import__("cadx.guide.state", fromlist=["GuideSubStep"]).GuideSubStep(
+            action="fasten", part="Adapter", target="Gehäuse"
+        )
+    )
+    state.steps.append(st)
+    sess = GuideToolSession(
+        ctx, mission="steps", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    r = asyncio.run(
+        create_steps(
+            sess,
+            {
+                "steps": [
+                    {
+                        "number": 1,
+                        "title": "Adapter links",
+                        "text": "new text body here",
+                        "display_text": "new display",
+                        "sub_steps": [
+                            {"action": "insert", "part": "Rohr", "target": "Adapter"}
+                        ],
+                    },
+                    {
+                        "number": 2,
+                        "title": "Rohr einstecken",
+                        "text": "step two text body",
+                        "display_text": "step two display",
+                    },
+                ]
+            },
+        )
+    )
+    assert r["created"] == [1, 2], r
+    step = state.step_by_number(1)
+    assert step.text == "new text body here"
+    assert len(step.sub_steps) == 1 and step.sub_steps[0].part == "Rohr"
+    assert len(state.steps) == 2

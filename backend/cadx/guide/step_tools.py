@@ -271,11 +271,29 @@ async def create_steps(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
                     subs = _ast.literal_eval(subs)
             except (ValueError, SyntaxError):
                 subs = []
-        res = await create_step(s, item)
-        if not res.get("ok"):
-            errors.append({"index": idx, "number": item.get("number"), "error": res.get("error")})
-            continue
-        step_num = int(res["step"])
+        num0 = int(item.get("number") or 0)
+        if s.state.step_by_number(num0) is not None:
+            # upsert: a reopened steps mission re-sends the whole plan —
+            # rejecting every existing number leaves it half-created and
+            # stacked (observed: 13→19 duplicate steps then order fights).
+            # Update fields and REPLACE the sub-step list with the item's.
+            res = await update_step(s, item)
+            if not res.get("ok"):
+                errors.append(
+                    {"index": idx, "number": num0, "error": res.get("error")}
+                )
+                continue
+            step = s.state.step_by_number(num0)
+            step.sub_steps.clear()
+            step_num = num0
+        else:
+            res = await create_step(s, item)
+            if not res.get("ok"):
+                errors.append(
+                    {"index": idx, "number": item.get("number"), "error": res.get("error")}
+                )
+                continue
+            step_num = int(res["step"])
         ok = True
         for j, sub in enumerate(subs):
             r = await add_sub_step(s, {**sub, "step": step_num})
