@@ -12,16 +12,16 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from cadx import storage
-from cadx.agent.context import read_prompt
 from cadx.api.deps import get_session
-from cadx.db.models import Version
+from cadx.db.models import Asset, AssetKind, Version
 from cadx.guide import unity
+from cadx.guide.annotate_tools import _DIR_VECS
 from cadx.guide.state import GuideState
 from cadx.logging import get_logger
 
@@ -482,17 +482,6 @@ class RewriteIn(BaseModel):
     language: str = ""  # free-form target language; "" = keep original
 
 
-class _RewriteStep(BaseModel):
-    number: int
-    title: str = ""
-    text: str
-    display_text: str
-
-
-class _RewriteOut(BaseModel):
-    steps: list[_RewriteStep]
-
-
 @router.post("/versions/{version_id}/guide/rewrite")
 async def rewrite_guide(
     version_id: uuid.UUID,
@@ -506,88 +495,27 @@ async def rewrite_guide(
     if not state.steps:
         raise HTTPException(400, "guide has no steps to rewrite")
 
+    from cadx.guide.rewrite import apply_rewrite
     from cadx.llm.client import make_llm
     from cadx.runtime_config import runtime_from_db_or_default
 
     runtime = await runtime_from_db_or_default()
     llm = make_llm(runtime)
-    payload = [
-        {
-            "number": s.number,
-            "title": s.title,
-            "text": s.text,
-            "display_text": s.display_text,
-        }
-        for s in state.steps
-    ]
-    prompt = (
-        read_prompt("guide_rewrite.md")
-        .replace("{audience}", body.audience)
-        .replace("{language}", body.language.strip() or "original")
-    )
     try:
-        res = await llm.chat(
-            "code",
-            [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
-            json_schema=_RewriteOut,
+        out = await apply_rewrite(
+            state, audience=body.audience, language=body.language, llm=llm
         )
-        out = (
-            _RewriteOut.model_validate(res.parsed)
-            if res.parsed is not None
-            else _RewriteOut.model_validate_json(res.text)
-        )
-    except HTTPException:
-        raise
     except Exception as exc:
         log.warning("guide.rewrite_failed", error=str(exc)[:300])
         raise HTTPException(502, f"rewrite failed: {str(exc)[:200]}") from exc
 
-    # snapshot the pre-rewrite text once — the variant picker must be
-    # able to return to the untranslated original
-    if "_original" not in state.variants:
-        state.variants["_original"] = [
-            {
-                "number": s.number,
-                "title": s.title,
-                "text": s.text,
-                "display_text": s.display_text,
-            }
-            for s in state.steps
-        ]
-    by_no = {s.number: s for s in out.steps}
-    applied = 0
-    variant_rows: list[dict] = []
-    for s in state.steps:
-        r = by_no.get(s.number)
-        if r is None:
-            continue
-        if r.title.strip():
-            s.title = r.title.strip()
-        if r.text.strip():
-            s.text = r.text.strip()
-        if r.display_text.strip():
-            s.display_text = r.display_text.strip()
-        variant_rows.append(
-            {
-                "number": s.number,
-                "title": s.title,
-                "text": s.text,
-                "display_text": s.display_text,
-            }
-        )
-        applied += 1
-    key = f"{body.audience}:{(body.language.strip() or 'original').lower()}"
-    state.variants[key] = variant_rows
     state.save(guide_dir)
     _regen_unity(state, guide_dir)
     return {
         "ok": True,
         "audience": body.audience,
-        "variant": key,
-        "rewritten": applied,
+        "variant": out["key"],
+        "rewritten": out["applied"],
         "steps": [_step_out(s) for s in state.steps],
     }
 
@@ -625,3 +553,262 @@ async def apply_variant(
     _regen_unity(state, guide_dir)
     return {"ok": True, "variant": body.key, "applied": applied,
             "steps": [_step_out(s) for s in state.steps]}
+
+
+class GuideNoteIn(BaseModel):
+    note: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/versions/{version_id}/guide/notes")
+async def add_guide_note(
+    version_id: uuid.UUID,
+    body: GuideNoteIn,
+    db: AsyncSession = Depends(get_session),
+):
+    """Append a free-form user note to the guide's ``user_notes.jsonl`` —
+    the exact line format ``attach_guide_note`` writes from chat, so a
+    running guide picks it up via ``list_user_notes`` mid-mission. Unlike
+    the read endpoints this works before state.json exists (early-run
+    notes still land in the same durable directory)."""
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    if v.kind != "guide":
+        raise HTTPException(404, "not a guide version")
+    note = body.note.strip()
+    if not note:
+        raise HTTPException(422, "note required")
+    guide_dir = storage.version_dir(v.project_id, v.id) / "guide"
+    guide_dir.mkdir(parents=True, exist_ok=True)
+    p = guide_dir / "user_notes.jsonl"
+    with p.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"note": note[:2000]}) + "\n")
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# annotations (arrows + free text fields)
+# ---------------------------------------------------------------------------
+
+_IMAGE_KINDS = {AssetKind.image, AssetKind.generated_image}
+_ANN_KINDS = {"arrow", "text"}
+
+
+class AnnotationIn(BaseModel):
+    kind: str = Field(pattern="^(arrow|text)$")
+    step: int = Field(ge=1)
+    part_id: str = ""  # arrow anchor — instance id or part id
+    approach_axis: list[float] | None = None  # arrow direction (vec3)
+    direction: str = ""  # named axis instead ("up" … _DIR_VECS)
+    label: str = Field(default="", max_length=500)
+    position: list[float] | None = None  # text field world pos (vec3)
+    text: str = Field(default="", max_length=500)
+    color: str = Field(default="", max_length=32)
+    size: float = Field(default=1.0, gt=0, le=10)
+
+
+class AnnotationPatch(BaseModel):
+    step: int | None = Field(default=None, ge=1)
+    part_id: str | None = None
+    approach_axis: list[float] | None = None
+    direction: str | None = None
+    label: str | None = Field(default=None, max_length=500)
+    position: list[float] | None = None
+    text: str | None = Field(default=None, max_length=500)
+    color: str | None = Field(default=None, max_length=32)
+    size: float | None = Field(default=None, gt=0, le=10)
+
+
+def _norm_axis(v: list[float] | None) -> list[float] | None:
+    if not v or len(v) != 3:
+        return None
+    n = sum(c * c for c in v) ** 0.5
+    return [round(c / n, 6) for c in v] if n > 1e-9 else None
+
+
+def _resolve_axis(axis: list[float] | None, direction: str | None) -> list[float] | None:
+    """explicit vec3 wins; else look the named direction up in _DIR_VECS."""
+    v = _norm_axis(axis)
+    if v is not None:
+        return v
+    if direction:
+        v = _DIR_VECS.get(direction.strip().lower())
+        return list(v) if v else None
+    return None
+
+
+def _ann_checks(body_step: int | None, state: GuideState) -> None:
+    if body_step is not None and not any(s.number == body_step for s in state.steps):
+        raise HTTPException(400, f"step {body_step} does not exist")
+
+
+def _ann_at(state: GuideState, idx: int) -> dict:
+    if idx < 0 or idx >= len(state.annotations):
+        raise HTTPException(404, f"annotation {idx} not found")
+    return state.annotations[idx]
+
+
+@router.post("/versions/{version_id}/guide/annotations")
+async def add_annotation(
+    version_id: uuid.UUID, body: AnnotationIn, db: AsyncSession = Depends(get_session)
+):
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    _ann_checks(body.step, state)
+    ann: dict[str, Any] = {"kind": body.kind, "step": body.step}
+    if body.kind == "arrow":
+        axis = _resolve_axis(body.approach_axis, body.direction) or [0.0, 1.0, 0.0]
+        ann.update(
+            part_id=body.part_id,
+            approach_axis=axis,
+            label=body.label,
+        )
+    else:
+        ann.update(
+            position=body.position if body.position and len(body.position) == 3 else [0, 0, 0],
+            text=body.text,
+        )
+    if body.color:
+        ann["color"] = body.color
+    if body.size != 1.0:
+        ann["size"] = body.size
+    state.annotations.append(ann)
+    state.save(guide_dir)
+    _regen_unity(state, guide_dir)
+    return {"ok": True, "index": len(state.annotations) - 1}
+
+
+@router.patch("/versions/{version_id}/guide/annotations/{idx}")
+async def patch_annotation(
+    version_id: uuid.UUID, idx: int, body: AnnotationPatch, db: AsyncSession = Depends(get_session)
+):
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    ann = _ann_at(state, idx)
+    if body.step is not None:
+        _ann_checks(body.step, state)
+        ann["step"] = body.step
+    if body.part_id is not None and ann.get("kind") == "arrow":
+        ann["part_id"] = body.part_id
+    axis = _resolve_axis(body.approach_axis, body.direction)
+    if axis is not None and ann.get("kind") == "arrow":
+        ann["approach_axis"] = axis
+    if body.label is not None and ann.get("kind") == "arrow":
+        ann["label"] = body.label
+    if body.position is not None and len(body.position) == 3 and ann.get("kind") == "text":
+        ann["position"] = list(body.position)
+    if body.text is not None and ann.get("kind") == "text":
+        ann["text"] = body.text
+    if body.color is not None:
+        if body.color:
+            ann["color"] = body.color
+        else:
+            ann.pop("color", None)
+    if body.size is not None:
+        if body.size != 1.0:
+            ann["size"] = body.size
+        else:
+            ann.pop("size", None)
+    state.save(guide_dir)
+    _regen_unity(state, guide_dir)
+    return {"ok": True, "index": idx, "annotation": ann}
+
+
+@router.delete("/versions/{version_id}/guide/annotations/{idx}")
+async def delete_annotation(
+    version_id: uuid.UUID, idx: int, db: AsyncSession = Depends(get_session)
+):
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    state, guide_dir = _guide_ctx(v)
+    _ann_at(state, idx)
+    state.annotations.pop(idx)
+    state.save(guide_dir)
+    _regen_unity(state, guide_dir)
+    return {"ok": True, "annotations": len(state.annotations)}
+
+
+# ---------------------------------------------------------------------------
+# guide media — step photos must live in guide/output/media (patch_step
+# validates the filename against that directory)
+# ---------------------------------------------------------------------------
+
+_MEDIA_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_MEDIA_MAX = 10 * 1024 * 1024
+
+
+def _media_dir(guide_dir: Path) -> Path:
+    d = guide_dir / "output" / "media"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _unique_media_name(media_dir: Path, raw: str) -> str:
+    name = storage.safe_filename(raw) or "image.png"
+    stem, dot, ext = name.rpartition(".")
+    stem, ext = (stem or "image"), ("." + ext if dot else ".png")
+    cand = f"{stem}{ext}"
+    i = 2
+    while (media_dir / cand).exists():
+        cand = f"{stem}-{i}{ext}"
+        i += 1
+    return cand
+
+
+@router.post("/versions/{version_id}/guide/media")
+async def upload_guide_media(
+    version_id: uuid.UUID, file: UploadFile, db: AsyncSession = Depends(get_session)
+):
+    """Direct media upload (viewport snapshot, user photo). The file lands
+    in guide/output/media so patch_step can reference it as media_image."""
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    _state, guide_dir = _guide_ctx(v)
+    name_in = Path(file.filename or "image.png").name
+    ext = Path(name_in).suffix.lower()
+    if ext not in _MEDIA_EXTS:
+        raise HTTPException(400, f"unsupported media type '{ext or name_in}'")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty file")
+    if len(data) > _MEDIA_MAX:
+        raise HTTPException(413, "media file too large (max 10 MB)")
+    media_dir = _media_dir(guide_dir)
+    name = _unique_media_name(media_dir, name_in)
+    (media_dir / name).write_bytes(data)
+    return {"ok": True, "name": name}
+
+
+class MediaFromAsset(BaseModel):
+    asset_id: uuid.UUID
+
+
+@router.post("/versions/{version_id}/guide/media/from-asset")
+async def guide_media_from_asset(
+    version_id: uuid.UUID, body: MediaFromAsset, db: AsyncSession = Depends(get_session)
+):
+    """Copy a project image asset into the guide media directory."""
+    v = await db.get(Version, version_id)
+    if not v:
+        raise HTTPException(404, "version not found")
+    _state, guide_dir = _guide_ctx(v)
+    asset = await db.get(Asset, body.asset_id)
+    if not asset or asset.project_id != v.project_id:
+        raise HTTPException(404, "asset not found")
+    if asset.kind not in _IMAGE_KINDS:
+        raise HTTPException(400, "asset is not an image")
+    src = storage.asset_path(asset.project_id, asset.id, asset.filename)
+    if not src.is_file():
+        raise HTTPException(404, "asset file missing")
+    if src.stat().st_size > _MEDIA_MAX:
+        raise HTTPException(413, "media file too large (max 10 MB)")
+    media_dir = _media_dir(guide_dir)
+    name = _unique_media_name(media_dir, asset.filename)
+    media_dir.joinpath(name).write_bytes(src.read_bytes())
+    return {"ok": True, "name": name}

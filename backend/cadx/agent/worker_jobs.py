@@ -812,6 +812,8 @@ async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
                 resume_state=resume_state,
                 allow_generation=bool((version.options or {}).get("guide_allow_generation", True)),
                 attach_images=bool((version.options or {}).get("guide_attach_images", True)),
+                language=str((version.options or {}).get("guide_language") or ""),
+                audience=str((version.options or {}).get("guide_audience") or ""),
             )
         except Exception as e:
             log.exception("guide.job_crashed", job=str(job_id))

@@ -385,6 +385,30 @@ def _completeness_issues(s: GuideToolSession) -> list[str]:
                         "update_step to drop it from required_parts"
                     )
                 issues.append(msg)
+    # every step TARGET resolving to a registered part needs a placed
+    # instance — a fitting cannot joint onto a host the plan referenced
+    # but nobody placed (heatpump run: steps targeted the casing, it
+    # stayed unplaced, the adapter→casing joint became impossible and the
+    # fittings grew as a detached pipe tree). A host is reference
+    # geometry, not an optional part.
+    placed_parts = {i.part_id for i in s.state.assembly.instances}
+    seen_target_issues: set[str] = set()
+    for st in s.state.steps:
+        if st.action_type != "assembly":
+            continue
+        for ss in st.sub_steps:
+            for nm in (ss.target, ss.target2):
+                pid = _resolve_name(
+                    s, nm, context=f"{ss.text or ''} {st.text} {st.title}"
+                )
+                if pid and pid not in placed_parts and pid not in seen_target_issues:
+                    seen_target_issues.add(pid)
+                    issues.append(
+                        f"step {st.number}: target '{nm}' resolves to "
+                        f"'{pid}' but no instance of it is placed — place "
+                        "it first (the host is reference geometry, "
+                        "not optional)"
+                    )
     if not s.state.assembly.instances:
         issues.append("no parts placed at all")
     return issues

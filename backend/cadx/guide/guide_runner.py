@@ -375,22 +375,30 @@ def _review_verdict(
 
 
 def _plan_lint_reopen(
-    lint_sess: Any, state: GuideState, state_dir: Path
+    lint_sess: Any, state: GuideState, state_dir: Path, *, allow_reopen: bool
 ) -> str | None:
     """Deterministic plan lint before assembly spends its budget —
     unresolvable refs route back to the owning mission (steps|parts) with
-    the lint text as repair notes. Returns the notes text, or None."""
+    the lint text as repair notes. Returns the notes text, or None.
+
+    When allow_reopen is False (cycle cap hit) the findings still reach
+    the assembly mission as in-place notes — but missions stay DONE:
+    reopening without a break would re-run steps/parts on every pass
+    (observed: 25→18→18 blocker thrash without progress)."""
     from cadx.guide.planlint import plan_lint
 
     blockers = [f for f in plan_lint(lint_sess) if f["severity"] == "blocker"]
     if not blockers:
         return None
-    flagged = {f["mission"] for f in blockers}
-    for m in flagged:
-        if m in state.missions_done:
-            state.missions_done.remove(m)
-    state.save(state_dir)
-    log.info("guide.plan_lint_reopen", reopen=sorted(flagged), blockers=len(blockers))
+    if allow_reopen:
+        flagged = {f["mission"] for f in blockers}
+        for m in flagged:
+            if m in state.missions_done:
+                state.missions_done.remove(m)
+        state.save(state_dir)
+        log.info("guide.plan_lint_reopen", reopen=sorted(flagged), blockers=len(blockers))
+    else:
+        log.info("guide.plan_lint_uncapped", blockers=len(blockers))
     return "\n".join(f"- {f['text']}" for f in blockers)
 
 
@@ -623,16 +631,21 @@ async def run_guide(
     best_assembly = None
     failed_review = False
     while True:
+        lint_reopened = False
         for mission in MISSION_ORDER:
             # deterministic plan lint before assembly spends its budget:
             # unresolvable refs / ordering bugs are routed back to the
             # owning mission (steps|parts) with the lint text as notes —
             # a degenerate extraction gets fixed, not faithfully placed
             if mission == "assembly" and mission not in state.missions_done:
-                notes = _plan_lint_reopen(_session("assembly"), state, state_dir)
+                notes = _plan_lint_reopen(
+                    _session("assembly"), state, state_dir,
+                    allow_reopen=lint_cycles < 2,
+                )
                 if notes and lint_cycles < 2:
                     lint_cycles += 1
                     repair_notes = notes
+                    lint_reopened = True
                     log.info("guide.plan_lint_cycle", cycle=lint_cycles)
                     break  # restart the mission order at the owning mission
             # findings go to the missions that actually re-run — a skipped
@@ -644,6 +657,10 @@ async def run_guide(
             if early is not None:
                 return early
 
+        # lint reopened owning missions — restart the mission order WITHOUT
+        # consulting the review verdict (there may be no report yet)
+        if lint_reopened:
+            continue
         verdict, repair_notes = _review_verdict(state, state_dir, score_target, max_iter)
         # keep the best-SCORED assembly across repair iterations — an LLM
         # repair that "succeeds" can still degrade the build (7.0 -> 4.0 in

@@ -167,6 +167,12 @@ class GuideRequest(BaseModel):
     # False = degraded-input mode: tool results carry no page/render
     # images — the agent works from extracted text and geometry alone
     attach_images: bool = True
+    # user-picked output language (BCP-47 like "de"/"en"); "" = auto-detect
+    # from the manual — a set value locks detect_language
+    language: str = ""
+    # text-variant rewrite applied at the end of the run; "" = ship the
+    # original step text (rewrites remain available post-hoc)
+    audience: Literal["", "beginner", "intermediate", "pro"] = ""
 
 
 # --------------------------------------------------------------------------- #

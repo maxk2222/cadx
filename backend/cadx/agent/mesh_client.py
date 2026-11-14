@@ -107,7 +107,8 @@ class MeshModelInfo(BaseModel):
     downloading: bool = False
     size_gb: float | None = None
     est_mem_mb: int | None = None
-    supports_vision: bool = False  # llm adapters: accepts image inputs
+    supports_vision: bool = False  # llm adapters: accepts image/video inputs
+    supports_audio: bool = False  # llm adapters: accepts input_audio parts
     supports_tools: bool = False  # llm adapters: OpenAI tool_calls
     pinned: bool = False  # resident model pinned in memory
     custom: bool = False  # user-registered via POST /v1/models/register

@@ -220,6 +220,8 @@ async def spawn_guide(
     prompt: str = "",
     allow_generation: bool = True,
     attach_images: bool = True,
+    language: str = "",
+    audience: str = "",
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> tuple[Version, Job]:
     """Spawn an anleitungsbuilder run: companion Part+Version (kind=guide)
@@ -264,6 +266,8 @@ async def spawn_guide(
             "options": {
                 "guide_allow_generation": allow_generation,
                 "guide_attach_images": attach_images,
+                "guide_language": language.strip(),
+                "guide_audience": audience.strip(),
             },
         },
         extra_job={
