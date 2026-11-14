@@ -160,6 +160,26 @@ def _int_or_none(v: Any) -> int | None:
         return None
 
 
+def _guide_mesh(s: GuideToolSession, src: Path) -> str:
+    """Mesh path that stays durable + servable: glTF gets the mm-normalized
+    copy first (uploads are meter-scale per spec); whatever normalize returns
+    must live under the guide parts dir — a src outside it (generated-part
+    exports, already-mm uploads) would 404 the /guide/parts/{id}/mesh guard
+    and detach the scene evidence from the guide dir."""
+    parts_dir = s.state_dir / "parts"
+    norm = Path(cadmeta.normalize_mesh_units(src, parts_dir)).resolve()
+    try:
+        norm.relative_to(parts_dir.resolve())
+        return str(norm)
+    except ValueError:
+        import shutil
+
+        parts_dir.mkdir(parents=True, exist_ok=True)
+        dst = parts_dir / src.name
+        shutil.copyfile(src, dst)
+        return str(dst)
+
+
 async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     pid = _slug(str(a.get("part_id", "")))
     if not pid:
@@ -261,9 +281,7 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
         }
     mesh_path: str | None = None
     if ext in cadmeta._MESH_EXTS:
-        # glTF is meter-scale per spec — uploads get an mm-normalized copy
-        # so solver/scene/emit stay in the CAD contract
-        mesh_path = str(cadmeta.normalize_mesh_units(path, s.state_dir / "parts"))
+        mesh_path = _guide_mesh(s, path)
     part = GuidePart(
         id=pid,
         name=str(a.get("name", "")).strip() or pid,
@@ -635,7 +653,7 @@ async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
         source="generated",
         version_id=str(v.id),
         step_path=str(step) if step else None,
-        mesh_path=str(mesh) if mesh else None,
+        mesh_path=_guide_mesh(s, mesh) if mesh else None,
         quantity=_int_or_none(a.get("quantity")),
     )
     part = await cadmeta.ensure_metadata(part, s.executor)

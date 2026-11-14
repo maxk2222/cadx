@@ -1,5 +1,5 @@
 import { Grid, OrbitControls, TransformControls } from "@react-three/drei";
-import { Canvas, useLoader, useThree } from "@react-three/fiber";
+import { Canvas, useThree } from "@react-three/fiber";
 import { Boxes, Move3d, Rotate3d } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type Ref } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,6 +7,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three-stdlib";
 import type { GuideAnnotation, GuideInstance, GuidePartInfo } from "../../lib/types";
 import { IconBtn } from "../ui";
+import { Annotations } from "./guideAnnotations";
 
 const meshUrl = (vid: string, pid: string) =>
   `/api/versions/${vid}/guide/parts/${encodeURIComponent(pid)}/mesh`;
@@ -74,30 +75,8 @@ function Instance({
   );
 }
 
-/** Annotation arrow for the CURRENT step: world-direction hint anchored at
- *  the annotated instance's origin (mirrors unity._annotation_arrows). */
-function AnnArrow({
-  axis,
-  origin,
-}: {
-  axis: number[];
-  origin: THREE.Vector3;
-}) {
-  const arrow = useMemo(() => {
-    const dir = new THREE.Vector3(...(axis as [number, number, number]));
-    const len = Math.max(dir.length(), 1);
-    dir.normalize();
-    return new THREE.ArrowHelper(
-      dir,
-      origin.clone().addScaledVector(dir, -30),
-      Math.min(len, 80),
-      0xffb020,
-      12,
-      6,
-    );
-  }, [axis, origin]);
-  return <primitive object={arrow} />;
-}
+/** Annotation arrows + text placards render via the shared
+ *  guideAnnotations components (same visuals as the editor). */
 
 /** Frame the camera on the placed assembly's world bbox: without this the
  *  three.js defaults (near 0.1 / far 2000, camera aimed at the origin) clip
@@ -210,11 +189,38 @@ function SceneInner({
   annotations?: GuideAnnotation[];
   t: (k: string, o?: Record<string, unknown>) => string;
 }) {
-  const gltfs = useLoader(GLTFLoader, urls);
+  // manual loading instead of useLoader: a single 404/malformed mesh must
+  // degrade to an empty group, not throw past the ErrorBoundary and kill
+  // the whole page (observed: generated parts whose mesh path points
+  // outside the guide dir)
+  const [gltfs, setGltfs] = useState<(THREE.Group | null)[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const loader = new GLTFLoader();
+    setGltfs(new Array(urls.length).fill(null));
+    urls.forEach((u, i) => {
+      loader
+        .loadAsync(u)
+        .then((g) => {
+          if (alive)
+            setGltfs((prev) => {
+              const next = [...prev];
+              next[i] = g.scene;
+              return next;
+            });
+        })
+        .catch(() => {
+          // missing/corrupt mesh — leave the slot empty, other parts still show
+        });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [urls]);
   const scenes = useMemo(
     () =>
       Object.fromEntries(
-        meshParts.map((p, i) => [p.id, gltfs[i]?.scene ?? new THREE.Group()]),
+        meshParts.map((p, i) => [p.id, gltfs[i] ?? new THREE.Group()]),
       ),
     [meshParts, gltfs],
   );
@@ -269,20 +275,7 @@ function SceneInner({
             />
           ))}
         </group>
-        {(annotations ?? [])
-          .filter((a) => a.kind === "arrow" && a.step === step)
-          .map((a, ai) => {
-            const inst = visible.find(
-              (i) => i.id === a.part_id || i.part_id === a.part_id,
-            );
-            if (!inst?.transform?.length) return null;
-            const origin = new THREE.Vector3(
-              inst.transform[0][3],
-              inst.transform[1][3],
-              inst.transform[2][3],
-            );
-            return <AnnArrow key={ai} axis={a.approach_axis} origin={origin} />;
-          })}
+        <Annotations anns={annotations ?? []} step={step} instances={visible} />
         <CameraFit content={contentRef} fitKey={step} />
         {selObj && !readonly && (
           <TransformControls object={selObj} mode={mode} onMouseUp={commit} />
