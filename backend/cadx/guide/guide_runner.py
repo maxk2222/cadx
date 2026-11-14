@@ -169,12 +169,17 @@ def _mission_prompt(
             + ", ".join(f"{p.id} ({p.name})" for p in state.parts[:30])
         )
     if mission == "steps" and not state.allow_part_generation:
+        kit = ", ".join(
+            a["filename"] for a in _guide_assets(ctx) if a["kind"] != "pdf"
+        ) or "(no CAD uploads)"
         ctx_lines.append(
-            "PART GENERATION IS DISABLED for this run: the kit is fixed to "
-            "the uploaded parts — check list_parts before writing "
-            "required_parts. A manual step that installs a part the kit "
-            "does not contain keeps that part in `text`/`target` as "
-            "context — NEVER in required_parts or a sub_step `part`."
+            "PART GENERATION IS DISABLED for this run — the kit is fixed "
+            f"to the uploaded CAD assets: {kit}. The parts mission "
+            "registers them later, so list_parts stays empty now — these "
+            "filenames are the whole kit. A manual step that installs a "
+            "part the kit does not contain keeps that part in `text`/"
+            "`target` as context — NEVER in required_parts or a sub_step "
+            "`part`."
         )
     if mission == "parts" and not state.allow_part_generation:
         ctx_lines.append(
