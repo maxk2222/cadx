@@ -148,6 +148,16 @@ SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+def _next_inst_no(existing: list[AssemblyInstance]) -> int:
+    """1 + the max live ``part#N`` suffix — never reuse a live instance id."""
+    top = 0
+    for i in existing:
+        tail = str(i.instance_id or "").rsplit("#", 1)
+        if len(tail) == 2 and tail[1].isdigit():
+            top = max(top, int(tail[1]))
+    return top + 1
+
+
 def _inst_by_id(s: GuideToolSession, inst_id: str) -> AssemblyInstance | None:
     return next((i for i in s.state.assembly.instances if i.instance_id == inst_id), None)
 
@@ -735,13 +745,20 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     # behind it — invisible to boolean collision inside a hollow AABB)
     buried_frac, buried_host = _candidate_burial(s, part, cand)
     if buried_frac > 0.45:
+        # name the actionable alternatives concretely — retrying the same
+        # candidate_id is the observed dead-loop; the fix is a DIFFERENT
+        # moving port (the part's other end) or a different target port
+        other_ports = [p.name for p in part.ports if p.name != cand.get("moving_port")]
         return {
             "ok": False,
             "error": f"candidate buries {round(buried_frac * 100)}% of "
             f"'{pid}' inside '{buried_host}' — it is not jointed to that "
-            "part. The mate direction points the body into a foreign host: "
-            "mate the OTHER end/port of the part or pick a different "
-            "port pair (find_matching_ports)",
+            "part. The mate direction points the body into a foreign "
+            "host. Do NOT retry this candidate — run "
+            "solve_attachment_preview with a different moving_port "
+            f"(other ports of '{pid}': {other_ports[:6]}) or a different "
+            "target (find_matching_ports first).",
+            "other_moving_ports": other_ports,
         }
     # the candidate must mate to the part the plan declares — a solver
     # preview run against the wrong fixed part (e.g. casing instead of the
@@ -754,7 +771,9 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     transform = cand["transform"]
     inst = AssemblyInstance(
         part_id=pid,
-        instance_id=f"{pid}#{len(existing) + 1}",
+        # next index from the max live suffix — len()+1 recycles a live id
+        # after unplace (observed: two distinct 'elbow#2' instances)
+        instance_id=f"{pid}#{_next_inst_no(existing)}",
         transform=[[float(v) for v in row] for row in transform],
         placed_in_step=step_no,
         substep_idx=int(a.get("substep_idx", 0)),
