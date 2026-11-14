@@ -694,34 +694,92 @@ def _candidate_burial(
         part.bbox_min, part.bbox_max, np.asarray(cand["transform"], dtype=float)
     )
     partner = str(cand.get("fixed_instance") or "")
-    others: list[tuple[np.ndarray, np.ndarray]] = []
-    boxes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    for inst in s.state.assembly.instances:
-        if inst.instance_id == partner or inst.transform is None:
-            continue
-        p2 = s.state.part_by_id(inst.part_id)
-        if p2 is None or p2.bbox_min is None or p2.bbox_max is None:
-            continue
-        bb = solver.world_bbox(
-            p2.bbox_min, p2.bbox_max, np.asarray(inst.transform, dtype=float)
-        )
-        others.append(bb)
-        boxes[inst.instance_id or inst.part_id] = bb
-    frac = solver.union_containment(mn, mx, others)
+    boxes = _placed_boxes(s, exclude=partner)
+    enclosures = _enclosure_hosts(boxes)
+    chain2 = _joint_neighbours(s, partner)
+    foreign: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    chain: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for iid, bb in boxes.items():
+        if iid in enclosures:
+            continue  # cavity placement — the collision check governs
+        (chain if iid in chain2 else foreign)[iid] = bb
+    frac = solver.union_containment(mn, mx, list(foreign.values()))
     host = None
     if frac > 0.0:
         best = 0.0
-        for iid, bb in boxes.items():
+        for iid, bb in foreign.items():
             f = solver.union_containment(mn, mx, [bb])
             if f > best:
                 best, host = f, iid
+    # FULL containment inside a chain-2 host is still a tunnel — partial
+    # overlap is engagement adjacency, >0.85 means it went THROUGH
+    for iid, bb in chain.items():
+        f = solver.union_containment(mn, mx, [bb])
+        if f > 0.85 and f > frac:
+            frac, host = f, iid
     swallow = 0.0
     swallowed = None
     for iid, bb in boxes.items():
+        if iid in enclosures:
+            continue
         f = solver.union_containment(bb[0], bb[1], [(mn, mx)])
         if f > swallow:
             swallow, swallowed = f, iid
     return frac, host, swallow, swallowed
+
+
+def _placed_boxes(
+    s: GuideToolSession, *, exclude: str = ""
+) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """instance_id → world AABB for every placed instance (minus ``exclude``)."""
+    boxes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for inst in s.state.assembly.instances:
+        if inst.instance_id == exclude or inst.transform is None:
+            continue
+        p2 = s.state.part_by_id(inst.part_id)
+        if p2 is None or p2.bbox_min is None or p2.bbox_max is None:
+            continue
+        boxes[inst.instance_id or inst.part_id] = solver.world_bbox(
+            p2.bbox_min, p2.bbox_max, np.asarray(inst.transform, dtype=float)
+        )
+    return boxes
+
+
+def _joint_neighbours(s: GuideToolSession, instance_id: str) -> set[str]:
+    """Instances the given one is already jointed to — the candidate's
+    joint neighbourhood. An elbow mating an adapter that sits inside the
+    casing legitimately reaches into the casing's volume: plugged chains
+    share engagement space (candidate→partner→partner's mates)."""
+    out: set[str] = set()
+    for j in s.state.assembly.joints:
+        for a, b in (
+            (j.get("moving_instance"), j.get("fixed_instance")),
+            (j.get("fixed_instance"), j.get("moving_instance")),
+        ):
+            if a == instance_id and b:
+                out.add(str(b))
+    return out
+
+
+def _enclosure_hosts(
+    boxes: dict[str, tuple[np.ndarray, np.ndarray]],
+) -> set[str]:
+    """Instances acting as ENCLOSURES — hollow hosts whose AABB legitimately
+    contains the assembly (a casing shell around the port stack). Detected
+    structurally, not by fragile mesh-volume guesses: two or more placed
+    instances sitting ≥50% inside a host's box means its interior is
+    workspace, not material — AABB containment there is cavity placement
+    and the solid-intersection collision check is the governing test."""
+    hosts: set[str] = set()
+    for hid, hb in boxes.items():
+        inside = sum(
+            1
+            for k, bb in boxes.items()
+            if k != hid and solver.union_containment(bb[0], bb[1], [hb]) > 0.5
+        )
+        if inside >= 2:
+            hosts.add(hid)
+    return hosts
 
 
 def _burial_gate_error(
@@ -1134,6 +1192,7 @@ def _buried_instances_audit(
         b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
         partners.setdefault(a, set()).add(b)
         partners.setdefault(b, set()).add(a)
+    enclosures = _enclosure_hosts(bboxes)
     buried: list[dict[str, Any]] = []
     for iid, (mn, mx) in bboxes.items():
         direct = partners.get(iid, set())
@@ -1142,11 +1201,12 @@ def _buried_instances_audit(
             chain2 |= partners.get(p, set()) - direct - {iid}
         far_frac = solver.union_containment(
             mn, mx, [bb for k, bb in bboxes.items()
-                     if k not in direct and k not in chain2 and k != iid]
+                     if k not in direct and k not in chain2
+                     and k != iid and k not in enclosures]
         )
         chain_worst = 0.0
         chain_host = None
-        for k in chain2:
+        for k in chain2 - enclosures:
             f = solver.union_containment(mn, mx, [bboxes[k]])
             if f > chain_worst:
                 chain_worst, chain_host = f, k
