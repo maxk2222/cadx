@@ -41,14 +41,17 @@ def test_clean_plan_no_blockers() -> None:
     assert not [f for f in plan_lint(sess) if f["severity"] == "blocker"]
 
 
-def test_unresolvable_target_routes_to_steps() -> None:
+def test_unresolvable_target_routes_to_parts() -> None:
+    """Unresolvable placement targets route to ``parts`` — the steps
+    mission runs BEFORE parts exist and cannot alias; name-landscape
+    fixes (alias_part / register) live in the parts mission."""
     sess = _sess(
         [_part("adapter"), _part("pipe")],
         [_step(1, [{"action": "place", "part": "pipe", "target": "mystery mount"}])],
     )
     fs = plan_lint(sess)
     b = [f for f in fs if f["severity"] == "blocker"]
-    assert b and all(f["mission"] == "steps" for f in b)
+    assert b and all(f["mission"] == "parts" for f in b)
     assert "mystery mount" in b[0]["text"]
 
 

@@ -11,7 +11,8 @@ tools it cannot fix.
 The lint checks what a plan can contradict BEFORE any placement:
 - every placement sub-step's part/target/target2 must resolve to a
   registered part or alias — unresolvable names route to the ``parts``
-  mission (alias/register coverage) or ``steps`` (fix the reference text)
+  mission (alias/register coverage — steps runs BEFORE parts, so name
+  fixes can only happen there)
 - a target must be anchored or placed no later than the step using it —
   a target whose earliest placement is a LATER step is an ordering bug
   the ``steps`` mission must fix (move the step or the reference)
@@ -65,32 +66,59 @@ def _suggest(sess: GuideToolSession, name: str) -> str:
 def _lint_refs(
     sess: GuideToolSession, steps: list[Any]
 ) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, int]]:
-    """Name resolution: unresolvable placement parts route to ``parts``
-    (register/alias the asset), unresolvable targets to ``steps`` (fix the
-    reference text). Also builds the earliest-placement map for ordering."""
+    """Name resolution: both unresolvable placement parts and targets route
+    to ``parts`` — the steps mission has no alias_part (parts haven't been
+    registered when steps runs), so name-landscape fixes (alias the manual
+    name onto the registered part, or register a missed asset) can only
+    happen there. Also builds the earliest-placement map for ordering."""
     findings: list[dict[str, Any]] = []
     first_place: dict[str, int] = {}
+    from cadx.guide.part_tools import _is_context
+
     for st in steps:
         for i, ss in enumerate(st.sub_steps):
             # only PLACEMENT targets must resolve — check/orient targets are
             # context anchors (the pre-existing host, walls, "Wärmepumpe")
             # that legitimately match no kit part
             for name in (ss.target, ss.target2):
-                if name and ss.action in _PLACE_ACTIONS and not _resolve_name(sess, name):
+                if not name or ss.action not in _PLACE_ACTIONS:
+                    continue
+                if _is_context(sess, name):
                     findings.append(
                         {
                             "mission": "steps",
                             "severity": "blocker",
                             "text": f"step {st.number} sub {i}: target '{name}' "
+                            "is marked context (host/tools/consumable) and "
+                            "cannot be mated to — fix the substep reference",
+                        }
+                    )
+                elif not _resolve_name(sess, name):
+                    findings.append(
+                        {
+                            "mission": "parts",
+                            "severity": "blocker",
+                            "text": f"step {st.number} sub {i}: target '{name}' "
                             "matches no registered part"
                             + _suggest(sess, name)
-                            + " — fix the reference text or alias the part",
+                            + " — alias_part the name onto the host part "
+                            "or register a missed asset",
                         }
                     )
             if ss.action in _PLACE_ACTIONS:
                 pid = _resolve_part(sess, ss.part, st.number)
                 if pid:
                     first_place.setdefault(pid, st.number)
+                elif _is_context(sess, ss.part):
+                    findings.append(
+                        {
+                            "mission": "steps",
+                            "severity": "blocker",
+                            "text": f"step {st.number} sub {i}: '{ss.part}' is "
+                            "marked context — a context name cannot be "
+                            "placed; drop the substep or retarget it",
+                        }
+                    )
                 else:
                     findings.append(
                         {

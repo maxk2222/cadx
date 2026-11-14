@@ -169,6 +169,11 @@ class GuideState(BaseModel):
     # spawn-time flag: False = all parts must come from uploads
     # (generate_missing_part refuses; the agent may only alias)
     allow_part_generation: bool = True
+    # manual names that are intentionally NOT kit parts — host equipment,
+    # tools, consumables, figure-only size references ("Rohr l=200mm" when
+    # only a dimension callout). mark_context_part writes them; resolution
+    # treats them as matched-context instead of missing.
+    context_names: list[str] = Field(default_factory=list)
     document: DocumentIndex | None = None
     steps: list[GuideStep] = Field(default_factory=list)
     parts: list[GuidePart] = Field(default_factory=list)

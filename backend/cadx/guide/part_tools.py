@@ -90,6 +90,17 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         },
         ["part_id", "name", "description"],
     ),
+    "mark_context_part": _fn(
+        "mark_context_part",
+        "Mark a required manual name as NOT a kit part — host equipment "
+        "(Wärmepumpe, wall, floor), tools, consumables, or a figure-only "
+        "size reference (e.g. 'Rohr DN22 l=200mm' that is only a dimension "
+        "callout in the drawing). The name stops counting as unmatched. "
+        "Placement substeps still can't target it — those need a steps fix.",
+        {"name": _s("manual name to mark as context"),
+         "reason": _s("why it is not a kit part")},
+        ["name"],
+    ),
 }
 
 
@@ -346,6 +357,27 @@ def _suggest_parts(s: GuideToolSession, name: str) -> list[str]:
     return out
 
 
+def _is_context(s: GuideToolSession, name: str) -> bool:
+    n = _norm(name)
+    return bool(n) and n in {_norm(x) for x in s.state.context_names}
+
+
+async def mark_context_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    name = str(a.get("name", "")).strip()
+    if not name:
+        return {"ok": False, "error": "name required"}
+    n = _norm(name)
+    if n not in {_norm(x) for x in s.state.context_names}:
+        s.state.context_names.append(name)
+    return {
+        "ok": True,
+        "context_names": list(s.state.context_names),
+        "note": f"'{name}' marked as context — no part needs registering. "
+        "Any placement substep still referencing it must be corrected by "
+        "the steps mission (plan lint will route it).",
+    }
+
+
 def _resolve_required(s: GuideToolSession, name: str) -> str | None:
     """Single resolution chain for a required manual name → part id:
     explicit alias → part name → part id → substring containment both ways.
@@ -372,16 +404,17 @@ async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[s
     for name in required:
         pid = _resolve_required(s, name)
         sugg = [] if pid else _suggest_parts(s, name)
-        sugg = [] if pid else _suggest_parts(s, name)
         rows.append(
             {
                 "name": name,
                 "matched_part_id": pid,
-                "status": "matched" if pid else "missing",
-                **({"suggested_part_ids": sugg} if sugg else {}),
+                "status": "matched"
+                if pid
+                else ("context" if _is_context(s, name) else "missing"),
+                **({"suggested_part_ids": sugg} if sugg and not pid else {}),
             }
         )
-        if pid is None:
+        if pid is None and not _is_context(s, name):
             missing.append(name)
     return {
         "ok": True,
@@ -604,12 +637,17 @@ def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
     required = _required_names(s)
     if not required:
         return None
-    missing = [n for n in required if _resolve_required(s, n) is None]
+    missing = [
+        n
+        for n in required
+        if _resolve_required(s, n) is None and not _is_context(s, n)
+    ]
     if missing:
         return {
             "ok": False,
             "error": f"unmatched required parts: {', '.join(missing[:6])} — "
-            "register/alias/generate them first",
+            "register/alias/generate them, or mark_context_part if they "
+            "are host/tools/consumables",
         }
     not_analyzed = [p.id for p in s.state.parts if p.status == "error"]
     if not_analyzed:
@@ -626,4 +664,5 @@ HANDLERS = {
     "match_required_parts": match_required_parts,
     "alias_part": alias_part,
     "generate_missing_part": generate_missing_part,
+    "mark_context_part": mark_context_part,
 }
