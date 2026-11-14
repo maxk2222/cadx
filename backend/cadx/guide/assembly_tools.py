@@ -665,6 +665,21 @@ def _candidate_burial(
     return frac, host, swallow, swallowed
 
 
+def _kit_bound(s: GuideToolSession, part: Any) -> int | None:
+    """Hard physical bound: the kit's shipped count for this part. The
+    registered quantity wins; otherwise fall back to the Stückliste counts
+    the doc mission captured (register calls often omit quantity — the
+    heatpump run placed 4x a 2-piece pipe because nothing bounded it)."""
+    if getattr(part, "quantity", None) is not None:
+        return int(part.quantity)
+    doc = getattr(s.state, "document", None)
+    for nrm, qty in (getattr(doc, "detected_part_qty", None) or {}).items():
+        pid = s._aliases_store.get(nrm) or _name_index(s).get(nrm)
+        if pid == part.id:
+            return int(qty)
+    return None
+
+
 async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     pid = str(a.get("part_id", ""))
     part = s.state.part_by_id(pid)
@@ -735,14 +750,15 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     # Stückliste quantity is a hard bound — the kit ships exactly N copies
     # (premounts count inside it); a plan overflowing it is a steps bug,
     # not a geometry problem, and the error must say so
-    if part.quantity is not None and len(existing) >= part.quantity:
+    kit = _kit_bound(s, part)
+    if kit is not None and len(existing) >= kit:
         return {
             "ok": False,
-            "error": f"parts list ships only {part.quantity}x '{pid}' — all "
+            "error": f"parts list ships only {kit}x '{pid}' — all "
             "placed. The plan requires more copies than the kit has: fix "
             "the step plan (wrong part mapping), or unplace_instance one first",
         }
-    cap = max(need, 2) + 2  # slack for manuals missing counts; bound runaway
+    cap = (kit if kit is not None else max(need, 2)) + 2  # bound runaway
     if len(existing) >= cap:
         return {
             "ok": False,
