@@ -36,6 +36,17 @@ PLAN_MAX_BYTES = 200 * 1024
 # enough rope for one typo, not enough for a retry spiral
 _IMAGE_TOOLS = {"get_figure_image", "get_page_image"}
 _IMAGE_FAIL_CAP = 3
+# placement/solve tools whose rejections the agent must not retry verbatim —
+# an identical call with identical args returns the identical result, so a
+# 3rd attempt is pure budget burn. The breaker returns a streak-exempt
+# guardrail (no solver run) telling the agent what to change instead.
+_REPEAT_REJECT_TOOLS = {
+    "place_instance",
+    "solve_attachment_preview",
+    "solve_env_preview",
+    "solve_free_preview",
+}
+_REPEAT_REJECT_CAP = 3
 
 # shared session-owned tool schemas (dispatched via _tool_* methods below)
 SESSION_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -204,6 +215,7 @@ class GuideToolSession(ToolSession):
         self._preview_cache = self.state.preview_cache
         self._aliases_store = self._load_aliases()
         self._bad_image_calls = 0
+        self._reject_counts: dict[str, int] = {}
         self.parked = False
         self.parked_questions: list[dict[str, Any]] = []
         # image budget for _images results (page images, assembly renders)
@@ -236,6 +248,22 @@ class GuideToolSession(ToolSession):
                 "after repeated invalid indices — verify via "
                 "render_assembly and the numeric audits instead",
             }
+        # identical-arg retry breaker: a rejected call repeated verbatim is
+        # deterministic budget burn — short-circuit at the cap with a
+        # streak-exempt guardrail naming what must change
+        sig: str | None = None
+        if name in _REPEAT_REJECT_TOOLS:
+            sig = json.dumps({"t": name, "a": args}, sort_keys=True, default=str)
+            if self._reject_counts.get(sig, 0) >= _REPEAT_REJECT_CAP:
+                return {
+                    "ok": False,
+                    "_streak_exempt": True,
+                    "error": f"'{name}' with these exact arguments was already "
+                    f"rejected {_REPEAT_REJECT_CAP}x — change the moving "
+                    "part's port, the target instance, or skip this substep "
+                    "with a documented plan note (list_parts/list_steps show "
+                    "the live state). Retrying verbatim cannot succeed.",
+                }
         handler = getattr(self, f"_tool_{name}", None)
         if handler is not None:
             res = handler(args)
@@ -250,6 +278,8 @@ class GuideToolSession(ToolSession):
                 self.state.save(self.state_dir)
         if name in _IMAGE_TOOLS and isinstance(res, dict) and not res.get("ok"):
             self._bad_image_calls += 1
+        if sig is not None and isinstance(res, dict) and not res.get("ok"):
+            self._reject_counts[sig] = self._reject_counts.get(sig, 0) + 1
         return res
 
     async def _emit(self, progress: float, label: str, **fields: Any) -> None:

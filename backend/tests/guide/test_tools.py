@@ -69,6 +69,42 @@ def test_place_instance_rejects_unknown_candidate() -> None:
     assert "candidate" in res["error"]
 
 
+def test_detect_language_respects_lock() -> None:
+    """A wizard-pinned output language must survive doc-mission
+    autodetect — only document.language records the manual's language."""
+    from cadx.guide.doc_tools import detect_language
+    from cadx.guide.state import DocumentIndex
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState(language="fr", language_locked=True)
+    state.document = DocumentIndex()
+    sess = GuideToolSession(
+        ctx,
+        mission="doc",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    import asyncio
+
+    res = asyncio.run(detect_language(sess, {"language": "de"}))
+    assert res["ok"] is True and res["locked"] is True
+    assert state.language == "fr"  # output language untouched
+    assert state.document.language == "fr"
+
+    # unlocked: the detected language wins as before
+    state2 = GuideState()
+    state2.document = DocumentIndex()
+    sess.state = state2
+    res2 = asyncio.run(detect_language(sess, {"language": "en"}))
+    assert res2["ok"] is True and "locked" not in res2
+    assert state2.language == "en"
+    assert state2.document.language == "en"
+
+
 def test_done_guard_blocks_incomplete_steps() -> None:
     from cadx.guide.step_tools import HANDLERS  # noqa: F401 — registers guard
 
@@ -1010,3 +1046,31 @@ def test_generate_missing_part_rejects_premounted() -> None:
     ):
         r = asyncio.run(generate_missing_part(sess, args))
         assert r["ok"] is False and "premounted" in r["error"], r
+
+
+def test_repeat_reject_breaker() -> None:
+    """Identical failing placement calls short-circuit after the cap —
+    a verbatim retry can only ever return the same rejection."""
+    import asyncio
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    sess = GuideToolSession(
+        ctx,
+        mission="assembly",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    args = {"part_id": "ghost", "candidate_id": "nope"}
+    for _ in range(3):
+        r = asyncio.run(sess._dispatch("place_instance", dict(args)))
+        assert r["ok"] is False and not r.get("_streak_exempt"), r
+    r = asyncio.run(sess._dispatch("place_instance", dict(args)))
+    assert r["ok"] is False and r["_streak_exempt"], r
+    # different args are unaffected
+    r2 = asyncio.run(sess._dispatch("place_instance", {"part_id": "ghost2"}))
+    assert not r2.get("_streak_exempt"), r2
