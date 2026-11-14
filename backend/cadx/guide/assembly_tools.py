@@ -530,10 +530,29 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
         if sf > 0.05 and moving.id != _host_part_id(s):
             c["swallow_frac"] = round(sf, 2)
             c["swallows"] = si
+        # the commit gates (buried >0.45, swallow >0.6) reject these at
+        # place_instance — fold them into geometry_ok NOW so the agent
+        # only ever sees viable candidates ranked on top; committing a
+        # buried candidate is deterministic rejection, not a choice
+        if bf > 0.45:
+            c["geometry_ok"] = False
+            c["rejected_reason"] = (
+                f"mates the body {round(bf * 100)}% inside foreign '{bh}'"
+            )
+        elif sf > 0.6 and moving.id != _host_part_id(s):
+            c["geometry_ok"] = False
+            c["rejected_reason"] = (
+                f"lands on top of '{si}' ({round(sf * 100)}% enveloped)"
+            )
+    cands.sort(
+        key=lambda c: (not c["geometry_ok"], c.get("joint_gap_mm") or 0.0)
+    )
     return {
         "ok": True,
         "candidates": _cache_candidates(s, cands),
-        "note": "pass one candidate_id to place_instance",
+        "note": "pass one candidate_id to place_instance — candidates with "
+        "geometry_ok=false are pre-rejected (buried/swallowing); pick a "
+        "geometry_ok=true candidate or a different port pair",
     }
 
 
