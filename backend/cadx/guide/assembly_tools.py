@@ -930,6 +930,10 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
                 "fixed_instance": str(cand.get("fixed_instance") or ""),
                 "moving_port": cand["moving_port"],
                 "fixed_port": cand["fixed_port"],
+                # solver emitted this candidate under the flipped moving-axis
+                # convention — post-hoc joint audits must evaluate with the
+                # same convention or normal_dot reads +1 on a valid mate
+                "axis_flipped": bool(cand.get("axis_flipped")),
                 # FIXED port's axis in the FIXED part's local frame — unity.py
                 # rotates it by the fixed instance's transform for arrows, and
                 # rotate_instance rolls about it at the port's world position
@@ -1106,6 +1110,57 @@ async def check_collisions(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
     return {"ok": True, **sc.all_pairs_collision_report()}
 
 
+def _buried_instances_audit(
+    s: GuideToolSession,
+    bboxes: dict[str, tuple[np.ndarray, np.ndarray]],
+    _ikey: Any,
+) -> list[dict[str, Any]]:
+    """Instances contained inside the union of UNRELATED placed boxes.
+
+    The mate partner legitimately swallows the plug by the engagement
+    depth, so exclusion runs one hop further along the joint chain —
+    plugged chains share engagement space (an adapter seated in a boss is
+    legitimately overlapped by the elbow mating its pipe:
+    adapter→pipe→elbow). But FULL burial inside a chain-2 host is still
+    impossible — a pipe 100% inside the casing while jointed only to an
+    adapter tunneled THROUGH its partner. Per-host rules:
+      distance 1 (direct partner)  — any containment is engagement
+      distance 2 (partner's mate)  — partial overlap allowed, >0.85 is a tunnel
+      distance ≥3 (unrelated)      — flag at 0.45 like before
+    """
+    partners: dict[str, set[str]] = {}
+    for j in s.state.assembly.joints:
+        a = _ikey(j.get("moving_instance") or j.get("moving_part"))
+        b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
+        partners.setdefault(a, set()).add(b)
+        partners.setdefault(b, set()).add(a)
+    buried: list[dict[str, Any]] = []
+    for iid, (mn, mx) in bboxes.items():
+        direct = partners.get(iid, set())
+        chain2 = set()
+        for p in direct:
+            chain2 |= partners.get(p, set()) - direct - {iid}
+        far_frac = solver.union_containment(
+            mn, mx, [bb for k, bb in bboxes.items()
+                     if k not in direct and k not in chain2 and k != iid]
+        )
+        chain_worst = 0.0
+        chain_host = None
+        for k in chain2:
+            f = solver.union_containment(mn, mx, [bboxes[k]])
+            if f > chain_worst:
+                chain_worst, chain_host = f, k
+        if far_frac > 0.45:
+            buried.append({"instance": iid, "buried_frac": round(far_frac, 3)})
+        elif chain_worst > 0.85:
+            buried.append({
+                "instance": iid,
+                "buried_frac": round(chain_worst, 3),
+                "buried_in": chain_host,
+            })
+    return buried
+
+
 def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
     """Deterministic physical audit — shared by the validator tool, the
     review-write guard and the emit path so every gate sees THE SAME
@@ -1136,23 +1191,7 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         bboxes[iid] = solver.world_bbox(
             part.bbox_min, part.bbox_max, np.asarray(inst.transform, dtype=float)
         )
-    # burial = inside the union of instances it is NOT jointed to — the
-    # mate partner legitimately swallows the plug by the engagement depth;
-    # any OTHER host containing the part means it tunneled somewhere
-    # it was never connected to (pipe through a nut into the casing wall)
-    partners: dict[str, set[str]] = {}
-    for j in s.state.assembly.joints:
-        a = _ikey(j.get("moving_instance") or j.get("moving_part"))
-        b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
-        partners.setdefault(a, set()).add(b)
-        partners.setdefault(b, set()).add(a)
-    buried: list[dict[str, Any]] = []
-    for iid, (mn, mx) in bboxes.items():
-        excl = {iid} | partners.get(iid, set())
-        others = [bb for k, bb in bboxes.items() if k not in excl]
-        frac = solver.union_containment(mn, mx, others)
-        if frac > 0.45:
-            buried.append({"instance": iid, "buried_frac": round(frac, 3)})
+    buried = _buried_instances_audit(s, bboxes, _ikey)
     rows: list[dict[str, Any]] = []
     bad: list[dict[str, Any]] = []
     approx: list[dict[str, Any]] = []
@@ -1165,6 +1204,8 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         tp = _named_port(s, fx.part_id, j.get("fixed_port"))
         if mp is None or tp is None:
             continue
+        if j.get("axis_flipped"):
+            mp = mp.model_copy(update={"axis": [-a for a in mp.axis]})
         gap, ndot = solver.evaluate_mate(
             mp,
             np.asarray(mv.transform, dtype=float).reshape(4, 4),
