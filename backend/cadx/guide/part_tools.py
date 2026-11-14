@@ -475,7 +475,7 @@ async def alias_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
 
 
 def _generation_guard(
-    s: GuideToolSession, name: str, force: bool
+    s: GuideToolSession, name: str, desc: str, force: bool
 ) -> dict[str, Any] | None:
     """Pre-flight for generation: disabled runs refuse outright; enabled runs
     must not spawn a codegen job when a registered part plausibly IS this
@@ -483,6 +483,18 @@ def _generation_guard(
     manuals rename fittings aggressively ("Muffe auf Muffe" == "socket to
     socket"), so a same-category/size candidate is almost certainly the
     same part: the right move is alias_part, not a redundant generation."""
+    # a part labelled "vormontiert/premounted" is initial-state host
+    # geometry — never something to GENERATE (generation produces loose
+    # parts the steps assemble). Alias it onto the host/casing or
+    # mark_context_part.
+    label = f"{name} {desc}".lower()
+    if "vormontiert" in label or "premounted" in label or "pre-mounted" in label:
+        return {
+            "ok": False,
+            "error": f"'{name}' is marked premounted — premounted components "
+            "are part of the initial state / host, never generated geometry. "
+            "alias_part it onto the host/casing part or mark_context_part.",
+        }
     if not s.state.allow_part_generation:
         sugg = _suggest_parts(s, name)
         return {
@@ -525,7 +537,9 @@ async def generate_missing_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
     desc = str(a.get("description", "")).strip()
     if len(desc) < 20:
         return {"ok": False, "error": "description too short — the generator needs real geometry"}
-    err = _generation_guard(s, str(a.get("name", "")) or pid, bool(a.get("force")))
+    err = _generation_guard(
+        s, str(a.get("name", "")) or pid, desc, bool(a.get("force"))
+    )
     if err:
         return err
 

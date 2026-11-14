@@ -978,3 +978,35 @@ def test_create_steps_upserts_existing_numbers() -> None:
     assert step.text == "new text body here"
     assert len(step.sub_steps) == 1 and step.sub_steps[0].part == "Rohr"
     assert len(state.steps) == 2
+
+
+def test_generate_missing_part_rejects_premounted() -> None:
+    """'Vormontiert' components are initial-state host geometry, never
+    generated — the guard must fire on the label, not just the name."""
+    import asyncio
+
+    from cadx.guide.part_tools import generate_missing_part
+    from cadx.guide.state import GuidePart
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.allow_part_generation = True
+    state.parts.append(GuidePart(id="casing", name="Gehäuse", mesh_path="/tmp/c.glb"))
+    sess = GuideToolSession(
+        ctx,
+        mission="parts",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    for args in (
+        {"part_id": "anschlussrohr", "name": "Anschlussrohr (vormontiert)",
+         "description": "straight pipe stub DN22 welded to the casing"},
+        {"part_id": "verkleidung", "name": "Verkleidung",
+         "description": "housing cover, premounted on the heat pump"},
+    ):
+        r = asyncio.run(generate_missing_part(sess, args))
+        assert r["ok"] is False and "premounted" in r["error"], r
