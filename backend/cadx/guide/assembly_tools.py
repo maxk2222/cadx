@@ -273,11 +273,23 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
         for t in _tokset(k):
             tok_owners.setdefault(t, set()).add(pid)
     scored = []
+    from cadx.guide.part_tools import _sig
+
+    name_cat, _ = _sig(name)
     for k, pid in cands:
         shared = _tokset(k) & nt
         overlap = len(shared)
         if overlap < 2 and not any(len(tok_owners.get(t, set())) == 1 for t in shared):
             continue
+        # category guard on token matches: shared size tokens ("dn22")
+        # must not map a fitting name onto a pipe part — 'Adapter DN22'
+        # resolved to pipe_l70 in the two-pipes run and sent the agent
+        # hunting nonexistent adapter targets
+        if name_cat != "other":
+            part = s.state.part_by_id(pid)
+            pcat, _ = _sig(f"{part.name} {part.id}" if part else k)
+            if pcat != "other" and pcat != name_cat:
+                continue
         # context confirms distinctive tokens: "Anschluss 2x außen" ties
         # on rohrbogen/dn/22 for both elbows — the step's "(Muffe auf
         # Muffe)" leaves spitzende's token UNCONFIRMED → fewer unconfirmed
