@@ -167,7 +167,11 @@ def _lint_refs(
             for name in (ss.target, ss.target2):
                 if not name or ss.action not in _PLACE_ACTIONS:
                     continue
-                if _is_context(sess, name):
+                # alias wins over a context mark — the last explicit
+                # agent action is the intended resolution; a stale
+                # context mark repaired via alias_part must not keep
+                # blocking placement targets
+                if _is_context(sess, name) and not _resolve_name(sess, name):
                     findings.append(
                         {
                             "mission": "parts",
