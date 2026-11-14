@@ -919,13 +919,25 @@ def _target_mismatch(
         and _resolve_name(s, ss.part, context=f"{ss.text or ''} {ctx}") == pid
     ]
     targets: list[tuple[str, str | None]] = []
+    premount_named = False
     for idx, ss in subs:
         if req_idx and idx != req_idx and any(i == req_idx for i, _ in subs):
             continue
         for name in (ss.target, ss.target2):
             if name:
+                low = name.lower()
+                premount_named = premount_named or any(
+                    w in low
+                    for w in ("vormontiert", "premounted", "pre-mounted", "preinstalled", "pre-installed")
+                )
                 targets.append((name, _resolve_name(s, name, context=f"{ss.text or ''} {ctx}")))
     resolved = {t for _, t in targets if t}
+    if premount_named:
+        # "Adapter am unteren Anschluss (vormontiert)" names HOST geometry —
+        # the premounted nozzle is a casing feature, not a kit part the
+        # solver can mate to. The acceptable mate for its step is the host
+        # part itself (largest registered part = the machine housing).
+        resolved |= {_host_part_id(s)} - {None}
     fixed_pid = str(cand.get("fixed_part") or "")
     if not resolved or fixed_pid in resolved:
         return None

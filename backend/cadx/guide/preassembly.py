@@ -1046,7 +1046,30 @@ def _attempt_quality(sess: GuideToolSession, report: dict[str, Any]) -> tuple[fl
             moving_part=parts[mv.part_id],
             fixed_part=parts[fx.part_id],
         )[0]
-    return (float(len(report["placed"])), -float(len(report["failed"])), -round(resid, 1))
+    # orphan penalty — an instance that placed but never reached the anchor
+    # through joints is debris the assembly mission must fix. A rotation
+    # that lands every part connected beats one leaving the same count
+    # stranded beside the host (observed: elbow committed onto a floating
+    # stub chain, flagged disconnected at audit time).
+    bboxes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for iid, i in inst.items():
+        part = parts.get(i.part_id)
+        if part is None or i.transform is None:
+            continue
+        bboxes[iid] = solver.world_bbox(
+            part.bbox_min, part.bbox_max, np.asarray(i.transform, dtype=float)
+        )
+    pairs = [
+        (str(j.get("moving_instance") or ""), str(j.get("fixed_instance") or ""))
+        for j in sess.state.assembly.joints
+    ]
+    orphans = solver.disconnected_instances(bboxes, pairs, sorted(bboxes))
+    return (
+        float(len(report["placed"])),
+        -float(len(report["failed"])),
+        -float(len(orphans)),
+        -round(resid, 1),
+    )
 
 
 async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
@@ -1083,7 +1106,7 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
         except Exception:
             # a crashed trial must not poison the next rotation's attempt —
             # the rollback below still runs, then worse rotations get tried
-            quality = (-1e9, -1e9, -1e9)
+            quality = (-1e9, -1e9, -1e9, -1e9)
             log.exception("guide.preassembly.trial_failed")
         tail_i = list(asm.instances[snap_i:])
         tail_j = list(asm.joints[snap_j:])
@@ -1097,7 +1120,7 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
         sess._scene_cache = None
         if best is None or quality > best[0]:
             best = (quality, report, tail_i, tail_j, tail_si)
-        if quality[1] == 0.0 and quality[2] > -2.0:
+        if quality[1] == 0.0 and quality[2] == 0.0 and quality[3] > -2.0:
             break  # fully consistent plan — no need to try worse rotations
     assert best is not None
     _q, report, tail_i, tail_j, tail_si = best
