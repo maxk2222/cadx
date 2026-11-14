@@ -86,11 +86,15 @@ def _lint_refs(
                 if _is_context(sess, name):
                     findings.append(
                         {
-                            "mission": "steps",
+                            "mission": "parts",
                             "severity": "blocker",
                             "text": f"step {st.number} sub {i}: target '{name}' "
-                            "is marked context (host/tools/consumable) and "
-                            "cannot be mated to — fix the substep reference",
+                            "is marked context but a placement mates to it — "
+                            "the name denotes a FEATURE of an existing part "
+                            "(nozzle/port on the host): alias_part "
+                            f"'{name}' onto that registered part (e.g. the "
+                            "enclosure/base), or mark_context_part it only "
+                            "if the substep gets retargeted",
                         }
                     )
                 elif not _resolve_name(sess, name):
@@ -219,6 +223,56 @@ def _lint_quantities(sess: GuideToolSession) -> list[dict[str, Any]]:
     return findings
 
 
+def _lint_anchor(
+    sess: GuideToolSession, steps: list[Any]
+) -> list[dict[str, Any]]:
+    """The biggest registered part is the assembly's host/base — a plan that
+    neither places it nor mates anything to it builds a satellite assembly
+    disconnected from the host (observed: adapters stacked on each other,
+    zero casing joints). Legit leaf-big-parts (a cover mounted last) are
+    the `part` of a placement and skip the flag; guides without any host
+    part have nothing to flag either."""
+    if len(sess.state.parts) < 2:
+        return []  # a lone-part guide has nothing to mate to the base
+    biggest = None
+    best_vol = 0.0
+    for p in sess.state.parts:
+        if p.bbox_min is None or p.bbox_max is None:
+            continue
+        vol = float(
+            (p.bbox_max[0] - p.bbox_min[0])
+            * (p.bbox_max[1] - p.bbox_min[1])
+            * (p.bbox_max[2] - p.bbox_min[2])
+        )
+        if vol > best_vol:
+            best_vol, biggest = vol, p
+    if biggest is None:
+        return []
+    referenced = False
+    for st in steps:
+        for ss in st.sub_steps:
+            if ss.action in _PLACE_ACTIONS:
+                if _resolve_part(sess, ss.part, st.number) == biggest.id:
+                    return []  # the big part is itself mounted — a leaf
+            for name in (ss.target, ss.target2):
+                if name and ss.action in _PLACE_ACTIONS:
+                    if _resolve_name(sess, name) == biggest.id:
+                        referenced = True
+    if referenced:
+        return []
+    return [
+        {
+            "mission": "parts",
+            "severity": "blocker",
+            "text": f"no placement substep mates anything to '{biggest.id}' "
+            "— it is the largest part (the host/base the assembly builds "
+            "on). Targets naming its features (nozzles, ports, 'Wärmepumpe', "
+            "the device itself) must alias_part onto it, or the assembly "
+            "ends up floating disconnected",
+        }
+    ]
+
+
 def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Plan-vs-registry contradictions, deterministically detected.
 
@@ -230,6 +284,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings, first_place, anchor_step = _lint_refs(sess, steps)
     findings += _lint_order(sess, steps, first_place, anchor_step)
     findings += _lint_quantities(sess)
+    findings += _lint_anchor(sess, steps)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
     log.info(
         "guide.plan_lint",

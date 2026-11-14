@@ -145,3 +145,44 @@ def test_quantity_none_unbounded() -> None:
         ],
     )
     assert not [f for f in plan_lint(sess) if "requires" in f["text"]]
+
+
+def test_host_without_incoming_mates_is_blocker() -> None:
+    """The largest registered part is the assembly's base — a plan mating
+    nothing to it produces a satellite disconnected from the host (kiara
+    heatpump: adapters stacked onto each other, zero casing joints)."""
+    from cadx.guide.planlint import plan_lint
+    from cadx.guide.state import GuidePart
+
+    big = GuidePart(id="casing", name="Gehäuse", bbox_min=[0, 0, 0], bbox_max=[10, 10, 10])
+    small = GuidePart(id="adapter", name="Adapter", bbox_min=[0, 0, 0], bbox_max=[1, 1, 1])
+    sess = _sess(
+        [big, small],
+        [_step(1, [{"action": "attach", "part": "adapter", "target": "adapter"}])],
+    )
+    fs = plan_lint(sess)
+    anchor = [f for f in fs if "host/base" in f["text"]]
+    assert anchor and anchor[0]["mission"] == "parts", fs
+    # once a placement targets the big part the flag clears
+    sess2 = _sess(
+        [big, small],
+        [_step(1, [{"action": "attach", "part": "adapter", "target": "casing"}])],
+    )
+    fs2 = plan_lint(sess2)
+    assert not [f for f in fs2 if "host/base" in f["text"]], fs2
+
+
+def test_context_target_routes_to_parts_for_aliasing() -> None:
+    """A placement target that IS context (a nozzle/port feature name) is
+    fixed by alias_part onto the enclosing part — only the parts mission
+    has that tool."""
+    from cadx.guide.planlint import plan_lint
+
+    sess = _sess(
+        [_part("casing"), _part("adapter")],
+        [_step(1, [{"action": "attach", "part": "adapter", "target": "Anschlussrohr"}])],
+    )
+    sess.state.context_names = ["Anschlussrohr"]
+    fs = plan_lint(sess)
+    ctx = [f for f in fs if "Anschlussrohr" in f["text"]]
+    assert ctx and ctx[0]["mission"] == "parts", fs
