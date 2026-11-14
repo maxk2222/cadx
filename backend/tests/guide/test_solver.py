@@ -193,3 +193,19 @@ def test_candidate_grow_dir_from_port_to_body() -> None:
     )
     assert gdir is not None
     assert gdir[2] < -0.9  # body centre far below the port → −z growth
+
+
+def test_direction_hint_end_side_phrases() -> None:
+    # "untere Seite in die Muffe" → bottom end mates, body grows up
+    vec, spec = solver.direction_hint("Rohr mit der unteren Seite in die Muffe stecken")
+    assert spec == "dir" and vec is not None and vec[2] == 1.0
+    vec, spec = solver.direction_hint("Obere Seite des Rohrs in die Muffe des Adapters")
+    assert spec == "dir" and vec is not None and vec[2] == -1.0
+    # bare positional adjective without insertion → no hint
+    vec, spec = solver.direction_hint("auf der unteren Seite des Gehäuses markieren")
+    assert vec is None and spec == ""
+
+
+def test_direction_hint_vertical_ruehre_cross_ref() -> None:
+    vec, spec = solver.direction_hint("Rohrbogen auf linke vertikale Röhre stecken")
+    assert vec is None and spec == "z"

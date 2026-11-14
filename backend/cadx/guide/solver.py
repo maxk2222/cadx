@@ -15,6 +15,7 @@ algorithms are the same:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
@@ -481,8 +482,16 @@ _DIR_WORDS: tuple[tuple[tuple[str, ...], tuple[float, float, float]], ...] = (
     # the part's BOTTOM end mates, so the body grows upward (and vice
     # versa). Only phrases carrying the insertion preposition count;
     # "untere Seite des Gehäuses" is a location, not a growth direction.
-    (("unteren seite in", "untere seite in", "unterem ende in", "unteren ende in", "lower end in", "bottom end in"), (0.0, 0.0, 1.0)),
-    (("oberen seite in", "obere seite in", "oberem ende in", "oberen ende in", "upper end in", "top end in"), (0.0, 0.0, -1.0)),
+)
+# insertion-end phrasing — "untere Seite des Rohrs in die Muffe" means the
+# part's BOTTOM end mates, so the body grows upward (and vice versa). A
+# genitive phrase may sit between end-word and insertion preposition; a
+# bare "untere Seite des Gehäuses" without "in" is a location, no hint.
+_END_SIDE = (
+    (re.compile(r"unter\w*\s+(?:seite|ende)\b[^.]{0,40}?\bin\b"), (0.0, 0.0, 1.0)),
+    (re.compile(r"ober\w*\s+(?:seite|ende)\b[^.]{0,40}?\bin\b"), (0.0, 0.0, -1.0)),
+    (re.compile(r"(?:lower|bottom)\s+end\b[^.]{0,40}?\bin\b"), (0.0, 0.0, 1.0)),
+    (re.compile(r"(?:upper|top)\s+end\b[^.]{0,40}?\bin\b"), (0.0, 0.0, -1.0)),
 )
 # axis-any-sign words — "vertikal" alone still demands a vertical part
 _AXIS_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (
@@ -498,6 +507,9 @@ def direction_hint(text: str) -> tuple[np.ndarray | None, str]:
     t = (text or "").lower()
     for words, vec in _DIR_WORDS:
         if any(w in t for w in words):
+            return np.asarray(vec, dtype=float), "dir"
+    for pat, vec in _END_SIDE:
+        if pat.search(t):
             return np.asarray(vec, dtype=float), "dir"
     for words, spec in _AXIS_WORDS:
         if any(w in t for w in words):

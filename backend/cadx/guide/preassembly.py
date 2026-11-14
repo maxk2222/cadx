@@ -1865,6 +1865,8 @@ async def _try_attach(
                 "moving_port": pair.get("moving_port", ""),
                 "target_part_id": target_iid,
                 "target_port": pair.get("fixed_port", ""),
+                "step": task["step"],
+                "substep_idx": task.get("substep_idx", 0),
             },
         )
         if not prev.get("ok"):
