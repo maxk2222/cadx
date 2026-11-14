@@ -147,6 +147,29 @@ def _is_instance_ref(sess: GuideToolSession, name: str) -> bool:
     return bool(toks & part_toks)
 
 
+def _lint_required_context(sess: GuideToolSession, st: Any) -> list[dict[str, Any]]:
+    """A context-marked required_part pressures the parts mission into
+    generating host geometry (covers, stubs) the kit never ships — it
+    belongs in the step text, not the parts list."""
+    from cadx.guide.part_tools import _is_context
+
+    findings: list[dict[str, Any]] = []
+    for name in st.required_parts or []:
+        if name and _is_context(sess, name) and not _resolve_name(sess, name):
+            findings.append(
+                {
+                    "mission": "steps",
+                    "severity": "blocker",
+                    "text": f"step {st.number}: required_parts '{name}' is "
+                    "marked context — premounted host components and "
+                    "consumables are scene context (text/target), not "
+                    "kit parts the step installs; remove it from "
+                    "required_parts",
+                }
+            )
+    return findings
+
+
 def _lint_refs(
     sess: GuideToolSession, steps: list[Any]
 ) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, int]]:
@@ -160,6 +183,7 @@ def _lint_refs(
     from cadx.guide.part_tools import _is_context
 
     for st in steps:
+        findings.extend(_lint_required_context(sess, st))
         for i, ss in enumerate(st.sub_steps):
             # only PLACEMENT targets must resolve — check/orient targets are
             # context anchors (the pre-existing host, walls, "Wärmepumpe")
