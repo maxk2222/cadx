@@ -856,3 +856,68 @@ def test_create_step_rejects_duplicate_title() -> None:
         )
     )
     assert r2["ok"], r2
+
+
+def test_place_instance_rejects_swallowing_candidate() -> None:
+    """Reverse-direction burial: a candidate whose AABB swallows an already
+    placed foreign instance lands ON TOP of built hardware — the elbow that
+    mates casing rim_1 while covering the adapter+pipe stack keeps valid
+    port mates yet duplicates a branch at the same spot (observed: elbows
+    buried 75% of adapters)."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.assembly_tools import place_instance
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts.append(
+        GuidePart(id="casing", name="Gehäuse", bbox_min=[0, 0, 0], bbox_max=[400, 300, 600])
+    )
+    state.parts.append(
+        GuidePart(id="adapter", name="Adapter", bbox_min=[0, 0, 0], bbox_max=[30, 30, 30])
+    )
+    state.parts.append(
+        GuidePart(id="elbow", name="Rohrbogen", bbox_min=[0, 0, 0], bbox_max=[60, 60, 60])
+    )
+    ident = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+    state.assembly.instances.append(
+        AssemblyInstance(part_id="casing", instance_id="casing#1", transform=ident)
+    )
+    # adapter placed OUTSIDE the casing box — the elbow candidate drops on it
+    state.assembly.instances.append(
+        AssemblyInstance(
+            part_id="adapter",
+            instance_id="adapter#1",
+            transform=[[1, 0, 0, 500], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+        )
+    )
+    state.steps.append(
+        GuideStep(
+            number=1,
+            text="t",
+            display_text="d",
+            required_parts=["Rohrbogen"],
+            sub_steps=[{"action": "insert", "part": "Rohrbogen", "target": "Gehäuse"}],
+        )
+    )
+    sess = GuideToolSession(
+        ctx, mission="assembly", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    # elbow candidate mated to the casing but its box covers adapter#1 fully
+    sess._preview_cache["sw"] = {
+        "transform": [[1, 0, 0, 485], [0, 1, 0, -15], [0, 0, 1, -15], [0, 0, 0, 1]],
+        "collision_free": True,
+        "moving_port": "rim_14",
+        "fixed_port": "rim_1",
+        "fixed_part": "casing",
+        "fixed_instance": "casing#1",
+    }
+    r = asyncio.run(
+        place_instance(sess, {"part_id": "elbow", "candidate_id": "sw", "step": 1})
+    )
+    assert r["ok"] is False and "lands on top of" in r["error"], r

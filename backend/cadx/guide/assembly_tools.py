@@ -511,10 +511,13 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
             rep = sc.collision_report(moving.id, moving.mesh_path, c["transform"])
             c["collision_free"] = rep["ok"]
             c["collisions"] = rep["collisions"][:3]
-        bf, bh = _candidate_burial(s, moving, c)
+        bf, bh, sf, si = _candidate_burial(s, moving, c)
         if bf > 0.05:
             c["buried_frac"] = round(bf, 2)
             c["buried_in"] = bh
+        if sf > 0.05 and moving.id != _host_part_id(s):
+            c["swallow_frac"] = round(sf, 2)
+            c["swallows"] = si
     return {
         "ok": True,
         "candidates": _cache_candidates(s, cands),
@@ -613,14 +616,21 @@ def _target_mismatch(
 
 def _candidate_burial(
     s: GuideToolSession, part: Any, cand: dict[str, Any]
-) -> tuple[float, str | None]:
-    """Fraction of the moving part's world AABB inside placed instances it is
-    NOT mating to — the candidate's fixed instance legitimately swallows the
-    plug, anything else containing the body means the transform pushes it
-    into a foreign host (pipe sliding through a fitting into the casing).
-    Returns (frac, worst_offender_instance_id)."""
+) -> tuple[float, str | None, float, str | None]:
+    """Burial in BOTH directions, both against instances the candidate is
+    NOT mating to (its fixed instance legitimately swallows the plug):
+
+    - ``buried``: fraction of the moving part's world AABB inside foreign
+      instances — the transform pushes the body into a foreign host
+      (pipe sliding through a fitting into the casing behind it).
+    - ``swallow``: the worst fraction of a foreign instance's AABB inside
+      the candidate's box — the candidate lands ON TOP of already-placed
+      parts (an elbow dropped over an existing adapter+pipe stack keeps
+      valid port mates yet duplicates a branch in the same space).
+
+    Returns (buried_frac, buried_host, swallow_frac, swallowed_id)."""
     if part.bbox_min is None or part.bbox_max is None or cand.get("transform") is None:
-        return 0.0, None
+        return 0.0, None, 0.0, None
     mn, mx = solver.world_bbox(
         part.bbox_min, part.bbox_max, np.asarray(cand["transform"], dtype=float)
     )
@@ -646,7 +656,13 @@ def _candidate_burial(
             f = solver.union_containment(mn, mx, [bb])
             if f > best:
                 best, host = f, iid
-    return frac, host
+    swallow = 0.0
+    swallowed = None
+    for iid, bb in boxes.items():
+        f = solver.union_containment(bb[0], bb[1], [(mn, mx)])
+        if f > swallow:
+            swallow, swallowed = f, iid
+    return frac, host, swallow, swallowed
 
 
 async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
@@ -743,7 +759,22 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     # is NOT connected to is physically wrong even when port gap/normals and
     # mesh collision pass (long pipe through its fitting into the host
     # behind it — invisible to boolean collision inside a hollow AABB)
-    buried_frac, buried_host = _candidate_burial(s, part, cand)
+    buried_frac, buried_host, swallow_frac, swallowed_id = _candidate_burial(
+        s, part, cand
+    )
+    # enclosure exemption: a cover/host-scale part legitimately contains
+    # already-built hardware (last-step "Verkleidung über alles"); the
+    # swallow gate targets parts that duplicate a branch at the same spot
+    if swallow_frac > 0.6 and pid != _host_part_id(s):
+        return {
+            "ok": False,
+            "error": f"candidate lands on top of '{swallowed_id}' — "
+            f"{round(swallow_frac * 100)}% of that placed part ends up "
+            f"inside '{pid}'s box. This duplicates an already-built "
+            "branch at the same spot: mate to a port of that instance "
+            "instead (it is the physical continuation), or pick a "
+            "different target port",
+        }
     if buried_frac > 0.45:
         # name the actionable alternatives concretely — retrying the same
         # candidate_id is the observed dead-loop; the fix is a DIFFERENT
