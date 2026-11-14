@@ -477,6 +477,12 @@ def _port_exposure(part: GuidePart) -> dict[str, float]:
 _DIR_WORDS: tuple[tuple[tuple[str, ...], tuple[float, float, float]], ...] = (
     (("nach unten", "vertikal nach unten", "senkrecht nach unten", "downward", "downwards"), (0.0, 0.0, -1.0)),
     (("nach oben", "vertikal nach oben", "senkrecht nach oben", "upward", "upwards"), (0.0, 0.0, 1.0)),
+    # insertion-end phrasing — "mit der unteren Seite in die Muffe" means
+    # the part's BOTTOM end mates, so the body grows upward (and vice
+    # versa). Only phrases carrying the insertion preposition count;
+    # "untere Seite des Gehäuses" is a location, not a growth direction.
+    (("unteren seite in", "untere seite in", "unterem ende in", "unteren ende in", "lower end in", "bottom end in"), (0.0, 0.0, 1.0)),
+    (("oberen seite in", "obere seite in", "oberem ende in", "oberen ende in", "upper end in", "top end in"), (0.0, 0.0, -1.0)),
 )
 # axis-any-sign words — "vertikal" alone still demands a vertical part
 _AXIS_WORDS: tuple[tuple[tuple[str, ...], str], ...] = (

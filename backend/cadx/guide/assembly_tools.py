@@ -635,7 +635,30 @@ def _grow_dir_hint(s: GuideToolSession, a: dict[str, Any]) -> tuple[Any, str]:
     ss_txt = ""
     if 0 <= idx < len(st.sub_steps):
         ss_txt = st.sub_steps[idx].text or ""
-    return solver.direction_hint(f"{ss_txt} {st.text or ''} {st.title or ''}")
+    vec, spec = solver.direction_hint(f"{ss_txt} {st.text or ''} {st.title or ''}")
+    if spec:
+        return vec, spec
+    # cross-step evidence: a LATER sub_step on the same part often carries
+    # the direction word the placing step lacks ("Rohrbogen auf die linke
+    # vertikale Röhre" — the pipe itself was placed two steps earlier).
+    # sub_step.part carries the part id, optionally with a "(links)" suffix
+    pid = str(a.get("part_id") or "")
+    if pid:
+        # first hit in plan order wins — the placing sub_step's own
+        # end-side phrasing outranks later descriptive mentions
+        for st2 in s.state.steps:
+            for ss in st2.sub_steps:
+                refs = (
+                    (ss.part or "").split("(")[0].strip(),
+                    (ss.target or "").split("(")[0].strip(),
+                    (ss.target2 or "").split("(")[0].strip(),
+                )
+                if pid not in refs:
+                    continue
+                vec, spec = solver.direction_hint(ss.text or "")
+                if spec:
+                    return vec, spec
+    return None, ""
 
 
 def _add_alternative_pairs(
