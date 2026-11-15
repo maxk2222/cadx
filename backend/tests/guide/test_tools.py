@@ -1152,15 +1152,30 @@ def test_alias_discriminativity_gate() -> None:
         ("pipe_l500", "Rohr DN22, l = 500 mm", "Pipe_l500_mm.glb"),
         ("pipe_l70", "Rohr DN22, l = 70 mm", "Pipe_l70_mm.glb"),
     ]
-    # generic compound → blocked, names the discriminators
+    # generic compound → blocked
     hit = _name_part_conflict(
         "Anschlussrohr", "Rohr DN22, l = 500 mm", "pipe_l500", sibs
     )
-    assert hit and "500" in hit
+    assert hit and "generic" in hit
     # qualified alias carries the discriminator → allowed
     assert _name_part_conflict(
         "oberes Anschlussrohr l=70", "Rohr DN22, l = 70 mm", "pipe_l70", sibs
     ) is None
+    # manual-side feature names discriminate too — 'Muffe auf Spitzende'
+    # is the BOM's own name for the spigot elbow
+    esibs = [
+        ("elbow_io", "Rohrbogen DN22, 1x aussen 1x innen", "Elbow_RN22_socket_to_spigot.glb"),
+        ("elbow_oo", "Rohrbogen DN22, 2x aussen", "Elbow_RN22_socket_to_socket.glb"),
+    ]
+    assert _name_part_conflict(
+        "Rohrbogen DN 22, Muffe auf Spitzende",
+        "Rohrbogen DN22, 1x aussen 1x innen",
+        "elbow_io",
+        esibs,
+    ) is None
+    assert _name_part_conflict(
+        "Rohrbogen", "Rohrbogen DN22, 1x aussen 1x innen", "elbow_io", esibs
+    )
     # single-part category → no gate
     assert _name_part_conflict(
         "Verkleidung", "Gehäuse", "casing", [*sibs, ("casing", "Gehäuse", "C.glb")]

@@ -488,26 +488,35 @@ def _name_part_conflict(
         )
     if acat != "other" and siblings:
         same_cat = [
-            (sid, sname)
-            for sid, sname, _ in siblings
+            (sid, sname, sstem)
+            for sid, sname, sstem in siblings
             if sid != part_id and _sig(f"{sname} {sid}")[0] == acat
         ]
         if same_cat:
             from cadx.guide.assembly_tools import _tokset
 
-            own = _tokset(f"{part_name} {part_id}")
-            disc = own - set().union(
-                *(_tokset(f"{sn} {sid}") for sid, sn in same_cat)
+            # a token discriminates when it is neither the family's kind
+            # noun nor surface vocabulary every same-category sibling
+            # shares — manual-side feature names count ('spitzende' vs
+            # 'muffe' distinguishes the elbows in BOM vocabulary even
+            # though neither part NAME carries the word), pure kind
+            # nouns don't ('anschlussrohr', 'rohr')
+            sib_toks = set().union(
+                *(_tokset(f"{sn} {sid} {st}") for sid, sn, st in same_cat)
             )
-            if not (_tokset(alias) & (disc | {t for t in atoks})):
+            private = [
+                t
+                for t in _tokset(alias)
+                if t not in sib_toks and _sig(t)[0] != acat
+            ]
+            if not private:
                 return (
                     f"is a generic {acat} name but {len(same_cat) + 1} "
-                    f"{acat} parts are registered ({part_id}, "
-                    f"{', '.join(s for s, _ in same_cat)}) — the alias "
-                    "must carry the part's discriminator "
-                    f"({', '.join(sorted(disc)[:4]) or 'e.g. its size'}) "
-                    "or it silently binds every generic reference to "
-                    "this one part"
+                    f"{acat} parts are registered "
+                    f"({part_id}, {', '.join(s for s, _, _ in same_cat)}) — "
+                    "the alias must carry a discriminator naming THIS "
+                    "part (size, end-type, or a feature no sibling has) "
+                    "or it silently binds every generic reference"
                 )
     return None
 
