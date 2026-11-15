@@ -791,3 +791,35 @@ def test_retry_bridges_restores_joints_when_still_unclosed() -> None:
     asyncio.run(pa._retry_bridges(sess, tasks, {}))
     assert sess.state.assembly.joints == [joint]
     assert np.asarray(mi.transform).reshape(4, 4)[0:3, 3].tolist() == [0.0, 0.0, 0.0]
+
+
+def test_bound_pids_preferred_over_fuzzy_names() -> None:
+    """canonicalize_refs binding wins: a task carrying part_pid/target_pid
+    resolves those ids even when the free-text name is ambiguous."""
+    from types import SimpleNamespace
+
+    from cadx.guide.preassembly import _tpart, _ttgt
+    from cadx.guide.state import AssemblyState, GuidePart, GuideState
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        GuidePart(
+            id="elbow_io", name="Rohrbogen DN22 1x aussen 1x innen",
+            bbox_min=[0, 0, 0], bbox_max=[1, 1, 1],
+        ),
+        GuidePart(
+            id="elbow_oo", name="Rohrbogen DN22 2x aussen",
+            bbox_min=[0, 0, 0], bbox_max=[1, 1, 1],
+        ),
+    ]
+    state.assembly = AssemblyState()
+    sess = SimpleNamespace(state=state, _aliases_store={}, state_dir="/tmp/x")
+
+    bound = {"part": "Rohrbogen", "part_pid": "elbow_io",
+             "target": "Rohrbogen", "target_pid": "elbow_oo", "step": 3}
+    assert _tpart(sess, bound) == "elbow_io"
+    assert _ttgt(sess, bound) == "elbow_oo"
+    # unbound task falls back to live resolution (ambiguous → None)
+    unbound = {"part": "Rohrbogen", "target": "Rohrbogen", "step": 3}
+    assert _tpart(sess, unbound) is None
+    assert _ttgt(sess, unbound) is None

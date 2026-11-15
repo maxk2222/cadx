@@ -203,6 +203,76 @@ def _lint_required_resolvable(sess: GuideToolSession, st: Any) -> list[dict[str,
     return findings
 
 
+def _lint_target(sess: GuideToolSession, st: Any, i: int, name: str) -> list[dict[str, Any]]:
+    """One placement target reference: context-marked, ambiguous,
+    instance-style, or simply unresolvable — each routes to the mission
+    that can actually fix it."""
+    from cadx.guide.part_tools import _is_context
+
+    # alias wins over a context mark — the last explicit agent action is
+    # the intended resolution; a stale context mark repaired via
+    # alias_part must not keep blocking placement targets
+    if _is_context(sess, name) and not _resolve_name(sess, name):
+        return [
+            {
+                "mission": "parts",
+                "severity": "blocker",
+                "text": f"step {st.number} sub {i}: target '{name}' "
+                "is marked context but a placement mates to it — "
+                "the name denotes a FEATURE of an existing part "
+                "(nozzle/port on the host): alias_part "
+                f"'{name}' onto that registered part (e.g. the "
+                "enclosure/base), or mark_context_part it only "
+                "if the substep gets retargeted",
+            }
+        ]
+    if _resolve_name(sess, name):
+        return []
+    amb = getattr(sess, "_ambiguous", {}).get(name)
+    if amb:
+        # the name tied between different parts — never silently
+        # guessed; the steps mission must qualify it with the
+        # parts-list name that carries the discriminator
+        # ('Rohrbogen 1x außen 1x innen')
+        return [
+            {
+                "mission": "steps",
+                "severity": "blocker",
+                "text": f"step {st.number} sub {i}: target "
+                f"'{name}' is ambiguous — matches {amb}; rename "
+                "it to the detected part name that carries the "
+                "discriminator",
+            }
+        ]
+    if _is_instance_ref(sess, name):
+        # "linkes vertikales Rohr" references a PLACED instance by
+        # position, not a part name — the direction words pick the
+        # instance at placement time (preassembly groups fall through
+        # to every placed instance). Not repairable by alias: the
+        # qualifier is the whole point. Warn, don't block.
+        return [
+            {
+                "mission": "steps",
+                "severity": "warning",
+                "text": f"step {st.number} sub {i}: target "
+                f"'{name}' is an instance-style reference "
+                "(positional qualifier + part noun) — it "
+                "resolves per position at placement",
+            }
+        ]
+    return [
+        {
+            "mission": "parts",
+            "severity": "blocker",
+            "text": f"step {st.number} sub {i}: target '{name}' "
+            "matches no registered part"
+            + _suggest(sess, name)
+            + " — alias_part the name onto the host part "
+            "or register a missed asset",
+        }
+    ]
+
+
 def _lint_refs(
     sess: GuideToolSession, steps: list[Any]
 ) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, int]]:
@@ -219,72 +289,39 @@ def _lint_refs(
         findings.extend(_lint_required_context(sess, st))
         findings.extend(_lint_required_resolvable(sess, st))
         for i, ss in enumerate(st.sub_steps):
-            # only PLACEMENT targets must resolve — check/orient targets are
-            # context anchors (the pre-existing host, walls, "Wärmepumpe")
-            # that legitimately match no kit part
             for name in (ss.target, ss.target2):
+                # only PLACEMENT targets must resolve — check/orient targets
+                # are context anchors (the pre-existing host, walls,
+                # "Wärmepumpe") that legitimately match no kit part
                 if not name or ss.action not in _PLACE_ACTIONS:
                     continue
-                # alias wins over a context mark — the last explicit
-                # agent action is the intended resolution; a stale
-                # context mark repaired via alias_part must not keep
-                # blocking placement targets
-                if _is_context(sess, name) and not _resolve_name(sess, name):
-                    findings.append(
-                        {
-                            "mission": "parts",
-                            "severity": "blocker",
-                            "text": f"step {st.number} sub {i}: target '{name}' "
-                            "is marked context but a placement mates to it — "
-                            "the name denotes a FEATURE of an existing part "
-                            "(nozzle/port on the host): alias_part "
-                            f"'{name}' onto that registered part (e.g. the "
-                            "enclosure/base), or mark_context_part it only "
-                            "if the substep gets retargeted",
-                        }
-                    )
-                elif not _resolve_name(sess, name):
-                    if _is_instance_ref(sess, name):
-                        # "linkes vertikales Rohr" references a PLACED
-                        # instance by position, not a part name — the
-                        # direction words pick the instance at placement
-                        # time (preassembly groups fall through to every
-                        # placed instance). Not repairable by alias: the
-                        # qualifier is the whole point. Warn, don't block.
-                        findings.append(
-                            {
-                                "mission": "steps",
-                                "severity": "warning",
-                                "text": f"step {st.number} sub {i}: target "
-                                f"'{name}' is an instance-style reference "
-                                "(positional qualifier + part noun) — it "
-                                "resolves per position at placement",
-                            }
-                        )
-                    else:
-                        findings.append(
-                            {
-                                "mission": "parts",
-                                "severity": "blocker",
-                                "text": f"step {st.number} sub {i}: target '{name}' "
-                                "matches no registered part"
-                                + _suggest(sess, name)
-                                + " — alias_part the name onto the host part "
-                                "or register a missed asset",
-                            }
-                        )
-            if ss.action in _PLACE_ACTIONS:
-                pid = _resolve_part(sess, ss.part, st.number)
-                if pid:
-                    first_place.setdefault(pid, st.number)
-                elif _is_context(sess, ss.part):
+                findings.extend(_lint_target(sess, st, i, name))
+            if ss.action not in _PLACE_ACTIONS:
+                continue
+            pid = _resolve_part(sess, ss.part, st.number)
+            if pid:
+                first_place.setdefault(pid, st.number)
+            elif _is_context(sess, ss.part):
+                findings.append(
+                    {
+                        "mission": "steps",
+                        "severity": "blocker",
+                        "text": f"step {st.number} sub {i}: '{ss.part}' is "
+                        "marked context — a context name cannot be "
+                        "placed; drop the substep or retarget it",
+                    }
+                )
+            else:
+                amb = getattr(sess, "_ambiguous", {}).get(ss.part)
+                if amb:
                     findings.append(
                         {
                             "mission": "steps",
                             "severity": "blocker",
-                            "text": f"step {st.number} sub {i}: '{ss.part}' is "
-                            "marked context — a context name cannot be "
-                            "placed; drop the substep or retarget it",
+                            "text": f"step {st.number} sub {i}: part "
+                            f"'{ss.part}' is ambiguous — matches {amb}; "
+                            "use the detected part name that carries "
+                            "the discriminator",
                         }
                     )
                 else:
@@ -292,10 +329,11 @@ def _lint_refs(
                         {
                             "mission": "parts",
                             "severity": "blocker",
-                            "text": f"step {st.number} sub {i}: part '{ss.part}' "
-                            "matches no registered part"
+                            "text": f"step {st.number} sub {i}: part "
+                            f"'{ss.part}' matches no registered part"
                             + _suggest(sess, ss.part)
-                            + " — register/alias the asset or fix the text",
+                            + " — register/alias the asset or fix the "
+                            "text",
                         }
                     )
     # anchors: referenced but never placed — preassembly places them at the
@@ -666,6 +704,25 @@ def _lint_asset_coverage(sess: GuideToolSession) -> list[dict[str, Any]]:
     return findings
 
 
+def canonicalize_refs(sess: GuideToolSession) -> None:
+    """Bind every sub-step reference ONCE to its registered part id.
+
+    The free-text name lives in ``part``/``target``/``target2`` for prompts
+    and display; ``*_pid`` is the auditable identity downstream consumers
+    (preassembly, placement, lints) use. Unresolvable or ambiguous names
+    stay None — the lints below report them as findings instead of
+    consumers each re-guessing through the fuzzy cascade."""
+    for st in sess.state.steps:
+        for ss in st.sub_steps:
+            ss.part_pid = _resolve_part(sess, ss.part, st.number) if ss.part else None
+            ss.target_pid = (
+                _resolve_part(sess, ss.target, st.number) if ss.target else None
+            )
+            ss.target2_pid = (
+                _resolve_part(sess, ss.target2, st.number) if ss.target2 else None
+            )
+
+
 def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Plan-vs-registry contradictions, deterministically detected.
 
@@ -674,6 +731,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     legal. Only blockers reopen missions.
     """
     steps = sorted(sess.state.steps, key=lambda s: s.number)
+    canonicalize_refs(sess)
     findings, first_place, anchor_step = _lint_refs(sess, steps)
     findings += _lint_order(sess, steps, first_place, anchor_step)
     findings += _lint_quantities(sess)

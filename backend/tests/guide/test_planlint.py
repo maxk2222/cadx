@@ -355,3 +355,112 @@ def test_side_coverage_exempt_with_premount_marker() -> None:
     )
     fs = plan_lint(sess)
     assert not [f for f in fs if "locates a" in f["text"]], fs
+
+
+def _named_part(pid: str, name: str) -> GuidePart:
+    return GuidePart(id=pid, name=name, bbox_min=[0, 0, 0], bbox_max=[1, 1, 1])
+
+
+def test_canonicalize_binds_pids() -> None:
+    """canonicalize_refs binds every substep reference once — consumers
+    read *_pid instead of re-running fuzzy resolution."""
+    sess = _sess(
+        [_part("casing"), _part("adapter")],
+        [_step(1, [{"action": "place", "part": "adapter", "target": "casing"}])],
+    )
+    plan_lint(sess)
+    ss = sess.state.steps[0].sub_steps[0]
+    assert ss.part_pid == "adapter"
+    assert ss.target_pid == "casing"
+    assert ss.target2_pid is None
+
+
+def test_ambiguous_name_is_blocker_not_guess() -> None:
+    """The heatpump failure: 'Rohrbogen' contains in BOTH elbow names —
+    silently best-of picking mated the bridge elbow where the premount
+    elbow was meant. Ties surface as a steps blocker with candidates."""
+    sess = _sess(
+        [
+            _named_part("elbow_io", "Rohrbogen DN22 1x aussen 1x innen"),
+            _named_part("elbow_oo", "Rohrbogen DN22 2x aussen"),
+            _part("casing"),
+        ],
+        [
+            _step(
+                1,
+                [
+                    {
+                        "action": "place",
+                        "part": "Rohrbogen",
+                        "target": "casing",
+                    }
+                ],
+            )
+        ],
+    )
+    fs = plan_lint(sess)
+    b = [f for f in fs if f["severity"] == "blocker" and "ambiguous" in f["text"]]
+    assert b, fs
+    assert all(f["mission"] == "steps" for f in b)
+    assert "elbow_io" in b[0]["text"] and "elbow_oo" in b[0]["text"]
+    assert sess.state.steps[0].sub_steps[0].part_pid is None
+
+
+def test_ambiguous_target_reports_candidates() -> None:
+    """Replay of the failed run: the manual's generic kind-name 'Rohrbogen
+    DN22' (no 1x/2x discriminator) is a substring of BOTH elbow names —
+    it must block, not silently bind either kind."""
+    sess = _sess(
+        [
+            _named_part("elbow_io", "Rohrbogen DN22 1x aussen 1x innen"),
+            _named_part("elbow_oo", "Rohrbogen DN22 2x aussen"),
+            _named_part("pipe", "Rohr DN22 l=500"),
+            _part("casing"),
+        ],
+        [
+            _step(1, [{"action": "place", "part": "Rohr DN22 l=500", "target": "casing"}]),
+            _step(
+                2,
+                [
+                    {
+                        "action": "place",
+                        "part": "Rohrbogen DN22",
+                        "target": "Rohr DN22 l=500",
+                    }
+                ],
+            ),
+        ],
+    )
+    fs = plan_lint(sess)
+    assert any(
+        f["severity"] == "blocker" and "ambiguous" in f["text"]
+        and "elbow_io" in f["text"] and "elbow_oo" in f["text"]
+        for f in fs
+    ), fs
+
+
+def test_exact_part_id_bypasses_ambiguity() -> None:
+    """The repair path: once the name is qualified (detected part name or
+    part_id), resolution binds exactly — no ambiguity remains."""
+    sess = _sess(
+        [
+            _named_part("elbow_io", "Rohrbogen DN22 1x aussen 1x innen"),
+            _named_part("elbow_oo", "Rohrbogen DN22 2x aussen"),
+            _part("casing"),
+        ],
+        [
+            _step(
+                1,
+                [
+                    {
+                        "action": "place",
+                        "part": "Rohrbogen DN22 1x aussen 1x innen",
+                        "target": "casing",
+                    }
+                ],
+            )
+        ],
+    )
+    fs = plan_lint(sess)
+    assert not [f for f in fs if f["severity"] == "blocker" and "ambiguous" in f["text"]], fs
+    assert sess.state.steps[0].sub_steps[0].part_pid == "elbow_io"

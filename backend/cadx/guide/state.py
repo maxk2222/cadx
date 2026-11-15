@@ -68,6 +68,13 @@ class GuideSubStep(BaseModel):
     target2: str = ""  # second mate for bridging parts (elbow across two pipes)
     text: str = ""
     side: str = ""
+    # canonical binding — resolved ONCE after the parts mission by
+    # planlint.canonicalize_refs; consumers read these instead of
+    # re-running the fuzzy name cascade on every tool call. None = the
+    # free-text name stayed unresolvable/ambiguous (a lint blocker).
+    part_pid: str | None = None
+    target_pid: str | None = None
+    target2_pid: str | None = None
 
 
 class GuideStep(BaseModel):

@@ -308,8 +308,18 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
         hit = _fuzzy_pid(n, cands)
         if hit:
             return hit
-    # keys shorter than 3 chars would containment-match almost anything
-    hits = [(k, pid) for k, pid in cands if len(k) >= 3 and (k in n or n in k)]
+    # keys shorter than 3 chars would containment-match almost anything.
+    # Direction matters: a registered name CONTAINED IN the query means
+    # the query is more specific — the longest such key legitimately
+    # disambiguates. The QUERY contained in several registered names
+    # means the name is more generic than the parts ('rohrbogen'
+    # substring-matches BOTH elbow kinds) — picking the longest name was
+    # an arbitrary guess that bound the wrong elbow kind.
+    hits = [
+        (k, pid, k in n)
+        for k, pid in cands
+        if len(k) >= 3 and (k in n or n in k)
+    ]
     # token-overlap fallback: feature phrases ("Rohrbogen am linken
     # Anschluss", "vertikales Rohr 500mm") share a part's distinctive
     # tokens even with no alias/containment — ≥2 shared tokens keeps it
@@ -347,20 +357,60 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
         # tokens = the meant part. Bare names keep longest-key.
         tie = -len(_tokset(k) - nt - ctx) if ctx else 0
         scored.append((overlap, tie, len(k), pid))
+    return _pick_resolution(s, name, hits, scored)
+
+
+def _record_ambiguous(s: GuideToolSession, name: str, pids: set[str]) -> None:
+    """A tie between different parts is a finding, not a guess."""
+    amb = getattr(s, "_ambiguous", None)
+    if amb is None:
+        amb = s._ambiguous = {}
+    amb.setdefault(name, sorted(pids))
+
+
+def _pick_resolution(
+    s: GuideToolSession,
+    name: str,
+    hits: list[tuple[str, str, bool]],
+    scored: list[tuple[int, int, int, str]],
+) -> str | None:
+    """Choose among containment/token candidates — ambiguity returns None
+    and is recorded for the plan lint to surface."""
     # host demotion: a target phrase naming BOTH the biggest part and a
     # mountable one mates to the mountable — "Adapter am Gehäuse" means
     # the adapter, the casing is just where it sits. Only applies with a
     # real alternative: a phrase naming ONLY the host still resolves to it
     host = _host_part_id(s)
-    matched = {pid for _, pid in hits} | {t[3] for t in scored}
+    matched = {pid for _, pid, _ in hits} | {t[3] for t in scored}
     if host and host in matched and len(matched) > 1:
         hits = [h for h in hits if h[1] != host]
         scored = [t for t in scored if t[3] != host]
-    if hits:
-        # longest containing/contained key wins — "rohrbogen dn22 muffe" beats "rohr"
-        return max(hits, key=lambda kv: len(kv[0]))[1]
+    hits_in = [(k, pid) for k, pid, is_in in hits if is_in]
+    hits_n = [(k, pid) for k, pid, is_in in hits if not is_in]
+    if hits_in:
+        # query contains the full registered name — longest key is the
+        # most specific match; a tie between DIFFERENT parts is ambiguous
+        top = max(len(k) for k, _ in hits_in)
+        tied = {pid for k, pid in hits_in if len(k) == top}
+        if len(tied) > 1:
+            _record_ambiguous(s, name, tied)
+            return None
+        return max(hits_in, key=lambda kv: len(kv[0]))[1]
+    if hits_n:
+        # the query is a generic substring of registered names — more
+        # than one part id means genuine ambiguity, never a guess
+        pids = {pid for _, pid in hits_n}
+        if len(pids) > 1:
+            _record_ambiguous(s, name, pids)
+            return None
+        return hits_n[0][1]
     if scored:
-        return max(scored)[3]
+        best = max(scored)
+        tied = {t[3] for t in scored if t[:3] == best[:3]}
+        if len(tied) > 1:
+            _record_ambiguous(s, name, tied)
+            return None
+        return best[3]
     return None
 
 
@@ -390,11 +440,12 @@ def _step_requirements(s: GuideToolSession) -> dict[int, dict[str, int]]:
         for ss in st.sub_steps:
             if ss.action not in _PLACE_ACTIONS:
                 continue
-            # the step prose carries the discriminating qualifier — two
-            # elbow types tie on rohrbogen/dn/22; "(Muffe auf Muffe)" in
-            # the same sentence decides, so requirements must resolve
-            # with context like the planner's _rp does
-            pid = _resolve_name(s, ss.part, context=f"{ss.text or ''} {st.text} {st.title}")
+            # the canonical binding (planlint.canonicalize_refs) is the
+            # identity when present — the step prose context stays the
+            # fallback for plans authored before binding existed
+            pid = ss.part_pid or _resolve_name(
+                s, ss.part, context=f"{ss.text or ''} {st.text} {st.title}"
+            )
             if pid:
                 counts[pid] = counts.get(pid, 0) + 1
         if not counts:
@@ -448,8 +499,8 @@ def _completeness_issues(s: GuideToolSession) -> list[str]:
         if st.action_type != "assembly":
             continue
         for ss in st.sub_steps:
-            for nm in (ss.target, ss.target2):
-                pid = _resolve_name(
+            for nm, bound in ((ss.target, ss.target_pid), (ss.target2, ss.target2_pid)):
+                pid = bound or _resolve_name(
                     s, nm, context=f"{ss.text or ''} {st.text} {st.title}"
                 )
                 if pid and pid not in placed_parts and pid not in seen_target_issues:
@@ -955,15 +1006,18 @@ def _target_mismatch(
         (i, ss)
         for i, ss in enumerate(step.sub_steps)
         if ss.action in _PLACE_ACTIONS
-        and _resolve_name(s, ss.part, context=f"{ss.text or ''} {ctx}") == pid
+        and (ss.part_pid or _resolve_name(s, ss.part, context=f"{ss.text or ''} {ctx}"))
+        == pid
     ]
     targets: list[tuple[str, str | None]] = []
     for idx, ss in subs:
         if req_idx and idx != req_idx and any(i == req_idx for i, _ in subs):
             continue
-        for name in (ss.target, ss.target2):
+        for name, bound in ((ss.target, ss.target_pid), (ss.target2, ss.target2_pid)):
             if name:
-                targets.append((name, _resolve_name(s, name, context=f"{ss.text or ''} {ctx}")))
+                targets.append(
+                    (name, bound or _resolve_name(s, name, context=f"{ss.text or ''} {ctx}"))
+                )
     resolved = {t for _, t in targets if t}
     fixed_pid = str(cand.get("fixed_part") or "")
     if not resolved or fixed_pid in resolved:
@@ -1747,15 +1801,18 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
         # the sub-step must actually name this part — required_parts
         # fallback tasks index required_parts, not sub_steps, and would
         # otherwise audit against an unrelated sibling action
-        if _resolve_name(s, str(sub.part or ""), ctx) != i.part_id:
+        if (sub.part_pid or _resolve_name(s, str(sub.part or ""), ctx)) != i.part_id:
             continue
         declared: set[str] = set()
         unresolved: list[str] = []
-        for nm in (sub.target, getattr(sub, "target2", "")):
+        for nm, bound in (
+            (sub.target, sub.target_pid),
+            (getattr(sub, "target2", ""), sub.target2_pid),
+        ):
             nm = str(nm or "").strip()
             if not nm:
                 continue
-            pid = _resolve_name(s, nm, ctx)
+            pid = bound or _resolve_name(s, nm, ctx)
             if pid:
                 declared.add(pid)
             else:
