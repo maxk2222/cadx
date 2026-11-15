@@ -323,14 +323,28 @@ def _measured(p: PortInfo) -> bool:
     return p.depth > 0.0 or p.inner_radius > 0.0
 
 
+def _can_plug(p: PortInfo) -> bool:
+    """Only a port with a real outer envelope can be inserted: declared
+    males, or rims whose outer wall radius was measured (tube ends). A
+    bare bore (female, unmeasured envelope) has nothing to insert — its
+    rim lip must never pretend to be a plug."""
+    return p.gender == "male" or p.outer_radius > 0.0
+
+
 def _receiver(a: PortInfo, b: PortInfo) -> tuple[PortInfo | None, PortInfo | None]:
     """(socket, plug) — which side physically receives the other."""
     sa, sb = _socket_depth(a) > 0.0, _socket_depth(b) > 0.0
-    if not sa and not sb:
-        return None, None
-    if sa and sb:  # two sockets: the wider bore swallows the smaller feature
-        return (a, b) if _inner_r(a) >= _inner_r(b) else (b, a)
-    return (a, b) if sa else (b, a)
+    cands: list[tuple[PortInfo, PortInfo]] = []
+    if sa:
+        cands.append((a, b))
+    if sb:
+        cands.append((b, a))
+    # two sockets: prefer the wider bore receiving the smaller feature
+    cands.sort(key=lambda sp: -_inner_r(sp[0]))
+    for sock, plug in cands:
+        if _can_plug(plug):
+            return sock, plug
+    return None, None
 
 
 def _thread_seat(moving: PortInfo, fixed: PortInfo) -> float | None:
@@ -351,6 +365,33 @@ def _thread_seat(moving: PortInfo, fixed: PortInfo) -> float | None:
     return min(3.0, _outer_r(fixed) * 0.15)
 
 
+def _physical_fit(moving_p: PortInfo, fixed_p: PortInfo) -> float | None:
+    """Socket↔plug verdict from measured geometry, or None when no
+    legal receiver exists at all (caller then tries the thread-seat
+    fallback). Score = snugness of the tightest legal fit — threads
+    (near-zero margin) score best, so a plug never lands in a much
+    larger opening that 'also fits'. -1.0 = hard reject."""
+    sock, plug = _receiver(moving_p, fixed_p)
+    if sock is None or plug is None:
+        return None
+    # clear radius is ray-measured ~10% low — accept with slack, still
+    # hard-reject a plug that can't physically enter
+    if _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug):
+        return None  # socket can't swallow the plug
+    # a HOST bore far wider than the plug is a pass-through opening (wall
+    # aperture, housing cutout), not a connection — nothing grips the
+    # plug. ASYMMETRIC on purpose: an oversized bore on the MOVING part
+    # is loose hardware (a union nut floats on the pipe and grips via
+    # its thread) and stays legal — the engagement model seats it at
+    # the mouth. Only fixed-side sockets are rejected.
+    if sock is fixed_p and _inner_r(sock) > max(
+        1.85 * _outer_r(plug), _outer_r(plug) + 12.0
+    ):
+        return -1.0  # opening, not an interface
+    margin = _inner_r(sock) - _outer_r(plug)
+    return max(0.0, 1.0 - max(margin, 0.0) / max(_outer_r(plug), 8.0))
+
+
 def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
     # different port KINDS can never mate — a flat face can't accept a
     # pipe, a rim can't seat on a plane. Mixed pairs only ever produced
@@ -366,42 +407,36 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
             # end (pipe-on-pipe), or a socket narrower than the plug, is
             # physically impossible. Threads are just small-clearance
             # versions of the same fit — no thread detection needed.
-            sock, plug = _receiver(a, b)
-            if sock is None or plug is None:
+            fit = _physical_fit(a, b)
+            if fit is None:
+                # a coarse nested stub may stand for the real threaded
+                # connection — flat fallback score, deliberately below
+                # any proven fit and never boosted by gender
                 seat = _thread_seat(a, b)
                 if seat is not None:
                     return 0.5 if a.depth < 4.0 else 0.35
                 return -1.0
-            # clear radius is ray-measured ~10% low — accept with slack,
-            # still hard-reject a plug that can't physically enter
-            if _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug):
-                seat = _thread_seat(a, b)
-                if seat is not None:
-                    return 0.5 if a.depth < 4.0 else 0.35
-                return -1.0  # socket can't swallow the plug
-            # SNUGNESS: the right interface is the TIGHTEST legal fit —
-            # a union nut's clear bore and a recessed shoulder are both
-            # legal receivers but the fitting's actual seat has the
-            # smallest margin. Reward the smallest inner-outer gap
-            # (threads = near-zero margins score best), so a plug never
-            # lands in a much larger opening that "also fits".
-            margin = _inner_r(sock) - _outer_r(plug)
-            score += max(0.0, 1.0 - max(margin, 0.0) / max(_outer_r(plug), 8.0))
+            if fit < 0.0:
+                return -1.0
+            score += fit
         else:
             sock, plug = _receiver(a, b)
             # one side carries real bore/envelope measurements — the
             # drawn radius of the unmeasured side is still its outer
             # envelope: a plug fatter than the measured bore can never
             # enter, no matter how the manual phrases the joint
-            if (
-                sock is not None
-                and plug is not None
-                and _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug)
-            ):
-                seat = _thread_seat(a, b)
-                if seat is not None:
-                    return 0.5 if a.depth < 4.0 else 0.35
-                return -1.0
+            if sock is not None and plug is not None:
+                if _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug):
+                    seat = _thread_seat(a, b)
+                    if seat is not None:
+                        return 0.5 if a.depth < 4.0 else 0.35
+                    return -1.0
+                # same asymmetry as _physical_fit: only a HOST-side
+                # opening rejects — moving-part bores are loose hardware
+                if sock is b and _inner_r(sock) > max(
+                    1.85 * _outer_r(plug), _outer_r(plug) + 12.0
+                ):
+                    return -1.0  # pass-through opening, not an interface
             ratio = min(a.radius, b.radius) / max(a.radius, b.radius)
             if ratio < 0.5:
                 if not include_mismatch:

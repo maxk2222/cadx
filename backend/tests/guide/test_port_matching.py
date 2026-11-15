@@ -196,10 +196,13 @@ def test_through_bore_coupler_accepts_pipe() -> None:
 
 def test_socket_socket_pair_needs_clearance() -> None:
     """Two socket mouths mate only if one collar physically fits inside
-    the other's bore — DN22 over DN22 can't (collar OD 15.5 > bore 9.9)."""
-    wide = _part("wide", [_socket(lip=30, inner=27, seat=15, outer=0)])
+    the other's bore — DN22 over DN22 can't (collar OD 15.5 > bore 9.9).
+    A bore dwarfing the plug is a wall opening, never a socket."""
+    boss = _part("boss", [_socket(lip=20, inner=18, seat=15, outer=0)])
     slim = _part("slim", [_socket(lip=12, inner=10, seat=15, outer=12.8)])
-    assert solver.find_matching_ports(slim, wide)  # slim collar fits boss
+    assert solver.find_matching_ports(slim, boss)  # slim collar fits boss
+    aperture = _part("aperture", [_socket(lip=30, inner=27, seat=15, outer=0)])
+    assert solver.find_matching_ports(slim, aperture) == []  # opening ≠ interface
     narrow = _part("narrow", [_socket(lip=11, inner=9.9, seat=18, outer=12.8)])
     slim2 = _part("slim2", [_socket(lip=11, inner=9.9, seat=18, outer=12.8)])
     assert solver.find_matching_ports(narrow, slim2) == []  # collar can't enter

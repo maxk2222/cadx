@@ -236,12 +236,28 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
         r"\b(ober|oberer|obere|oberen|unter|unterer|untere|unteren|"
         r"linker|linke|linken|rechter|rechte|rechten|"
         r"upper|lower|top|bottom|left|right)\s+"
-        r"(öffnung|muffe|bohrung|lippe|kante|ende|"
-        r"opening|socket|bore|mouth|lip|edge|end)\w*",
+        r"(öffnung|muffe|bohrung|lippe|kante|ende|seite|spitze|fläche|"
+        r"opening|socket|bore|mouth|lip|edge|end|side|tip|face)\w*",
         r" \2",
         first_clause,
     )
-    return _side_words(f"{t.get('target') or ''} {first_clause}")
+    # the TARGET carries the same traps — "(Spitzende, zeigt nach oben)"
+    # describes the part's opening, not another instance's side
+    target = re.sub(
+        r"nach\s+(oben|unten|links|rechts|vorne|hinten|oben zeigend)\w*",
+        " ",
+        (t.get("target") or "").lower(),
+    )
+    target = re.sub(
+        r"\b(ober|oberer|obere|oberen|unter|unterer|untere|unteren|"
+        r"linker|linke|linken|rechter|rechte|rechten|"
+        r"upper|lower|top|bottom|left|right)\s+"
+        r"(öffnung|muffe|bohrung|lippe|kante|ende|seite|spitze|fläche|"
+        r"opening|socket|bore|mouth|lip|edge|end|side|tip|face)\w*",
+        r" \2",
+        target,
+    )
+    return _side_words(f"{target} {first_clause}")
 
 
 def _spawn_premounts(

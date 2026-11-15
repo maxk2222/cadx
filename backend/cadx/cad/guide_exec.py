@@ -100,10 +100,13 @@ def _face_ports(shape) -> list[dict[str, Any]]:
                 radial = c_arr - pos
                 rn = float(np.linalg.norm(radial))
                 outward = float(np.dot(n, radial / rn)) > 0.0 if rn > 1e-9 else True
-                # pos = the mate's contact point: male ports expose their
-                # tip (open end), female ports their bottom (insertion
-                # target, mouth - axis·depth); axis points at the open end
-                contact = pos + axis * (h * 0.5) * (1.0 if outward else -1.0)
+                # pos = the port's OPEN side (mouth/rim plane) for every
+                # gender — the same convention rim-port extraction uses,
+                # so solver frames never mix mouth-vs-seat semantics.
+                # axis points at the open end; depth is the seat distance
+                # inward (-axis). Male tip and female mouth both sit at
+                # center + axis·h/2.
+                contact = pos + axis * (h * 0.5)
                 ports.append(
                     {
                         "name": f"cyl_{idx}",
