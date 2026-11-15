@@ -573,6 +573,64 @@ def _lint_premount_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
     return findings
 
 
+def _lint_side_coverage(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
+    """A side-qualified placement target matching none of the part's
+    planned instance signatures is an unresolved position reference —
+    either a premounted/context instance the plan never declared, or
+    wrong side words. Without this check placement silently binds the
+    nearest instance at the WRONG side (observed: 'Adapter an der
+    unteren Anschlussstelle' binding the upper kit adapter — chains
+    built top-side, honest success verdict on the wrong topology).
+    Marker-carrying targets spawn premounted copies in preassembly and
+    are exempt here."""
+    from cadx.guide.preassembly import _PREMOUNT_MARK, _task_side_signature
+
+    tasks = [
+        {
+            "step": st.number,
+            "substep_idx": i,
+            "part": ss.part,
+            "target": ss.target or "",
+            "text": ss.text or "",
+        }
+        for st in steps
+        for i, ss in enumerate(st.sub_steps or [])
+        if ss.action in _PLACE_ACTIONS
+    ]
+    planned: dict[str, list[frozenset[str]]] = {}
+    for t in tasks:
+        pid = _resolve_part(sess, t["part"], t["step"])
+        if pid:
+            planned.setdefault(pid, []).append(frozenset(_task_side_signature(t)))
+    findings: list[dict[str, Any]] = []
+    for t in tasks:
+        tpid = _resolve_name(sess, t["target"])
+        if not tpid or tpid == _resolve_part(sess, t["part"], t["step"]):
+            continue
+        ref = frozenset(_task_side_signature(t))
+        if not ref:
+            continue
+        sigs = [s for s in planned.get(tpid, []) if s]
+        if len(sigs) < 2 or any(ref <= s for s in sigs):
+            continue
+        if _PREMOUNT_MARK.search(f"{t['target']} {t['text']}"):
+            continue  # preassembly spawns the premounted copy
+        findings.append(
+            {
+                "mission": "steps",
+                "severity": "blocker",
+                "text": f"step {t['step']}: target '{t['target'][:60]}' "
+                f"locates a '{tpid}' at side {{{','.join(sorted(ref))}}} "
+                "but the plan only places it at "
+                f"{{{'; '.join(','.join(sorted(s)) for s in sigs)}}} — "
+                "either mark the target 'vormontierter <part>' (a "
+                "device-side piece the kit never installs) or fix the "
+                "side words to name a placed instance",
+            }
+        )
+    return findings
+
+
 def _lint_asset_coverage(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Every uploaded CAD file is real geometry the plan must account
     for — an unregistered upload means the assembly silently dropped a
@@ -623,6 +681,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings += _lint_phantom_sizes(sess, steps)
     findings += _lint_anchor(sess, steps)
     findings += _lint_premount_refs(sess, steps)
+    findings += _lint_side_coverage(sess, steps)
     findings += _lint_asset_coverage(sess)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
     log.info(

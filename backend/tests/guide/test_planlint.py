@@ -296,3 +296,62 @@ def test_plan_lint_reopen_uncapped_returns_fatal() -> None:
     notes, fatal = _plan_lint_reopen(sess, sess.state, sdir, allow_reopen=True)
     assert notes and "ghost mount" in notes and not fatal
     assert "parts" not in sess.state.missions_done  # owning mission reopened
+
+
+def test_side_coverage_blocker_for_uncovered_side() -> None:
+    """'Adapter an der unteren Anschlussstelle' while the plan only
+    places adapters at the upper connections — the reference has no
+    matching instance; without a marker it must block, not silently
+    bind the upper adapter (observed: chains built top-side, verdict
+    'succeeded' on the wrong topology)."""
+    sess = _sess(
+        [_part("casing"), _part("adapter"), _part("elbow")],
+        [
+            _step(1, [{"action": "place", "part": "adapter",
+                       "target": "linker oberer Anschluss am Gehäuse"}]),
+            _step(2, [{"action": "place", "part": "adapter",
+                       "target": "rechter oberer Anschluss am Gehäuse"}]),
+            _step(3, [{"action": "place", "part": "elbow",
+                       "target": "Adapter an der linken unteren Anschlussstelle"}]),
+        ],
+    )
+    fs = plan_lint(sess)
+    b = [f for f in fs if f["severity"] == "blocker" and "Anschlussstelle" in f["text"]]
+    assert b and b[0]["mission"] == "steps", fs
+
+
+def test_side_coverage_ok_when_matched() -> None:
+    """'(unteres Ende) des linken Rohrs' references the placed LEFT pipe —
+    end-feature words are stripped, {links} ⊆ {links,oben} → no blocker."""
+    sess = _sess(
+        [_part("casing"), _part("pipe"), _part("elbow")],
+        [
+            _step(1, [{"action": "place", "part": "pipe",
+                       "target": "linker oberer Anschluss am Gehäuse"}]),
+            _step(2, [{"action": "place", "part": "pipe",
+                       "target": "rechter oberer Anschluss am Gehäuse"}]),
+            _step(3, [{"action": "place", "part": "elbow",
+                       "target": "linkes Rohr (unteres Ende)"}]),
+        ],
+    )
+    fs = plan_lint(sess)
+    assert not [f for f in fs if "no matching instance" in f["text"]
+                or "locates a" in f["text"]], fs
+
+
+def test_side_coverage_exempt_with_premount_marker() -> None:
+    """'vormontierter Adapter am linken unteren Anschluss' — the marker
+    declares a device-side piece; preassembly spawns it, lint exempt."""
+    sess = _sess(
+        [_part("casing"), _part("adapter"), _part("elbow")],
+        [
+            _step(1, [{"action": "place", "part": "adapter",
+                       "target": "linker oberer Anschluss am Gehäuse"}]),
+            _step(2, [{"action": "place", "part": "adapter",
+                       "target": "rechter oberer Anschluss am Gehäuse"}]),
+            _step(3, [{"action": "place", "part": "elbow",
+                       "target": "vormontierter Adapter am linken unteren Anschluss"}]),
+        ],
+    )
+    fs = plan_lint(sess)
+    assert not [f for f in fs if "locates a" in f["text"]], fs
