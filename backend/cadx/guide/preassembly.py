@@ -1340,6 +1340,12 @@ async def _place_tasks(
             continue
         lookahead = _lookahead(sess, tasks, ti, pid)
         feed_perp = _feeds_bridge_axis(sess, tasks, ti, pid)
+        if feed_perp is not None:
+            # the chain feeds a loop: aim free ports at the OTHER leg's
+            # placed instances (real positions, no direction words needed)
+            fd = _feeds_bridge_dir(sess, tasks, ti, task, pid)
+            if fd:
+                lookahead = ([*lookahead[0], *fd], lookahead[1])
         if task.get("premount"):
             # initial-state hardware is not mated onto a kit port — give it
             # a documented reference pose beside/below the host instead of
@@ -1639,6 +1645,84 @@ def _chain_side_dir(
         if n > 1e-6:
             return d / n
     return None
+
+
+def _feeds_bridge_dir(
+    sess: GuideToolSession,
+    tasks: list[dict[str, Any]],
+    ti: int,
+    task: dict[str, Any],
+    pid: str,
+) -> list[tuple[int, float]]:
+    """(axis, sign) hints pointing from this task's anchor toward the OTHER
+    bridge leg's placed instances. A chain part's free ports should face
+    where the loop eventually closes — the l500 must grow UP toward the
+    l70 stubs, not down into the void. Uses the partner's actual placed
+    position instead of direction words, so it is robust on manuals whose
+    chain steps carry no 'nach oben'-phrases at all. [] when the loop
+    partner is not placed yet or the direction is degenerate."""
+    downstream = {pid}
+    for t in tasks[ti + 1 :]:
+        pp = _tpart(sess, t)
+        tp = _ttgt(sess, t)
+        t2 = _ttgt(sess, t, "target2")
+        if t2 and (tp in downstream or t2 in downstream):
+            other = t.get("target") if t2 in downstream else t.get("target2")
+            pool = _ref_instances(sess, other)
+            if not pool:
+                return []
+            anchor_iid = (
+                _pick_target_instance(sess, task["target"], moving_pid=pid)
+                if task.get("target")
+                else None
+            )
+            anchor = next(
+                (
+                    i
+                    for i in sess.state.assembly.instances
+                    if (i.instance_id or i.part_id) == anchor_iid
+                ),
+                None,
+            ) or (sess.state.assembly.instances[-1] if sess.state.assembly.instances else None)
+            if anchor is None or not anchor.transform:
+                return []
+            a_part = sess.state.part_by_id(anchor.part_id)
+            if a_part is None:
+                return []
+            a_pos = np.asarray(
+                _world_pos(
+                    anchor.transform,
+                    [(a_part.bbox_min[i] + a_part.bbox_max[i]) / 2 for i in range(3)],
+                ),
+                dtype=float,
+            )
+            p_locs = []
+            for inst in pool:
+                if not inst.transform:
+                    continue
+                pt = sess.state.part_by_id(inst.part_id)
+                if pt is None:
+                    continue
+                p_locs.append(
+                    np.asarray(
+                        _world_pos(
+                            inst.transform,
+                            [(pt.bbox_min[i] + pt.bbox_max[i]) / 2 for i in range(3)],
+                        ),
+                        dtype=float,
+                    )
+                )
+            if not p_locs:
+                return []
+            d = np.mean(p_locs, axis=0) - a_pos
+            n = float(np.linalg.norm(d))
+            if n < 1.0:
+                return []
+            d = d / n
+            return [(i, float(np.sign(d[i]))) for i in range(3) if abs(d[i]) > 0.3]
+        if pp and tp in downstream:
+            downstream.add(pp)
+    return []
 
 
 def _mounted_on_host(sess: GuideToolSession, fixed_inst: Any) -> bool:

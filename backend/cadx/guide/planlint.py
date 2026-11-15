@@ -759,6 +759,179 @@ def _lint_step_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, 
     return findings
 
 
+def _lint_bridge_reach(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
+    """A bridge leg (target+target2) can only close TOWARD its partner —
+    a fitting turns at most ~90° per joint, it can never reach back past
+    the chain's own anchor. When the chain feeding `target` declares
+    'nach unten' growth while `target2` attaches ABOVE the chain's host
+    anchor, the loop is declared in the geometrically impossible
+    direction: deterministic placement would faithfully build a chain
+    that dives 500mm away and then leave the elbow reaching for a mate
+    hundreds of mm behind it (observed: l500 chains descending from the
+    lower bores declared to bridge back to upper-bore stubs).
+
+    Chain growth comes from open-direction phrases ('nach unten',
+    'vertikale Verbindung nach unten') along the placement chain; the
+    relative anchor positions come from the side words of each leg's
+    host-attachment target ('untere Bohrung' vs 'obere Bohrung'). Only
+    flags when both legs hang on the SAME host part — different anchors
+    carry incomparable frames and yield no verdict."""
+
+    findings: list[dict[str, Any]] = []
+    by_no = {st.number: st for st in steps}
+    placements: dict[str, list[tuple[int, Any]]] = {}
+    for st in steps:
+        for ss in st.sub_steps or []:
+            if ss.action in _PLACE_ACTIONS:
+                pid = ss.part_pid or _resolve_part(sess, ss.part, st.number)
+                if pid:
+                    placements.setdefault(pid, []).append((st.number, ss))
+    earliest = min((n for lst in placements.values() for n, _ in lst), default=None)
+    for st in steps:
+        for ss in st.sub_steps or []:
+            if ss.action not in _PLACE_ACTIONS or not ss.target2:
+                continue
+            f = _bridge_leg_finding(
+                sess, ss, st.number, placements, by_no, earliest
+            )
+            if f:
+                findings.append(f)
+    return findings
+
+
+def _bridge_producer(
+    sess: GuideToolSession,
+    placements: dict[str, list[tuple[int, Any]]],
+    pid: str,
+    ref: str | None,
+) -> tuple[int, Any] | None:
+    """(step, substep) that places `pid`, honoring the ref's '(Schritt N)'
+    pin; symmetric siblings fall to the side words or the first match —
+    mirrored siblings share the growth axis the caller checks, so the
+    verdict is safe on either."""
+    from cadx.guide.preassembly import _STEP_REF, _dir_axes
+
+    m = _STEP_REF.search(ref or "")
+    cands = placements.get(pid, [])
+    if m:
+        n = int(m.group(1))
+        return next(((sn, ssx) for sn, ssx in cands if sn == n), None)
+    if len(cands) == 1:
+        return cands[0]
+    ref_axes = dict(_dir_axes(ref or ""))
+    if ref_axes:
+        best, best_score = None, -1.0
+        for sn, ssx in cands:
+            t_axes = dict(_dir_axes(ssx.target or ""))
+            score = sum(
+                1.0 if t_axes.get(a) == sg else -1.0 if a in t_axes else 0.0
+                for a, sg in ref_axes.items()
+            )
+            if score > best_score:
+                best, best_score = (sn, ssx), score
+        if best and best_score > 0:
+            return best
+    return cands[0] if cands else None
+
+
+def _bridge_chain(
+    sess: GuideToolSession,
+    placements: dict[str, list[tuple[int, Any]]],
+    by_no: dict[int, Any],
+    earliest: int | None,
+    pid: str,
+    ref: str | None,
+) -> tuple[dict[int, float], Any, int] | None:
+    """Accumulated growth axes + the chain's host-attachment substep —
+    the link whose target is the anchor part or an unplaced element."""
+    from cadx.guide.preassembly import _open_axes
+
+    growth: dict[int, float] = {}
+    cur = _bridge_producer(sess, placements, pid, ref)
+    seen: set[int] = set()
+    while cur:
+        csn, css = cur
+        if id(css) in seen:
+            return None
+        seen.add(id(css))
+        cst = by_no.get(csn)
+        hint = f"{css.target or ''} {css.text or ''} {cst.title if cst else ''}"
+        for ax, sg in _open_axes(hint):
+            growth[ax] = growth.get(ax, 0.0) + sg
+        n_pid = css.target_pid or _resolve_part(sess, css.target or "", csn)
+        if not n_pid or n_pid not in placements:
+            return growth, css, csn
+        if min(sn for sn, _ in placements[n_pid]) == earliest:
+            # attaches onto the anchor/host part — THIS substep's
+            # target locates the chain's root on the host
+            return growth, css, csn
+        cur = _bridge_producer(sess, placements, n_pid, css.target)
+    return None
+
+
+def _bridge_leg_finding(
+    sess: GuideToolSession,
+    ss: Any,
+    step_no: int,
+    placements: dict[str, list[tuple[int, Any]]],
+    by_no: dict[int, Any],
+    earliest: int | None,
+) -> dict[str, Any] | None:
+    """One bridge substep's direction contradiction — the chain feeding
+    `target` grows away from the `target2` partner's host position."""
+    from cadx.guide.preassembly import _dir_axes
+
+    t_pid = ss.target_pid or _resolve_part(sess, ss.target or "", step_no)
+    p_pid = ss.target2_pid or _resolve_part(sess, ss.target2 or "", step_no)
+    if not t_pid or not p_pid:
+        return None
+    chain = _bridge_chain(sess, placements, by_no, earliest, t_pid, ss.target)
+    if not chain:
+        return None
+    growth, root_ss, root_step = chain
+    growth = {a: g for a, g in growth.items() if abs(g) >= 0.5}
+    if not growth:
+        return None
+    # the partner's attachment point: its producing substep's target —
+    # comparable only when it hangs on the same host
+    prod = _bridge_producer(sess, placements, p_pid, ss.target2)
+    if prod:
+        p_step, p_ss = prod
+        p_target = p_ss.target or ""
+        if p_step >= step_no:
+            return None
+        p_pid_attach = p_ss.target_pid or _resolve_part(sess, p_target, p_step)
+    else:
+        # partner not placed by the plan — compare its own ref axes
+        # only when it names the same host part
+        p_target = ss.target2 or ""
+        p_pid_attach = _resolve_name(sess, p_target)
+    r_pid = root_ss.target_pid or _resolve_part(sess, root_ss.target or "", root_step)
+    if r_pid is None or p_pid_attach is None or r_pid != p_pid_attach:
+        return None
+    r_axes = dict(_dir_axes(root_ss.target or ""))
+    p_axes = dict(_dir_axes(p_target))
+    for ax, g in growth.items():
+        rel = p_axes.get(ax, 0.0) - r_axes.get(ax, 0.0)
+        if g * rel < -0.5:
+            side = {2: "vertically", 1: "front/back", 0: "left/right"}[ax]
+            return {
+                "mission": "steps",
+                "severity": "blocker",
+                "text": f"step {step_no}: the chain feeding "
+                f"'{(ss.target or '')[:40]}' grows away from "
+                f"the declared mate '{(ss.target2 or '')[:40]}' "
+                f"({side}) — a closing fitting at the chain's "
+                "far end can never reach back past its own "
+                "anchor. The loop direction or the partner "
+                "reference contradicts the figure — re-read "
+                "the manual figure and re-order the legs "
+                "(which fitting sits at the chain's top end, "
+                "which at its bottom?)",
+            }
+    return None
+
+
 def _lint_asset_coverage(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Every uploaded CAD file is real geometry the plan must account
     for — an unregistered upload means the assembly silently dropped a
@@ -831,6 +1004,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings += _lint_premount_refs(sess, steps)
     findings += _lint_side_coverage(sess, steps)
     findings += _lint_step_refs(sess, steps)
+    findings += _lint_bridge_reach(sess, steps)
     findings += _lint_asset_coverage(sess)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
     log.info(

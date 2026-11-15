@@ -528,3 +528,152 @@ def test_step_ref_consistent_pin_passes() -> None:
     sess = _adapter_plan("Bohrung des linken oberen Adapters (Schritt 2)")
     fs = plan_lint(sess)
     assert not [f for f in fs if "pins '(Schritt" in f["text"]], fs
+
+
+def _u_plan(partner_bore: str):
+    """Two-loop plan: anchor → adapter at a bore → elbow bends 'nach
+    unten' → l500 descends → closing elbow bridges pipe + partner bore."""
+    parts = [_part(p) for p in ("casing", "adapter", "elbow", "pipe", "stub", "socket")]
+    steps = [
+        _step(1, [{"action": "place", "part": "casing", "target": "device"}]),
+        _step(
+            2,
+            [
+                {
+                    "action": "insert",
+                    "part": "adapter",
+                    "target": "casing, untere linke Bohrung",
+                    "text": "Adapter in die untere linke Bohrung einsetzen",
+                }
+            ],
+        ),
+        _step(
+            3,
+            [
+                {
+                    "action": "insert",
+                    "part": "stub",
+                    "target": "casing, obere linke Bohrung",
+                    "text": "Stutzen in die obere linke Bohrung stecken",
+                }
+            ],
+        ),
+        _step(
+            4,
+            [
+                {
+                    "action": "insert",
+                    "part": "elbow",
+                    "target": "adapter links",
+                    "text": "Bogen auf den Adapter, biegt nach unten ab",
+                }
+            ],
+        ),
+        _step(
+            5,
+            [
+                {
+                    "action": "insert",
+                    "part": "pipe",
+                    "target": "elbow links",
+                    "text": "Rohr in den Bogen, vertikale Verbindung nach unten",
+                }
+            ],
+        ),
+        _step(
+            6,
+            [
+                {
+                    "action": "place",
+                    "part": "socket",
+                    "target": "pipe links (Schritt 5)",
+                    "target2": f"stub links {partner_bore} (Schritt 3)",
+                    "text": "Muffe auf das Rohr, freie Seite auf den Stutzen",
+                }
+            ],
+        ),
+    ]
+    return _sess(parts, steps)
+
+
+def test_bridge_away_from_partner_blocks() -> None:
+    """The chain grows 'nach unten' from the LOWER bore while the
+    declared mate sits at the UPPER bore — a 90° fitting at the chain's
+    far end can never reach back past its own anchor (KIARA run: l500
+    descended 500mm and was declared to bridge up to the l70 stubs)."""
+    sess = _u_plan("oben")
+    fs = plan_lint(sess)
+    assert any(
+        f["severity"] == "blocker"
+        and "grows away" in f["text"]
+        and "step 6" in f["text"]
+        for f in fs
+    ), fs
+
+
+def test_bridge_toward_partner_passes() -> None:
+    """Chain grows down from the LOWER bore and the partner is the
+    'unten' stub BELOW the root — descending reaches it, no finding."""
+    parts = [_part(p) for p in ("casing", "adapter", "elbow", "pipe", "stub", "socket")]
+    steps = [
+        _step(1, [{"action": "place", "part": "casing", "target": "device"}]),
+        _step(
+            2,
+            [
+                {
+                    "action": "insert",
+                    "part": "adapter",
+                    "target": "casing, obere linke Bohrung",
+                    "text": "Adapter in die obere linke Bohrung einsetzen",
+                }
+            ],
+        ),
+        _step(
+            3,
+            [
+                {
+                    "action": "insert",
+                    "part": "stub",
+                    "target": "casing, untere linke Bohrung",
+                    "text": "Stutzen in die untere linke Bohrung stecken",
+                }
+            ],
+        ),
+        _step(
+            4,
+            [
+                {
+                    "action": "insert",
+                    "part": "elbow",
+                    "target": "adapter links",
+                    "text": "Bogen auf den Adapter, biegt nach unten ab",
+                }
+            ],
+        ),
+        _step(
+            5,
+            [
+                {
+                    "action": "insert",
+                    "part": "pipe",
+                    "target": "elbow links",
+                    "text": "Rohr in den Bogen, vertikale Verbindung nach unten",
+                }
+            ],
+        ),
+        _step(
+            6,
+            [
+                {
+                    "action": "place",
+                    "part": "socket",
+                    "target": "pipe links (Schritt 5)",
+                    "target2": "stub links unten (Schritt 3)",
+                    "text": "Muffe auf das Rohr, freie Seite auf den Stutzen",
+                }
+            ],
+        ),
+    ]
+    sess = _sess(parts, steps)
+    fs = plan_lint(sess)
+    assert not [f for f in fs if "grows away" in f["text"]], fs

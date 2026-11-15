@@ -1029,3 +1029,87 @@ def test_infer_legs_consumes_orient_substep_declaration() -> None:
     # persisted onto the placing sub-step — durable evidence for the audit
     src = state.steps[0].sub_steps[0]
     assert src.target2_pid == "pipe_l70" and "l=70" in src.target2
+
+
+def test_feeds_bridge_dir_points_at_placed_partner() -> None:
+    """A chain feeding a loop aims its free ports at the OTHER leg's
+    placed instances: adapter placed at the lower bore (z-), the l70
+    partner already sits at the upper bore (z+) — the elbow feeding the
+    descending-closing bridge gets +Z hints so the solver doesn't run
+    the chain away from its declared mate."""
+    from cadx.guide.state import (
+        AssemblyInstance,
+        AssemblyState,
+        GuideState,
+    )
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        _part("casing"),
+        _part("adapter"),
+        _part("elbow"),
+        _part("pipe"),
+        _part("stub"),
+    ]
+    state.assembly = AssemblyState(
+        instances=[
+            AssemblyInstance(
+                instance_id="casing#1", part_id="casing", placed_in_step=1,
+                transform=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+            ),
+            AssemblyInstance(
+                instance_id="adapter#1", part_id="adapter", placed_in_step=2,
+                transform=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, -50], [0, 0, 0, 1]],
+            ),
+            AssemblyInstance(
+                instance_id="stub#1", part_id="stub", placed_in_step=3,
+                transform=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 80], [0, 0, 0, 1]],
+            ),
+        ]
+    )
+    sess = SimpleNamespace(state=state, _aliases_store={}, state_dir="/tmp/x")
+    tasks = [
+        {"step": 4, "part": "elbow", "part_pid": "elbow",
+         "target": "adapter links", "target_pid": "adapter",
+         "text": "Bogen auf den Adapter"},
+        {"step": 5, "part": "pipe", "part_pid": "pipe",
+         "target": "elbow links", "target_pid": "elbow", "text": "Rohr"},
+        {"step": 6, "part": "elbow2", "part_pid": "elbow",
+         "target": "pipe links", "target_pid": "pipe",
+         "target2": "stub links (Schritt 3)", "target2_pid": "stub",
+         "text": "Bogen schließt"},
+    ]
+    fd = pa._feeds_bridge_dir(sess, tasks, 0, tasks[0], "elbow")
+    assert fd, "bridge-feeding elbow must get a direction hint"
+    ax = dict(fd)
+    assert ax.get(2) == 1.0, f"partner is ABOVE the chain root — {fd}"
+
+
+def test_feeds_bridge_dir_silent_without_partner() -> None:
+    """Partner not placed yet → no hint (the mechanism never invents a
+    direction from thin air)."""
+    from cadx.guide.state import (
+        AssemblyInstance,
+        AssemblyState,
+        GuideState,
+    )
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [_part("casing"), _part("adapter"), _part("elbow"), _part("pipe"), _part("stub")]
+    state.assembly = AssemblyState(
+        instances=[
+            AssemblyInstance(
+                instance_id="casing#1", part_id="casing", placed_in_step=1,
+                transform=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+            ),
+        ]
+    )
+    sess = SimpleNamespace(state=state, _aliases_store={}, state_dir="/tmp/x")
+    tasks = [
+        {"step": 4, "part": "elbow", "part_pid": "elbow",
+         "target": "adapter links", "target_pid": "adapter", "text": "x"},
+        {"step": 6, "part": "elbow2", "part_pid": "elbow",
+         "target": "pipe", "target_pid": "pipe",
+         "target2": "stub (Schritt 9)", "target2_pid": "stub", "text": "x"},
+    ]
+    assert pa._feeds_bridge_dir(sess, tasks, 0, tasks[0], "elbow") == []
