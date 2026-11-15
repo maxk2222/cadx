@@ -261,7 +261,9 @@
     "preview_failed": "failed to load 3D preview",
     "context_lost": "3D context lost",
     "context_lost_hint": "the graphics context was reset — reload the view to continue",
-    "context_lost_reload": "reload view"
+    "context_lost_reload": "reload view",
+    "webgl_unavailable": "3D view unavailable",
+    "webgl_unavailable_hint": "WebGL could not be initialised — enable hardware acceleration or close other GPU-heavy tabs, then retry"
   },
   "error_boundary": {
     "title": "Something went wrong",

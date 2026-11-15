@@ -271,7 +271,9 @@
     "preview_failed": "nie udało się wczytać podglądu 3D",
     "context_lost": "utracono kontekst 3D",
     "context_lost_hint": "kontekst graficzny został zresetowany — przeładuj widok, aby kontynuować",
-    "context_lost_reload": "przeładuj widok"
+    "context_lost_reload": "przeładuj widok",
+    "webgl_unavailable": "Widok 3D niedostępny",
+    "webgl_unavailable_hint": "Nie udało się zainicjować WebGL — włącz akcelerację sprzętową lub zamknij inne karty obciążające GPU, a następnie spróbuj ponownie"
   },
   "error_boundary": {
     "title": "Coś poszło nie tak",

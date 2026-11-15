@@ -261,7 +261,9 @@
     "preview_failed": "échec du chargement de l'aperçu 3D",
     "context_lost": "contexte 3D perdu",
     "context_lost_hint": "le contexte graphique a été réinitialisé — rechargez la vue pour continuer",
-    "context_lost_reload": "recharger la vue"
+    "context_lost_reload": "recharger la vue",
+    "webgl_unavailable": "Vue 3D indisponible",
+    "webgl_unavailable_hint": "WebGL n'a pas pu être initialisé — activez l'accélération matérielle ou fermez les autres onglets gourmands en GPU, puis réessayez"
   },
   "error_boundary": {
     "title": "Une erreur est survenue",

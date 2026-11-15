@@ -256,7 +256,9 @@
     "preview_failed": "3Dプレビューをみめませんでした",
     "context_lost": "3Dコンテキストがわれました",
     "context_lost_hint": "グラフィックコンテキストがリセットされました。ビューをみみしてしてください",
-    "context_lost_reload": "ビューをみみ"
+    "context_lost_reload": "ビューをみみ",
+    "webgl_unavailable": "3Dビューを利用できません",
+    "webgl_unavailable_hint": "WebGLを初期化できませんでした — ハードウェアアクセラレーションを有効にするか、GPUを使う他のタブを閉じてから再試行してください"
   },
   "error_boundary": {
     "title": "がしました",

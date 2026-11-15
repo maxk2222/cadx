@@ -24,6 +24,7 @@ import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { STLLoader } from "three-stdlib";
 import i18n from "../../i18n";
 import { applyModelOpacity } from "../../lib/modelOpacity";
+import WebGLGate from "../common/WebGLGate";
 
 export type ViewPreset = "iso" | "front" | "top" | "side";
 
@@ -363,6 +364,7 @@ export default function ModelCanvas({
 
   return (
     <div className="relative h-full w-full">
+      <WebGLGate>
       <Canvas
         key={canvasKey}
         // demand frameloop — render only on invalidation. Declarative commits
@@ -456,6 +458,7 @@ export default function ModelCanvas({
       <ModelOpacity value={opacity} url={url} frame={frameRef} />
       {glRef && <GlCapture glRef={glRef} />}
       </Canvas>
+      </WebGLGate>
       {ctxLost && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-bg/85 text-center backdrop-blur-sm">
           <TriangleAlert className="h-8 w-8 text-amber-400" />

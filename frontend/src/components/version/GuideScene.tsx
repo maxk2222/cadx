@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import * as THREE from "three";
 import { GLTFLoader } from "three-stdlib";
 import type { GuideAnnotation, GuideInstance, GuidePartInfo } from "../../lib/types";
+import WebGLGate from "../common/WebGLGate";
 import { IconBtn } from "../ui";
 import { Annotations } from "./guideAnnotations";
 
@@ -245,6 +246,7 @@ function SceneInner({
 
   return (
     <div className="relative h-full w-full">
+      <WebGLGate>
       <Canvas
         key={ctxLost}
         frameloop="demand"
@@ -282,6 +284,7 @@ function SceneInner({
         )}
         <OrbitControls makeDefault enableDamping dampingFactor={0.1} zoomToCursor />
       </Canvas>
+      </WebGLGate>
 
       {!readonly && (
       <div className="absolute right-2 top-2 flex gap-1">

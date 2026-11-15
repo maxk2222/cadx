@@ -261,7 +261,9 @@
     "preview_failed": "3D-Vorschau konnte nicht geladen werden",
     "context_lost": "3D-Kontext verloren",
     "context_lost_hint": "Der Grafikkontext wurde zurückgesetzt — Ansicht neu laden, um fortzufahren",
-    "context_lost_reload": "Ansicht neu laden"
+    "context_lost_reload": "Ansicht neu laden",
+    "webgl_unavailable": "3D-Ansicht nicht verfügbar",
+    "webgl_unavailable_hint": "WebGL konnte nicht initialisiert werden — Hardware-Beschleunigung aktivieren oder andere GPU-lastige Tabs schließen, dann erneut versuchen"
   },
   "error_boundary": {
     "title": "Etwas ist schiefgelaufen",

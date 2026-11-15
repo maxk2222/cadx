@@ -256,7 +256,9 @@
     "preview_failed": "3D ",
     "context_lost": "3D ",
     "context_lost_hint": "——",
-    "context_lost_reload": ""
+    "context_lost_reload": "",
+    "webgl_unavailable": "3D 视图不可用",
+    "webgl_unavailable_hint": "无法初始化 WebGL — 请启用硬件加速或关闭其他占用 GPU 的标签页，然后重试"
   },
   "error_boundary": {
     "title": "",

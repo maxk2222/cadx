@@ -1,14 +1,23 @@
 import {
   ArrowDownToLine,
+  ArrowUpFromDot,
+  Camera,
   ChevronLeft,
   ChevronRight,
+  CopyPlus,
   Crosshair,
+  Eye,
   Maximize2,
   Move3d,
+  PanelRightClose,
+  PanelRightOpen,
+  Play,
   Plus,
   Redo2,
   Rotate3d,
+  Square,
   Trash2,
+  Type,
   Undo2,
   X,
 } from "lucide-react";
@@ -30,17 +39,21 @@ import {
   OrbitControls,
   TransformControls,
 } from "@react-three/drei";
-import { Canvas, useLoader } from "@react-three/fiber";
+import { Canvas, useFrame, useLoader } from "@react-three/fiber";
 import { GLTFLoader, type OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import { api, errMsg } from "../../lib/api";
 import type {
+  Asset,
+  GuideAnnotation,
   GuideDetail,
   GuideInstance,
   GuidePartInfo,
   GuideStepDetail,
 } from "../../lib/types";
 import SafeImg from "../SafeImg";
+import WebGLGate from "../common/WebGLGate";
 import { CameraFit } from "./GuideScene";
+import { Annotations, axisVec } from "./guideAnnotations";
 import { Btn, IconBtn, Spinner } from "../ui";
 
 /**
@@ -60,8 +73,26 @@ const mediaUrl = (vid: string, name: string) =>
 
 const PALETTE = ["#8c9bb3", "#e03131", "#2f9e44", "#1971c2", "#f08c00", "#e5e5e5"];
 
-type Doc = { steps: GuideStepDetail[]; instances: GuideInstance[] };
+type Doc = {
+  steps: GuideStepDetail[];
+  instances: GuideInstance[];
+  annotations: EdAnn[];
+};
 type Mode = "translate" | "rotate" | "scale";
+/** Editable annotation: server dict + client bookkeeping. `k` is the
+ *  identity key (never persisted), `idx` is the index in
+ *  state.annotations — undefined means "not yet POSTed". */
+type EdAnn = GuideAnnotation & { k: string; idx?: number };
+const annPayload = (a: EdAnn): GuideAnnotation => {
+  const rest = { ...a } as Record<string, unknown>;
+  delete rest.k;
+  delete rest.idx;
+  return rest as unknown as GuideAnnotation;
+};
+const annEq = (a: EdAnn, b: EdAnn) =>
+  JSON.stringify(annPayload(a)) === JSON.stringify(annPayload(b));
+
+const DIR_PRESETS = ["up", "down", "left", "right", "front", "back"] as const;
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v));
 
@@ -105,6 +136,7 @@ function PartObject({
   scene,
   inst,
   selected,
+  ghost,
   innerRef,
   onSelect,
   onContext,
@@ -112,6 +144,8 @@ function PartObject({
   scene: THREE.Group;
   inst: GuideInstance;
   selected: boolean;
+  /** isolate-step mode: earlier steps fade to a ghost */
+  ghost?: boolean;
   innerRef?: Ref<THREE.Group>;
   onSelect: (e: { stopPropagation: () => void; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void;
   onContext: (iid: string, x: number, y: number) => void;
@@ -125,7 +159,7 @@ function PartObject({
         const mat = (src as THREE.MeshStandardMaterial).clone();
         if (inst.color && "color" in mat)
           (mat as THREE.MeshStandardMaterial).color = new THREE.Color(inst.color);
-        const op = inst.opacity ?? 1;
+        const op = ghost ? 0.15 : (inst.opacity ?? 1);
         if (op < 1) {
           mat.transparent = true;
           mat.opacity = op;
@@ -141,7 +175,7 @@ function PartObject({
         : apply(m.material);
     });
     return o;
-  }, [scene, inst.color, inst.opacity, selected]);
+  }, [scene, inst.color, inst.opacity, selected, ghost]);
 
   const { pos, quat, scl } = useMemo(() => decompose(inst.transform), [inst.transform]);
 
@@ -178,6 +212,13 @@ function Scene({
   onMiss,
   onTransformedMany,
   focus,
+  anns,
+  selAnn,
+  onAnnSelect,
+  onAnnTransformed,
+  isolate,
+  playing,
+  glRef,
 }: {
   versionId: string;
   parts: GuidePartInfo[];
@@ -192,6 +233,13 @@ function Scene({
   onMiss: () => void;
   onTransformedMany: (t: Record<string, number[][]>) => void;
   focus: { iid: string; v: number } | null;
+  anns: EdAnn[];
+  selAnn: EdAnn | null;
+  onAnnSelect: (k: string | null) => void;
+  onAnnTransformed: (k: string, p: { axis?: number[]; position?: number[] }) => void;
+  isolate: boolean;
+  playing: { t0: number } | null;
+  glRef: React.MutableRefObject<THREE.WebGLRenderer | null>;
 }) {
   const meshParts = useMemo(() => parts.filter((p) => p.has_mesh), [parts]);
   const urls = useMemo(
@@ -200,20 +248,26 @@ function Scene({
   );
   const key = urls.join("|");
   const [ctxLost, setCtxLost] = useState(0);
+  const visible = useMemo(
+    () => instances.filter((i) => (i.placed_in_step ?? 0) <= stepNo),
+    [instances, stepNo],
+  );
   return (
+    <WebGLGate>
     <Canvas
       key={`${key}:${ctxLost}`}
-      frameloop="demand"
+      frameloop={playing ? "always" : "demand"}
       dpr={[1, 2]}
       camera={{ position: [220, 200, 260], fov: 40 }}
       onPointerMissed={onMiss}
       onCreated={({ gl }) => {
+        glRef.current = gl;
         gl.domElement.addEventListener("webglcontextlost", (e) => {
           e.preventDefault();
           setCtxLost((n) => n + 1);
         });
       }}
-      gl={{ antialias: true, powerPreference: "high-performance", alpha: false, stencil: false }}
+      gl={{ antialias: true, powerPreference: "high-performance", alpha: false, stencil: false, preserveDrawingBuffer: true }}
     >
       <color attach="background" args={["#181818"]} />
       <ambientLight intensity={0.55} />
@@ -226,7 +280,7 @@ function Scene({
       <SceneInner
         urls={urls}
         meshParts={meshParts}
-        instances={instances.filter((i) => (i.placed_in_step ?? 0) <= stepNo)}
+        instances={visible}
         sel={sel}
         primary={primary}
         mode={mode}
@@ -235,12 +289,45 @@ function Scene({
         onContext={onContext}
         onTransformedMany={onTransformedMany}
         focus={focus}
+        anns={anns}
+        stepNo={stepNo}
+        selAnn={selAnn}
+        onAnnSelect={onAnnSelect}
+        onAnnTransformed={onAnnTransformed}
+        isolate={isolate}
+        playing={playing}
       />
       <GizmoHelper alignment="bottom-right" margin={[70, 70]}>
         <GizmoViewport axisColors={["#ff4d5a", "#00d084", "#2b7cff"]} labelColor="#ccc" />
       </GizmoHelper>
     </Canvas>
+    </WebGLGate>
   );
+}
+
+/** Per-step assembly animation: freshly placed instances slide into
+ *  their final transform along the step's arrow axis (KIARA preview). */
+function AnimatedIn({
+  dir,
+  delay,
+  t0,
+  children,
+}: {
+  dir: THREE.Vector3;
+  delay: number;
+  t0: number;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<THREE.Group>(null);
+  useFrame(() => {
+    const g = ref.current;
+    if (!g) return;
+    const el = (performance.now() - t0) / 1000 - delay;
+    const p = Math.min(1, Math.max(0, el / 0.9));
+    const ease = 1 - (1 - p) * (1 - p); // ease-out quad
+    g.position.copy(dir).multiplyScalar((1 - ease) * 140);
+  });
+  return <group ref={ref}>{children}</group>;
 }
 
 function SceneInner({
@@ -254,6 +341,13 @@ function SceneInner({
   onContext,
   onTransformedMany,
   focus,
+  anns,
+  stepNo,
+  selAnn,
+  onAnnSelect,
+  onAnnTransformed,
+  isolate,
+  playing,
 }: {
   urls: string[];
   meshParts: GuidePartInfo[];
@@ -266,6 +360,13 @@ function SceneInner({
   onContext: (iid: string, x: number, y: number) => void;
   onTransformedMany: (t: Record<string, number[][]>) => void;
   focus: { iid: string; v: number } | null;
+  anns: EdAnn[];
+  stepNo: number;
+  selAnn: EdAnn | null;
+  onAnnSelect: (k: string | null) => void;
+  onAnnTransformed: (k: string, p: { axis?: number[]; position?: number[] }) => void;
+  isolate: boolean;
+  playing: { t0: number } | null;
 }) {
   const gltfs = useLoader(GLTFLoader, urls);
   const scenes = useMemo(
@@ -277,6 +378,8 @@ function SceneInner({
   );
 
   const refs = useRef<Record<string, THREE.Group | null>>({});
+  const annRefs = useRef<Record<string, THREE.Group | null>>({});
+  const [annObj, setAnnObj] = useState<THREE.Group | null>(null);
   const pivotRef = useRef<THREE.Group>(null!);
   const [pivotObj, setPivotObj] = useState<THREE.Group | null>(null);
   const pivotStart = useRef(new THREE.Matrix4());
@@ -349,31 +452,92 @@ function SceneInner({
     if (Object.keys(out).length) onTransformedMany(out);
   }, [onTransformedMany]);
 
-  const showGizmo = liveSel.size > 0;
+  const showGizmo = liveSel.size > 0 && !playing;
+
+  // animation direction per freshly-placed instance: its step's arrow
+  // axis if annotated, else +Z (slide down)
+  const dirFor = useMemo(() => {
+    const m = new Map<string, THREE.Vector3>();
+    for (const a of anns) {
+      if (a.kind === "arrow" && a.step === stepNo && a.part_id)
+        m.set(a.part_id, axisVec(a));
+    }
+    return (i: GuideInstance) =>
+      m.get(i.id) ?? m.get(i.part_id) ?? new THREE.Vector3(0, 0, 1);
+  }, [anns, stepNo]);
+
+  // stagger order among this step's new instances
+  const newOrder = useMemo(() => {
+    const m = new Map<string, number>();
+    let n = 0;
+    for (const i of instances)
+      if ((i.placed_in_step ?? 0) === stepNo) m.set(i.id, n++);
+    return m;
+  }, [instances, stepNo]);
+
+  // annotation gizmo: rotate changes the arrow axis, translate moves the
+  // text placard — commits back into the doc
+  const commitAnn = useCallback(() => {
+    if (!selAnn) return;
+    const g = annRefs.current[selAnn.k];
+    if (!g) return;
+    if (selAnn.kind === "text") {
+      onAnnTransformed(selAnn.k, {
+        position: [g.position.x, g.position.y, g.position.z],
+      });
+    } else {
+      const v = new THREE.Vector3(0, 1, 0).applyQuaternion(g.quaternion).normalize();
+      onAnnTransformed(selAnn.k, { axis: [v.x, v.y, v.z] });
+    }
+  }, [selAnn, onAnnTransformed]);
 
   return (
     <>
       <group ref={contentRef}>
-        {instances.map((i) => (
-          <PartObject
-            key={i.id}
-            scene={scenes[i.part_id] ?? new THREE.Group()}
-            inst={i}
-            selected={liveSel.has(i.id)}
-            innerRef={(g) => {
-              refs.current[i.id] = g;
-            }}
-            onSelect={(e) => {
-              e.stopPropagation();
-              onSelect(
-                i.id,
-                !!(e.ctrlKey || e.metaKey || e.shiftKey),
-              );
-            }}
-            onContext={onContext}
-          />
-        ))}
+        {instances.map((i) => {
+          const isNew = (i.placed_in_step ?? 0) === stepNo;
+          const node = (
+            <PartObject
+              key={i.id}
+              scene={scenes[i.part_id] ?? new THREE.Group()}
+              inst={i}
+              selected={liveSel.has(i.id)}
+              ghost={isolate && !isNew}
+              innerRef={(g) => {
+                refs.current[i.id] = g;
+              }}
+              onSelect={(e) => {
+                e.stopPropagation();
+                onSelect(
+                  i.id,
+                  !!(e.ctrlKey || e.metaKey || e.shiftKey),
+                );
+              }}
+              onContext={onContext}
+            />
+          );
+          if (playing && isNew) {
+            return (
+              <AnimatedIn key={i.id} dir={dirFor(i)} delay={(newOrder.get(i.id) ?? 0) * 0.15} t0={playing.t0}>
+                {node}
+              </AnimatedIn>
+            );
+          }
+          return node;
+        })}
       </group>
+      <Annotations
+        anns={anns}
+        step={stepNo}
+        instances={instances}
+        selKey={selAnn?.k ?? null}
+        annKey={(a) => (a as EdAnn).k}
+        onSelect={(a) => onAnnSelect((a as EdAnn).k)}
+        annRef={(key, g) => {
+          annRefs.current[key] = g;
+          if (selAnn && key === selAnn.k) setAnnObj(g);
+        }}
+      />
       <CameraFit content={contentRef} fitKey={urls.length} />
 
       {showGizmo && (
@@ -411,6 +575,18 @@ function SceneInner({
           )}
         </>
       )}
+      {selAnn && annObj && (
+        <TransformControls
+          object={annObj}
+          mode={selAnn.kind === "text" ? "translate" : "rotate"}
+          size={0.8}
+          onMouseDown={() => gizmoDrag(true)}
+          onMouseUp={() => {
+            gizmoDrag(false);
+            commitAnn();
+          }}
+        />
+      )}
       <OrbitControls makeDefault ref={controlsRef} enableDamping dampingFactor={0.1} zoomToCursor />
     </>
   );
@@ -422,10 +598,13 @@ export default function GuideEditor({
   versionId,
   name,
   onClose,
+  projectId,
 }: {
   versionId: string;
   name: string;
   onClose: () => void;
+  /** owning project — enables the project-asset→media copy picker */
+  projectId?: string;
 }) {
   const { t } = useTranslation("version");
   const [guide, setGuide] = useState<GuideDetail | null>(null);
@@ -440,8 +619,20 @@ export default function GuideEditor({
   const [assetTab, setAssetTab] = useState<"parts" | "media">("parts");
   const [ctx, setCtx] = useState<{ iid: string; x: number; y: number; sub: "main" | "color" | "alpha" } | null>(null);
   const [focus, setFocus] = useState<{ iid: string; v: number } | null>(null);
+  // selected annotation (EdAnn.k) — mutually exclusive with instance sel
+  const [annSel, setAnnSel] = useState<string | null>(null);
+  // right rail: collapsible steps/objects tabs
+  const [railOpen, setRailOpen] = useState(true);
+  const [railTab, setRailTab] = useState<"steps" | "objects">("steps");
+  const [dirPreset, setDirPreset] = useState<(typeof DIR_PRESETS)[number]>("down");
+  const [annLabel, setAnnLabel] = useState("");
+  const [isolateStep, setIsolateStep] = useState(false);
+  const [playing, setPlaying] = useState<{ t0: number } | null>(null);
+  const [mediaFor, setMediaFor] = useState<number | null>(null); // step no with open picker
+  const glRef = useRef<THREE.WebGLRenderer | null>(null);
+  const tmpAnnSeq = useRef(0);
   const [saveState, setSaveState] = useState<"saved" | "dirty" | "saving" | "error">("saved");
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ msg: string; err?: boolean } | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const tmpSeq = useRef(0);
   const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -455,7 +646,15 @@ export default function GuideEditor({
       .getGuide(versionId)
       .then((g) => {
         setGuide(g);
-        const d: Doc = { steps: clone(g.steps), instances: clone(g.instance_list ?? []) };
+        const d: Doc = {
+          steps: clone(g.steps),
+          instances: clone(g.instance_list ?? []),
+          annotations: (g.annotations ?? []).map((a, i) => ({
+            ...(clone(a) as GuideAnnotation),
+            k: `a${i}_${Date.now()}`,
+            idx: i,
+          })),
+        };
         setDoc(d);
         setBase(clone(d));
       })
@@ -464,8 +663,8 @@ export default function GuideEditor({
 
   useEffect(reloadDoc, [reloadDoc]);
 
-  const flash = (msg: string) => {
-    setFeedback(msg);
+  const flash = (msg: string, err = false) => {
+    setFeedback({ msg, err });
     setTimeout(() => setFeedback(null), 2500);
   };
 
@@ -510,6 +709,10 @@ export default function GuideEditor({
             j.id = r.id;
             j.transform = r.transform;
           }
+          // arrows anchored to this fresh instance must point at the real
+          // server id — remap in both the outgoing doc and the synced copy
+          for (const a of d.annotations) if (a.part_id === inst.id) a.part_id = r.id;
+          for (const a of next.annotations) if (a.part_id === inst.id) a.part_id = r.id;
           continue;
         }
         if (o && !instEq(inst, o)) {
@@ -525,12 +728,53 @@ export default function GuideEditor({
       for (const o of b.instances) {
         if (!dIds.has(o.id)) await api.deleteGuideInstance(versionId, o.id);
       }
+      // annotations: keyed diff — POST new (idx undefined), PATCH changed,
+      // DELETE removed. Deletes must run descending by server index or the
+      // indexes of later deletes drift.
+      const bAnn = new Map(b.annotations.map((a) => [a.k, a]));
+      for (const a of d.annotations) {
+        const o = bAnn.get(a.k);
+        if (a.idx === undefined) {
+          const r = await api.addGuideAnnotation(versionId, annPayload(a));
+          const j = next.annotations.find((x) => x.k === a.k);
+          if (j) j.idx = r.index;
+          continue;
+        }
+        if (o && !annEq(a, o)) {
+          await api.patchGuideAnnotation(versionId, a.idx, {
+            step: a.step,
+            part_id: a.part_id,
+            approach_axis: a.approach_axis,
+            label: a.label,
+            position: a.position,
+            text: a.text,
+            color: a.color ?? "",
+            ...(a.size != null ? { size: a.size } : {}),
+          });
+        }
+      }
+      const dKeys = new Set(d.annotations.map((a) => a.k));
+      const removals = b.annotations
+        .filter((o) => !dKeys.has(o.k) && o.idx !== undefined)
+        .map((o) => o.idx as number)
+        .sort((x, y) => y - x); // descending — see above
+      for (const idx of removals) {
+        await api.deleteGuideAnnotation(versionId, idx);
+      }
+      // deletes renumber the server list — shift surviving idx or the
+      // next flush would PATCH/DELETE the wrong annotations
+      if (removals.length) {
+        for (const a of next.annotations) {
+          if (a.idx === undefined) continue;
+          a.idx -= removals.filter((r) => r < (a.idx as number)).length;
+        }
+      }
       setDoc((cur) => (cur === d ? next : cur));
       setBase(next);
       setSaveState("saved");
     } catch (e) {
       setSaveState("error");
-      flash(errMsg(e));
+      flash(errMsg(e), true);
     }
   }, [versionId]);
 
@@ -585,24 +829,6 @@ export default function GuideEditor({
     flash(t("guide_redo"));
   }, [scheduleFlush, t]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
-      if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
-        e.preventDefault();
-        if (e.shiftKey) redo();
-        else undo();
-      } else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) {
-        e.preventDefault();
-        redo();
-      } else if (e.key === "Escape") {
-        setCtx(null);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [undo, redo]);
 
   const steps = useMemo(
     () => [...(doc?.steps ?? [])].sort((a, b) => a.number - b.number),
@@ -615,31 +841,32 @@ export default function GuideEditor({
   );
   const selInst = primary ? doc?.instances.find((i) => i.id === primary) ?? null : null;
 
-  const goto = (idx: number) => {
-    setCur(Math.max(0, Math.min(steps.length - 1, idx)));
-    setSel(new Set());
-    setPrimary(null);
-    setCtx(null);
-    void flush(); // KIARA: autosave on step switch
-  };
+  const goto = useCallback(
+    (idx: number) => {
+      setCur(Math.max(0, Math.min(steps.length - 1, idx)));
+      setSel(new Set());
+      setPrimary(null);
+      setAnnSel(null);
+      setCtx(null);
+      setPlaying(null);
+      void flush(); // KIARA: autosave on step switch
+    },
+    [steps.length, flush],
+  );
 
   const close = () => {
     if (flushTimer.current) clearTimeout(flushTimer.current);
     void flush().finally(onClose);
   };
 
-  const setStepField = (k: keyof GuideStepDetail, v: string) =>
-    mutate((d) => {
-      const s = d.steps.find((x) => x.number === step?.number);
-      if (s) (s as unknown as Record<string, unknown>)[k] = v;
-    });
-
   const select = (iid: string | null, multi: boolean) => {
     if (iid === null) {
       setSel(new Set());
       setPrimary(null);
+      setAnnSel(null);
       return;
     }
+    setAnnSel(null);
     if (multi) {
       setSel((s) => {
         const n = new Set(s);
@@ -672,18 +899,21 @@ export default function GuideEditor({
       for (const i of d.instances) if (sel.has(i.id)) fn(i);
     });
 
-  const deleteInst = (iid: string) => {
-    mutate((d) => {
-      d.instances = d.instances.filter((i) => i.id !== iid);
-    });
-    setSel((s) => {
-      const n = new Set(s);
-      n.delete(iid);
-      return n;
-    });
-    if (primary === iid) setPrimary(null);
-    setCtx(null);
-  };
+  const deleteInst = useCallback(
+    (iid: string) => {
+      mutate((d) => {
+        d.instances = d.instances.filter((i) => i.id !== iid);
+      });
+      setSel((s) => {
+        const n = new Set(s);
+        n.delete(iid);
+        return n;
+      });
+      if (primary === iid) setPrimary(null);
+      setCtx(null);
+    },
+    [mutate, primary],
+  );
 
   const insertPart = (pid: string) => {
     const iid = `new_${++tmpSeq.current}`;
@@ -701,6 +931,152 @@ export default function GuideEditor({
     });
     setSel(new Set([iid]));
     setPrimary(iid);
+  };
+
+  // ---------------- annotations ----------------
+  const selAnn = annSel
+    ? (doc?.annotations.find((a) => a.k === annSel) ?? null)
+    : null;
+
+  const updateAnn = (k: string, fn: (a: EdAnn) => void) =>
+    mutate((d) => {
+      const a = d.annotations.find((x) => x.k === k);
+      if (a) fn(a);
+    });
+
+  const deleteAnn = useCallback(
+    (k: string) => {
+      mutate((d) => {
+        d.annotations = d.annotations.filter((a) => a.k !== k);
+      });
+      if (annSel === k) setAnnSel(null);
+      setCtx(null);
+    },
+    [mutate, annSel],
+  );
+
+  const selectAnn = (k: string | null) => {
+    setAnnSel(k);
+    if (k) {
+      setSel(new Set());
+      setPrimary(null);
+    }
+  };
+
+  const DIR_VEC: Record<(typeof DIR_PRESETS)[number], number[]> = {
+    // mirrors annotate_tools._DIR_VECS — Z-up assembly frame
+    up: [0, 0, 1], down: [0, 0, -1],
+    left: [-1, 0, 0], right: [1, 0, 0],
+    front: [0, -1, 0], back: [0, 1, 0],
+  };
+
+  const addArrow = (iid?: string) => {
+    const target = iid ?? primary;
+    if (!target) return;
+    const k = `n_${++tmpAnnSeq.current}`;
+    mutate((d) => {
+      d.annotations.push({
+        k,
+        kind: "arrow",
+        step: step?.number ?? 1,
+        part_id: target,
+        approach_axis: DIR_VEC[dirPreset],
+        label: annLabel.trim() || undefined,
+      });
+    });
+    selectAnn(k);
+  };
+
+  const addText = (iid?: string) => {
+    const k = `n_${++tmpAnnSeq.current}`;
+    const anchor = iid
+      ? doc?.instances.find((i) => i.id === iid)
+      : selInst;
+    const p = anchor ? decompose(anchor.transform).pos : new THREE.Vector3();
+    mutate((d) => {
+      d.annotations.push({
+        k,
+        kind: "text",
+        step: step?.number ?? 1,
+        position: [p.x, p.y + 60, p.z],
+        text: "",
+      });
+    });
+    selectAnn(k);
+  };
+
+  /** gizmo commit: arrow → rotated approach_axis, text → moved position */
+  const onAnnTransformed = (k: string, p: { axis?: number[]; position?: number[] }) =>
+    updateAnn(k, (a) => {
+      if (p.axis) a.approach_axis = p.axis;
+      if (p.position) a.position = p.position;
+    });
+
+  const setStepMedia = (no: number, name: string | null) =>
+    mutate((d) => {
+      const s = d.steps.find((x) => x.number === no);
+      if (s) s.media_image = name;
+    });
+
+  const refreshGuide = () =>
+    api.getGuide(versionId).then((g) => setGuide(g)).catch(() => {});
+
+  /** viewport snapshot → guide media → step.media_image */
+  const snapshotStep = (no: number) => {
+    const gl = glRef.current;
+    if (!gl) return;
+    gl.domElement.toBlob((b) => {
+      if (!b) return;
+      void api
+        .uploadGuideMedia(versionId, b, `step-${no}-snapshot.png`)
+        .then((r) => {
+          setStepMedia(no, r.name);
+          refreshGuide();
+          flash(t("guide_snapshot_done"));
+        })
+        .catch((e) => flash(errMsg(e), true));
+    }, "image/png");
+  };
+
+  /** server-side step ops renumber state — always settle the pending
+   *  doc diff first or a debounced flush could PATCH shifted numbers */
+  const runStepOp = useCallback(
+    async (op: () => Promise<void>) => {
+      if (flushTimer.current) clearTimeout(flushTimer.current);
+      try {
+        await flush();
+        await op();
+      } catch (e) {
+        flash(errMsg(e), true);
+      }
+    },
+    [flush],
+  );
+
+  const duplicateStep = () => {
+    if (!step) return;
+    const srcNo = step.number;
+    const srcStep = step;
+    const anns = doc?.annotations ?? [];
+    void runStepOp(async () => {
+      const r = await api.addGuideStep(versionId, { insert_at: srcNo + 1 });
+      const newNo = r.step.number;
+      await api.patchGuideStep(versionId, newNo, {
+        title: srcStep.title,
+        text: srcStep.text,
+        display_text: srcStep.display_text,
+        safety_hint: srcStep.safety_hint,
+        media_image: srcStep.media_image ?? "",
+      });
+      for (const a of anns.filter((x) => x.step === srcNo)) {
+        await api.addGuideAnnotation(versionId, {
+          ...annPayload(a),
+          step: newNo,
+        });
+      }
+      reloadDoc();
+      setCur(Math.min(srcNo, steps.length));
+    });
   };
 
   const quickRotate = (axis: "x" | "y" | "z", deg: number) =>
@@ -732,6 +1108,32 @@ export default function GuideEditor({
       const yawOnly = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, d.euler.y, 0));
       i.transform = rowsFromMat(new THREE.Matrix4().compose(d.pos, yawOnly, d.scl));
     });
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+      if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) {
+        e.preventDefault();
+        redo();
+      } else if (e.key === "Escape") {
+        setCtx(null);
+      } else if (e.key === "ArrowLeft") {
+        goto(cur - 1);
+      } else if (e.key === "ArrowRight") {
+        goto(cur + 1);
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        if (primary) deleteInst(primary);
+        else if (annSel) deleteAnn(annSel);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo, goto, cur, primary, deleteInst, annSel, deleteAnn]);
 
   const scaleSel = (k: number) =>
     updateSel((i) => {
@@ -769,6 +1171,50 @@ export default function GuideEditor({
           <Redo2 className="h-4 w-4" />
         </IconBtn>
         <div className="mx-2 h-5 w-px bg-edge" />
+        <div className="flex items-center gap-1">
+          <Btn size="sm" disabled={cur === 0} onClick={() => goto(cur - 1)}>
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </Btn>
+          <span className="px-1 text-xs text-fg">
+            {t("guide_step_of", { n: step?.number ?? 0, m: steps.length })}
+          </span>
+          <Btn size="sm" disabled={cur >= steps.length - 1} onClick={() => goto(cur + 1)}>
+            <ChevronRight className="h-3.5 w-3.5" />
+          </Btn>
+          <IconBtn
+            title={t("guide_step_add")}
+            onClick={() => {
+              const at = (step?.number ?? steps.length) + 1;
+              void runStepOp(async () => {
+                await api.addGuideStep(versionId, { insert_at: at });
+                reloadDoc();
+                setCur(Math.min(at - 1, steps.length));
+              });
+            }}
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </IconBtn>
+          <IconBtn title={t("guide_step_dup")} disabled={!step} onClick={duplicateStep}>
+            <CopyPlus className="h-3.5 w-3.5" />
+          </IconBtn>
+          <IconBtn
+            title={t("guide_step_delete")}
+            className="text-red-400"
+            disabled={steps.length <= 1}
+            onClick={() => {
+              if (!step || steps.length <= 1) return;
+              const no = step.number;
+              void runStepOp(async () => {
+                await api.deleteGuideStep(versionId, no);
+                reloadDoc();
+                setCur((c) => Math.max(0, c - 1));
+              });
+            }}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </IconBtn>
+        </div>
+        <div className="mx-2 h-5 w-px bg-edge" />
         <span className="truncate text-sm font-medium text-fg">{name}</span>
         <span
           className={
@@ -785,7 +1231,11 @@ export default function GuideEditor({
           {t(`guide_save_${saveState}`)}
         </span>
         <div className="flex-1" />
-        {feedback && <span className="text-[11px] text-emerald-400">{feedback}</span>}
+        {feedback && (
+          <span className={"text-[11px] " + (feedback.err ? "text-red-400" : "text-emerald-400")}>
+            {feedback.msg}
+          </span>
+        )}
         <IconBtn title={t("close")} onClick={close}>
           <X className="h-4 w-4" />
         </IconBtn>
@@ -794,85 +1244,95 @@ export default function GuideEditor({
       {/* ——— 3-pane body ——— */}
       <div className="flex min-h-0 flex-1" onClick={() => setCtx(null)}>
         {/* left sidebar — Schritte + Asset-Bibliothek */}
-        <aside className="flex w-60 shrink-0 flex-col gap-3 overflow-y-auto border-r border-edge p-3">
+        <aside className="flex w-56 shrink-0 flex-col gap-3 overflow-y-auto border-r border-edge p-3">
           <section>
             <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-faint">
-              {t("guide_steps")}
+              {t("guide_annotations")}
             </h2>
-            <div className="mb-2 flex items-center justify-between">
-              <Btn size="sm" disabled={cur === 0} onClick={() => goto(cur - 1)}>
-                <ChevronLeft className="h-3.5 w-3.5" />
-              </Btn>
-              <span className="text-xs text-fg">
-                {t("guide_step_of", { n: step?.number ?? 0, m: steps.length })}
-              </span>
-              <Btn size="sm" disabled={cur >= steps.length - 1} onClick={() => goto(cur + 1)}>
-                <ChevronRight className="h-3.5 w-3.5" />
-              </Btn>
-            </div>
-            <div className="mb-2 flex gap-1">
-              <IconBtn
-                title={t("guide_step_add")}
-                className="flex-1"
-                onClick={() => {
-                  const at = (step?.number ?? steps.length) + 1;
-                  api
-                    .addGuideStep(versionId, { insert_at: at })
-                    .then(() => {
-                      reloadDoc();
-                      setCur(Math.min(at - 1, steps.length));
-                    })
-                    .catch((e) => setFeedback(errMsg(e)));
-                }}
-              >
-                <Plus className="h-3.5 w-3.5" />
-              </IconBtn>
-              <IconBtn
-                title={t("guide_step_delete")}
-                className="flex-1 text-red-400"
-                onClick={() => {
-                  if (!step || steps.length <= 1) return;
-                  api
-                    .deleteGuideStep(versionId, step.number)
-                    .then(() => {
-                      reloadDoc();
-                      setCur(Math.max(0, cur - 1));
-                    })
-                    .catch((e) => setFeedback(errMsg(e)));
-                }}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </IconBtn>
-            </div>
-            {step && (
-              <div className="flex flex-col gap-1.5">
-                <input
-                  className="input py-1 text-xs"
-                  value={step.title}
-                  placeholder={t("guide_title_ph")}
-                  onChange={(e) => setStepField("title", e.target.value)}
-                />
-                <textarea
-                  className="input w-full text-[11px]"
-                  rows={7}
-                  value={step.text}
-                  placeholder={t("guide_text_ph")}
-                  onChange={(e) => setStepField("text", e.target.value)}
-                />
-                <input
-                  className="input py-1 text-[11px]"
-                  value={step.display_text}
-                  placeholder={t("guide_display_ph")}
-                  onChange={(e) => setStepField("display_text", e.target.value)}
-                />
-                <input
-                  className="input py-1 text-[11px]"
-                  value={step.safety_hint}
-                  placeholder={t("guide_safety_ph")}
-                  onChange={(e) => setStepField("safety_hint", e.target.value)}
-                />
+            <div className="flex flex-col gap-1.5">
+              <div className="flex gap-1">
+                <select
+                  className="input min-w-0 flex-1 py-1 text-[11px]"
+                  value={dirPreset}
+                  onChange={(e) => setDirPreset(e.target.value as (typeof DIR_PRESETS)[number])}
+                  title={t("guide_ann_dir")}
+                >
+                  {DIR_PRESETS.map((d) => (
+                    <option key={d} value={d}>{t(`guide_dir_${d}`)}</option>
+                  ))}
+                </select>
+                <IconBtn
+                  title={primary ? t("guide_arrow_add") : t("guide_arrow_add_hint")}
+                  disabled={!primary}
+                  onClick={() => addArrow()}
+                >
+                  <ArrowUpFromDot className="h-4 w-4" />
+                </IconBtn>
+                <IconBtn title={t("guide_text_add")} onClick={() => addText()}>
+                  <Type className="h-4 w-4" />
+                </IconBtn>
               </div>
-            )}
+              <input
+                className="input py-1 text-[11px]"
+                value={annLabel}
+                placeholder={t("guide_ann_label_ph")}
+                onChange={(e) => setAnnLabel(e.target.value)}
+              />
+              {selAnn && (
+                <div className="flex flex-col gap-1 rounded border border-edge2 bg-panel2/50 p-1.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] uppercase text-faint">
+                      {selAnn.kind === "arrow" ? t("guide_ann_arrow") : t("guide_ann_text")}
+                    </span>
+                    <button
+                      className="text-faint hover:text-red-400"
+                      title={t("guide_delete")}
+                      onClick={() => deleteAnn(selAnn.k)}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                  {selAnn.kind === "arrow" ? (
+                    <input
+                      className="input py-0.5 text-[11px]"
+                      value={selAnn.label ?? ""}
+                      placeholder={t("guide_ann_label_ph")}
+                      onChange={(e) => updateAnn(selAnn.k, (a) => { a.label = e.target.value; })}
+                    />
+                  ) : (
+                    <textarea
+                      className="input w-full text-[11px]"
+                      rows={2}
+                      value={selAnn.text ?? ""}
+                      placeholder={t("guide_ann_text_ph")}
+                      onChange={(e) => updateAnn(selAnn.k, (a) => { a.text = e.target.value; })}
+                    />
+                  )}
+                  <div className="grid grid-cols-6 gap-1">
+                    {PALETTE.map((c) => (
+                      <button
+                        key={c}
+                        className={
+                          "h-4 w-4 rounded-full border " +
+                          (selAnn.color === c ? "border-fg ring-1 ring-fg" : "border-edge2")
+                        }
+                        style={{ backgroundColor: c }}
+                        onClick={() => updateAnn(selAnn.k, (a) => { a.color = c; })}
+                      />
+                    ))}
+                  </div>
+                  <label className="flex items-center gap-1.5 text-[10px] text-faint">
+                    {t("guide_ann_size")}
+                    <input
+                      type="range" min={0.5} max={3} step={0.1}
+                      value={selAnn.size ?? 1}
+                      className="min-w-0 flex-1"
+                      onChange={(e) => updateAnn(selAnn.k, (a) => { a.size = Number(e.target.value); })}
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
           </section>
 
           <section className="min-h-0 flex-1">
@@ -955,7 +1415,41 @@ export default function GuideEditor({
             onMiss={() => select(null, false)}
             onTransformedMany={applyTransforms}
             focus={focus}
+            anns={doc.annotations}
+            selAnn={selAnn}
+            onAnnSelect={selectAnn}
+            onAnnTransformed={onAnnTransformed}
+            isolate={isolateStep}
+            playing={playing}
+            glRef={glRef}
           />
+          {/* canvas overlay — preview transport, isolate, snapshot */}
+          <div className="absolute left-2 top-2 flex flex-col gap-1">
+            <IconBtn
+              title={playing ? t("guide_anim_stop") : t("guide_anim_play")}
+              className="bg-panel/80 backdrop-blur"
+              onClick={() => setPlaying(playing ? null : { t0: performance.now() })}
+            >
+              {playing ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+            </IconBtn>
+            <IconBtn
+              title={t("guide_isolate_step")}
+              className={
+                "bg-panel/80 backdrop-blur " +
+                (isolateStep ? "text-brand-400 ring-1 ring-brand-500" : "")
+              }
+              onClick={() => setIsolateStep((v) => !v)}
+            >
+              <Eye className="h-4 w-4" />
+            </IconBtn>
+            <IconBtn
+              title={t("guide_snapshot")}
+              className="bg-panel/80 backdrop-blur"
+              onClick={() => step && snapshotStep(step.number)}
+            >
+              <Camera className="h-4 w-4" />
+            </IconBtn>
+          </div>
           {ctx && (
             <ContextMenu
               x={ctx.x}
@@ -989,13 +1483,110 @@ export default function GuideEditor({
                 });
                 setCtx(null);
               }}
+              onArrow={() => {
+                addArrow(ctx.iid);
+                setCtx(null);
+              }}
+              onText={() => {
+                addText(ctx.iid);
+                setCtx(null);
+              }}
               onDelete={() => deleteInst(ctx.iid)}
             />
           )}
         </div>
 
-        {/* right inspector — Objekte in Schritt + Auswahl bearbeiten */}
-        <aside className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto border-l border-edge p-3">
+        {/* right rail — collapsible: Steps editor (all steps) | Objects */}
+        <div className="flex w-9 shrink-0 flex-col items-center border-l border-edge py-1.5">
+          <IconBtn
+            title={railOpen ? t("guide_rail_close") : t("guide_rail_open")}
+            onClick={() => setRailOpen((v) => !v)}
+          >
+            {railOpen ? (
+              <PanelRightClose className="h-4 w-4" />
+            ) : (
+              <PanelRightOpen className="h-4 w-4" />
+            )}
+          </IconBtn>
+        </div>
+        {railOpen && (
+          <aside className="flex w-80 shrink-0 flex-col border-l border-edge xl:w-96">
+            <div className="flex gap-1 border-b border-edge p-1.5">
+              {(["steps", "objects"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  className={
+                    "flex-1 rounded px-2 py-1 text-[11px] " +
+                    (railTab === tab
+                      ? "bg-brand-500/20 text-brand-300"
+                      : "bg-panel2 text-muted hover:text-fg")
+                  }
+                  onClick={() => setRailTab(tab)}
+                >
+                  {t(tab === "steps" ? "guide_steps" : "guide_objects")}
+                </button>
+              ))}
+            </div>
+            {railTab === "steps" ? (
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-2">
+                {steps.map((s, idx) => (
+                  <StepCard
+                    key={s.number}
+                    step={s}
+                    active={s.number === step?.number}
+                    annCount={doc.annotations.filter((a) => a.step === s.number)}
+                    onFocus={() => goto(idx)}
+                    onField={(k, v) =>
+                      mutate((d) => {
+                        const st = d.steps.find((x) => x.number === s.number);
+                        if (st) (st as unknown as Record<string, unknown>)[k] = v;
+                      })
+                    }
+                    versionId={versionId}
+                    guideMedia={guide.media}
+                    mediaOpen={mediaFor === s.number}
+                    onToggleMedia={() =>
+                      setMediaFor((m) => (m === s.number ? null : s.number))
+                    }
+                    onMedia={(name) => {
+                      setStepMedia(s.number, name);
+                      setMediaFor(null);
+                    }}
+                    onSnapshot={() => snapshotStep(s.number)}
+                    onUpload={(blob, fn) =>
+                      void api
+                        .uploadGuideMedia(versionId, blob, fn)
+                        .then((r) => {
+                          setStepMedia(s.number, r.name);
+                          setMediaFor(null);
+                          refreshGuide();
+                        })
+                        .catch((e) => flash(errMsg(e), true))
+                    }
+                    onAsset={(aid) =>
+                      void api
+                        .guideMediaFromAsset(versionId, aid)
+                        .then((r) => {
+                          setStepMedia(s.number, r.name);
+                          setMediaFor(null);
+                          refreshGuide();
+                        })
+                        .catch((e) => flash(errMsg(e), true))
+                    }
+                    projectId={projectId}
+                    canDelete={steps.length > 1}
+                    onDelete={() =>
+                      void runStepOp(async () => {
+                        await api.deleteGuideStep(versionId, s.number);
+                        reloadDoc();
+                        setCur((c) => Math.max(0, c - (idx <= c ? 1 : 0)));
+                      })
+                    }
+                  />
+                ))}
+              </div>
+            ) : (
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
           <section>
             <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-faint">
               {t("guide_objects")}
@@ -1003,6 +1594,8 @@ export default function GuideEditor({
             <div className="flex flex-col gap-0.5">
               {visible.map((i) => {
                 const pname = guide.parts.find((p) => p.id === i.part_id)?.name ?? i.part_id;
+                const ord =
+                  visible.filter((x) => x.part_id === i.part_id).indexOf(i) + 1;
                 return (
                   <div
                     key={i.id}
@@ -1013,7 +1606,10 @@ export default function GuideEditor({
                     title={`${i.id} · ${pname}`}
                     onClick={(e) => select(i.id, e.ctrlKey || e.metaKey || e.shiftKey)}
                   >
-                    <span className="truncate">{i.id}</span>
+                    <span className="truncate">
+                      {pname}
+                      <span className="text-faint"> · {ord}</span>
+                    </span>
                     <button
                       className="hidden text-faint hover:text-red-400 group-hover:block"
                       title={t("guide_delete")}
@@ -1101,13 +1697,319 @@ export default function GuideEditor({
               </Btn>
             </section>
           )}
-        </aside>
+
+          <section>
+            <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-faint">
+              {t("guide_annotations")}
+            </h2>
+            <div className="flex flex-col gap-0.5">
+              {doc.annotations
+                .filter((a) => a.step === step?.number)
+                .map((a) => (
+                  <div
+                    key={a.k}
+                    className={
+                      "group flex cursor-pointer items-center justify-between rounded px-2 py-1 text-[11px] " +
+                      (annSel === a.k
+                        ? "bg-brand-500/20 text-brand-200"
+                        : "text-muted hover:bg-panel2 hover:text-fg")
+                    }
+                    onClick={() => selectAnn(annSel === a.k ? null : a.k)}
+                  >
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {a.kind === "arrow" ? (
+                        <ArrowUpFromDot className="h-3 w-3 shrink-0 text-amber-400" />
+                      ) : (
+                        <Type className="h-3 w-3 shrink-0 text-teal-300" />
+                      )}
+                      <span className="truncate">
+                        {a.kind === "arrow"
+                          ? a.label || a.part_id || t("guide_ann_arrow")
+                          : a.text || t("guide_ann_text")}
+                      </span>
+                    </span>
+                    <button
+                      className="hidden text-faint hover:text-red-400 group-hover:block"
+                      title={t("guide_delete")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteAnn(a.k);
+                      }}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              {!doc.annotations.filter((a) => a.step === step?.number).length && (
+                <p className="text-[11px] text-faint">{t("guide_ann_none")}</p>
+              )}
+            </div>
+          </section>
+          </div>
+            )}
+          </aside>
+        )}
       </div>
     </Shell>
   );
 }
 
 // ======================== pieces ========================
+
+/** One step inside the right rail's scrollable steps editor: title/text/
+ *  display/safety fields, media image swap (guide media · project assets
+ *  · upload · viewport snapshot), annotation counts, delete. */
+function StepCard({
+  step,
+  active,
+  annCount,
+  onFocus,
+  onField,
+  versionId,
+  guideMedia,
+  mediaOpen,
+  onToggleMedia,
+  onMedia,
+  onSnapshot,
+  onUpload,
+  onAsset,
+  projectId,
+  canDelete,
+  onDelete,
+}: {
+  step: GuideStepDetail;
+  active: boolean;
+  annCount: EdAnn[];
+  onFocus: () => void;
+  onField: (k: keyof GuideStepDetail, v: string) => void;
+  versionId: string;
+  guideMedia: string[];
+  mediaOpen: boolean;
+  onToggleMedia: () => void;
+  onMedia: (name: string | null) => void;
+  onSnapshot: () => void;
+  onUpload: (blob: Blob, filename: string) => void;
+  onAsset: (assetId: string) => void;
+  projectId?: string;
+  canDelete: boolean;
+  onDelete: () => void;
+}) {
+  const { t } = useTranslation("version");
+  const ref = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+  const arrows = annCount.filter((a) => a.kind === "arrow").length;
+  const texts = annCount.filter((a) => a.kind === "text").length;
+  return (
+    <div
+      ref={ref}
+      className={
+        "rounded-lg border p-2 " +
+        (active ? "border-brand-600 bg-panel2/60 ring-1 ring-brand-700/50" : "border-edge bg-panel")
+      }
+    >
+      <div className="flex items-center gap-1.5">
+        <button
+          className={
+            "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold " +
+            (active ? "bg-brand-500/20 text-brand-300" : "bg-panel2 text-faint")
+          }
+          title={t("guide_step_focus")}
+          onClick={onFocus}
+        >
+          S{step.number}
+        </button>
+        <input
+          className="input min-w-0 flex-1 py-0.5 text-[11px]"
+          value={step.title}
+          placeholder={t("guide_title_ph")}
+          onFocus={onFocus}
+          onChange={(e) => onField("title", e.target.value)}
+        />
+        <button
+          className="shrink-0 text-faint hover:text-red-400 disabled:opacity-30"
+          title={t("guide_step_delete")}
+          disabled={!canDelete}
+          onClick={onDelete}
+        >
+          <Trash2 className="h-3 w-3" />
+        </button>
+      </div>
+      <textarea
+        className="input mt-1.5 w-full text-[11px]"
+        rows={3}
+        value={step.text}
+        placeholder={t("guide_text_ph")}
+        onFocus={onFocus}
+        onChange={(e) => onField("text", e.target.value)}
+      />
+      <input
+        className="input mt-1 w-full py-0.5 text-[11px]"
+        value={step.display_text}
+        placeholder={t("guide_display_ph")}
+        onFocus={onFocus}
+        onChange={(e) => onField("display_text", e.target.value)}
+      />
+      <input
+        className="input mt-1 w-full py-0.5 text-[11px]"
+        value={step.safety_hint}
+        placeholder={t("guide_safety_ph")}
+        onFocus={onFocus}
+        onChange={(e) => onField("safety_hint", e.target.value)}
+      />
+
+      {/* step photo — swap from guide media / project assets / upload /
+          viewport snapshot */}
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <div className="h-11 w-14 shrink-0 overflow-hidden rounded border border-edge2 bg-panel2">
+          {step.media_image ? (
+            <SafeImg
+              src={mediaUrl(versionId, step.media_image)}
+              alt={step.media_image}
+              className="h-full w-full object-cover"
+              fallback={<div className="h-full w-full" />}
+            />
+          ) : null}
+        </div>
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          <Btn size="sm" variant="ghost" onClick={onToggleMedia}>
+            {t("guide_media_swap")}
+          </Btn>
+          <IconBtn title={t("guide_snapshot")} onClick={onSnapshot}>
+            <Camera className="h-3.5 w-3.5" />
+          </IconBtn>
+          {step.media_image && (
+            <IconBtn title={t("guide_media_clear")} onClick={() => onMedia(null)}>
+              <X className="h-3.5 w-3.5" />
+            </IconBtn>
+          )}
+          {(arrows > 0 || texts > 0) && (
+            <span className="ml-auto shrink-0 text-[10px] text-faint">
+              {arrows > 0 && `➤ ${arrows}`}
+              {arrows > 0 && texts > 0 && " · "}
+              {texts > 0 && `▤ ${texts}`}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {mediaOpen && (
+        <MediaPicker
+          versionId={versionId}
+          guideMedia={guideMedia}
+          current={step.media_image}
+          onPick={onMedia}
+          onUpload={onUpload}
+          onAsset={onAsset}
+          projectId={projectId}
+          fileRef={fileRef}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Popover body for step-photo swap: guide-extracted media, project
+ *  image assets (copied in), or a fresh upload. */
+function MediaPicker({
+  versionId,
+  guideMedia,
+  current,
+  onPick,
+  onUpload,
+  onAsset,
+  projectId,
+  fileRef,
+}: {
+  versionId: string;
+  guideMedia: string[];
+  current: string | null | undefined;
+  onPick: (name: string) => void;
+  onUpload: (blob: Blob, filename: string) => void;
+  onAsset: (assetId: string) => void;
+  projectId?: string;
+  fileRef: React.RefObject<HTMLInputElement>;
+}) {
+  const { t } = useTranslation("version");
+  const [assets, setAssets] = useState<Asset[] | null>(null);
+  useEffect(() => {
+    if (!projectId || assets !== null) return;
+    api
+      .listAssets(projectId)
+      .then((a) =>
+        setAssets(a.filter((x) => x.kind === "image" || x.kind === "generated_image")),
+      )
+      .catch(() => setAssets([]));
+  }, [projectId, assets]);
+  return (
+    <div className="mt-1.5 space-y-2 rounded border border-edge2 bg-panel2/40 p-1.5">
+      {guideMedia.length > 0 && (
+        <div className="grid grid-cols-4 gap-1">
+          {guideMedia.map((m) => (
+            <button
+              key={m}
+              className={
+                "overflow-hidden rounded border " +
+                (m === current ? "border-brand-500 ring-1 ring-brand-500" : "border-edge2 hover:border-brand-500")
+              }
+              title={m}
+              onClick={() => onPick(m)}
+            >
+              <SafeImg
+                src={mediaUrl(versionId, m)}
+                alt={m}
+                className="h-12 w-full object-cover"
+                fallback={<div className="h-12 bg-panel2" />}
+              />
+            </button>
+          ))}
+        </div>
+      )}
+      {projectId && assets && assets.length > 0 && (
+        <>
+          <div className="text-[10px] uppercase tracking-wider text-faint">
+            {t("guide_media_project")}
+          </div>
+          <div className="grid grid-cols-4 gap-1">
+            {assets.map((a) => (
+              <button
+                key={a.id}
+                className="overflow-hidden rounded border border-edge2 hover:border-brand-500"
+                title={a.filename}
+                onClick={() => onAsset(a.id)}
+              >
+                <SafeImg
+                  src={`/api/assets/${a.id}/file`}
+                  alt={a.filename}
+                  className="h-12 w-full object-cover"
+                  fallback={<div className="h-12 bg-panel2" />}
+                />
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      <div>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onUpload(f, f.name);
+            e.target.value = "";
+          }}
+        />
+        <Btn size="sm" variant="ghost" className="w-full" onClick={() => fileRef.current?.click()}>
+          {t("guide_media_upload")}
+        </Btn>
+      </div>
+    </div>
+  );
+}
 
 function Shell({
   children,
@@ -1148,6 +2050,8 @@ function ContextMenu({
   onOpacity,
   onFocus,
   onReset,
+  onArrow,
+  onText,
   onDelete,
 }: {
   x: number;
@@ -1159,6 +2063,8 @@ function ContextMenu({
   onOpacity: (o: number) => void;
   onFocus: () => void;
   onReset: () => void;
+  onArrow: () => void;
+  onText: () => void;
   onDelete: () => void;
 }) {
   const { t } = useTranslation("version");
@@ -1185,6 +2091,15 @@ function ContextMenu({
           </button>
           <button className={item} onClick={onReset}>
             {t("guide_reset_transform")}
+          </button>
+          <div className="my-1 border-t border-edge" />
+          <button className={item} onClick={onArrow}>
+            <ArrowUpFromDot className="mr-1.5 inline h-3 w-3" />
+            {t("guide_arrow_add")}
+          </button>
+          <button className={item} onClick={onText}>
+            <Type className="mr-1.5 inline h-3 w-3" />
+            {t("guide_text_add")}
           </button>
           <div className="my-1 border-t border-edge" />
           <button className={item + " text-red-400"} onClick={onDelete}>

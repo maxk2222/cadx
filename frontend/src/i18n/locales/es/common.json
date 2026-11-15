@@ -261,7 +261,9 @@
     "preview_failed": "no se pudo cargar la vista previa 3D",
     "context_lost": "contexto 3D perdido",
     "context_lost_hint": "el contexto gráfico se reinició — recarga la vista para continuar",
-    "context_lost_reload": "recargar vista"
+    "context_lost_reload": "recargar vista",
+    "webgl_unavailable": "Vista 3D no disponible",
+    "webgl_unavailable_hint": "No se pudo inicializar WebGL — activa la aceleración de hardware o cierra otras pestañas exigentes de GPU, luego reintenta"
   },
   "error_boundary": {
     "title": "Algo salió mal",
