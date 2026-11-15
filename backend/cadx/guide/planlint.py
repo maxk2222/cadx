@@ -357,6 +357,8 @@ def _lint_order(
     """A PLACED (non-anchor) target must exist no later than the step
     referencing it — targeting a part that only appears later is a
     plan-order bug the steps mission must resolve."""
+    from cadx.guide.preassembly import _PREMOUNT_MARK
+
     findings: list[dict[str, Any]] = []
     for st in steps:
         for i, ss in enumerate(st.sub_steps):
@@ -364,6 +366,11 @@ def _lint_order(
                 continue
             for name in (ss.target, ss.target2):
                 if not name:
+                    continue
+                # 'vormontierter X' references a device-mounted copy the
+                # preassembly spawns BEFORE this step — not the kit
+                # instance placed later; ordering does not apply
+                if _PREMOUNT_MARK.search(name):
                     continue
                 pid = _resolve_name(sess, name)
                 if pid is None or pid in anchor_step:
@@ -500,6 +507,8 @@ def _lint_anchor(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any
     if hid is None:
         return []  # no clear size outlier — no identifiable host to anchor to
     biggest = next(p for p in sess.state.parts if p.id == hid)
+    from cadx.guide.preassembly import _PREMOUNT_MARK
+
     referenced = False
     for st in steps:
         for ss in st.sub_steps:
@@ -508,7 +517,12 @@ def _lint_anchor(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any
             if _resolve_part(sess, ss.part, st.number) == biggest.id:
                 return []  # the big part is itself mounted — a leaf
             for name in (ss.target, ss.target2):
-                if name and _resolve_name(sess, name) == biggest.id:
+                if not name:
+                    continue
+                # a 'vormontierter' target spawns a device-mounted copy
+                # ONTO the host — the plan references the base as mount
+                # point even when the mounted piece is another kind
+                if _resolve_name(sess, name) == biggest.id or _PREMOUNT_MARK.search(name):
                     referenced = True
     if referenced:
         return []
@@ -592,12 +606,25 @@ def _lint_premount_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
                 ppid = _resolve_part(sess, ss.part, st.number)
                 if ppid:
                     kit_placed.add(ppid)
+    # premounted-marked targets spawn device-mounted copies ONTO the
+    # assembly's host part — for the host itself that IS the reference:
+    # the plan uses it as the mount point for the pre-installed state
+    from cadx.guide.assembly_tools import _host_part_id
+
+    host = _host_part_id(sess)
+    host_referenced = host is not None and any(
+        _premount_words().search(tgt)
+        for st in steps
+        for ss in st.sub_steps
+        for tgt in (ss.target, ss.target2)
+        if tgt
+    )
     findings: list[dict[str, Any]] = []
     for nrm, pm_qty in pm_map.items():
         pid = sess._aliases_store.get(nrm) or _name_index(sess).get(nrm)
         if not pid:
             continue
-        referenced = False
+        referenced = pid == host and host_referenced
         for st in steps:
             for ss in st.sub_steps:
                 for tgt in (ss.target, ss.target2):

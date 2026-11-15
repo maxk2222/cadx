@@ -433,9 +433,12 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
         r"öffnung|muffe|lippe|kante|ende|seite|spitze|fläche|"
         r"opening|socket|mouth|lip|edge|end|side|tip|face"
     )
+    # the feature can head a compound ("Anschlussöffnung") — match it as
+    # a word-internal stem, not only as a standalone token
+    _feat_tok = rf"\w*(?:{_feat})\w*"
     _side_stem = r"ober\w+|unter\w+|link\w+|recht\w+|upper|lower|top|bottom|left|right"
     first_clause = re.sub(
-        rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+(?:{_feat})\w*",
+        rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+{_feat_tok}",
         " ",
         first_clause,
     )
@@ -447,7 +450,7 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
         (t.get("target") or "").lower(),
     )
     target = re.sub(
-        rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+(?:{_feat})\w*",
+        rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+{_feat_tok}",
         " ",
         target,
     )
