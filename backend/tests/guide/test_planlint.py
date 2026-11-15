@@ -227,3 +227,72 @@ def test_split_name_qty_variants() -> None:
     assert _split_name_qty("Adapter DN22 2 + 2 premounted") == ("Adapter DN22", 4, 2)
     # plain "N vormontiert" — the whole count is device-side already
     assert _split_name_qty("Halterung 2 vormontiert") == ("Halterung", 2, 2)
+
+
+def _sess_with_assets(parts, steps, assets) -> SimpleNamespace:
+    s = _sess(parts, steps)
+    s.guide_assets = assets
+    return s
+
+
+def _upart(pid: str, aid: str) -> GuidePart:
+    p = _part(pid)
+    p.asset_id = aid
+    return p
+
+
+def test_unregistered_cad_asset_is_parts_blocker() -> None:
+    """An uploaded CAD file mapped to no registered part means the plan
+    silently dropped real geometry — observed: the host casing marked
+    context, leaving nothing to anchor to (satellite assembly)."""
+    sess = _sess_with_assets(
+        [_upart("pipe", "a-pipe"), _upart("elbow", "a-elbow")],
+        [_step(1, [{"action": "place", "part": "elbow", "target": "pipe"}])],
+        [
+            {"id": "a-pipe", "filename": "Pipe.glb", "kind": "model"},
+            {"id": "a-elbow", "filename": "Elbow.glb", "kind": "model"},
+            {"id": "a-casing", "filename": "Casing.step", "kind": "model"},
+            {"id": "a-pdf", "filename": "manual.pdf", "kind": "document"},
+        ],
+    )
+    fs = plan_lint(sess)
+    b = [f for f in fs if "Casing.step" in f["text"]]
+    assert b and b[0]["mission"] == "parts" and b[0]["severity"] == "blocker", fs
+    assert not [f for f in fs if "manual.pdf" in f["text"]], fs
+
+
+def test_all_cad_assets_registered_clean() -> None:
+    sess = _sess_with_assets(
+        [_upart("pipe", "a-pipe"), _upart("casing", "Casing.step")],
+        [_step(1, [{"action": "place", "part": "pipe", "target": "casing"}])],
+        [
+            {"id": "a-pipe", "filename": "Pipe.glb", "kind": "model"},
+            {"id": "a-casing", "filename": "Casing.step", "kind": "model"},
+        ],
+    )
+    # filename also counts as the registered key (forgiving asset lookup
+    # accepts filenames, not only uuids)
+    assert not [f for f in plan_lint(sess) if "maps to no registered" in f["text"]]
+
+
+def test_plan_lint_reopen_uncapped_returns_fatal() -> None:
+    """Persistent blockers after the reopen cap must not reach assembly —
+    only the capped owning missions can fix them, so they are fatal."""
+    from pathlib import Path
+    from tempfile import mkdtemp
+
+    from cadx.guide.guide_runner import _plan_lint_reopen
+
+    sess = _sess(
+        [_part("pipe")],
+        [_step(1, [{"action": "place", "part": "pipe", "target": "ghost mount"}])],
+    )
+    sess.state.missions_done = ["doc", "steps", "parts"]
+    sdir = Path(mkdtemp())
+    notes, fatal = _plan_lint_reopen(sess, sess.state, sdir, allow_reopen=False)
+    assert notes is None and fatal and "ghost mount" in fatal[0]
+    assert sess.state.missions_done == ["doc", "steps", "parts"]
+
+    notes, fatal = _plan_lint_reopen(sess, sess.state, sdir, allow_reopen=True)
+    assert notes and "ghost mount" in notes and not fatal
+    assert "parts" not in sess.state.missions_done  # owning mission reopened

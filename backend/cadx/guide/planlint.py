@@ -573,6 +573,41 @@ def _lint_premount_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
     return findings
 
 
+def _lint_asset_coverage(sess: GuideToolSession) -> list[dict[str, Any]]:
+    """Every uploaded CAD file is real geometry the plan must account
+    for — an unregistered upload means the assembly silently dropped a
+    part (observed: Casing.glb classified as context → no host to anchor
+    to, satellite assembly). Doc/page assets carry no geometry and are
+    skipped; only STEP/mesh bodies must map to a registered part."""
+    assets = getattr(sess, "guide_assets", None) or []
+    if not assets:
+        return []
+    from cadx.guide import cadmeta
+
+    used = {p.asset_id for p in sess.state.parts if getattr(p, "asset_id", None)}
+    findings: list[dict[str, Any]] = []
+    for a in assets:
+        fn = str(a.get("filename") or a.get("path") or "")
+        from pathlib import Path as _P
+
+        if _P(fn).suffix.lower() not in (cadmeta._BREP_EXTS | cadmeta._MESH_EXTS):
+            continue  # pdf/page assets carry no placeable geometry
+        keys = {str(a.get("id") or ""), fn, _P(fn).name}
+        if keys & used:
+            continue
+        findings.append(
+            {
+                "mission": "parts",
+                "severity": "blocker",
+                "text": f"uploaded CAD file '{_P(fn).name}' maps to no "
+                "registered part — the assembly silently drops its "
+                "geometry. register_part it (a host/context part still "
+                "needs registering so the planner can anchor to it)",
+            }
+        )
+    return findings
+
+
 def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Plan-vs-registry contradictions, deterministically detected.
 
@@ -588,6 +623,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings += _lint_phantom_sizes(sess, steps)
     findings += _lint_anchor(sess, steps)
     findings += _lint_premount_refs(sess, steps)
+    findings += _lint_asset_coverage(sess)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
     log.info(
         "guide.plan_lint",

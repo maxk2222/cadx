@@ -416,30 +416,56 @@ def _review_verdict(
 
 def _plan_lint_reopen(
     lint_sess: Any, state: GuideState, state_dir: Path, *, allow_reopen: bool
-) -> str | None:
+) -> tuple[str | None, list[str]]:
     """Deterministic plan lint before assembly spends its budget —
     unresolvable refs route back to the owning mission (steps|parts) with
-    the lint text as repair notes. Returns the notes text, or None.
+    the lint text as repair notes. Returns (notes, fatal_blockers).
 
-    When allow_reopen is False (cycle cap hit) the findings still reach
-    the assembly mission as in-place notes — but missions stay DONE:
-    reopening without a break would re-run steps/parts on every pass
-    (observed: 25→18→18 blocker thrash without progress)."""
+    When allow_reopen is False (cycle cap hit) the blockers are FATAL:
+    the plan is known-invalid and only the capped owning missions could
+    fix it — assembly tools (place_instance/solve_attachment) can never
+    register a missing host part or rewrite a step ref. Reopening without
+    a break would re-run steps/parts on every pass (observed: 25→18→18
+    blocker thrash without progress), and letting assembly run anyway
+    burns its whole budget placing a plan that cannot succeed."""
     from cadx.guide.planlint import plan_lint
 
     blockers = [f for f in plan_lint(lint_sess) if f["severity"] == "blocker"]
     if not blockers:
+        return None, []
+    texts = [f["text"] for f in blockers]
+    if not allow_reopen:
+        log.info("guide.plan_lint_uncapped", blockers=len(blockers), texts=texts)
+        return None, texts
+    flagged = {f["mission"] for f in blockers}
+    for m in flagged:
+        if m in state.missions_done:
+            state.missions_done.remove(m)
+    state.save(state_dir)
+    log.info("guide.plan_lint_reopen", reopen=sorted(flagged), blockers=len(blockers))
+    return "\n".join(f"- {t}" for t in texts), []
+
+
+def _assembly_lint_gate(
+    mission: str, lint_sess: Any, state: GuideState, state_dir: Path, *, lint_cycles: int
+) -> RunOutcome | str | None:
+    """Pre-assembly plan lint gate — a no-op for any mission but the
+    pending assembly. Returns a failed RunOutcome when blockers outlive
+    the reopen cap, the repair-notes string when the owning missions were
+    reopened, or None on a clean plan."""
+    if mission != "assembly" or mission in state.missions_done:
         return None
-    if allow_reopen:
-        flagged = {f["mission"] for f in blockers}
-        for m in flagged:
-            if m in state.missions_done:
-                state.missions_done.remove(m)
-        state.save(state_dir)
-        log.info("guide.plan_lint_reopen", reopen=sorted(flagged), blockers=len(blockers))
-    else:
-        log.info("guide.plan_lint_uncapped", blockers=len(blockers))
-    return "\n".join(f"- {f['text']}" for f in blockers)
+    notes, fatal = _plan_lint_reopen(
+        lint_sess, state, state_dir, allow_reopen=lint_cycles < 2
+    )
+    if fatal:
+        return RunOutcome(
+            status="failed",
+            error="plan lint blockers persist after "
+            f"{lint_cycles} reopen cycles — unrepairable by "
+            "the owning missions: " + " | ".join(fatal),
+        )
+    return notes
 
 
 async def _mission_early(
@@ -714,17 +740,17 @@ async def run_guide(
             # unresolvable refs / ordering bugs are routed back to the
             # owning mission (steps|parts) with the lint text as notes —
             # a degenerate extraction gets fixed, not faithfully placed
-            if mission == "assembly" and mission not in state.missions_done:
-                notes = _plan_lint_reopen(
-                    _session("assembly"), state, state_dir,
-                    allow_reopen=lint_cycles < 2,
-                )
-                if notes and lint_cycles < 2:
-                    lint_cycles += 1
-                    repair_notes = notes
-                    lint_reopened = True
-                    log.info("guide.plan_lint_cycle", cycle=lint_cycles)
-                    break  # restart the mission order at the owning mission
+            gate = _assembly_lint_gate(
+                mission, _session("assembly"), state, state_dir, lint_cycles=lint_cycles
+            )
+            if isinstance(gate, RunOutcome):
+                return gate
+            if gate:  # lint reopened the owning missions — restart order
+                lint_cycles += 1
+                repair_notes = gate
+                lint_reopened = True
+                log.info("guide.plan_lint_cycle", cycle=lint_cycles)
+                break
             # findings go to the missions that actually re-run — a skipped
             # (already-done) mission must not consume them
             notes = repair_notes if mission not in state.missions_done else ""

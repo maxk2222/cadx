@@ -13,6 +13,7 @@ Rules:
 - Manuals often name the SAME part differently in the parts list vs. step text (e.g. a connector's catalog name vs. its step-text nickname) — alias every name VARIANT onto the registered part; never generate a second copy of a part you already have.
 - A part that the manual uses in MULTIPLE steps is still ONE registered part — instances are placed per step later.
 - One CAD FILE is one physical part — never register the same file twice under different ids; if the manual gives it several names, alias the variants instead (re-registering an already-registered file auto-aliases for you).
+- EVERY uploaded CAD file must map to exactly one registered part — including the host device/casing (it is the anchor everything mounts onto). mark_context_part is for NAMES without geometry (dimensions, tools, consumables), never an excuse to skip registering an uploaded file.
 - NEVER invent part geometry — every dimension in a generate_missing_part description must come from the manual, a figure, or a user note.
 - NEVER generate a part just because its name is unmatched — decide first: real kit part the CAD lacks → generate; non-kit reference → mark_context_part. When in doubt whether a name is kit hardware, check the parts list page — names absent there but appearing inside step text/dimensions are usually context.
 - If the manual lacks geometry for a missing part and it's clearly hardware (screws, nuts), say so in the description and let the generator use standard sizes — else `ask_user`.
