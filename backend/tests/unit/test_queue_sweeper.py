@@ -39,12 +39,23 @@ async def _tables():
 class FakeRedis:
     """Minimal in-memory stand-in for the keys the sweeper touches."""
 
-    def __init__(self, keys: set[str] | None = None):
+    def __init__(self, keys: set[str] | None = None, zsets: dict[str, set[str]] | None = None):
         self.keys = set(keys or ())
+        self.zsets = {n: set(m) for n, m in (zsets or {}).items()}
         self.deleted: list[str] = []
 
     async def exists(self, *keys: str) -> int:
         return sum(1 for k in keys if k in self.keys)
+
+    async def zscore(self, name: str, member: str) -> float | None:
+        return 1.0 if member in self.zsets.get(name, set()) else None
+
+    async def zadd(self, name: str, members: dict[str, float]) -> int:
+        self.zsets.setdefault(name, set()).update(members)
+        return len(members)
+
+    async def zrange(self, name: str, start: int, stop: int) -> list[str]:
+        return list(self.zsets.get(name, set()))
 
     async def delete(self, *keys: str) -> int:
         self.deleted.extend(keys)
@@ -99,8 +110,8 @@ async def _mk_job(*, age_s: float = 300, payload: dict | None = ...) -> Job:
 
 async def test_sweeper_skips_live_arq_entry(monkeypatch):
     """The core regression: a job still queued in arq must NOT be re-enqueued.
-    Requires the deterministic-key contract — the sweeper checks
-    `arq:job:<job.id>`."""
+    Requires the deterministic-key contract — the sweeper checks the job id's
+    membership in the queue zset (and the in-progress key while running)."""
     j = await _mk_job()
     calls: list[tuple[str, dict, str | None]] = []
 
@@ -109,9 +120,28 @@ async def test_sweeper_skips_live_arq_entry(monkeypatch):
         return "ok"
 
     monkeypatch.setattr(deps, "enqueue", fake_enqueue)
-    ctx = {"arq_redis": FakeRedis({f"arq:job:{j.id}"})}
+    ctx = {"arq_redis": FakeRedis(zsets={deps.AGENT_QUEUE: {str(j.id)}})}
     await q._sweep_once(ctx)
     assert not [c for c in calls if c[1].get("job_id") == str(j.id)]  # live → no dup
+
+
+async def test_sweeper_reenqueues_stranded_payload(monkeypatch):
+    """A bare `arq:job:` hash with no queue entry is stranded, not live —
+    the half-lost enqueue must be replayed AND the stale hash deleted so
+    arq's own dedup can't veto the replay."""
+    j = await _mk_job()
+    calls: list[tuple[str, dict, str | None]] = []
+
+    async def fake_enqueue(func, payload, dedup_id=None):
+        calls.append((func, payload, dedup_id))
+        return "ok"
+
+    monkeypatch.setattr(deps, "enqueue", fake_enqueue)
+    redis = FakeRedis({f"arq:job:{j.id}"})
+    await q._sweep_once({"arq_redis": redis})
+    mine = [c for c in calls if c[1].get("job_id") == str(j.id)]
+    assert len(mine) == 1
+    assert f"arq:job:{j.id}" in redis.deleted
 
 
 async def test_sweeper_reenqueues_lost_job(monkeypatch):
@@ -257,7 +287,7 @@ async def test_sweeper_chat_pending_live_turn_skipped(monkeypatch):
 
     calls: list = []
     monkeypatch.setattr(deps, "enqueue", _rec_enqueue(calls))
-    await q._sweep_once({"arq_redis": FakeRedis({f"arq:job:{key}"})})
+    await q._sweep_once({"arq_redis": FakeRedis(zsets={deps.AGENT_QUEUE: {key}})})
     assert key not in [c[2] for c in calls]
 
 

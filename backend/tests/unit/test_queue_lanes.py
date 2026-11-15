@@ -36,6 +36,8 @@ def test_lanes_are_disjoint_and_cover_all_cad_funcs() -> None:
         "audit_params",
         "edit_feature",
         "export_all",
+        "extract_ports",
+        "render_assembly",
         "process_mesh",
         "parametrize_mesh",
         "fem_analyze",

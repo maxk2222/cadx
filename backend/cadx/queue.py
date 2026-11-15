@@ -75,13 +75,20 @@ async def _heartbeat_loop(ctx: dict[str, Any], role: str) -> None:
 
 
 async def _arq_live(redis: Any, key_id: str) -> bool:
-    """queued or running: `arq:job:` (survives the whole run) or a TTL'd
-    job_key with a live `arq:in-progress:`. result_key is NOT liveness —
-    see the result-key branch in _sweep_job."""
+    """queued or running: the job id is a member of the queue zset, or a
+    worker holds `arq:in-progress:`. The bare `arq:job:` payload hash is
+    NOT liveness — it also survives a half-lost enqueue (payload written,
+    queue entry gone) or a worker that popped the queue and died before
+    writing in-progress, and in both states the job waits forever.
+    result_key is NOT liveness — see the result-key branch in _sweep_job."""
     if redis is None:
         return True  # can't prove it's missing — don't double-fire
     try:
-        return bool(await redis.exists(f"arq:job:{key_id}", f"arq:in-progress:{key_id}"))
+        if await redis.exists(f"arq:in-progress:{key_id}"):
+            return True
+        from cadx.api.deps import AGENT_QUEUE
+
+        return (await redis.zscore(AGENT_QUEUE, key_id)) is not None
     except Exception:
         return True
 
@@ -125,6 +132,13 @@ async def _sweep_job(redis: Any, db: Any, j: Any) -> None:
         await _fail_lost(db, j, "queue entry finished but status transition lost")
         log.info("queue.sweeper.lost_transition", job=str(j.id), func=func)
         return
+    if redis is not None:
+        # arq dedups on `arq:job:<id>` — a leftover payload hash (half-lost
+        # enqueue, popped-then-died) would veto the replay while no worker
+        # can ever consume it. Safe: _arq_live=False proves nothing queued
+        # or running references this id.
+        with contextlib.suppress(Exception):
+            await redis.delete(f"arq:job:{j.id}")
     args = {"job_id": str(j.id), "version_id": str(j.version_id), **args}
     ok = await enqueue(func, args, dedup_id=str(j.id))
     if ok is None:
@@ -176,21 +190,30 @@ async def _sweep_once(ctx: dict[str, Any]) -> None:
 async def _chat_turn_alive(redis: Any, chat_id: Any) -> bool:
     """True when a run_chat_turn task for this chat is queued or in-flight.
 
-    Turns are enqueued under deterministic `chat:<chat>:<msg>` keys, so a
-    live turn leaves `arq:job:chat:<id>:*` (job_key survives until task end)
-    or `arq:in-progress:chat:<id>:*`. Unknown == alive: clearing a flag that
-    a real turn still holds would unlock a second concurrent turn."""
+    Turns are enqueued under deterministic `chat:<chat>:<msg>` keys. Live
+    means a queue-zset member or an `arq:in-progress:chat:<id>:*` key —
+    a bare `arq:job:` payload hash is stranded, not live (half-lost enqueue
+    or a worker that popped then died). Unknown == alive: clearing a flag
+    that a real turn still holds would unlock a second concurrent turn."""
     if redis is None:
         return True
     try:
-        for prefix in ("arq:job:chat:", "arq:in-progress:chat:"):
-            cursor = 0
-            while True:
-                cursor, keys = await redis.scan(cursor, match=f"{prefix}{chat_id}:*", count=200)
-                if keys:
-                    return True
-                if not cursor:
-                    break
+        cursor = 0
+        while True:
+            cursor, keys = await redis.scan(
+                cursor, match=f"arq:in-progress:chat:{chat_id}:*", count=200
+            )
+            if keys:
+                return True
+            if not cursor:
+                break
+        from cadx.api.deps import AGENT_QUEUE
+
+        prefix = f"chat:{chat_id}:"
+        members = await redis.zrange(AGENT_QUEUE, 0, -1)
+        return any(
+            (m.decode() if isinstance(m, bytes) else m).startswith(prefix) for m in members
+        )
     except Exception:
         return True
     return False
@@ -241,9 +264,14 @@ async def _sweep_chats(db: Any, age_s: Any, redis: Any) -> None:
                 # arq:result: is deliberately NOT part of the liveness check —
                 # a claim-lost task writes one too, and arq dedup honors it
                 # for ~1h, which would suppress this re-enqueue forever.
-                if await redis.exists(f"arq:job:{key}", f"arq:in-progress:{key}"):
+                from cadx.api.deps import AGENT_QUEUE
+
+                queued = (await redis.zscore(AGENT_QUEUE, key)) is not None
+                if queued or await redis.exists(f"arq:in-progress:{key}"):
                     continue
-                await redis.delete(f"arq:result:{key}")
+                # a leftover payload hash would veto arq's own dedup while
+                # nothing can consume it — clear before replaying
+                await redis.delete(f"arq:job:{key}", f"arq:result:{key}")
             except Exception:
                 continue  # redis flaky — retry next sweep
         ok = await enqueue(
