@@ -493,21 +493,36 @@ def _name_part_conflict(
             if sid != part_id and _sig(f"{sname} {sid}")[0] == acat
         ]
         if same_cat:
-            from cadx.guide.assembly_tools import _tokset
+            from collections import Counter
+
+            from cadx.guide.assembly_tools import _norm2
 
             # a token discriminates when it is neither the family's kind
             # noun nor surface vocabulary every same-category sibling
             # shares — manual-side feature names count ('spitzende' vs
             # 'muffe' distinguishes the elbows in BOM vocabulary even
             # though neither part NAME carries the word), pure kind
-            # nouns don't ('anschlussrohr', 'rohr')
-            sib_toks = set().union(
-                *(_tokset(f"{sn} {sid} {st}") for sid, sn, st in same_cat)
-            )
+            # nouns don't ('anschlussrohr', 'rohr'). Multiplicity counts
+            # too: 'Muffe auf Muffe' differs from 'Muffe auf Spitzende'
+            # only in the muffe COUNT — a set diff sees nothing. Mesh
+            # paths stay OUT: uuid digits ('7e70' → '70') once swallowed
+            # the '70mm' discriminator and deadlocked the parts mission
+            def _ct(text: str) -> Counter:
+                import re
+
+                return Counter(
+                    t
+                    for t in re.findall(r"[a-zäöüß]+|\d+", _norm2(text))
+                    if len(t) >= 2 or t.isdigit()
+                )
+
+            sib_ct: Counter = Counter()
+            for sid, sn, _st in same_cat:
+                sib_ct.update(_ct(f"{sn} {sid}"))
             private = [
                 t
-                for t in _tokset(alias)
-                if t not in sib_toks and _sig(t)[0] != acat
+                for t in _ct(alias) - sib_ct
+                if _sig(t)[0] != acat
             ]
             if not private:
                 return (
