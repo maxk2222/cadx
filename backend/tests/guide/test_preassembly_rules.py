@@ -929,3 +929,74 @@ def test_ref_instances_compound_noun_kind_pool() -> None:
         "pipe_l70#1",
         "pipe_l70#2",
     ]
+
+
+def test_infer_legs_consumes_orient_substep_declaration() -> None:
+    """Extraction split one bridge into 'insert elbow onto l500' +
+    'orient the free socket onto l70' — the orient sub-step is not a
+    placement task, but its part+target declaration IS the second leg.
+    _infer_legs must merge it into target2 and persist it on the
+    placing sub-step so the audit sees the contract."""
+    from types import SimpleNamespace
+
+    from cadx.guide.preassembly import _infer_legs
+    from cadx.guide.state import (
+        AssemblyState,
+        GuidePart,
+        GuideState,
+        GuideStep,
+        GuideSubStep,
+        PortInfo,
+    )
+
+    cyl = [
+        PortInfo(name=f"r{i}", kind="cylinder", pos=[0, 0, 0],
+                 axis=[0, 0, 1], radius=9, gender="female")
+        for i in range(2)
+    ]
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        GuidePart(id="elbow_oo", name="Rohrbogen DN22 2x aussen", ports=cyl,
+                  bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]),
+        GuidePart(id="pipe_l500", name="Rohr DN22 l=500mm",
+                  bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]),
+        GuidePart(id="pipe_l70", name="Rohr DN22 l=70mm",
+                  bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]),
+    ]
+    state.assembly = AssemblyState()
+    state.steps = [
+        GuideStep(
+            number=8, text="Bogen stecken", title="t",
+            sub_steps=[
+                GuideSubStep(
+                    action="insert",
+                    part="Rohrbogen DN22 2x aussen",
+                    part_pid="elbow_oo",
+                    target="oberes Ende des linken vertikalen Rohrs",
+                    target_pid="pipe_l500",
+                ),
+                GuideSubStep(
+                    action="orient",
+                    part="Rohrbogen DN22 2x aussen",
+                    part_pid="elbow_oo",
+                    target="linkes oberes Rohr DN22 l=70",
+                    target_pid="pipe_l70",
+                ),
+            ],
+        )
+    ]
+    sess = SimpleNamespace(state=state, _aliases_store={}, state_dir="/tmp/x")
+    tasks = [
+        {
+            "step": 8, "substep_idx": 0,
+            "part": "Rohrbogen DN22 2x aussen", "part_pid": "elbow_oo",
+            "target": "oberes Ende des linken vertikalen Rohrs",
+            "target_pid": "pipe_l500", "target2": "",
+        }
+    ]
+    _infer_legs(sess, tasks)
+    assert tasks[0]["target2"] == "pipe_l70"
+    assert tasks[0]["target2_inferred"] is True
+    # persisted onto the placing sub-step — durable evidence for the audit
+    src = state.steps[0].sub_steps[0]
+    assert src.target2_pid == "pipe_l70" and "l=70" in src.target2

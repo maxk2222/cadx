@@ -1840,25 +1840,7 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
         # otherwise audit against an unrelated sibling action
         if (sub.part_pid or _resolve_name(s, str(sub.part or ""), ctx)) != i.part_id:
             continue
-        declared: set[str] = set()
-        unresolved: list[str] = []
-        for nm, bound in (
-            (sub.target, sub.target_pid),
-            (getattr(sub, "target2", ""), sub.target2_pid),
-        ):
-            nm = str(nm or "").strip()
-            if not nm:
-                continue
-            pid = bound or _resolve_name(s, nm, ctx)
-            if pid:
-                declared.add(pid)
-            else:
-                # positional instance refs ("linkes vertikales Rohr",
-                # "offene Muffe des unteren Bogens") legitimately resolve
-                # to no part name — the mate under them is unverifiable,
-                # NOT undeclared; suppressing avoids flagging correct
-                # placements as deviations
-                unresolved.append(nm)
+        declared, unresolved = _substep_declared_mates(s, i, st, ctx)
         missing = sorted(declared - jointed.get(iid, set()))
         if missing:
             unfulfilled.append(
@@ -1922,6 +1904,42 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
         "unverifiable_mates": unverifiable,
         "bridge_incomplete": bridge_open,
     }
+
+
+def _substep_declared_mates(
+    s: GuideToolSession,
+    i: Any,
+    st: Any,
+    ctx: str,
+) -> tuple[set[str], list[str]]:
+    """Declared mates for one placed instance: every sub-step of its step
+    naming the part contributes target/target2 — extraction may split a
+    bridge into insert + orient/check where the second leg lands on a
+    non-placement sub-step; all of them are mates the placement must
+    materialize."""
+    declared: set[str] = set()
+    unresolved: list[str] = []
+    for ss in st.sub_steps:
+        if (ss.part_pid or _resolve_name(s, str(ss.part or ""), ctx)) != i.part_id:
+            continue
+        for nm, bound in (
+            (ss.target, ss.target_pid),
+            (getattr(ss, "target2", ""), ss.target2_pid),
+        ):
+            nm = str(nm or "").strip()
+            if not nm:
+                continue
+            pid = bound or _resolve_name(s, nm, ctx)
+            if pid:
+                declared.add(pid)
+            else:
+                # positional instance refs ("linkes vertikales Rohr",
+                # "offene Muffe des unteren Bogens") legitimately resolve
+                # to no part name — the mate under them is unverifiable,
+                # NOT undeclared; suppressing avoids flagging correct
+                # placements as deviations
+                unresolved.append(nm)
+    return declared, unresolved
 
 
 def _unresolved_kind_check(

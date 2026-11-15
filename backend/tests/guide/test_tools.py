@@ -1188,3 +1188,64 @@ def test_sig_compound_rohr_is_pipe() -> None:
     assert _sig("Anschlussrohr")[0] == "pipe"
     assert _sig("Anschlussrohre")[0] == "pipe"
     assert _sig("Rohrbogen DN22")[0] == "elbow"  # elbow still wins
+
+
+def test_declared_mates_audits_orient_substep_leg() -> None:
+    """The l70 leg was declared on an `orient` sub-step (non-placement)
+    with a clean target_pid — the elbow only jointed to l500. The audit
+    must read EVERY sub-step naming the part, not only the placing one,
+    or the dangling socket passes as a clean single mate."""
+    from unittest.mock import MagicMock
+
+    from cadx.guide.assembly_tools import _declared_mates
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import (
+        AssemblyInstance,
+        GuidePart,
+        GuideState,
+        GuideStep,
+    )
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts += [
+        GuidePart(id="elbow_oo", name="Rohrbogen DN22 2x aussen"),
+        GuidePart(id="pipe_l500", name="Rohr DN22 l=500mm"),
+        GuidePart(id="pipe_l70", name="Rohr DN22 l=70mm"),
+    ]
+    state.steps.append(
+        GuideStep(
+            number=8, text="t", display_text="d",
+            required_parts=["Rohrbogen DN22 2x aussen"],
+            sub_steps=[
+                {"action": "insert", "part": "Rohrbogen DN22 2x aussen",
+                 "part_pid": "elbow_oo",
+                 "target": "oberes Ende des linken vertikalen Rohrs",
+                 "target_pid": "pipe_l500"},
+                {"action": "orient", "part": "Rohrbogen DN22 2x aussen",
+                 "part_pid": "elbow_oo",
+                 "target": "linkes oberes Rohr DN22 l=70",
+                 "target_pid": "pipe_l70"},
+            ],
+        )
+    )
+    state.assembly.instances += [
+        AssemblyInstance(instance_id="elbow_oo#1", part_id="elbow_oo",
+                         placed_in_step=8, substep_idx=0),
+        AssemblyInstance(instance_id="pipe_l500#1", part_id="pipe_l500",
+                         placed_in_step=7, substep_idx=0),
+        AssemblyInstance(instance_id="pipe_l70#1", part_id="pipe_l70",
+                         placed_in_step=3, substep_idx=0),
+    ]
+    state.assembly.joints.append(
+        {"step": 8, "moving_instance": "elbow_oo#1",
+         "fixed_instance": "pipe_l500#1"}
+    )
+    sess = GuideToolSession(
+        ctx, mission="assembly", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    dm = _declared_mates(sess)
+    miss = [m for m in dm["unfulfilled_mates"] if m["instance"] == "elbow_oo#1"]
+    assert miss and miss[0]["missing"] == ["pipe_l70"], dm

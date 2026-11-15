@@ -309,6 +309,45 @@ def _infer_legs(sess: GuideToolSession, tasks: list[dict[str, Any]]) -> None:
                 b["_leg_of"] = ai
                 break
 
+    for t in tasks:
+        _merge_declared_leg(sess, t)
+
+
+def _merge_declared_leg(sess: GuideToolSession, t: dict[str, Any]) -> None:
+    """Leg declarations hiding in NON-placement sub-steps: extractions
+    often write one bridge as "insert elbow onto A" + "orient the free
+    socket onto B" — the orient/check sub-step names the same part
+    against a different target. Merge it into target2 so the solver
+    attempts the leg, and persist it onto the placing sub-step so the
+    plan-vs-joints audit sees the declared mate (otherwise a dangling
+    socket reads as a clean single-mate placement)."""
+    if t.get("premount") or t.get("anchor") or str(t.get("target2") or "").strip():
+        return
+    pid_a = _tpart(sess, t)
+    part = sess.state.part_by_id(pid_a) if pid_a else None
+    if part is None or sum(1 for p in part.ports or [] if p.kind == "cylinder") < 2:
+        return
+    st = sess.state.step_by_number(t["step"])
+    if st is None:
+        return
+    tgt_a = _ttgt(sess, t)
+    ctx = f"{st.text} {st.title}"
+    for j, ss in enumerate(st.sub_steps):
+        if j == t["substep_idx"] or ss.action in _PLACE_ACTIONS:
+            continue
+        if (ss.part_pid or _resolve_name(sess, str(ss.part or ""), ctx)) != pid_a:
+            continue
+        tgt_b = ss.target_pid or _resolve_name(sess, str(ss.target or ""), ctx)
+        if not tgt_b or tgt_b in (pid_a, tgt_a):
+            continue
+        t["target2"] = tgt_b
+        t["target2_inferred"] = True
+        if 0 <= t["substep_idx"] < len(st.sub_steps):
+            src = st.sub_steps[t["substep_idx"]]
+            src.target2 = str(ss.target or tgt_b)
+            src.target2_pid = tgt_b
+        break
+
 
 # canonical side keys — inflected surface forms of the same direction
 # must collapse ("(links oben)" vs "linken oberen" produced disjoint
