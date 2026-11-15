@@ -1465,7 +1465,7 @@ def _score_pairs_for_instance(
     feed_perp: int | None,
     picked: bool,
     chain_dir: np.ndarray | None = None,
-    sibling_pos: list[list[float]] | None = None,
+    sibling_spots: list[tuple[list[float], list[float]]] | None = None,
 ) -> list[tuple[float, float, float, str, dict[str, Any]]]:
     """(hint, picked-bonus, solver-score, iid, pair) rows for one placed
     instance — the fixed port's world POSITION follows the location axes
@@ -1555,16 +1555,25 @@ def _score_pairs_for_instance(
         pos_hint = 1.5 * sum(
             sg * (wp[ax] - float(center_w[ax])) / float(span_w[ax]) for ax, sg in axes
         )
-        if sibling_pos:
+        if sibling_spots:
             # paired stubs sit tens of mm apart on one face; opposite
             # faces are hundreds of mm away — a ~150mm-decaying pull
             # binds same-part siblings to the same stub cluster without
             # ever beating the physical fit
             d = min(
                 float(np.linalg.norm(np.asarray(wp) - np.asarray(sp)))
-                for sp in sibling_pos
+                for sp, _ in sibling_spots
             )
             pos_hint += 3.0 * max(0.0, 1.0 - d / 150.0)
+            if fp is not None:
+                # co-face bonus: the sibling's stub faces outward along a
+                # face normal; the pair's other stub shares that normal —
+                # mirrored ports on the opposite face score negative here
+                face = max(
+                    float(np.dot(np.asarray(fa), np.asarray(sa)))
+                    for _, sa in sibling_spots
+                )
+                axis_hint += 2.0 * max(0.0, face)
         hint = pos_hint + 25.0 * axis_hint + 4.0 * float(pair.get("score") or 0.0)
         out.append((hint, 1.0 if picked else 0.0, float(pair.get("score") or 0.0), iid, pair))
     return out
@@ -1787,13 +1796,14 @@ def _used(sess: GuideToolSession, inst: Any) -> set[str]:
     return _used_port_names(sess, inst)
 
 
-def _sibling_port_positions(sess: GuideToolSession, pid: str) -> list[list[float]]:
-    """World positions of the fixed ports that already-placed instances of
-    part `pid` mated onto — "rechtes Anschlussrohr" targets the OTHER stub
-    of the pair, adjacent to where the first sibling went, not the same
-    feature on the casing's opposite face."""
+def _sibling_port_spots(sess: GuideToolSession, pid: str) -> list[tuple[list[float], list[float]]]:
+    """(world position, world axis) of the fixed ports that already-placed
+    instances of part `pid` mated onto — "rechtes Anschlussrohr" targets
+    the OTHER stub of the pair: adjacent in position AND on the same
+    host face (coaxial outward axis) as the first sibling's mate, not the
+    mirrored feature on the casing's opposite face."""
     insts = {i.instance_id: i for i in sess.state.assembly.instances}
-    out: list[list[float]] = []
+    out: list[tuple[list[float], list[float]]] = []
     for j in sess.state.assembly.joints:
         mv = insts.get(str(j.get("moving_instance") or ""))
         if mv is None or mv.part_id != pid:
@@ -1805,7 +1815,7 @@ def _sibling_port_positions(sess: GuideToolSession, pid: str) -> list[list[float
             None,
         )
         if fi is not None and fi.transform and fp is not None:
-            out.append(_world_pos(fi.transform, fp.pos))
+            out.append((_world_pos(fi.transform, fp.pos), _world_dir(fi.transform, fp.axis)))
     return out
 
 
@@ -1886,7 +1896,7 @@ async def _try_attach(
     # sibling-instance ports: a second "Pipe_l500" targeting "rechtes
     # Anschlussrohr" means the OTHER stub of the same pair — adjacent to
     # the first sibling's stub, not on the casing's opposite face
-    sib_pos = _sibling_port_positions(sess, pid)
+    sib_spots = _sibling_port_spots(sess, pid)
     for group in groups:
         if not group:
             continue
@@ -1910,7 +1920,7 @@ async def _try_attach(
                     feed_perp if iid == anchor_iid else None,
                     iid == picked_iid,
                     chain_dir if iid == anchor_iid else None,
-                    sibling_pos=sib_pos,
+                    sibling_spots=sib_spots,
                 )
             )
         if scored:
