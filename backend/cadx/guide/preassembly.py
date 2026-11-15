@@ -1469,7 +1469,10 @@ def _lookahead(
         if tpid is not None and tpid != pid:
             return [], None
         text = f"{nxt.get('target') or ''} {nxt.get('text') or ''}"
-        return _open_axes(text) or _dir_axes(text), _orient_word(text)
+        # only explicit opening phrases carry approach direction — bare
+        # direction words in the next task's target ("unterer Bogen") are
+        # positional qualifiers and would tilt this part's free port
+        return _open_axes(text), _orient_word(text)
     return [], None
 
 
@@ -2092,7 +2095,10 @@ async def _try_attach(
                         "transform"
                     )
                     or [],
-                    open_axes or axes,
+                    # positional qualifiers ("linker unterer Anschluss")
+                    # locate the FIXED port — they must never steer this
+                    # part's free ports; only explicit opening phrases may
+                    open_axes,
                     orient,
                     next_axes,
                 )
