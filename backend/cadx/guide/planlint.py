@@ -581,6 +581,17 @@ def _lint_premount_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
     pm_map = getattr(doc, "detected_premount_qty", None) or {}
     if not pm_map:
         return []
+    # the 'vormontiert' marker only disambiguates when the same kind also
+    # ships kit copies — a part that is never placed by any step is pure
+    # context (the host machine) and EVERY reference to it is a premount
+    # reference; requiring the literal marker there adds no information
+    kit_placed: set[str] = set()
+    for st in steps:
+        for ss in st.sub_steps:
+            if ss.action in _PLACE_ACTIONS:
+                ppid = _resolve_part(sess, ss.part, st.number)
+                if ppid:
+                    kit_placed.add(ppid)
     findings: list[dict[str, Any]] = []
     for nrm, pm_qty in pm_map.items():
         pid = sess._aliases_store.get(nrm) or _name_index(sess).get(nrm)
@@ -590,11 +601,9 @@ def _lint_premount_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
         for st in steps:
             for ss in st.sub_steps:
                 for tgt in (ss.target, ss.target2):
-                    if (
-                        tgt
-                        and _premount_words().search(tgt)
-                        and _resolve_name(sess, tgt) == pid
-                    ):
+                    if not tgt or _resolve_name(sess, tgt) != pid:
+                        continue
+                    if pid not in kit_placed or _premount_words().search(tgt):
                         referenced = True
         if not referenced:
             findings.append(

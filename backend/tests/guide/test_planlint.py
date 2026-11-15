@@ -677,3 +677,42 @@ def test_bridge_toward_partner_passes() -> None:
     sess = _sess(parts, steps)
     fs = plan_lint(sess)
     assert not [f for f in fs if "grows away" in f["text"]], fs
+
+
+def test_premount_context_part_needs_no_marker() -> None:
+    """A part that is never kit-placed is pure context (the host device)
+    — every reference to it IS a premount reference; demanding the
+    literal 'vormontiert' word adds nothing and deadlocks the repair
+    loop (observed: 'Gehäuse linker Port' targets blocked because they
+    lacked the marker while 'gehause' was BOM-premounted)."""
+    from cadx.guide.state import DocumentIndex
+
+    sess = _sess(
+        [GuidePart(id="casing", name="gehause", bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]),
+         _part("adapter"), _part("pipe")],
+        [
+            _step(1, [{"action": "place", "part": "adapter", "target": "gehause linker Port"}]),
+            _step(2, [{"action": "place", "part": "pipe", "target": "adapter"}]),
+        ],
+    )
+    sess.state.document = DocumentIndex(detected_premount_qty={"gehause": 1})
+    fs = plan_lint(sess)
+    assert not [f for f in fs if "premounted target" in f["text"]], fs
+
+
+def test_premount_kit_kind_still_needs_marker() -> None:
+    """A kind that ships BOTH kit and device-mounted copies keeps the
+    marker requirement — otherwise premount references silently bind the
+    kit instance instead of spawning the mounted one."""
+    from cadx.guide.state import DocumentIndex
+
+    sess = _sess(
+        [_part("casing"), _part("adapter"), _part("pipe")],
+        [
+            _step(1, [{"action": "place", "part": "adapter", "target": "casing"}]),
+            _step(2, [{"action": "place", "part": "pipe", "target": "adapter"}]),
+        ],
+    )
+    sess.state.document = DocumentIndex(detected_premount_qty={"adapter": 1})
+    hits = [f for f in plan_lint(sess) if "premounted target" in f["text"]]
+    assert hits, "adapter is kit-placed — the unmarked 'adapter' target cannot count"
