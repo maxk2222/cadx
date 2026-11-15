@@ -644,6 +644,70 @@ def test_place_instance_respects_quantity() -> None:
     assert r2["ok"] is False and "ships only 1x" in r2["error"], r2
 
 
+def test_place_instance_premount_lives_outside_kit_bound() -> None:
+    """BOM "2 + 2 vormontiert" ships 2 kit copies AND 2 device-mounted —
+    the planner's premount tasks must place instances 3/4 even though the
+    kit bound (2) is already exhausted. Regression: the early kit check
+    fired before the premount-aware cap and killed every premount with
+    'ships only Nx' (masked as 'no candidate' in the planner report)."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide.assembly_tools import place_instance
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts.append(GuidePart(id="adapter", name="Adapter DN22", quantity=2))
+    for n in (1, 2):
+        state.assembly.instances.append(
+            AssemblyInstance(
+                part_id="adapter", instance_id=f"adapter#{n}",
+                transform=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+                placed_in_step=n, substep_idx=0,
+            )
+        )
+        state.steps.append(
+            GuideStep(
+                number=n, text="t", display_text="d",
+                required_parts=["Adapter DN22"],
+                sub_steps=[{"action": "attach", "part": "Adapter DN22", "target": ""}],
+            )
+        )
+    state.steps.append(
+        GuideStep(
+            number=5, text="t", display_text="d",
+            required_parts=["Bogen"],
+            sub_steps=[{"action": "insert", "part": "Bogen", "target": "vormontierter Adapter"}],
+        )
+    )
+    sess = GuideToolSession(
+        ctx, mission="assembly", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    tf = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, -500, 1]]
+    sess._preview_cache["pm1"] = {"transform": tf, "collision_free": True}
+    sess._preview_cache["pm2"] = {"transform": tf, "collision_free": True}
+    sess._preview_cache["pm3"] = {"transform": tf, "collision_free": True}
+    sess._premount_quota = {"adapter": 2}
+    for cid, want_no in (("pm1", 3), ("pm2", 4)):
+        r = asyncio.run(place_instance(sess, {
+            "part_id": "adapter", "candidate_id": cid, "step": 5,
+            "premount": True, "_premount_task": True,
+        }))
+        assert r["ok"], r
+        inst = sess.state.assembly.instances[-1]
+        assert inst.premounted and inst.instance_id == f"adapter#{want_no}"
+    # the premount quota itself stays a hard bound
+    r3 = asyncio.run(place_instance(sess, {
+        "part_id": "adapter", "candidate_id": "pm3", "step": 5,
+        "premount": True, "_premount_task": True,
+    }))
+    assert r3["ok"] is False and "premounted" in r3["error"], r3
+
+
 def test_place_instance_rejects_candidate_on_wrong_target() -> None:
     """Plan says 'insert pipe into adapter' but the preview candidate mates
     to the casing (pipe fits its rim port too → buried-in-host geometry).

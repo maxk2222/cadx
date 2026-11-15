@@ -1240,10 +1240,12 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             f"assembly step — it is the fixed host, not a mountable part{hint}",
         }
     # Stückliste quantity is a hard bound — the kit ships exactly N copies
-    # (premounts count inside it); a plan overflowing it is a steps bug,
-    # not a geometry problem, and the error must say so
+    # (premounts live OUTSIDE it: "N + M vormontiert" ships N in the kit
+    # and M already on the device — their own quota caps them below);
+    # a plan overflowing it is a steps bug, not a geometry problem,
+    # and the error must say so
     kit = _kit_bound(s, part)
-    if kit is not None and len(existing) >= kit:
+    if not premount and kit is not None and len(existing) >= kit:
         return {
             "ok": False,
             "error": f"parts list ships only {kit}x '{pid}' — all "
