@@ -7,6 +7,7 @@ KIARA's DocAnalyst surface (v4 tools/doc_tools.py).
 
 from __future__ import annotations
 
+import re as _re_mod
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -175,10 +176,19 @@ async def classify_pages(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     }
 
 
-def _split_name_qty(item: Any) -> tuple[str, int | None]:
+_PREMOUNT_WORDS = _re_mod.compile(
+    r"vormontiert|premount|pre-mount|preinstall|pre-install|bereits montiert|"
+    r"already mounted|factory.?fit", _re_mod.I
+)
+
+
+def _split_name_qty(item: Any) -> tuple[str, int | None, int]:
     """Accept '2x Rohr DN22', 'Rohr DN22 (2x)', 'Rohr DN22 x2',
-    'Rohr DN22 — 2 Stück' or {name, qty} — manuals write the Menge into
-    the line itself; keep the canonical name clean of the count."""
+    'Rohr DN22 — 2 Stück', 'Adapter 2 + 2 (vormontiert)' or {name, qty} —
+    manuals write the Menge into the line itself; keep the canonical
+    name clean of the count. Returns (name, total_qty, premounted_qty):
+    split notation sums kit + device-mounted copies and reports the
+    mounted side separately."""
     import re as _re
 
     if isinstance(item, dict):
@@ -187,8 +197,19 @@ def _split_name_qty(item: Any) -> tuple[str, int | None]:
             qty = int(item.get("qty") or item.get("quantity") or 0)
         except (TypeError, ValueError):
             qty = 0
-        return name, (qty if qty > 0 else None)
+        return name, (qty if qty > 0 else None), 0
     raw = str(item).strip()
+    # "2 + 2 (vormontiert)" split: kit copies + copies already on the device
+    m = _re.match(
+        r"^(.+?)[\s\-:,;]*(\d+)\s*\+\s*(\d+)\s*[\(\[]?\s*"
+        r"(vormontiert|premount|pre-mount|preinstall|pre-install|"
+        r"bereits montiert|already mounted|factory.?fit)\w*[\)\]]?\s*$",
+        raw,
+        _re.I,
+    )
+    if m:
+        name, kit_n, pm_n = m.group(1), int(m.group(2)), int(m.group(3))
+        return name.strip(" ,-:;"), kit_n + pm_n, pm_n
     for pat, qty_first in (
         (r"^(\d+)\s*[x\u00d7]\s+(.+)$", True),  # "2x Rohr DN22"
         (r"^(.+?)\s*[\(\[]\s*(\d+)\s*(?:x|\u00d7)\s*[\)\]]\s*$", False),  # "Rohr (2x)"
@@ -198,8 +219,14 @@ def _split_name_qty(item: Any) -> tuple[str, int | None]:
         m = _re.match(pat, raw, _re.I)
         if m:
             name, qty = (m.group(2), m.group(1)) if qty_first else (m.group(1), m.group(2))
-            return name.strip(), int(qty)
-    return raw, None
+            return name.strip(), int(qty), 0
+    # "N vormontiert" — the whole count sits on the device already
+    if _PREMOUNT_WORDS.search(raw):
+        m2 = _re.match(r"^(.+?)[\s\-:]*(\d+)\s*[\(\[]?", raw, _re.I)
+        if m2:
+            name2 = _PREMOUNT_WORDS.sub("", m2.group(1)).strip(" ,()[]")
+            return name2, int(m2.group(2)), int(m2.group(2))
+    return raw, None, 0
 
 
 async def set_detected_part_names(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
@@ -209,22 +236,27 @@ async def set_detected_part_names(s: GuideToolSession, a: dict[str, Any]) -> dic
 
     names: list[str] = []
     qtys: dict[str, int] = {}
+    pm_qtys: dict[str, int] = {}
     for item in a.get("names") or []:
-        name, qty = _split_name_qty(item)
+        name, qty, pm_qty = _split_name_qty(item)
         if not name:
             continue
         names.append(name)
         if qty:
             qtys[_norm2(name)] = qty
+        if pm_qty:
+            pm_qtys[_norm2(name)] = pm_qty
     if not names:
         return {"ok": False, "error": "names list is empty"}
     assert s.state.document is not None
     s.state.document.detected_part_names = names[:60]
     s.state.document.detected_part_qty.update(qtys)
+    s.state.document.detected_premount_qty.update(pm_qtys)
     return {
         "ok": True,
         "detected_part_names": s.state.document.detected_part_names,
         "detected_part_qty": qtys or None,
+        "detected_premount_qty": pm_qtys or None,
     }
 
 

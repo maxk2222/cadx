@@ -336,7 +336,11 @@ class GuideToolSession(ToolSession):
     def _page_err(self) -> dict[str, Any]:
         doc = self._doc()
         n = len(doc.pages) if doc else 0
-        return {"ok": False, "error": f"page not found — document has pages 1..{n}"}
+        return {
+            "ok": False,
+            "_streak_exempt": True,
+            "error": f"page not found — document has pages 1..{n}",
+        }
 
     def _images_result(self, paths: list[str], **extra: Any) -> dict[str, Any]:
         out: dict[str, Any] = {"ok": True, **extra}
@@ -455,6 +459,7 @@ class GuideToolSession(ToolSession):
                 return self._images_result([str(f["image_path"])], page=p.page, index=idx)
         return {
             "ok": False,
+            "_streak_exempt": True,
             "error": (
                 f"figure not found — page {p.page} has figure indices "
                 f"{[int(f.get('index', 0)) for f in p.figures if f.get('image_path')]} "
@@ -494,7 +499,13 @@ class GuideToolSession(ToolSession):
         s = self.state.step_by_number(int(a.get("number", 0)))
         if s is None:
             nums = sorted(st.number for st in self.state.steps)
-            return {"ok": False, "error": f"step {a.get('number')} not found — valid steps: {nums}"}
+            # a read-only miss that returns the valid domain is guidance,
+            # not a failure — it must not burn error_streak budget
+            return {
+                "ok": False,
+                "_streak_exempt": True,
+                "error": f"step {a.get('number')} not found — valid steps: {nums}",
+            }
         return {"ok": True, "step": s.model_dump()}
 
     def _tool_list_parts(self, a: dict[str, Any]) -> dict[str, Any]:
@@ -524,7 +535,11 @@ class GuideToolSession(ToolSession):
         p = _part_ref(self, a.get("part_id", ""))
         if p is None:
             ids = [x.id for x in self.state.parts][:15]
-            return {"ok": False, "error": f"part '{a.get('part_id')}' not found — valid part_ids: {ids}"}
+            return {
+                "ok": False,
+                "_streak_exempt": True,
+                "error": f"part '{a.get('part_id')}' not found — valid part_ids: {ids}",
+            }
         return {"ok": True, "part": p.model_dump()}
 
     def _tool_list_assets(self, a: dict[str, Any]) -> dict[str, Any]:

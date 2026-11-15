@@ -517,6 +517,62 @@ def _lint_dropped_placements(sess: GuideToolSession, steps: list[Any]) -> list[d
     return findings
 
 
+_PREMOUNT_RE = None  # lazily built — see _premount_words()
+
+
+def _premount_words():
+    import re
+
+    global _PREMOUNT_RE
+    if _PREMOUNT_RE is None:
+        _PREMOUNT_RE = re.compile(
+            r"vormontiert|premount|pre-mount|preinstall|pre-install|"
+            r"bereits montiert|already mounted|factory.?fit",
+            re.I,
+        )
+    return _PREMOUNT_RE
+
+
+def _lint_premount_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
+    """BOM "N + M vormontiert" declares M device-mounted copies — the plan
+    must reference them as premount TARGETS somewhere (the preassembly
+    planner then spawns the actual mount tasks). A plan that only mounts
+    the kit copies and never names the pre-installed ones silently drops
+    part of the documented state — same class as a dropped placement."""
+    doc = getattr(sess.state, "document", None)
+    pm_map = getattr(doc, "detected_premount_qty", None) or {}
+    if not pm_map:
+        return []
+    findings: list[dict[str, Any]] = []
+    for nrm, pm_qty in pm_map.items():
+        pid = sess._aliases_store.get(nrm) or _name_index(sess).get(nrm)
+        if not pid:
+            continue
+        referenced = False
+        for st in steps:
+            for ss in st.sub_steps:
+                for tgt in (ss.target, ss.target2):
+                    if (
+                        tgt
+                        and _premount_words().search(tgt)
+                        and _resolve_name(sess, tgt) == pid
+                    ):
+                        referenced = True
+        if not referenced:
+            findings.append(
+                {
+                    "mission": "steps",
+                    "severity": "blocker",
+                    "text": f"parts list marks {pm_qty}x '{pid}' as already "
+                    "mounted on the device (vormontiert) — no step references "
+                    "them as a premounted target. Add 'vormontierter <part>' "
+                    "targets where the manual's later steps connect to them "
+                    "(they are initial-state context, not loose kit parts)",
+                }
+            )
+    return findings
+
+
 def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Plan-vs-registry contradictions, deterministically detected.
 
@@ -531,6 +587,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings += _lint_dropped_placements(sess, steps)
     findings += _lint_phantom_sizes(sess, steps)
     findings += _lint_anchor(sess, steps)
+    findings += _lint_premount_refs(sess, steps)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
     log.info(
         "guide.plan_lint",

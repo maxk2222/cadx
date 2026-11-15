@@ -1428,7 +1428,30 @@ async def unplace_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
         or (j.get("moving_part") != inst.part_id and j.get("fixed_part") != inst.part_id)
     ]
     s._scene_cache = None
-    return {"ok": True, "unplaced": iid}
+    # tell the caller IMMEDIATELY which step requirement just lost its
+    # instance — otherwise the hole only surfaces at completeness
+    # validation, after the repair loop already spent turns elsewhere
+    reqs = _step_requirements(s)
+    holes = [
+        f"step {st_no} still requires {n}x '{inst.part_id}' (has "
+        f"{sum(1 for i in s.state.assembly.instances if i.placed_in_step == st_no and i.part_id == inst.part_id)})"
+        for st_no, req in reqs.items()
+        for p, n in [(inst.part_id, req.get(inst.part_id, 0))]
+        if n
+        > sum(
+            1
+            for i in s.state.assembly.instances
+            if i.placed_in_step == st_no and i.part_id == inst.part_id
+        )
+    ]
+    out: dict[str, Any] = {"ok": True, "unplaced": iid}
+    if holes:
+        out["warning"] = (
+            "removed instance leaves open requirement(s): "
+            + "; ".join(holes[:5])
+            + " — re-place it in this step or the completeness check will block"
+        )
+    return out
 
 
 async def reset_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:

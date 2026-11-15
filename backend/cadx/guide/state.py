@@ -116,6 +116,11 @@ class DocumentIndex(BaseModel):
     # canonical name (normalized) → Stückliste quantity the manual states —
     # bounds plan allocation when register calls omit `quantity`
     detected_part_qty: dict[str, int] = Field(default_factory=dict)
+    # canonical name → copies the BOM marks as already mounted on the
+    # device ("N + M vormontiert" splits kit copies from pre-installed
+    # ones) — the plan must reference them as premount targets, never as
+    # loose kit parts
+    detected_premount_qty: dict[str, int] = Field(default_factory=dict)
 
 
 class AssemblyInstance(BaseModel):

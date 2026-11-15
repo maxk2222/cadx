@@ -216,9 +216,14 @@ def test_detected_qty_bounds_plan_when_register_omits() -> None:
 def test_split_name_qty_variants() -> None:
     from cadx.guide.doc_tools import _split_name_qty
 
-    assert _split_name_qty("2x Rohr DN22") == ("Rohr DN22", 2)
-    assert _split_name_qty("Rohr DN22 x2") == ("Rohr DN22", 2)
-    assert _split_name_qty("Rohr DN22 (2x)") == ("Rohr DN22", 2)
-    assert _split_name_qty("Adapter DN22 — 2 Stück") == ("Adapter DN22", 2)
-    assert _split_name_qty({"name": "Rohr", "qty": 3}) == ("Rohr", 3)
-    assert _split_name_qty("Rohr DN22, l = 500 mm") == ("Rohr DN22, l = 500 mm", None)
+    assert _split_name_qty("2x Rohr DN22") == ("Rohr DN22", 2, 0)
+    assert _split_name_qty("Rohr DN22 x2") == ("Rohr DN22", 2, 0)
+    assert _split_name_qty("Rohr DN22 (2x)") == ("Rohr DN22", 2, 0)
+    assert _split_name_qty("Adapter DN22 — 2 Stück") == ("Adapter DN22", 2, 0)
+    assert _split_name_qty({"name": "Rohr", "qty": 3}) == ("Rohr", 3, 0)
+    assert _split_name_qty("Rohr DN22, l = 500 mm") == ("Rohr DN22, l = 500 mm", None, 0)
+    # "N + M vormontiert" split: kit copies + device-mounted copies
+    assert _split_name_qty("Adapter DN22, 2 + 2 (vormontiert)") == ("Adapter DN22", 4, 2)
+    assert _split_name_qty("Adapter DN22 2 + 2 premounted") == ("Adapter DN22", 4, 2)
+    # plain "N vormontiert" — the whole count is device-side already
+    assert _split_name_qty("Halterung 2 vormontiert") == ("Halterung", 2, 2)
