@@ -216,7 +216,39 @@ def test_no_premount_for_single_instance_side_words() -> None:
 
 def test_premount_for_uncovered_side_signature() -> None:
     """A part placed at 'oben links' and 'oben rechts' whose target says
-    'unterer linker' means a pre-mounted third instance — spawn it."""
+    'vormontierter unterer linker' means a pre-mounted third instance —
+    the explicit marker licenses the spawn."""
+    parts = [_part("base"), _part("adapter"), _part("elbow")]
+    sess = _sess(parts)
+    tasks = [
+        {"step": 1, "substep_idx": -1, "part": "base", "target": "", "anchor": True},
+        {
+            "step": 2, "substep_idx": 0, "part": "adapter",
+            "target": "base oberer linker", "text": "Adapter am oberen linken Anschluss",
+        },
+        {
+            "step": 3, "substep_idx": 0, "part": "adapter",
+            "target": "base oberer rechter", "text": "Adapter am oberen rechten Anschluss",
+        },
+        {
+            "step": 5, "substep_idx": 0, "part": "elbow",
+            "target": "unterer linker vormontierter adapter",
+            "text": "Bogen auf unteren linken Adapter",
+        },
+    ]
+    out = pa._spawn_premounts(sess, tasks)
+    prems = [t for t in out if t.get("premount")]
+    assert len(prems) == 1 and prems[0]["part"] == "adapter"
+    assert prems[0]["target"] == "base"
+    # sorted before the referencing step
+    assert out.index(prems[0]) < out.index(tasks[3])
+
+
+def test_no_premount_without_marker() -> None:
+    """The same side-signature mismatch WITHOUT a premount marker is a
+    reference to a placed instance, not a new copy — '(unteres Ende)'
+    picks the end feature, not another pipe (observed: phantom l70/l500
+    copies that consumed the kit quota and derailed the chain)."""
     parts = [_part("base"), _part("adapter"), _part("elbow")]
     sess = _sess(parts)
     tasks = [
@@ -235,11 +267,7 @@ def test_premount_for_uncovered_side_signature() -> None:
         },
     ]
     out = pa._spawn_premounts(sess, tasks)
-    prems = [t for t in out if t.get("premount")]
-    assert len(prems) == 1 and prems[0]["part"] == "adapter"
-    assert prems[0]["target"] == "base"
-    # sorted before the referencing step
-    assert out.index(prems[0]) < out.index(tasks[3])
+    assert not [t for t in out if t.get("premount")]
 
 
 # --------------------------------------------------------------------- #

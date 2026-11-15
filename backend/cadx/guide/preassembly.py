@@ -231,14 +231,22 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
     )
     # port qualifiers modify a FEATURE, not the instance location:
     # "obere Öffnung des linken unteren Rohrbogens" locates the elbow
-    # left+lower — "obere" describes its port and must stay out
+    # left+lower — "obere" describes its port and must stay out. Stems
+    # (ober\w+/unter\w+/link\w+/recht\w+) cover every German declension —
+    # "(unteres Ende)" is neuter and misses any enumerated list.
+    # part-INTERNAL features only (end/tip/opening of the referenced
+    # piece): their side word describes the feature, not the instance.
+    # Mount points (anschluss|stutzen|verbindung) are NOT stripped — "am
+    # linken unteren Anschluss" locates the connector on the host, where
+    # the side word IS the instance discriminator.
+    _feat = (
+        r"öffnung|muffe|bohrung|lippe|kante|ende|seite|spitze|fläche|"
+        r"opening|socket|bore|mouth|lip|edge|end|side|tip|face"
+    )
+    _side_stem = r"ober\w+|unter\w+|link\w+|recht\w+|upper|lower|top|bottom|left|right"
     first_clause = re.sub(
-        r"\b(ober|oberer|obere|oberen|unter|unterer|untere|unteren|"
-        r"linker|linke|linken|rechter|rechte|rechten|"
-        r"upper|lower|top|bottom|left|right)\s+"
-        r"(öffnung|muffe|bohrung|lippe|kante|ende|seite|spitze|fläche|"
-        r"opening|socket|bore|mouth|lip|edge|end|side|tip|face)\w*",
-        r" \2",
+        rf"\b(?:{_side_stem})\s+(?:{_feat})\w*",
+        " ",
         first_clause,
     )
     # the TARGET carries the same traps — "(Spitzende, zeigt nach oben)"
@@ -249,15 +257,19 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
         (t.get("target") or "").lower(),
     )
     target = re.sub(
-        r"\b(ober|oberer|obere|oberen|unter|unterer|untere|unteren|"
-        r"linker|linke|linken|rechter|rechte|rechten|"
-        r"upper|lower|top|bottom|left|right)\s+"
-        r"(öffnung|muffe|bohrung|lippe|kante|ende|seite|spitze|fläche|"
-        r"opening|socket|bore|mouth|lip|edge|end|side|tip|face)\w*",
-        r" \2",
+        rf"\b(?:{_side_stem})\s+(?:{_feat})\w*",
+        " ",
         target,
     )
     return _side_words(f"{target} {first_clause}")
+
+
+_PREMOUNT_MARK = re.compile(
+    r"vormontier\w*|premount\w*|pre[-\s]?mount\w*|preinstall\w*|"
+    r"pre[-\s]?install\w*|vorinstallier\w*|bereits\s+(?:vor)?montier\w*|"
+    r"already\s+(?:pre[-\s]?)?(?:mounted|installed)|factory[-\s]?(?:mounted|installed)",
+    re.IGNORECASE,
+)
 
 
 def _spawn_premounts(
@@ -291,6 +303,17 @@ def _spawn_premounts(
             continue
         ref = _ref_sides(task)
         if not ref:
+            continue
+        # a side-qualified target alone never proves a premounted piece —
+        # "linkes Rohr (unteres Ende)" references the SAME instance the
+        # plan placed, just by its mating end. Only an explicit premount
+        # marker in the step/target text ("vormontierter Adapter …")
+        # licenses spawning an extra copy; declared-but-unmarked premounts
+        # surface via the plan_lint premount-reference blocker instead of
+        # silently spawning phantom instances (observed: phantom l70/l500
+        # copies the whole chain then built upon).
+        blob = f"{task.get('target') or ''} {task.get('text') or ''}"
+        if not _PREMOUNT_MARK.search(blob):
             continue
         # only when the part's own placements split into per-side
         # instances does a side-qualified target mean ANOTHER instance —
