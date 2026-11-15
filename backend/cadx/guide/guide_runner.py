@@ -69,9 +69,16 @@ def _tool_failures(result: Any, limit: int = 6) -> list[str]:
         res = e.get("result")
         if isinstance(res, dict):
             if not res.get("ok", True):
-                detail = res.get("error") or res.get("issues") or res.get("bad_joints") or res.get(
-                    "collisions"
-                ) or "ok=false"
+                detail = (
+                    res.get("error")
+                    or res.get("issues")
+                    or res.get("bad_joints")
+                    or res.get("unfulfilled_mates")
+                    or res.get("unexpected_mates")
+                    or res.get("disconnected_instances")
+                    or res.get("collisions")
+                    or "ok=false"
+                )
                 fails.append(f"{e.get('name')}: {str(detail)[:160]}")
         elif isinstance(res, str) and '"ok": false' in res:
             # _truncate can stringify long results — salvage a useful cause.
@@ -81,7 +88,16 @@ def _tool_failures(result: Any, limit: int = 6) -> list[str]:
             # closing bracket for a regex to match, which is exactly where
             # "(truncated failure)" used to hide the cause.
             detail = None
-            for key in ("error", "bad_joints", "buried_instances", "issues", "collisions"):
+            for key in (
+                "error",
+                "bad_joints",
+                "unfulfilled_mates",
+                "unexpected_mates",
+                "buried_instances",
+                "disconnected_instances",
+                "issues",
+                "collisions",
+            ):
                 m = re.search(rf'"{key}"\s*:\s*', res)
                 if m:
                     tail = res[m.end() : m.end() + 160].strip()

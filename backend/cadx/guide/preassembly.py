@@ -2324,6 +2324,19 @@ def _free_cyl_ports(sess: GuideToolSession, inst: Any) -> list[Any]:
     return [p for p in (part.ports or []) if p.kind == "cylinder" and p.name not in used]
 
 
+def _target_is_tip(sess: GuideToolSession, name: str | None, tip: str) -> bool:
+    """Does the task target mean the chain's current tip? Positional
+    instance refs ("offene Muffe des linken unteren Rohrbogens") resolve
+    to no part name — fall back to category candidates: the ref is a
+    chain continuation when the tip is among them."""
+    pid = _resolve_name(sess, name or "")
+    if pid is not None:
+        return pid == tip
+    from cadx.guide.part_tools import _suggest_parts
+
+    return tip in set(_suggest_parts(sess, name or ""))
+
+
 def _side_filtered_chain(
     sess: GuideToolSession,
     tasks: list[dict[str, Any]],
@@ -2339,7 +2352,7 @@ def _side_filtered_chain(
     for t in tasks[ti + 1 :]:
         if t.get("premount") or t.get("anchor"):
             continue
-        if _resolve_name(sess, t.get("target") or "") != tip:
+        if not _target_is_tip(sess, t.get("target"), tip):
             continue
         t_sides = _task_side_signature(t)
         if sides and t_sides and not (t_sides & sides):
@@ -2352,6 +2365,22 @@ def _side_filtered_chain(
         mids.append(pp)
         tip = pp
     return mids, None
+
+
+def _bridge_second_mate(
+    sess: GuideToolSession, bridge: dict[str, Any], chain_pids: set[str]
+) -> str | None:
+    """Resolve the bridge's ``target2`` to a part id. Positional refs
+    ("linkes oberes Rohr") resolve to no name — fall back to category
+    candidates minus the chain's own links: the second mate is never a
+    mid of the chain it closes."""
+    t2 = _resolve_name(sess, bridge.get("target2") or "")
+    if t2 is not None:
+        return t2
+    from cadx.guide.part_tools import _suggest_parts
+
+    cands = set(_suggest_parts(sess, bridge.get("target2") or "")) - chain_pids
+    return cands.pop() if len(cands) == 1 else None
 
 
 def _premount_chain_transform(
@@ -2377,7 +2406,7 @@ def _premount_chain_transform(
     if bridge is None or not mids:
         return None
     bpid = _rp(sess, bridge["part"], bridge["step"])
-    t2 = _resolve_name(sess, bridge.get("target2") or "")
+    t2 = _bridge_second_mate(sess, bridge, {pid, bpid, *mids})
     bpart = sess.state.part_by_id(bpid) if bpid else None
     t2part = sess.state.part_by_id(t2) if t2 else None
     if bpart is None or t2part is None:

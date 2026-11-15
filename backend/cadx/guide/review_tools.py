@@ -87,6 +87,8 @@ def _audit_evidence(s: GuideToolSession) -> tuple[bool, list[str]]:
             evidence.append(m["issue"])
         for m in audit.get("unexpected_mates", []):
             evidence.append(m["issue"])
+        for m in audit.get("bridge_incomplete", []):
+            evidence.append(m["issue"])
         # a joint on a SYNTHESIZED thread site (nested stub emitted inside an
         # enclosing socket when the mesh models no real threaded end) is
         # geometrically legal but semantically unverified — the classic

@@ -1688,6 +1688,7 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
     insts = {i.instance_id or i.part_id: i for i in s.state.assembly.instances}
     jointed: dict[str, set[str]] = {}
     moved: dict[str, set[str]] = {}
+    joint_n: dict[str, int] = {}
     for j in s.state.assembly.joints:
         mv_id = str(j.get("moving_instance") or "")
         fx_id = str(j.get("fixed_instance") or "")
@@ -1698,8 +1699,12 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
         jointed.setdefault(mv_id, set()).add(fx.part_id)
         jointed.setdefault(fx_id, set()).add(mv.part_id)
         moved.setdefault(mv_id, set()).add(fx.part_id)
+        joint_n[mv_id] = joint_n.get(mv_id, 0) + 1
+        joint_n[fx_id] = joint_n.get(fx_id, 0) + 1
     unfulfilled: list[dict[str, Any]] = []
     unexpected: list[dict[str, Any]] = []
+    unverifiable: list[dict[str, Any]] = []
+    bridge_open: list[dict[str, Any]] = []
     for i in insts.values():
         iid = i.instance_id or i.part_id
         st = s.state.step_by_number(i.placed_in_step)
@@ -1714,13 +1719,23 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
         # otherwise audit against an unrelated sibling action
         if _resolve_name(s, str(sub.part or ""), ctx) != i.part_id:
             continue
-        declared = {
-            pid
-            for nm in (sub.target, getattr(sub, "target2", ""))
-            if (pid := _resolve_name(s, str(nm or ""), ctx))
-        }
+        declared: set[str] = set()
+        unresolved: list[str] = []
+        for nm in (sub.target, getattr(sub, "target2", "")):
+            nm = str(nm or "").strip()
+            if not nm:
+                continue
+            pid = _resolve_name(s, nm, ctx)
+            if pid:
+                declared.add(pid)
+            else:
+                # positional instance refs ("linkes vertikales Rohr",
+                # "offene Muffe des unteren Bogens") legitimately resolve
+                # to no part name — the mate under them is unverifiable,
+                # NOT undeclared; suppressing avoids flagging correct
+                # placements as deviations
+                unresolved.append(nm)
         missing = sorted(declared - jointed.get(iid, set()))
-        extra = sorted(moved.get(iid, set()) - declared)
         if missing:
             unfulfilled.append(
                 {
@@ -1731,7 +1746,18 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
                     "issue": f"{iid} declared mate(s) {missing} never materialized as joints",
                 }
             )
-        if extra:
+        if unresolved:
+            unverifiable.append(
+                {
+                    "instance": iid,
+                    "step": i.placed_in_step,
+                    "names": unresolved,
+                    "note": f"{iid} mates to {sorted(moved.get(iid, set()))} — "
+                    f"target name(s) {unresolved} resolve to no part, "
+                    "the pairing cannot be verified against the plan",
+                }
+            )
+        elif extra := sorted(moved.get(iid, set()) - declared):
             unexpected.append(
                 {
                     "instance": iid,
@@ -1741,8 +1767,27 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
                     "issue": f"{iid} jointed to {extra} — the sub-step declared {sorted(declared)}",
                 }
             )
+        # bridge contract: a declared second mate needs two joints — the
+        # raw string check fires even when the name resolves to nothing
+        # (positional refs, typos): one joint = a dangling leg
+        if str(getattr(sub, "target2", "") or "").strip() and joint_n.get(iid, 0) < 2:
+            bridge_open.append(
+                {
+                    "instance": iid,
+                    "step": i.placed_in_step,
+                    "target2": str(getattr(sub, "target2", "") or ""),
+                    "issue": f"{iid} declared a second mate "
+                    f"({str(getattr(sub, 'target2', '') or '')[:60]}) but holds "
+                    f"{joint_n.get(iid, 0)} joint(s) — bridge leg open",
+                }
+            )
     unfulfilled += _unplaced_substeps(s, insts)
-    return {"unfulfilled_mates": unfulfilled, "unexpected_mates": unexpected}
+    return {
+        "unfulfilled_mates": unfulfilled,
+        "unexpected_mates": unexpected,
+        "unverifiable_mates": unverifiable,
+        "bridge_incomplete": bridge_open,
+    }
 
 
 def _unplaced_substeps(
@@ -1793,7 +1838,8 @@ async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> 
         and not audit["buried_instances"]
         and not audit["disconnected_instances"]
         and not audit["unfulfilled_mates"]
-        and not audit["unexpected_mates"],
+        and not audit["unexpected_mates"]
+        and not audit["bridge_incomplete"],
         **audit,
         "collisions": col["collisions"],
         # a part buried inside another's AABB is WRONG even when boolean
