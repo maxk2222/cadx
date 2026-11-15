@@ -130,6 +130,10 @@ class AssemblyInstance(BaseModel):
     transform: list[list[float]] = Field(default_factory=list)  # 4x4, mm, CAD frame
     placed_in_step: int = 0
     substep_idx: int = 0
+    # initial-state hardware the manual names but never mounts itself
+    # (e.g. fittings pre-mounted on the device) — placed at a derived
+    # reference pose, targets like "vormontierter Adapter" bind to it
+    premounted: bool = False
     # editor overrides — rendering-only, keep pipeline palette semantics
     color: str | None = None
     opacity: float | None = None

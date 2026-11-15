@@ -308,20 +308,6 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
         hit = _fuzzy_pid(n, cands)
         if hit:
             return hit
-    # premounted host hardware: "vormontierter Adapter am linken unteren
-    # Anschluss" is a casing feature, never a kit part — token overlap
-    # ("adapter", "anschluss") must not drag it onto a mountable part
-    # (observed: the guard then rejected every casing mate and the agent
-    # burned its budget hunting adapter targets that don't exist).
-    # Exact/fuzzy hits above still win — an explicitly aliased premount
-    # name stays mapped to its real part.
-    if any(
-        w in n
-        for w in ("vormontiert", "premount", "pre mounted", "preinstall", "pre install")
-    ):
-        host = _host_part_id(s)
-        if host:
-            return host
     # keys shorter than 3 chars would containment-match almost anything
     hits = [(k, pid) for k, pid in cands if len(k) >= 3 and (k in n or n in k)]
     # token-overlap fallback: feature phrases ("Rohrbogen am linken
@@ -972,25 +958,13 @@ def _target_mismatch(
         and _resolve_name(s, ss.part, context=f"{ss.text or ''} {ctx}") == pid
     ]
     targets: list[tuple[str, str | None]] = []
-    premount_named = False
     for idx, ss in subs:
         if req_idx and idx != req_idx and any(i == req_idx for i, _ in subs):
             continue
         for name in (ss.target, ss.target2):
             if name:
-                low = name.lower()
-                premount_named = premount_named or any(
-                    w in low
-                    for w in ("vormontiert", "premounted", "pre-mounted", "preinstalled", "pre-installed")
-                )
                 targets.append((name, _resolve_name(s, name, context=f"{ss.text or ''} {ctx}")))
     resolved = {t for _, t in targets if t}
-    if premount_named:
-        # "Adapter am unteren Anschluss (vormontiert)" names HOST geometry —
-        # the premounted nozzle is a casing feature, not a kit part the
-        # solver can mate to. The acceptable mate for its step is the host
-        # part itself (largest registered part = the machine housing).
-        resolved |= {_host_part_id(s)} - {None}
     fixed_pid = str(cand.get("fixed_part") or "")
     if not resolved or fixed_pid in resolved:
         return None
@@ -1197,12 +1171,13 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     # planner-driven pre-mounts (initial-state hardware the manual names but
     # never mounts itself — e.g. fittings already on the device) legitimately
     # add instances beyond the step requirements; they still respect the cap
-    # premount only makes sense for initial-state hardware NO step mounts
-    # (need==0). Passing premount=true on a step-required part is quota
-    # evasion — the run observed adapter_rn22#3/#4 spawned via this path
-    # while need=2. Treat the flag as inert then: the normal requirement
-    # checks below refuse the surplus with actionable errors.
-    premount = bool(a.get("premount")) and need == 0
+    # premount makes sense for initial-state hardware NO step mounts
+    # (need==0), and for planner-spawned premount tasks — the manual can
+    # both ship a part in the kit AND have pre-mounted copies on the
+    # device ("Adapter 2 + 2 vormontiert"). A bare premount=true from the
+    # agent on a step-required part remains quota evasion — only the
+    # planner's spawned task carries the _premount_task marker.
+    premount = bool(a.get("premount")) and (need == 0 or bool(a.get("_premount_task")))
     need_here = reqs.get(step_no, {}).get(pid, 0)
     have_here = sum(1 for i in existing if i.placed_in_step == step_no)
     if not premount and need_here and have_here >= need_here:
@@ -1258,9 +1233,24 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             "placed. The plan requires more copies than the kit has: fix "
             "the step plan (wrong part mapping), or unplace_instance one first",
         }
-    # unknown-kit premounts cap at a pair — initial-state hardware comes
-    # once or doubled (two pre-fitted elbows), never in fours
-    cap = kit if kit is not None else (2 if premount else max(need, 2) + 2)
+    # unknown-kit premounts are bounded by the planner's spawned quota
+    # (kit-mounted copies don't consume it); the placed-premounted count
+    # keeps the allowance durable across session rebuilds, 2 is the
+    # absent-a-plan fallback for genuine initial-state pairs
+    premount_allow = (
+        max(
+            int(getattr(s, "_premount_quota", {}).get(pid, 0)),
+            sum(1 for i in existing if i.premounted),
+            2,
+        )
+        if premount
+        else 0
+    )
+    cap = (
+        kit
+        if kit is not None
+        else (need + premount_allow if premount else max(need, 2) + 2)
+    )
     if len(existing) >= cap:
         return {
             "ok": False,
@@ -1297,6 +1287,7 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
         transform=[[float(v) for v in row] for row in transform],
         placed_in_step=step_no,
         substep_idx=int(a.get("substep_idx", 0)),
+        premounted=premount,
     )
     s.state.assembly.instances.append(inst)
     s.state.assembly.step_instances.setdefault(str(step_no), []).append(inst.instance_id)
@@ -1656,7 +1647,38 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         "axis_profiles": axis_profiles,
         "sibling_pairs": sib_pairs,
         "approximated_joints": approx,
+        "bridge_incomplete": _bridge_incomplete(s),
     }
+
+
+def _bridge_incomplete(s: GuideToolSession) -> list[dict[str, Any]]:
+    """Instances whose placing substep declared ``target2`` but ended with
+    fewer than two joints — one-joint "bridges" are dangling legs the old
+    pipeline silently shipped."""
+    joint_count: dict[str, int] = {}
+    for j in s.state.assembly.joints:
+        for k in ("moving_instance", "fixed_instance"):
+            iid = str(j.get(k) or "")
+            if iid:
+                joint_count[iid] = joint_count.get(iid, 0) + 1
+    out: list[dict[str, Any]] = []
+    for i in s.state.assembly.instances:
+        iid = i.instance_id or i.part_id
+        st = s.state.step_by_number(i.placed_in_step)
+        if st is None or not (0 <= i.substep_idx < len(st.sub_steps)):
+            continue
+        sub = st.sub_steps[i.substep_idx]
+        if str(sub.target2 or "").strip() and joint_count.get(iid, 0) < 2:
+            out.append(
+                {
+                    "instance": iid,
+                    "step": i.placed_in_step,
+                    "target": sub.target,
+                    "target2": sub.target2,
+                    "joints": joint_count.get(iid, 0),
+                }
+            )
+    return out
 
 
 async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:

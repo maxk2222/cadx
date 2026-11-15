@@ -214,6 +214,10 @@ class GuideToolSession(ToolSession):
         # candidate_ids a previous attempt handed out
         self._preview_cache = self.state.preview_cache
         self._aliases_store = self._load_aliases()
+        # how many premounted copies the planner spawned per part —
+        # bounds place_instance's premount allowance so "Adapter 2 + 2
+        # vormontiert" can place 4 total but never 5
+        self._premount_quota: dict[str, int] = {}
         self._bad_image_calls = 0
         self._reject_counts: dict[str, int] = {}
         self.parked = False
