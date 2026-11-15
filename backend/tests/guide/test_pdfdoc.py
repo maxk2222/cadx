@@ -107,3 +107,60 @@ def test_extract_figures_empty_graceful(tmp_path: Path) -> None:
 def test_render_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
         pdfdoc.render_pdf(tmp_path / "nope.pdf", tmp_path / "out")
+
+
+def test_dedup_variant_text_drops_second_layer() -> None:
+    """A page whose text layer restarts with its own first line carries a
+    duplicated variant (OCR layer / revised wording) — keep the first."""
+    text = (
+        "Schritt 4:\n"
+        "Teile: Rohr l = 70 mm\n"
+        "Rohr in den linken oberen Adapter einfuehren.\n"
+        "Schritt 5:\n"
+        "Teile: Rohrbogen, Muffe auf Spitzende\n"
+        "Bogen in den Adapter am linken unteren Anschluss einsetzen.\n"
+        "Schritt 4:\n"
+        "Sie benoetigen: Rohr l = 7 mm\n"
+        "Stecken Sie das Rohr in die Bohrung des Adapters ein.\n"
+        "Schritt 5:\n"
+        "Sie benoetigen: Rohrbogen Anschluss 1x aussen 1x innen\n"
+        "Bogen in die untere Anschlussstelle stecken.\n"
+    )
+    out = pdfdoc._dedup_variant_text(text)
+    assert "Muffe auf Spitzende" in out
+    assert "1x aussen" not in out
+    assert out.count("Schritt 4:") == 1
+
+
+def test_dedup_variant_text_keeps_distinct_steps() -> None:
+    """Similar step wording ('links' vs 'rechts') is not a duplicated layer —
+    a normal manual must survive untouched."""
+    text = (
+        "Schritt 1:\n"
+        "Schrauben Sie den Adapter an das linke Anschlussrohr.\n"
+        "Schritt 2:\n"
+        "Schrauben Sie den Adapter an das rechte Anschlussrohr.\n"
+        "Schritt 3:\n"
+        "Stecken Sie das lange Rohr in den linken Bogen.\n"
+        "Schritt 4:\n"
+        "Stecken Sie das lange Rohr in den rechten Bogen.\n"
+        "Schritt 5:\n"
+        "Pruefen Sie alle Verbindungen auf festen Sitz.\n"
+    )
+    assert pdfdoc._dedup_variant_text(text) == text
+
+
+def test_dedup_variant_text_first_line_repeat_without_mirror_keeps() -> None:
+    """A single echoed first line (running footer/header quirk) without
+    further head-line recurrences is not a layer restart."""
+    text = (
+        "Montageanleitung\n"
+        "Schritt 1: Adapter setzen.\n"
+        "Schritt 2: Rohr stecken.\n"
+        "Schritt 3: Bogen montieren.\n"
+        "Schritt 4: Rohr verlaengern.\n"
+        "Schritt 5: Dichtung pruefen.\n"
+        "Montageanleitung\n"
+        "Anhang: Werkzeugliste folgt auf der naechsten Seite.\n"
+    )
+    assert pdfdoc._dedup_variant_text(text) == text

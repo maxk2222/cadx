@@ -22,6 +22,57 @@ DEFAULT_DPI = 200
 DEFAULT_FMT = "png"
 
 
+def _dedup_variant_text(text: str) -> str:
+    """Drop a whole-page duplicated text variant.
+
+    Some PDFs carry multiple text layers per page — the visible layer
+    plus hidden variants (an OCR layer, revised wording, an imposition
+    duplicate). The model then reads every step twice with DIFFERENT
+    wording and reconciles them differently each run — a structural
+    source of plan variance. The reliable signature: the duplicated
+    layer restarts mid-page with the page's own opening line; the tail
+    then mirrors the head. When that restart is found, keep the first
+    variant only. Conservative by design — a normal manual never
+    reprints its first line mid-page, and the head-mirror check rejects
+    coincidences; legit repeated step wording ("…links"/"…rechts") is
+    untouched. If a variant restarts with a different heading than the
+    page's first line, it stays (status quo) — precision over recall.
+    """
+    import difflib
+
+    raw_lines = [ln for ln in text.splitlines() if ln.strip()]
+    lines = [" ".join(ln.split()).lower() for ln in raw_lines]
+    if len(lines) < 7:
+        return text
+
+    def _sim(a: str, b: str) -> float:
+        return difflib.SequenceMatcher(None, a, b).quick_ratio()
+
+    for k in range(3, len(lines) - 3):
+        # the duplicate layer restarts with the page's own FIRST line —
+        # near-exact (OCR may typo a char) but strict enough that the next
+        # numbered heading ("Schritt 5:" vs "Schritt 4:" = 0.9) can't fake it
+        if _sim(lines[k], lines[0]) < 0.95:
+            continue
+        # confirm it is a real restart, not a one-off echoed header: the
+        # opening line repeats AGAIN later, or another head line recurs in
+        # the tail — either way the page content re-runs from here
+        head = set(lines[:k])
+        tail = lines[k + 1 :]
+        second = any(_sim(lines[k], tl) >= 0.95 for tl in tail) or any(
+            any(_sim(hl, tl) >= 0.8 for tl in tail) for hl in head
+        )
+        if not second:
+            continue
+        log.info(
+            "pdf.dedup_variant",
+            kept_lines=k,
+            dropped_lines=len(lines) - k,
+        )
+        return "\n".join(raw_lines[:k]) + "\n"
+    return text
+
+
 def render_pdf(
     pdf_path: Path,
     out_dir: Path,
@@ -119,7 +170,7 @@ def extract_page_texts(pdf_path: Path, max_pages: int = 0) -> dict[int, str]:
             finally:
                 page.close()
         pdf.close()
-        return out
+        return {k: _dedup_variant_text(v) for k, v in out.items()}
     except ImportError:
         pass
     except Exception:
@@ -133,7 +184,7 @@ def extract_page_texts(pdf_path: Path, max_pages: int = 0) -> dict[int, str]:
         limit = doc.page_count if max_pages <= 0 else min(doc.page_count, max_pages)
         out = {i + 1: (doc.load_page(i).get_text() or "") for i in range(limit)}
         doc.close()
-        return out
+        return {k: _dedup_variant_text(v) for k, v in out.items()}
     except ImportError:
         pass
     except Exception:
@@ -152,7 +203,7 @@ def extract_page_texts(pdf_path: Path, max_pages: int = 0) -> dict[int, str]:
             out[i + 1] = reader.pages[i].extract_text() or ""
         except Exception:
             out[i + 1] = ""
-    return out
+    return {k: _dedup_variant_text(v) for k, v in out.items()}
 
 
 def extract_figures(
