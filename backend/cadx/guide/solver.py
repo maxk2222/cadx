@@ -819,13 +819,18 @@ def disconnected_instances(
     boxes: dict[str, tuple[np.ndarray, np.ndarray]],
     joint_pairs: list[tuple[str, str]],
     placed_ids: list[str],
+    extra_roots: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Every placed instance must be reachable from the anchor host through
-    the joint graph — a fitting cluster assembled NEXT TO the casing is
-    topologically complete yet physically wrong.
+    """Every placed instance must be reachable from an anchor through
+    the joint graph — a fitting cluster assembled NEXT TO the machine
+    is topologically complete yet physically wrong.
 
-    Anchor: the enclosure host when present (the shell everything mounts
-    into/onto), else the largest placed bbox."""
+    Roots: the enclosure host when present (the shell everything mounts
+    into/onto), else the largest placed bbox — PLUS any premounted
+    instance (``extra_roots``). Premounted hardware sits on the machine
+    body itself: a second rigid anchor. Without this, a correctly built
+    chain hanging off a pre-mounted fitting gets flagged as debris and
+    the repair loop tears it down."""
     if len(placed_ids) < 2 or not joint_pairs:
         return []
     adj: dict[str, set[str]] = {}
@@ -841,8 +846,8 @@ def disconnected_instances(
             return float(np.prod(np.asarray(mx) - np.asarray(mn)))
 
         anchor = max(boxes, key=_vol)
-    seen = {anchor}
-    stack = [anchor]
+    seen = {anchor} | (extra_roots or set())
+    stack = list(seen)
     while stack:
         for nb in adj.get(stack.pop(), ()):
             if nb not in seen:

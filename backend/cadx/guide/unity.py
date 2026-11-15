@@ -136,7 +136,12 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[
             _ikey(j.get("fixed_instance") or j.get("fixed_part")),
         ))
     buried_rows = buried_instances(bboxes, joint_pairs)
-    disconnected_rows = disconnected_instances(bboxes, joint_pairs, sorted(insts))
+    # premounted hardware roots its own subtree — it mounts on the
+    # machine body, not the casing host
+    roots = {iid for iid, i in insts.items() if getattr(i, "premounted", False)}
+    disconnected_rows = disconnected_instances(
+        bboxes, joint_pairs, sorted(insts), extra_roots=roots
+    )
     buried = {r["instance"]: r["buried_frac"] for r in buried_rows}
     metrics: dict[int, dict] = {}
     for idx, j in enumerate(state.assembly.joints):

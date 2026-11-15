@@ -209,3 +209,33 @@ def test_direction_hint_end_side_phrases() -> None:
 def test_direction_hint_vertical_ruehre_cross_ref() -> None:
     vec, spec = solver.direction_hint("Rohrbogen auf linke vertikale Röhre stecken")
     assert vec is None and spec == "z"
+
+
+def test_disconnected_premounted_instances_are_roots() -> None:
+    """A fitting chain hanging off a device-mounted (premounted) part is
+    connected to the MACHINE, not the casing — premounted instances are
+    second rigid anchors, not debris."""
+    import numpy as np
+
+    boxes = {
+        "casing#1": (np.array([-50, -50, 0.0]), np.array([50, 50, 300.0])),
+        "adapter#1": (np.array([-60, -20, -30.0]), np.array([-30, 20, -10.0])),
+        "elbow#1": (np.array([-60, -20, -60.0]), np.array([-30, 20, -30.0])),
+        "pipe#1": (np.array([-55, -10, -560.0]), np.array([-35, 10, -60.0])),
+        "debris#1": (np.array([300.0, 300.0, 0.0]), np.array([320.0, 320.0, 20.0])),
+    }
+    # casing subtree joined to premounted adapter#1 — physically the pump
+    # body chain: adapter (premount root) → elbow → pipe
+    pairs = [
+        ("adapter#1", "elbow#1"),
+        ("elbow#1", "pipe#1"),
+    ]
+    ids = sorted(boxes)
+    # without premount roots the whole lower chain reads as debris
+    lost = solver.disconnected_instances(boxes, pairs, ids)
+    assert {r["instance"] for r in lost} == {"adapter#1", "elbow#1", "pipe#1", "debris#1"}
+    # with adapter#1 as premounted root only the true debris remains
+    lost = solver.disconnected_instances(
+        boxes, pairs, ids, extra_roots={"adapter#1"}
+    )
+    assert {r["instance"] for r in lost} == {"debris#1"}

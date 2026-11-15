@@ -1203,7 +1203,10 @@ def _attempt_quality(sess: GuideToolSession, report: dict[str, Any]) -> tuple[fl
         (str(j.get("moving_instance") or ""), str(j.get("fixed_instance") or ""))
         for j in sess.state.assembly.joints
     ]
-    orphans = solver.disconnected_instances(bboxes, pairs, sorted(bboxes))
+    roots = {iid for iid, i in inst.items() if i.premounted}
+    orphans = solver.disconnected_instances(
+        bboxes, pairs, sorted(bboxes), extra_roots=roots
+    )
     return (
         float(len(report["placed"])),
         -float(len(report["failed"])),

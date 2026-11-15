@@ -1540,7 +1540,12 @@ def _connectivity_audit(
     topologically complete yet physically wrong (observed: heatpump run
     joined 10 joints adapter→pipe→elbow, zero joints to the casing)."""
     insts = {i.instance_id: i for i in s.state.assembly.instances}
-    return solver.disconnected_instances(bboxes, _joint_pairs(s, _ikey), sorted(insts))
+    # premounted hardware is a second rigid root — it sits on the machine
+    # body, not on the casing, so its subtree is legitimately host-anchored
+    roots = {iid for iid, i in insts.items() if i.premounted}
+    return solver.disconnected_instances(
+        bboxes, _joint_pairs(s, _ikey), sorted(insts), extra_roots=roots
+    )
 
 
 def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
