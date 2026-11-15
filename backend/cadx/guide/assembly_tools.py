@@ -1505,7 +1505,44 @@ async def unplace_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
             + "; ".join(holes[:5])
             + " — re-place it in this step or the completeness check will block"
         )
+    # surgical-repair hint: the audit already names WHICH instances are
+    # wrong — unplacing a healthy one rebuilds more than it repairs
+    # (observed: one open bridge leg → the agent demolished all 12
+    # instances and never recovered within budget)
+    flagged = _flagged_instances(s)
+    if flagged and iid not in flagged:
+        out.setdefault("warning", "")
+        out["warning"] += (
+            (" — " if out["warning"] else "")
+            + f"the geometry audit flags {sorted(flagged)[:6]}, not "
+            f"'{iid}' — repair starts at the flagged instances"
+        )
     return out
+
+
+def _flagged_instances(s: GuideToolSession) -> set[str]:
+    """Instances the geometry audit currently implicates — the surgical
+    repair target set."""
+    audit = joint_geometry_audit(s)
+    flagged: set[str] = set()
+    for key in (
+        "bad_joints",
+        "buried_instances",
+        "disconnected_instances",
+        "unfulfilled_mates",
+        "unexpected_mates",
+        "bridge_incomplete",
+    ):
+        for it in audit.get(key) or []:
+            if isinstance(it, dict):
+                if it.get("instance"):
+                    flagged.add(str(it["instance"]))
+                for end in str(it.get("joint") or "").split("→"):
+                    if end:
+                        flagged.add(end)
+            elif isinstance(it, str):
+                flagged.add(it)
+    return flagged
 
 
 async def reset_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:

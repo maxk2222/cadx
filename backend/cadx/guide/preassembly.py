@@ -35,6 +35,8 @@ import structlog
 from cadx.guide import solver
 from cadx.guide.assembly_tools import (
     _PLACE_ACTIONS,
+    _name_index,
+    _norm2,
     _resolve_name,
     _step_requirements,
     place_instance,
@@ -68,6 +70,59 @@ def _ttgt(
 ) -> str | None:
     """Canonical bound target part id of a task, or live resolution."""
     return t.get(f"{key}_pid") or _resolve_name(sess, t.get(key) or "")
+
+
+_STEP_REF = re.compile(r"\b(?:schritt|step)\s*(\d+)\b", re.IGNORECASE)
+
+
+def _ref_step(name: str | None) -> int | None:
+    """'das in Schritt 3 montierte Rohr' — manuals reference placed products
+    by the step that produced them; provenance is the strongest instance
+    discriminator a manual gives."""
+    m = _STEP_REF.search(name or "")
+    return int(m.group(1)) if m else None
+
+
+def _kind_pool(sess: GuideToolSession, name: str) -> set[str] | None:
+    """Candidate part ids for a reference's kind noun: the resolved pid,
+    the tied pids when the name was ambiguous ('Rohrbogen' between two
+    elbow kinds), or the substring-kind pool when nothing scored."""
+    pid = _resolve_name(sess, name or "")
+    if pid:
+        return {pid}
+    amb = getattr(sess, "_ambiguous", {}).get(name or "")
+    if amb:
+        return set(amb)
+    n = _norm2(name)
+    pool = {
+        p
+        for k, p in _name_index(sess).items()
+        if len(k) >= 3 and n in k
+    }
+    return pool or None
+
+
+def _ref_instances(sess: GuideToolSession, name: str | None) -> list[Any] | None:
+    """Placed-instance pool for a reference that names a placed product.
+
+    Provenance first: '(aus) Schritt N' pins the instances step N placed —
+    the kind noun only narrows within that pool (and never overrides it:
+    manuals occasionally misname the noun). Without a step pin, the kind
+    pool restricts to the matching part ids — never ALL placed instances.
+    None when the name carries no usable instance signal."""
+    insts = list(sess.state.assembly.instances)
+    step = _ref_step(name)
+    pool_pids = _kind_pool(sess, name or "")
+    if step is not None:
+        pool = [i for i in insts if (i.placed_in_step or 0) == step]
+        if pool_pids:
+            typed = [i for i in pool if i.part_id in pool_pids]
+            if typed:
+                pool = typed
+        return pool or None
+    if pool_pids:
+        return [i for i in insts if i.part_id in pool_pids] or None
+    return None
 
 
 def _plan(sess: GuideToolSession) -> list[dict[str, Any]]:
@@ -387,10 +442,7 @@ def _pick_target_instance(
     instance — which produced star topologies and coincident part heaps.
     Chains still continue correctly because a different moving part type
     is a different pair."""
-    tid = _resolve_name(sess, target_name) if target_name else None
-    if not tid:
-        return None
-    insts = [i for i in sess.state.assembly.instances if i.part_id == tid]
+    insts = _ref_instances(sess, target_name)
     if not insts:
         return None
     # "vormontierter X" binds to the premounted copy, never a kit instance —
@@ -1809,21 +1861,16 @@ def _bridge_search(
     records a ``bridge_miss`` for the lift-correction pass, or commits."""
     if not str(task.get("target2") or "").strip():
         return None
-    t1, t2 = _ttgt(sess, task), _ttgt(sess, task, "target2")
     moving = sess.state.part_by_id(pid)
-    if not (t1 and t2) or moving is None or len(moving.ports) < 2:
+    if moving is None or len(moving.ports) < 2:
         return None
-    insts = {
-        iid: i
-        for i in sess.state.assembly.instances
-        for iid in [i.instance_id or i.part_id]
-    }
-    targets = {
-        t: [i for i in insts.values() if i.part_id == t] for t in (t1, t2)
-    }
-    fixed1 = sess.state.part_by_id(t1)
-    fixed2 = sess.state.part_by_id(t2)
-    if fixed1 is None or fixed2 is None:
+    # instance pools via the structured resolver: '(aus) Schritt N' pins
+    # provenance, the kind noun forms a candidate pool — a part-level pid
+    # is not required, which is what killed every instance-ref bridge
+    # ('oberes Rohr aus Schritt 3' resolved to None → bridge never ran)
+    p1_pool = _ref_instances(sess, str(task.get("target") or ""))
+    p2_pool = _ref_instances(sess, str(task.get("target2") or ""))
+    if not p1_pool or not p2_pool:
         return None
     st_b = sess.state.step_by_number(task["step"])
     hint_b = f"{task.get('target') or ''} {task.get('target2') or ''} {task.get('text') or ''} {st_b.title if st_b else ''}"
@@ -1839,8 +1886,14 @@ def _bridge_search(
         return sum(sg * wp[ax] for ax, sg in axes_b)
 
     best: tuple[float, float, Any, tuple, tuple, np.ndarray] | None = None
-    for i1 in targets[t1]:
-        for i2 in targets[t2]:
+    for i1 in p1_pool:
+        fixed1 = sess.state.part_by_id(i1.part_id)
+        if fixed1 is None:
+            continue
+        for i2 in p2_pool:
+            fixed2 = sess.state.part_by_id(i2.part_id)
+            if fixed2 is None:
+                continue
             p1s = solver.find_matching_ports(
                 moving, fixed1, used_fixed_ports=_used(sess, i1), include_mismatch=True
             )[:4]
@@ -1896,7 +1949,9 @@ def _bridge_bound(sess: GuideToolSession, task: dict[str, Any], pid: str, best: 
     socket's grip (plug must reach well into the bore)."""
     _key, _res, _m, _p1, (_i2, p2), _rv = best
     moving = sess.state.part_by_id(pid)
-    fixed2 = sess.state.part_by_id(_ttgt(sess, task, "target2") or "")
+    # the fixed part of the SECOND leg is whichever instance the search
+    # committed — instance pools may span sibling pids
+    fixed2 = sess.state.part_by_id(_i2.part_id if _i2 is not None else "")
     mp2b = next((q for q in (moving.ports if moving else []) if q.name == p2["moving_port"]), None)
     fp2b = next(
         (q for q in (fixed2.ports if fixed2 else []) if q.name == p2["fixed_port"]),
@@ -2015,9 +2070,12 @@ async def _try_attach(
     fixed port's world position along the hinted axes — without them the
     resolved instance keeps precedence."""
     resolved_pid = _ttgt(sess, task) if task["target"] else None
+    # _pick_target_instance resolves refs structurally — provenance pin
+    # ('Schritt N'), kind pool, side rank — so it also serves targets the
+    # part-level resolver leaves unbound
     picked_iid = (
         _pick_target_instance(sess, task["target"], moving_pid=pid)
-        if resolved_pid
+        if task.get("target")
         else None
     )
     st = sess.state.step_by_number(task["step"])
@@ -2046,6 +2104,15 @@ async def _try_attach(
     # pipe-on-pipe stacks). Feature names that resolve to nothing ("linkes
     # oberes Anschlussrohr") fall through to every placed instance.
     resolved_iids = {iid for iid, i in inst_by_iid.items() if i.part_id == resolved_pid}
+    if not resolved_iids:
+        # instance refs ("linkes Rohr aus Schritt 3") and ambiguous kind
+        # nouns ("Rohrbogen" between two elbows) resolve no single pid —
+        # but they still carry provenance/kind signal: prefer THAT pool
+        # over the geometric free-for-all that cross-wired l500 onto the
+        # wrong elbow branch
+        pool = _ref_instances(sess, task["target"]) if task.get("target") else None
+        if pool:
+            resolved_iids = {i.instance_id or i.part_id for i in pool}
     # chain locality: an attachment almost always mates onto something the
     # manual JUST placed (pipe → adapter → casing in the last steps).
     # Recent instances form the middle tier so an unresolvable target
@@ -2063,7 +2130,7 @@ async def _try_attach(
             [iid for iid in rest_iids if iid in recent_iids],
             [iid for iid in rest_iids if iid not in recent_iids],
         ]
-        if resolved_pid
+        if resolved_iids
         else [
             [iid for iid in inst_by_iid if iid in recent_iids],
             [iid for iid in inst_by_iid if iid not in recent_iids],
@@ -2250,9 +2317,15 @@ def _walk_premount_chain(
     for t in tasks[prem_idx + 1 :]:
         if t.get("premount"):
             continue
+        # a task continues the chain when its target resolves to the tip —
+        # instance refs ('Rohr aus Schritt N') bind no pid but their kind
+        # pool still contains it
         tp = _ttgt(sess, t)
         if tp != tip:
-            continue
+            pool = _kind_pool(sess, str(t.get("target") or "")) or set()
+            if tip not in pool:
+                continue
+            tp = tip
         if str(t.get("target2") or "").strip():
             return mids, t
         pp = _tpart(sess, t)
@@ -2264,16 +2337,17 @@ def _walk_premount_chain(
 
 
 def _partner_tip_out(
-    sess: GuideToolSession, t2: str, out: list[float]
+    sess: GuideToolSession, pids: set[str] | None, out: list[float]
 ) -> float | None:
     """Outward coordinate of the bridge partner's free end — a placed
-    instance port whose axis points ~along +out."""
-    part2 = sess.state.part_by_id(t2)
-    if part2 is None:
-        return None
+    instance port whose axis points ~along +out. ``pids`` is the kind
+    pool the target2 reference resolved to."""
     best: float | None = None
     for inst in sess.state.assembly.instances:
-        if inst.part_id != t2 or not inst.transform:
+        if (pids and inst.part_id not in pids) or not inst.transform:
+            continue
+        part2 = sess.state.part_by_id(inst.part_id)
+        if part2 is None or not part2.ports:
             continue
         used = _used_port_names(sess, inst)
         for p in part2.ports:
@@ -2305,7 +2379,8 @@ def _chain_out_correction(
     mids, bridge = _walk_premount_chain(sess, tasks, prem_idx)
     if bridge is None:
         return 0.0
-    tip_out = _partner_tip_out(sess, _ttgt(sess, bridge, "target2"), out)
+    t2_pool = _kind_pool(sess, str(bridge.get("target2") or ""))
+    tip_out = _partner_tip_out(sess, t2_pool, out)
     bpart = sess.state.part_by_id(_tpart(sess, bridge) or "")
     if tip_out is None or bpart is None:
         return 0.0

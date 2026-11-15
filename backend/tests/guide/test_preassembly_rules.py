@@ -823,3 +823,79 @@ def test_bound_pids_preferred_over_fuzzy_names() -> None:
     unbound = {"part": "Rohrbogen", "target": "Rohrbogen", "step": 3}
     assert _tpart(sess, unbound) is None
     assert _ttgt(sess, unbound) is None
+
+
+def _mk_state_with_instances() -> tuple[SimpleNamespace, list]:
+    """Parts + placed instances mimicking the heatpump topology."""
+    from cadx.guide.state import (
+        AssemblyInstance,
+        AssemblyState,
+        GuidePart,
+        GuideState,
+    )
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        GuidePart(id="elbow_io", name="Rohrbogen DN22 1x aussen 1x innen",
+                  bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]),
+        GuidePart(id="elbow_oo", name="Rohrbogen DN22 2x aussen",
+                  bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]),
+        GuidePart(id="pipe_l70", name="Rohr DN22 l=70mm",
+                  bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]),
+        GuidePart(id="pipe_l500", name="Rohr DN22 l=500mm",
+                  bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]),
+    ]
+    state.assembly = AssemblyState()
+    insts = [
+        # step 3/4 placed the short pipes, 5/6 the spigot elbows, 7/9 long pipes
+        AssemblyInstance(instance_id="pipe_l70#1", part_id="pipe_l70",
+                         placed_in_step=3),
+        AssemblyInstance(instance_id="pipe_l70#2", part_id="pipe_l70",
+                         placed_in_step=4),
+        AssemblyInstance(instance_id="elbow_io#1", part_id="elbow_io",
+                         placed_in_step=5),
+        AssemblyInstance(instance_id="elbow_io#2", part_id="elbow_io",
+                         placed_in_step=6),
+        AssemblyInstance(instance_id="pipe_l500#1", part_id="pipe_l500",
+                         placed_in_step=7),
+        AssemblyInstance(instance_id="pipe_l500#2", part_id="pipe_l500",
+                         placed_in_step=9),
+    ]
+    state.assembly.instances = insts
+    sess = SimpleNamespace(state=state, _aliases_store={}, state_dir="/tmp/x")
+    return sess, insts
+
+
+def test_ref_step_parsing() -> None:
+    from cadx.guide.preassembly import _ref_step
+
+    assert _ref_step("oberes Rohr aus Schritt 3") == 3
+    assert _ref_step("upper pipe from step 7") == 7
+    assert _ref_step("linkes Rohr") is None
+    assert _ref_step("") is None
+
+
+def test_ref_instances_provenance_pin() -> None:
+    """'Rohr aus Schritt 3' — the bare noun is ambiguous between the two
+    pipes, but provenance pins the instance step 3 placed."""
+    from cadx.guide.preassembly import _ref_instances
+
+    sess, insts = _mk_state_with_instances()
+    pool = _ref_instances(sess, "linkes oberes Rohr aus Schritt 3")
+    assert [i.instance_id for i in pool] == ["pipe_l70#1"]
+    # generic elbow noun + step pin → the spigot elbow of step 5
+    pool = _ref_instances(sess, "Rohrbogen an der Anschlussstelle (Schritt 5)")
+    assert [i.instance_id for i in pool] == ["elbow_io#1"]
+
+
+def test_ref_instances_kind_pool() -> None:
+    """Ambiguous kind noun without a step pin restricts to the tied
+    parts' instances — never every placed instance."""
+    from cadx.guide.preassembly import _ref_instances
+
+    sess, insts = _mk_state_with_instances()
+    pool = _ref_instances(sess, "Rohrbogen")
+    assert sorted(i.instance_id for i in pool) == ["elbow_io#1", "elbow_io#2"]
+    # a name carrying no part signal at all → no pool (free fallthrough
+    # for true feature names like 'linkes oberes Anschlussrohr')
+    assert _ref_instances(sess, "oberer Anschlusspunkt") is None
