@@ -1134,6 +1134,23 @@ def _burial_gate_error(
     }
 
 
+def _premount_quota_error(
+    pid: str, existing: list[Any], premount_allow: int, kit: int | None
+) -> dict[str, Any] | None:
+    """Premounted copies are device-side hardware, NOT kit items — the
+    Stückliste "Menge 2" counts the loose adapters shipped for mounting;
+    the two already seated on the pump must not consume that bound. The
+    premount count itself stays bounded by the plan's spawned quota."""
+    if sum(1 for i in existing if i.premounted) >= premount_allow:
+        return {
+            "ok": False,
+            "error": f"'{pid}' already has {premount_allow} premounted "
+            "instance(s) — the plan's premount quota is exhausted; "
+            "unplace_instance one first to reposition it",
+        }
+    return None
+
+
 def _kit_bound(s: GuideToolSession, part: Any) -> int | None:
     """Hard physical bound: the kit's shipped count for this part. The
     registered quantity wins; otherwise fall back to the Stückliste counts
@@ -1246,8 +1263,14 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
         if premount
         else 0
     )
+    if premount:
+        err = _premount_quota_error(pid, existing, premount_allow, kit)
+        if err:
+            return err
     cap = (
-        kit
+        (kit + premount_allow)
+        if kit is not None and premount
+        else kit
         if kit is not None
         else (need + premount_allow if premount else max(need, 2) + 2)
     )
