@@ -649,7 +649,10 @@ def _lint_side_coverage(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
         if not ref:
             continue
         sigs = [s for s in planned.get(tpid, []) if s]
-        if len(sigs) < 2 or any(ref <= s for s in sigs):
+        # any planned signature must cover the ref's full side words —
+        # a single-signature part is no exemption: 'linker Adapter'
+        # still cannot bind the instance the plan places 'rechter'
+        if not sigs or any(ref <= s for s in sigs):
             continue
         if _PREMOUNT_MARK.search(f"{t['target']} {t['text']}"):
             continue  # preassembly spawns the premounted copy
@@ -841,12 +844,14 @@ def _bridge_chain(
     earliest: int | None,
     pid: str,
     ref: str | None,
-) -> tuple[dict[int, float], Any, int] | None:
+) -> tuple[dict[int, float], Any, int, set[int]] | None:
     """Accumulated growth axes + the chain's host-attachment substep —
-    the link whose target is the anchor part or an unplaced element."""
+    the link whose target is the anchor part or an unplaced element —
+    plus the producing step numbers along the chain."""
     from cadx.guide.preassembly import _open_axes
 
     growth: dict[int, float] = {}
+    chain_steps: set[int] = set()
     cur = _bridge_producer(sess, placements, pid, ref)
     seen: set[int] = set()
     while cur:
@@ -854,17 +859,18 @@ def _bridge_chain(
         if id(css) in seen:
             return None
         seen.add(id(css))
+        chain_steps.add(csn)
         cst = by_no.get(csn)
         hint = f"{css.target or ''} {css.text or ''} {cst.title if cst else ''}"
         for ax, sg in _open_axes(hint):
             growth[ax] = growth.get(ax, 0.0) + sg
         n_pid = css.target_pid or _resolve_part(sess, css.target or "", csn)
         if not n_pid or n_pid not in placements:
-            return growth, css, csn
+            return growth, css, csn, chain_steps
         if min(sn for sn, _ in placements[n_pid]) == earliest:
             # attaches onto the anchor/host part — THIS substep's
             # target locates the chain's root on the host
-            return growth, css, csn
+            return growth, css, csn, chain_steps
         cur = _bridge_producer(sess, placements, n_pid, css.target)
     return None
 
@@ -888,10 +894,7 @@ def _bridge_leg_finding(
     chain = _bridge_chain(sess, placements, by_no, earliest, t_pid, ss.target)
     if not chain:
         return None
-    growth, root_ss, root_step = chain
-    growth = {a: g for a, g in growth.items() if abs(g) >= 0.5}
-    if not growth:
-        return None
+    growth, root_ss, root_step, chain_steps = chain
     # the partner's attachment point: its producing substep's target —
     # comparable only when it hangs on the same host
     prod = _bridge_producer(sess, placements, p_pid, ss.target2)
@@ -900,12 +903,27 @@ def _bridge_leg_finding(
         p_target = p_ss.target or ""
         if p_step >= step_no:
             return None
+        if p_step in chain_steps:
+            return {
+                "mission": "steps",
+                "severity": "blocker",
+                "text": f"step {step_no}: the declared mate "
+                f"'{(ss.target2 or '')[:50]}' is already the chain's "
+                "own parent — the plan mates the pipe to it directly "
+                "AND bridges a fitting between the same two ends. "
+                "Either the pipe hangs off the FITTING (move it after "
+                "the bridge part) or the partner ref names the wrong "
+                "leg",
+            }
         p_pid_attach = p_ss.target_pid or _resolve_part(sess, p_target, p_step)
     else:
         # partner not placed by the plan — compare its own ref axes
         # only when it names the same host part
         p_target = ss.target2 or ""
         p_pid_attach = _resolve_name(sess, p_target)
+    growth = {a: g for a, g in growth.items() if abs(g) >= 0.5}
+    if not growth:
+        return None
     r_pid = root_ss.target_pid or _resolve_part(sess, root_ss.target or "", root_step)
     if r_pid is None or p_pid_attach is None or r_pid != p_pid_attach:
         return None

@@ -414,6 +414,14 @@ def _pick_resolution(
                 if _sig(f"{p.name} {p.id}")[0] == name_cat
             }
     if len(side_pids) > 1:
+        # numeric model tokens are identity, not position: "l = 70 mm"
+        # can never mean the 500mm sibling — resolve on numeric coverage
+        # BEFORE positional evidence (the sibling's own placement step
+        # legitimately carries the same side words and would win otherwise)
+        side_pids = _narrow_by_numerics(s, name, side_pids)
+        if len(side_pids) == 1:
+            return side_pids.pop()
+    if len(side_pids) > 1:
         pick = _ref_side_disambiguate(s, name, side_pids)
         if pick:
             return pick
@@ -433,6 +441,26 @@ def _pick_resolution(
             return None
         return best[3]
     return None
+
+
+def _narrow_by_numerics(
+    s: GuideToolSession, name: str, pids: set[str]
+) -> set[str]:
+    """Restrict candidates to those covering the ref's numeric tokens —
+    'l = 70 mm' can never mean the 500mm sibling. Model numbers are
+    identity, not position, so this runs before positional evidence."""
+    ref_nums = {t for t in _tokset(name) if any(c.isdigit() for c in t)}
+
+    def _cover(pid: str) -> int:
+        p = s.state.part_by_id(pid)
+        ptoks = _tokset(f"{p.name} {p.id}") if p else set()
+        return len(ref_nums & {t for t in ptoks if any(c.isdigit() for c in t)})
+
+    cov = {pid: _cover(pid) for pid in pids}
+    best = max(cov.values(), default=0)
+    if best <= 0:
+        return pids
+    return {pid for pid, c in cov.items() if c == best}
 
 
 def _ref_side_disambiguate(
