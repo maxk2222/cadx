@@ -419,22 +419,23 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
         first_clause.lower(),
     )
     # port qualifiers modify a FEATURE, not the instance location:
-    # "obere Öffnung des linken unteren Rohrbogens" locates the elbow
-    # left+lower — "obere" describes its port and must stay out. Stems
+    # "obere freie Öffnung des linken unteren Rohrbogens" locates the
+    # elbow left+lower — "obere" describes its port and must stay out
+    # (intervening adjectives like "freie" don't rescue it). Stems
     # (ober\w+/unter\w+/link\w+/recht\w+) cover every German declension —
     # "(unteres Ende)" is neuter and misses any enumerated list.
     # part-INTERNAL features only (end/tip/opening of the referenced
     # piece): their side word describes the feature, not the instance.
-    # Mount points (anschluss|stutzen|verbindung) are NOT stripped — "am
-    # linken unteren Anschluss" locates the connector on the host, where
-    # the side word IS the instance discriminator.
+    # Mount points (anschluss|stutzen|verbindung|bohrung) are NOT in the
+    # feature list — "am linken unteren Anschluss" locates the connector
+    # on the host, where the side words ARE the instance discriminator.
     _feat = (
-        r"öffnung|muffe|bohrung|lippe|kante|ende|seite|spitze|fläche|"
-        r"opening|socket|bore|mouth|lip|edge|end|side|tip|face"
+        r"öffnung|muffe|lippe|kante|ende|seite|spitze|fläche|"
+        r"opening|socket|mouth|lip|edge|end|side|tip|face"
     )
     _side_stem = r"ober\w+|unter\w+|link\w+|recht\w+|upper|lower|top|bottom|left|right"
     first_clause = re.sub(
-        rf"\b(?:{_side_stem})\s+(?:{_feat})\w*",
+        rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+(?:{_feat})\w*",
         " ",
         first_clause,
     )
@@ -446,7 +447,7 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
         (t.get("target") or "").lower(),
     )
     target = re.sub(
-        rf"\b(?:{_side_stem})\s+(?:{_feat})\w*",
+        rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+(?:{_feat})\w*",
         " ",
         target,
     )

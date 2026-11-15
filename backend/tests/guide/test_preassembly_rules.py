@@ -1202,3 +1202,26 @@ def test_cardinal_rolls_skip_single_axis_part() -> None:
     host_port = PortInfo(name="stub", pos=[0.0, 0.0, 0.0], axis=[0.0, 0.0, 1.0], kind="cylinder", gender="female")
     host = _part("host", [host_port])
     assert solver.cardinal_roll_candidates(pipe, "e0", host, solver.identity_transform(), "stub") == []
+
+
+def test_side_signature_feature_phrases() -> None:
+    """Side words before a part FEATURE name the feature, not the
+    instance — including through intervening adjectives ('obere freie
+    Öffnung' = its upper opening). Mount points (Anschluss/Bohrung) are
+    NOT features: their side words locate the connector itself."""
+    # 'obere freie Öffnung' — 'obere' is a feature qualifier (must drop)
+    sig = pa._task_side_signature(
+        {"target": "Rohrbogen DN 22, linker (aus Schritt 5, in Höhe des linken unteren Anschlusses)",
+         "text": "Langes Rohr vertikal in die obere freie Öffnung des Rohrbogens"}
+    )
+    assert sig == {"l", "d"}, sig
+    # 'rechte untere Bohrung' — a bore is a MOUNT POINT: both words locate it
+    sig = pa._task_side_signature(
+        {"target": "Adapter an der rechten unteren Bohrung", "text": ""}
+    )
+    assert sig == {"r", "d"}, sig
+    # 'linkes Ende' — end is a feature, the side word describes it
+    sig = pa._task_side_signature(
+        {"target": "Rohr", "text": "Muffe auf das linke Ende des Rohrs"}
+    )
+    assert "l" not in sig, sig
