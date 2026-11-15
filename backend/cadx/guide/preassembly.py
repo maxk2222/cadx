@@ -580,21 +580,9 @@ def _anchor_orientations(
         s = -1.0 * sum(1 for _, ax_w, _ in ports_r if float(ax_w[2]) < -0.8)
         win: dict[int, np.ndarray] = {}
         for ti, (t, moving) in enumerate(attach):
-            st = sess.state.step_by_number(t["step"])
-            hint = f"{t.get('target') or ''} {t.get('text') or ''} {st.title if st else ''}"
-            task_best = -1e18
-            task_pos: np.ndarray | None = None
-            for (pos_w, ax_w, fp), exp in zip(ports_r, exposure, strict=True):
-                if exp > 60.0:
-                    continue  # recessed past any fitting's reach — an
-                    # interior junction, not a mount interface
-                cand = _interface_score(
-                    moving, fp, pos_w, ax_w, exp,
-                    _dir_axes(hint), span, center, pos_w[2], mn_r[2], span_z,
-                    low_bias,
-                )
-                if cand > task_best:
-                    task_best, task_pos = cand, pos_w
+            task_best, task_pos = _task_best_port(
+                sess, t, moving, ports_r, exposure, span, center, mn_r, span_z, low_bias
+            )
             if task_best > -1e18:
                 s += task_best
                 if task_pos is not None:
@@ -610,6 +598,37 @@ def _anchor_orientations(
         scored.append((s, rot))
     scored.sort(key=lambda sr: -sr[0])
     return scored
+
+
+def _task_best_port(
+    sess: GuideToolSession,
+    t: dict[str, Any],
+    moving: Any,
+    ports_r: list[tuple[np.ndarray, np.ndarray, Any]],
+    exposure: list[float],
+    span: float,
+    center: np.ndarray,
+    mn_r: np.ndarray,
+    span_z: float,
+    low_bias: bool,
+) -> tuple[float, np.ndarray | None]:
+    """Best-scoring host port for one attach task under this rotation."""
+    st = sess.state.step_by_number(t["step"])
+    hint = f"{t.get('target') or ''} {t.get('text') or ''} {st.title if st else ''}"
+    task_best = -1e18
+    task_pos: np.ndarray | None = None
+    for (pos_w, ax_w, fp), exp in zip(ports_r, exposure, strict=True):
+        if exp > 60.0:
+            continue  # recessed past any fitting's reach — an
+            # interior junction, not a mount interface
+        cand = _interface_score(
+            moving, fp, pos_w, ax_w, exp,
+            _dir_axes(hint), span, center, pos_w[2], mn_r[2], span_z,
+            low_bias,
+        )
+        if cand > task_best:
+            task_best, task_pos = cand, pos_w
+    return task_best, task_pos
 
 
 def _port_exposures(
@@ -2417,9 +2436,14 @@ def _solve_bridge_onto_tip(
     must face down the chain leg — otherwise the bridge can never close."""
     best: tuple[float, np.ndarray, str] | None = None
     for bs in b_cyl:
-        other = next((p for p in b_cyl if p.name != bs.name), None)
-        if other is None:
+        rest = [p for p in b_cyl if p.name != bs.name]
+        if not rest:
             continue
+        # the bridge's second socket — several rim detections per mouth
+        # mean the next differently-NAMED port can still be the same
+        # opening; farthest position is the other socket
+        bs_pos = solver._v(bs.pos)
+        other = max(rest, key=lambda p: float(np.linalg.norm(solver._v(p.pos) - bs_pos)))
         for tp_p in free_tip:
             for c in solver.solve_attachment(
                 bpart, bs.name, t2part, tf_tip.tolist(), tp_p.name,
@@ -2459,6 +2483,14 @@ def _solve_mid_link(
         rest = [p for p in m_cyl if p.name != mp_p.name]
         if not rest:
             continue
+        # continuation port = the OTHER opening — fittings carry several
+        # rim detections per mouth, so rest[0] can sit on the same end the
+        # part just mated with (adapter socket→elbow socket: gap 15mm,
+        # dead chain). Farthest position = the other end for pipes AND
+        # the other leg for elbows.
+        mp_pos = solver._v(mp_p.pos)
+        nxt = max(rest, key=lambda p: float(np.linalg.norm(solver._v(p.pos) - mp_pos)))
+        far_from_mate = abs(float(np.dot(solver._unit(solver._v(nxt.axis)), solver._unit(solver._v(mp_p.axis))))) < 0.7
         for c in solver.solve_attachment(
             mpart, mp_p.name, prev_part, prev_m.tolist(), prev_port,
             rotation_snaps=snaps,
@@ -2466,10 +2498,9 @@ def _solve_mid_link(
             if not c.get("geometry_ok"):
                 continue
             m = np.asarray(c["transform"], dtype=float).reshape(4, 4)
-            nxt = rest[0]
             wa = solver._unit(m[0:3, 0:3] @ solver._v(nxt.axis))
             s = -float(c["joint_gap_mm"])
-            if len(m_cyl) == 2 and abs(float(nxt.axis[2])) < 0.5:
+            if far_from_mate:
                 s -= 3.0 * float(np.dot(wa[:2], flat))
             else:
                 s -= 3.0 * float(np.dot(wa, -leg_axis))
