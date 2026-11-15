@@ -901,6 +901,35 @@ def test_ref_instances_kind_pool() -> None:
     assert _ref_instances(sess, "oberer Anschlusspunkt") is None
 
 
+def test_kind_pool_step_provenance_pin() -> None:
+    """'(aus) Schritt N' narrows the kind pool to what the step produced —
+    'oberes Rohr aus Schritt 3' is {l70}, not the whole pipe family. The
+    live run bound a bridge leg against l500 because the loose pipe pool
+    admitted it; a {l70}-pool would have flagged the joint as unexpected."""
+    from cadx.guide.preassembly import _kind_pool
+    from cadx.guide.state import GuideStep, GuideSubStep
+
+    sess, _insts = _mk_state_with_instances()
+    sess.state.steps = [
+        GuideStep(
+            number=3, action_type="assembly", text="linkes Rohr oben",
+            sub_steps=[GuideSubStep(
+                action="insert", part="Rohr DN22 l=70mm", part_pid="pipe_l70",
+            )],
+        ),
+        GuideStep(
+            number=7, action_type="assembly", text="linkes langes Rohr",
+            sub_steps=[GuideSubStep(
+                action="insert", part="Rohr DN22 l=500mm", part_pid="pipe_l500",
+            )],
+        ),
+    ]
+    assert _kind_pool(sess, "linkes oberes Rohr aus Schritt 3") == {"pipe_l70"}
+    assert _kind_pool(sess, "vertikales Rohr aus Schritt 7") == {"pipe_l500"}
+    # no pin → the full family pool stays (honest ambiguity, not a guess)
+    assert _kind_pool(sess, "oberes Rohr") == {"pipe_l70", "pipe_l500"}
+
+
 def test_ref_instances_empty_pin_pool_is_a_miss() -> None:
     """'(Schritt 1)' when step 1 placed NOTHING is a structured miss —
     returning None meant 'no signal' and callers free-fell onto every

@@ -831,6 +831,72 @@ def test_resolve_name_distinctive_single_token() -> None:
     assert _resolve_name(s, "Anschluss am Rohr") is None
 
 
+def test_resolve_name_side_position_beats_incidental_token() -> None:
+    """Live bug from run 214939: the parts mission named the spigot elbow
+    'Muffe auf Spitzende' — the ref 'Rohrbogen am rechten unteren
+    Anschluss' shared 'anschluss' with ONLY the 2x-outside name, so token
+    overlap bound step 9's lower-right target to the upper bridge elbow
+    and cross-wired both long pipes into elbow_2x#1. Position words are
+    the real discriminator: the part placed in a 'rechts unten' step is
+    the lower-right elbow, regardless of which sibling's name carries
+    the incidental token."""
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import _resolve_name
+    from cadx.guide.state import GuideStep, GuideSubStep
+
+    state = GuideState(output_dir="/tmp/x")
+    spigot = _phys_part("elbow_socket_spigot", [])
+    outside = _phys_part("elbow_2x_outside", [])
+    spigot.name = "Rohrbogen DN22, Muffe auf Spitzende"
+    outside.name = "Rohrbogen DN22, Anschluss 2x außen"
+    state.parts = [spigot, outside]
+    state.steps = [
+        GuideStep(
+            number=5, title="Rohrbogen links unten", text="Rohrbogen links unten",
+            sub_steps=[GuideSubStep(
+                action="attach", part="spigot", part_pid="elbow_socket_spigot",
+            )],
+        ),
+        GuideStep(
+            number=6, title="Rohrbogen rechts unten", text="Rohrbogen rechts unten",
+            sub_steps=[GuideSubStep(
+                action="attach", part="spigot", part_pid="elbow_socket_spigot",
+            )],
+        ),
+        GuideStep(
+            number=8, title="Rohrbogen links", text="Bogen auf linkes Rohr",
+            sub_steps=[GuideSubStep(
+                action="attach", part="2x", part_pid="elbow_2x_outside",
+            )],
+        ),
+        GuideStep(
+            number=10, title="Rohrbogen rechts", text="Bogen auf rechtes Rohr",
+            sub_steps=[GuideSubStep(
+                action="attach", part="2x", part_pid="elbow_2x_outside",
+            )],
+        ),
+    ]
+    s = SimpleNamespace(state=state, _aliases_store={})
+    # 'unten' pins the lower elbow family — the incidental 'anschluss'
+    # token must not pull the upper bridge elbow
+    assert (
+        _resolve_name(s, "Rohrbogen am rechten unteren Anschluss der Wärmepumpe")
+        == "elbow_socket_spigot"
+    )
+    assert (
+        _resolve_name(s, "Rohrbogen am linken unteren Anschluss der Wärmepumpe")
+        == "elbow_socket_spigot"
+    )
+    # explicit registered name still wins outright
+    assert (
+        _resolve_name(s, "Rohrbogen DN22, Anschluss 2x außen")
+        == "elbow_2x_outside"
+    )
+    # bare noun stays honestly ambiguous
+    assert _resolve_name(s, "Rohrbogen") is None
+
+
 def test_side_words_canonical_inflections() -> None:
     """'(links oben)' and 'linken oberen' are the same side signature —
     mixed inflection vocab produced disjoint sets and phantom premounts."""

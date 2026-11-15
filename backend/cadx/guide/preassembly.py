@@ -91,10 +91,48 @@ def _kind_pool(sess: GuideToolSession, name: str) -> set[str] | None:
     substring-kind pool when nothing scored."""
     pid = _resolve_name(sess, name or "")
     if pid:
-        return {pid}
-    amb = getattr(sess, "_ambiguous", {}).get(name or "")
-    if amb:
-        return set(amb)
+        base: set[str] | None = {pid}
+    else:
+        amb = getattr(sess, "_ambiguous", {}).get(name or "")
+        base = set(amb) if amb else _cat_pool(sess, name)
+    # provenance pin: '(aus) Schritt N' narrows the pool to what step N
+    # actually produced — 'oberes Rohr aus Schritt 3' is not "any pipe",
+    # it is THE pipe step 3 placed (l70); an audit checking the ref's
+    # kind pool must see {l70}, not {l70, l500}
+    step_no = _ref_step(name)
+    if step_no is not None:
+        produced = _step_produced_pids(sess, step_no)
+        if produced:
+            return produced & base if base else produced
+    return base
+
+
+def _step_produced_pids(sess: GuideToolSession, step_no: int) -> set[str]:
+    """Part ids a step produces — substeps' bound/resolved parts plus
+    resolved required_parts (premount/anchor tasks spawn from refs, not
+    from required_parts, so substeps alone can under-cover)."""
+    st = sess.state.step_by_number(step_no)
+    if st is None:
+        return set()
+    ctx = f"{st.text} {st.title}"
+    produced = {
+        pid
+        for pid in (
+            ss.part_pid or _resolve_name(sess, str(ss.part or ""), ctx)
+            for ss in st.sub_steps
+        )
+        if pid
+    }
+    produced |= {
+        pid
+        for pid in (_resolve_name(sess, n, ctx) for n in st.required_parts)
+        if pid
+    }
+    return produced
+
+
+def _cat_pool(sess: GuideToolSession, name: str) -> set[str] | None:
+    """Category/substring pool — the second half of _kind_pool."""
     from cadx.guide.part_tools import _sig
 
     cat, _ = _sig(name)

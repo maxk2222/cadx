@@ -396,6 +396,27 @@ def _pick_resolution(
             _record_ambiguous(s, name, tied)
             return None
         return max(hits_in, key=lambda kv: len(kv[0]))[1]
+    # positional evidence before fuzzy/token scoring: "Rohrbogen am
+    # rechten unteren Anschluss" names the elbow placed in a rechts+unten
+    # step — a sibling's incidental token match ('anschluss' happens to
+    # sit in ONE registered name) must not pick the upper bridge elbow.
+    # The candidate set is the whole kind-family of the scored/hit pids:
+    # the ref is "the <kind> at <side>", every same-kind sibling competes
+    side_pids = {t[3] for t in scored} | {pid for _, pid in hits_n}
+    if side_pids:
+        from cadx.guide.part_tools import _sig
+
+        name_cat, _ = _sig(name)
+        if name_cat != "other":
+            side_pids |= {
+                p.id
+                for p in s.state.parts
+                if _sig(f"{p.name} {p.id}")[0] == name_cat
+            }
+    if len(side_pids) > 1:
+        pick = _ref_side_disambiguate(s, name, side_pids)
+        if pick:
+            return pick
     if hits_n:
         # the query is a generic substring of registered names — more
         # than one part id means genuine ambiguity, never a guess
@@ -412,6 +433,47 @@ def _pick_resolution(
             return None
         return best[3]
     return None
+
+
+def _ref_side_disambiguate(
+    s: GuideToolSession, name: str, pids: set[str]
+) -> str | None:
+    """Side words in a reference pin WHICH of the tied parts is meant:
+    "Rohrbogen am rechten unteren Anschluss" — both elbow kinds tie on
+    rohrbogen/anschluss, but only the spigot elbow is placed in a
+    'rechts unten' step. A candidate wins when ONE of its placement
+    steps' side signature covers the reference's full signature; a
+    unique winner resolves, else the tie stands."""
+    if getattr(s, "_in_side_disamb", False):
+        return None
+    from cadx.guide.preassembly import _side_words
+
+    ref_sides = _side_words(name)
+    if not ref_sides:
+        return None
+    try:
+        s._in_side_disamb = True
+        winners: set[str] = set()
+        for pid in pids:
+            for st in s.state.steps:
+                placed_here = any(
+                    (ss.part_pid or _resolve_name(s, str(ss.part or ""), st.text))
+                    == pid
+                    for ss in st.sub_steps
+                )
+                if not placed_here:
+                    placed_here = any(
+                        _resolve_name(s, n, st.text) == pid
+                        for n in st.required_parts
+                    )
+                if placed_here and ref_sides <= _side_words(
+                    f"{st.title} {st.text}"
+                ):
+                    winners.add(pid)
+                    break
+        return winners.pop() if len(winners) == 1 else None
+    finally:
+        s._in_side_disamb = False
 
 
 def _tokset(text: str) -> set[str]:
@@ -1957,27 +2019,31 @@ def _unresolved_kind_check(
 
     unfulfilled: list[dict[str, Any]] = []
     unexpected: list[dict[str, Any]] = []
-    pool: set[str] = set()
+    moved_pids = moved.get(iid, set())
+    satisfied: set[str] = set()
     for nm in unresolved:
+        # each ref is its own mate contract — pooling them union-wide let
+        # ONE joint satisfy BOTH declared bridge legs ('vertikales Rohr
+        # aus Schritt 7' + 'oberes Rohr aus Schritt 3' pooled {l70,l500}
+        # and the single l500 joint covered the missing l70 leg)
         kp = _kind_pool(s, nm)
-        if kp:
-            pool |= kp
-    if not pool:
-        return unfulfilled, unexpected
-    satisfied = moved.get(iid, set()) & pool
-    if not satisfied:
-        unfulfilled.append(
-            {
-                "instance": iid,
-                "step": step_no,
-                "declared": sorted(declared),
-                "missing": unresolved,
-                "issue": f"{iid} declared mate '{unresolved[0][:50]}' "
-                f"(kind pool {sorted(pool)}) never materialized — it "
-                f"jointed to {sorted(moved.get(iid, set()))} instead",
-            }
-        )
-    if extra := sorted(moved.get(iid, set()) - declared - satisfied):
+        if not kp:
+            continue
+        if moved_pids & kp:
+            satisfied |= kp
+        else:
+            unfulfilled.append(
+                {
+                    "instance": iid,
+                    "step": step_no,
+                    "declared": sorted(declared),
+                    "missing": [nm],
+                    "issue": f"{iid} declared mate '{nm[:50]}' "
+                    f"(kind pool {sorted(kp)}) never materialized — it "
+                    f"jointed to {sorted(moved_pids)} instead",
+                }
+            )
+    if extra := sorted(moved_pids - declared - satisfied):
         unexpected.append(
             {
                 "instance": iid,
