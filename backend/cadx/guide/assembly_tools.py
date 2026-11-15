@@ -151,13 +151,20 @@ SCHEMAS: dict[str, dict[str, Any]] = {
 
 
 def _next_inst_no(existing: list[AssemblyInstance]) -> int:
-    """1 + the max live ``part#N`` suffix — never reuse a live instance id."""
-    top = 0
+    """Smallest free ``part#N`` suffix — an unplace frees its number for
+    the next placement. Repair loops drifted through dead ids ('elbow#3
+    does not exist — placed: #1' while the agent kept quoting #3);
+    reissuing the freed id makes the label the agent was told real again
+    instead of inventing #4."""
+    used = set()
     for i in existing:
         tail = str(i.instance_id or "").rsplit("#", 1)
         if len(tail) == 2 and tail[1].isdigit():
-            top = max(top, int(tail[1]))
-    return top + 1
+            used.add(int(tail[1]))
+    n = 1
+    while n in used:
+        n += 1
+    return n
 
 
 def _inst_by_id(s: GuideToolSession, inst_id: str) -> AssemblyInstance | None:
@@ -551,11 +558,26 @@ async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[st
             "note": "no compatible port pairs — use solve_free_preview or "
             "solve_env_preview for bbox placement",
         }
-    return {
+    out: dict[str, Any] = {
         "ok": True,
         "candidates": cands[:8],
         "moving_ports": [p.model_dump() for p in moving.ports][:10],
     }
+    # the intended pair up front — candidates are already compatibility-
+    # ranked; the first one whose fixed port is still free is the pair the
+    # plan means. Spelling it out kills the "agent combines ports ad hoc"
+    # failure mode observed in repair loops.
+    for c in cands:
+        fp = str(c.get("target_port") or c.get("fixed_port") or "")
+        if fp and fp not in used:
+            out["suggested_pair"] = {
+                "moving_port": c.get("moving_port"),
+                "target_port": fp,
+                "target_instance": fixed_inst.instance_id,
+                "port_loc": c.get("port_loc") or c.get("fixed_loc"),
+            }
+            break
+    return out
 
 
 async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
@@ -610,13 +632,30 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
     gvec, gspec = _grow_dir_hint(s, a)
     ovec, ospec = _out_dir_hint(s, a, moving)
     _rank_candidates(s, a, cands, moving, fixed, fixed_inst, gvec, gspec, ovec, ospec)
+    slim = _cache_candidates(s, cands)
     out: dict[str, Any] = {
         "ok": True,
-        "candidates": _cache_candidates(s, cands),
+        "candidates": slim,
         "note": "pass one candidate_id to place_instance — candidates with "
         "geometry_ok=false are pre-rejected (buried/swallowing); pick a "
         "geometry_ok=true candidate or a different port pair",
     }
+    # one decisive recommendation — the agent's job is choosing the JOINT,
+    # not diffing a table of roll variants. The first geometry_ok row is
+    # already the ranked winner (direction > out-port > gap).
+    top = next((c for c in slim if c.get("geometry_ok")), None)
+    if top:
+        why = [f"gap {top.get('joint_gap_mm', 0):.2f}mm"]
+        if top.get("dir_match") is not None:
+            why.append(f"growth match {top['dir_match']:.2f}")
+        if top.get("out_dir_match") is not None:
+            why.append(f"free-port faces follower {top['out_dir_match']:.2f}")
+        out["recommended"] = {
+            "candidate_id": top["candidate_id"],
+            "why": ", ".join(why),
+            "note": "the intended mate — pass this id to place_instance "
+            "unless the render proves it wrong",
+        }
     if gspec:
         hint_txt = f"grow_dir '{gspec}'"
         if gvec is not None:
