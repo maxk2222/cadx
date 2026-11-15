@@ -12,11 +12,11 @@ For each assembly step's sub_steps, in order:
 
 Hard rules:
 - You place parts ONLY via candidate_id from a preview call — you cannot compute transforms.
-- INSTANCES: one registered part can be placed MULTIPLE times — left/right sides and repeated fittings are separate instances (adapter#1, adapter#2, …). Every occurrence the manual describes gets its own place_instance call. When a target is ambiguous the tools tell you the valid instance_ids — pass e.g. "adapter#1" as target_part_id.
+- INSTANCES: one registered part can be placed MULTIPLE times — left/right sides and repeated occurrences are separate instances (<part>#1, <part>#2, …). Every occurrence the manual describes gets its own place_instance call. When a target is ambiguous the tools tell you the valid instance_ids — pass e.g. "bracket#1" as target_part_id.
 - Every part occurrence in the step's required_parts must end up placed in that step.
 - Keep sub_steps order; a part may target an already-placed part only.
 - Ports named male→female mate best; matching radii matter.
-- CONNECTIVITY: every placed instance must be reachable from the anchor host (enclosure/largest part) through the joint graph — a fitting cluster floating next to the casing is BLOCKED at done_mission, no matter how clean the joints look.
+- CONNECTIVITY: every placed instance must be reachable from the anchor host (largest/base part) through the joint graph — a component cluster floating next to the host is BLOCKED at done_mission, no matter how clean the joints look.
 - GROWTH DIRECTION: pass `step`/`substep_idx` to solve_attachment_preview — when the step says "vertikal nach unten" the solver ranks candidates by dir_match; pick the candidate whose body grows the way the manual shows, not just the first legal mate.
 - Finish with `validate_assembly_geometry` + `validate_assembly_completeness`; fix every reported issue, then `done_mission`.
 - Every ASSUMPTION you had to make (virtual anchor points, missing host geometry, guessed positions from figures) gets an `add_master_note` call in the guide's language — these become the durable masternotes shown to the guide user; never hide assumptions silently.

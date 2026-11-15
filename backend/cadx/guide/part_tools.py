@@ -95,9 +95,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "mark_context_part": _fn(
         "mark_context_part",
         "Mark a required manual name as NOT a kit part — host equipment "
-        "(Wärmepumpe, wall, floor), tools, consumables, or a figure-only "
-        "size reference (e.g. 'Rohr DN22 l=200mm' that is only a dimension "
-        "callout in the drawing). The name stops counting as unmatched. "
+        "(the machine/device the assembly mounts onto, walls, floors), tools, "
+        "consumables, or a figure-only "
+        "size reference (a length/diameter callout that is only a dimension "
+        "annotation in the drawing). The name stops counting as unmatched. "
         "Placement substeps still can't target it — those need a steps fix.",
         {"name": _s("manual name to mark as context"),
          "reason": _s("why it is not a kit part")},

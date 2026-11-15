@@ -79,7 +79,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                                     "action": {"type": "string", "enum": _SUB_ACTIONS},
                                     "part": _s("part name/id"),
                                     "target": _s("already-placed part/feature this part mates onto — include the manual's position qualifier ('linker unterer Stutzen', 'vormontierter Adapter unten'), '' only for the base part"),
-                                    "target2": _s("second mate when ONE part bridges two already-placed parts in ONE action (elbow onto pipe A AND pipe B) — replaces a second place substep; '' otherwise"),
+                                    "target2": _s("second mate when ONE part bridges two already-placed parts in ONE action (a coupler joining section A AND section B) — replaces a second place substep; '' otherwise"),
                                     "text": _s("internal detail"),
                                     "side": _s("left/right/top/bottom/front/back, '' if n/a"),
                                 },

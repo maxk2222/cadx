@@ -480,8 +480,8 @@ def _lint_anchor(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any
             "severity": "blocker",
             "text": f"no placement substep mates anything to '{biggest.id}' "
             "— it is the largest part (the host/base the assembly builds "
-            "on). Targets naming its features (nozzles, ports, 'Wärmepumpe', "
-            "the device itself) must alias_part onto it, or the assembly "
+            "on). Targets naming its features (nozzles, ports, the host "
+            "device itself) must alias_part onto it, or the assembly "
             "ends up floating disconnected",
         }
     ]
