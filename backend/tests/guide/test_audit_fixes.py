@@ -882,3 +882,118 @@ def test_assembly_snapshot_survives_preassembly(monkeypatch, tmp_path) -> None:
     assert out is not None and out.status == "failed"
     assert "assembly" in state.missions_failed
     assert [i.instance_id for i in state.assembly.instances] == ["pipe#1"]
+
+
+def _mate_state(tmp_path, *, sub_action="place") -> "object":
+    """Two parts: moving declared a mate onto fixed but jointed elsewhere."""
+    from types import SimpleNamespace
+
+    from cadx.guide.state import (
+        AssemblyInstance,
+        GuideState,
+        GuideStep,
+        GuideSubStep,
+    )
+
+    state = GuideState(output_dir=str(tmp_path))
+    state.parts = [
+        _phys_part("host", []),
+        _phys_part("pipe_a", []),
+        _phys_part("pipe_b", []),
+    ]
+    state.steps = [
+        GuideStep(
+            number=1,
+            action_type="assembly",
+            text="pipe_a auf pipe_b stecken",
+            sub_steps=[
+                GuideSubStep(action=sub_action, part="pipe_a", target="pipe_b")
+            ],
+        )
+    ]
+    state.assembly.instances = [
+        AssemblyInstance(
+            part_id="host", instance_id="host#1", placed_in_step=1, substep_idx=-1
+        ),
+        AssemblyInstance(
+            part_id="pipe_a", instance_id="pipe_a#1", placed_in_step=1, substep_idx=0
+        ),
+        AssemblyInstance(
+            part_id="pipe_b", instance_id="pipe_b#1", placed_in_step=1, substep_idx=-1
+        ),
+    ]
+    state.assembly.joints = [
+        {"moving_instance": "pipe_a#1", "fixed_instance": "host#1"}
+    ]
+    return SimpleNamespace(state=state, _aliases_store={})
+
+
+def test_declared_mates_flags_wrong_and_missing_mates(tmp_path) -> None:
+    """A clean mate on the WRONG part passes gap/alignment but violates
+    the plan contract — both directions must surface."""
+    from cadx.guide.assembly_tools import _declared_mates
+
+    s = _mate_state(tmp_path)
+    out = _declared_mates(s)
+    assert any("pipe_b" in m["missing"] for m in out["unfulfilled_mates"])
+    assert any("host" in m["jointed"] for m in out["unexpected_mates"])
+
+
+def test_declared_mates_flags_unplaced_substep(tmp_path) -> None:
+    """A place sub-step whose instance never materialized is silent plan
+    loss (dropped task, quota block, prep-mislabeled step)."""
+    from cadx.guide.assembly_tools import _declared_mates
+    from cadx.guide.state import AssemblyInstance
+
+    s = _mate_state(tmp_path)
+    s.state.assembly.instances = [
+        i for i in s.state.assembly.instances if i.part_id != "pipe_a"
+    ]
+    s.state.assembly.joints = []
+    out = _declared_mates(s)
+    assert any(
+        "no instance materialized" in m["issue"]
+        for m in out["unfulfilled_mates"]
+    )
+
+
+def test_declared_mates_clean_when_plan_matches(tmp_path) -> None:
+    from cadx.guide.assembly_tools import _declared_mates
+
+    s = _mate_state(tmp_path)
+    s.state.assembly.joints = [
+        {"moving_instance": "pipe_a#1", "fixed_instance": "pipe_b#1"}
+    ]
+    out = _declared_mates(s)
+    assert not out["unfulfilled_mates"]
+    assert not out["unexpected_mates"]
+
+
+def test_lint_dropped_placements_blocks_prep_step(tmp_path) -> None:
+    """A place sub-step under a non-assembly step is silently dropped by
+    the planner — plan_lint must block it before preassembly."""
+    from types import SimpleNamespace
+
+    from cadx.guide.planlint import _lint_dropped_placements
+    from cadx.guide.state import GuideState, GuideStep, GuideSubStep
+
+    state = GuideState(output_dir=str(tmp_path))
+    state.parts = [_phys_part("host", []), _phys_part("elbow", [])]
+    state.steps = [
+        GuideStep(
+            number=1,
+            action_type="prep",
+            text="vorbereitung",
+            sub_steps=[
+                GuideSubStep(
+                    action="place", part="elbow", target="host", target2="pipe"
+                )
+            ],
+        )
+    ]
+    s = SimpleNamespace(state=state, _aliases_store={})
+    findings = _lint_dropped_placements(s, state.steps)
+    assert findings and findings[0]["severity"] == "blocker"
+    # assembly steps are untouched
+    state.steps[0].action_type = "assembly"
+    assert not _lint_dropped_placements(s, state.steps)

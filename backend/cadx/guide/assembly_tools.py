@@ -1670,35 +1670,115 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         "axis_profiles": axis_profiles,
         "sibling_pairs": sib_pairs,
         "approximated_joints": approx,
-        "bridge_incomplete": _bridge_incomplete(s),
+        **_declared_mates(s),
     }
 
 
-def _bridge_incomplete(s: GuideToolSession) -> list[dict[str, Any]]:
-    """Instances whose placing substep declared ``target2`` but ended with
-    fewer than two joints — one-joint "bridges" are dangling legs the old
-    pipeline silently shipped."""
-    joint_count: dict[str, int] = {}
+def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
+    """Plan-vs-joints reconciliation: a placement sub-step declares its
+    mates (``target``/``target2``); the joint it materialized must match.
+
+    ``unfulfilled`` — a declared mate part has no joint to the instance
+    (a bridge that closed only one leg, a target the solver quietly
+    dropped). ``unexpected`` — a joint the instance's own placement
+    created lands on a part the sub-step never declared (the mate went
+    somewhere the plan did not intend). Both fire regardless of whether
+    the joint itself is geometrically clean — a perfect mate on the
+    wrong part is still the wrong assembly."""
+    insts = {i.instance_id or i.part_id: i for i in s.state.assembly.instances}
+    jointed: dict[str, set[str]] = {}
+    moved: dict[str, set[str]] = {}
     for j in s.state.assembly.joints:
-        for k in ("moving_instance", "fixed_instance"):
-            iid = str(j.get(k) or "")
-            if iid:
-                joint_count[iid] = joint_count.get(iid, 0) + 1
-    out: list[dict[str, Any]] = []
-    for i in s.state.assembly.instances:
+        mv_id = str(j.get("moving_instance") or "")
+        fx_id = str(j.get("fixed_instance") or "")
+        mv = insts.get(mv_id)
+        fx = insts.get(fx_id)
+        if mv is None or fx is None:
+            continue
+        jointed.setdefault(mv_id, set()).add(fx.part_id)
+        jointed.setdefault(fx_id, set()).add(mv.part_id)
+        moved.setdefault(mv_id, set()).add(fx.part_id)
+    unfulfilled: list[dict[str, Any]] = []
+    unexpected: list[dict[str, Any]] = []
+    for i in insts.values():
         iid = i.instance_id or i.part_id
         st = s.state.step_by_number(i.placed_in_step)
         if st is None or not (0 <= i.substep_idx < len(st.sub_steps)):
             continue
         sub = st.sub_steps[i.substep_idx]
-        if str(sub.target2 or "").strip() and joint_count.get(iid, 0) < 2:
-            out.append(
+        if sub.action not in _PLACE_ACTIONS:
+            continue
+        ctx = f"{st.text} {st.title}"
+        # the sub-step must actually name this part — required_parts
+        # fallback tasks index required_parts, not sub_steps, and would
+        # otherwise audit against an unrelated sibling action
+        if _resolve_name(s, str(sub.part or ""), ctx) != i.part_id:
+            continue
+        declared = {
+            pid
+            for nm in (sub.target, getattr(sub, "target2", ""))
+            if (pid := _resolve_name(s, str(nm or ""), ctx))
+        }
+        missing = sorted(declared - jointed.get(iid, set()))
+        extra = sorted(moved.get(iid, set()) - declared)
+        if missing:
+            unfulfilled.append(
                 {
                     "instance": iid,
                     "step": i.placed_in_step,
-                    "target": sub.target,
-                    "target2": sub.target2,
-                    "joints": joint_count.get(iid, 0),
+                    "declared": sorted(declared),
+                    "missing": missing,
+                    "issue": f"{iid} declared mate(s) {missing} never materialized as joints",
+                }
+            )
+        if extra:
+            unexpected.append(
+                {
+                    "instance": iid,
+                    "step": i.placed_in_step,
+                    "declared": sorted(declared),
+                    "jointed": extra,
+                    "issue": f"{iid} jointed to {extra} — the sub-step declared {sorted(declared)}",
+                }
+            )
+    unfulfilled += _unplaced_substeps(s, insts)
+    return {"unfulfilled_mates": unfulfilled, "unexpected_mates": unexpected}
+
+
+def _unplaced_substeps(
+    s: GuideToolSession, insts: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Placement sub-steps that left NO instance — silent task loss no
+    per-instance check can see (e.g. a place sub-step under a step the
+    planner skipped, or a failed placement). Legs merged into a bridge's
+    ``target2`` by the plan view are exempt — they consumed no instance
+    by design."""
+    try:
+        from cadx.guide.preassembly import _plan
+
+        leg_keys = {
+            (t["step"], t["substep_idx"]) for t in _plan(s) if t.get("_leg_of") is not None
+        }
+    except Exception:
+        leg_keys = set()
+    placed_keys = {
+        (i.placed_in_step, i.substep_idx) for i in insts.values() if i.substep_idx >= 0
+    }
+    out: list[dict[str, Any]] = []
+    for st in s.state.steps:
+        for i, ss in enumerate(st.sub_steps):
+            if ss.action not in _PLACE_ACTIONS:
+                continue
+            if (st.number, i) in placed_keys or (st.number, i) in leg_keys:
+                continue
+            out.append(
+                {
+                    "instance": str(ss.part or "?"),
+                    "step": st.number,
+                    "declared": [],
+                    "missing": [str(ss.target or "")],
+                    "issue": f"sub-step {st.number}.{i} declared a placement of "
+                    f"{ss.part!r} — no instance materialized",
                 }
             )
     return out
@@ -1711,7 +1791,9 @@ async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> 
         "ok": not audit["bad_joints"]
         and col["ok"]
         and not audit["buried_instances"]
-        and not audit["disconnected_instances"],
+        and not audit["disconnected_instances"]
+        and not audit["unfulfilled_mates"]
+        and not audit["unexpected_mates"],
         **audit,
         "collisions": col["collisions"],
         # a part buried inside another's AABB is WRONG even when boolean

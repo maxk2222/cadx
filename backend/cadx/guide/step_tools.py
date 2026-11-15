@@ -78,14 +78,14 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                                 "properties": {
                                     "action": {"type": "string", "enum": _SUB_ACTIONS},
                                     "part": _s("part name/id"),
-                                    "target": _s("parent part/target, '' if base"),
-                                    "target2": _s("second mate when the part bridges two existing parts (e.g. elbow onto pipe A AND pipe B), '' otherwise"),
+                                    "target": _s("already-placed part/feature this part mates onto — include the manual's position qualifier ('linker unterer Stutzen', 'vormontierter Adapter unten'), '' only for the base part"),
+                                    "target2": _s("second mate when ONE part bridges two already-placed parts in ONE action (elbow onto pipe A AND pipe B) — replaces a second place substep; '' otherwise"),
                                     "text": _s("internal detail"),
                                     "side": _s("left/right/top/bottom/front/back, '' if n/a"),
                                 },
                                 "required": ["action", "part"],
                             },
-                            "atomic actions, one per part placed",
+                            "atomic actions — one place/attach/insert/fasten per NEW part occurrence; re-seat=orient, tighten/crimp/verify on already-placed=check",
                         ),
                         "media": {
                             "type": "object",
@@ -128,12 +128,42 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "step": _i("step number"),
             "action": {"type": "string", "enum": _SUB_ACTIONS},
             "part": _s("part name/id this sub-step acts on"),
-            "target": _s("parent part or step reference it attaches to, '' if base"),
-            "target2": _s("second mate for bridging parts, '' otherwise"),
+            "target": _s("already-placed part/feature it mates onto — include the manual's position qualifier where given; '' only for the base part"),
+            "target2": _s("second mate when this ONE part bridges two already-placed parts in ONE action; '' otherwise"),
             "text": _s("internal detail for the placement solver"),
             "side": _s("spatial hint: left/right/top/bottom/front/back, '' if n/a"),
         },
         ["step", "action", "part"],
+    ),
+    "update_sub_step": _fn(
+        "update_sub_step",
+        "Update fields of an existing sub-step (index within the step's "
+        "sub_steps list — use get_step to see indices). Only provided "
+        "fields change. Use this to retag a wrong action (e.g. crimp on "
+        "an already-placed part must be 'check', not 'place') or fix a "
+        "wrong target/target2.",
+        {
+            "step": _i("step number"),
+            "index": _i("sub-step index (0-based)"),
+            "action": {"type": "string", "enum": _SUB_ACTIONS},
+            "part": _s("part name/id"),
+            "target": _s("already-placed part/feature it mates onto"),
+            "target2": _s("second mate when this ONE part bridges two already-placed parts in ONE action"),
+            "text": _s("internal detail"),
+            "side": _s("spatial hint"),
+        },
+        ["step", "index"],
+    ),
+    "delete_sub_step": _fn(
+        "delete_sub_step",
+        "Remove a sub-step by index — for duplicate/phantom extractions "
+        "(the same physical part emitted twice). Use get_step to see "
+        "indices.",
+        {
+            "step": _i("step number"),
+            "index": _i("sub-step index (0-based)"),
+        },
+        ["step", "index"],
     ),
     "assign_media": _fn(
         "assign_media",
@@ -356,6 +386,48 @@ async def add_sub_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
     return {"ok": True, "step": step.number, "sub_steps": len(step.sub_steps)}
 
 
+async def update_sub_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    step = s.state.step_by_number(int(a.get("step", 0)))
+    if step is None:
+        return {"ok": False, "error": f"step {a.get('step')} not found"}
+    idx = int(a.get("index", -1))
+    if not (0 <= idx < len(step.sub_steps)):
+        return {
+            "ok": False,
+            "error": f"sub-step index {idx} out of range — step {step.number} "
+            f"has {len(step.sub_steps)} sub_steps",
+        }
+    ss = step.sub_steps[idx]
+    if "action" in a:
+        action = str(a["action"])
+        if action not in _SUB_ACTIONS:
+            return {"ok": False, "error": f"action must be one of {_SUB_ACTIONS}"}
+        ss.action = action
+    for k in ("part", "target", "target2", "text", "side"):
+        if k in a:
+            setattr(ss, k, str(a[k]))
+    return {"ok": True, "step": step.number, "index": idx}
+
+
+async def delete_sub_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    step = s.state.step_by_number(int(a.get("step", 0)))
+    if step is None:
+        return {"ok": False, "error": f"step {a.get('step')} not found"}
+    idx = int(a.get("index", -1))
+    if not (0 <= idx < len(step.sub_steps)):
+        return {
+            "ok": False,
+            "error": f"sub-step index {idx} out of range — step {step.number} "
+            f"has {len(step.sub_steps)} sub_steps",
+        }
+    removed = step.sub_steps.pop(idx)
+    return {
+        "ok": True,
+        "step": step.number,
+        "removed": {"action": removed.action, "part": removed.part},
+    }
+
+
 async def assign_media(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     step = s.state.step_by_number(int(a.get("step", 0)))
     if step is None:
@@ -447,6 +519,8 @@ HANDLERS = {
     "create_steps": create_steps,
     "update_step": update_step,
     "add_sub_step": add_sub_step,
+    "update_sub_step": update_sub_step,
+    "delete_sub_step": delete_sub_step,
     "assign_media": assign_media,
     "reorder_steps": reorder_steps,
     "finalize_steps": finalize_steps,

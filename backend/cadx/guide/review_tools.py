@@ -63,6 +63,49 @@ SCHEMAS: dict[str, dict[str, Any]] = {
 }
 
 
+def _audit_evidence(s: GuideToolSession) -> tuple[bool, list[str]]:
+    """Physical audit findings as readable evidence lines — the reviewer's
+    score cannot contradict what the deterministic audit measured. Stays
+    advisory (clean) when the scene can't be built."""
+    evidence: list[str] = []
+    try:
+        from cadx.guide.assembly_tools import joint_geometry_audit
+
+        audit = joint_geometry_audit(s)
+        for b in audit["bad_joints"]:
+            evidence.append(f"joint {b['joint']}: gap={b['gap_mm']}mm nd={b['normal_dot']}")
+        for b in audit["buried_instances"]:
+            evidence.append(
+                f"{b['instance']} is {round(b['buried_frac'] * 100)}% inside other parts"
+            )
+        for d in audit.get("disconnected_instances", []):
+            evidence.append(d["issue"])
+        # declared mates that never materialized / joints that landed on
+        # parts the sub-step did not declare — topology deviations the
+        # geometry checks alone can't see (a clean mate on the wrong part)
+        for m in audit.get("unfulfilled_mates", []):
+            evidence.append(m["issue"])
+        for m in audit.get("unexpected_mates", []):
+            evidence.append(m["issue"])
+        # a joint on a SYNTHESIZED thread site (nested stub emitted inside an
+        # enclosing socket when the mesh models no real threaded end) is
+        # geometrically legal but semantically unverified — the classic
+        # wrong-interface failure (fitting sunk into an oversized opening
+        # instead of seated on the pipe end) passes gap/alignment cleanly.
+        # It cannot earn a ship-grade score without the reviewer explicitly
+        # judging it against the manual figure.
+        for ap in audit.get("approximated_joints", []):
+            evidence.append(
+                f"joint {ap['joint']}: approximated thread-site interface "
+                f"(nested stub inside an enclosing socket) — verify against "
+                f"the manual figure; if the fitting sits inside an oversized "
+                f"opening this is a blocker on 'assembly'"
+            )
+    except Exception:
+        pass
+    return (not evidence, evidence)
+
+
 async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     score = max(0.0, min(10.0, float(a.get("score", 0.0))))
     findings = []
@@ -118,40 +161,7 @@ async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[st
     # measurably fails (buried parts, misaligned/open joints). Passing
     # score while physical findings exist is a contradiction — return
     # ok:false and force an honest verdict instead.
-    audit_ok = True
-    audit_evidence: list[str] = []
-    try:
-        from cadx.guide.assembly_tools import joint_geometry_audit
-
-        audit = joint_geometry_audit(s)
-        for b in audit["bad_joints"]:
-            audit_evidence.append(
-                f"joint {b['joint']}: gap={b['gap_mm']}mm nd={b['normal_dot']}"
-            )
-        for b in audit["buried_instances"]:
-            audit_evidence.append(
-                f"{b['instance']} is {round(b['buried_frac'] * 100)}% inside other parts"
-            )
-        for d in audit.get("disconnected_instances", []):
-            audit_evidence.append(d["issue"])
-        # a joint on a SYNTHESIZED thread site (nested stub emitted inside an
-        # enclosing socket when the mesh models no real threaded end) is
-        # geometrically legal but semantically unverified — the classic
-        # wrong-interface failure (fitting sunk into an oversized opening
-        # instead of seated on the pipe end) passes gap/alignment cleanly.
-        # It cannot earn a ship-grade score without the reviewer explicitly
-        # judging it against the manual figure.
-        for ap in audit.get("approximated_joints", []):
-            audit_evidence.append(
-                f"joint {ap['joint']}: approximated thread-site interface "
-                f"(nested stub inside an enclosing socket) — verify against "
-                f"the manual figure; if the fitting sits inside an oversized "
-                f"opening this is a blocker on 'assembly'"
-            )
-        if audit_evidence:
-            audit_ok = False
-    except Exception:
-        pass  # audit stays advisory if the scene can't be built
+    audit_ok, audit_evidence = _audit_evidence(s)
     if score >= 8.0 and not audit_ok:
         return {
             "ok": False,

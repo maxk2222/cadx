@@ -487,6 +487,36 @@ def _lint_anchor(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any
     ]
 
 
+def _lint_dropped_placements(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
+    """A place-substep under a non-assembly step is silently dropped:
+    _plan and _step_requirements only read assembly steps, so the
+    declared placement never runs, the instance never materializes and
+    downstream audits see a mate that vanished. Either the step's
+    action_type is mislabeled (fix it to 'assembly') or the sub-step
+    belongs on an assembly step."""
+    findings: list[dict[str, Any]] = []
+    for st in steps:
+        if st.action_type == "assembly":
+            continue
+        for i, ss in enumerate(st.sub_steps):
+            if ss.action in _PLACE_ACTIONS:
+                findings.append(
+                    {
+                        "mission": "steps",
+                        "severity": "blocker",
+                        "text": f"step {st.number} sub {i}: placement of "
+                        f"'{ss.part}' sits under action_type='{st.action_type}' "
+                        "— the planner skips non-assembly steps so this mate "
+                        "is silently dropped. Either set the step's "
+                        "action_type to 'assembly' (update_step), or if the "
+                        "sub-step operates on an already-placed part "
+                        "(tighten/crimp/re-check) retag its action to "
+                        "'check'/'orient'",
+                    }
+                )
+    return findings
+
+
 def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Plan-vs-registry contradictions, deterministically detected.
 
@@ -498,6 +528,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings, first_place, anchor_step = _lint_refs(sess, steps)
     findings += _lint_order(sess, steps, first_place, anchor_step)
     findings += _lint_quantities(sess)
+    findings += _lint_dropped_placements(sess, steps)
     findings += _lint_phantom_sizes(sess, steps)
     findings += _lint_anchor(sess, steps)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
