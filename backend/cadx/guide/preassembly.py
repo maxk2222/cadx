@@ -1459,6 +1459,9 @@ def _lookahead(
     target resolves to this part or to nothing (chain fallback); a target
     resolving elsewhere constrains that part, not this one."""
     for nxt in tasks[ti + 1 :]:
+        if nxt.get("premount") or nxt.get("anchor"):
+            continue  # reference placements mate nothing onto this part —
+            # their host target must not cut the chain's hint walk
         npid = _rp(sess, nxt["part"], nxt["step"])
         if not npid or npid == pid:
             continue
