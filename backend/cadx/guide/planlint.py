@@ -669,6 +669,96 @@ def _lint_side_coverage(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
     return findings
 
 
+def _lint_step_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
+    """'(<part> aus) Schritt N' references must pin a step that actually
+    PROVIDES the ref's kind — the pin is the strongest instance
+    discriminator and a wrong one either pins an empty pool (preassembly
+    then reported a miss) or the wrong side's instance (observed:
+    'rechter Adapter (Schritt 2)' bound the 'linker' adapter step 2
+    placed). Manuals number by figure, plans by guide step — a mismatch
+    is a plan defect the steps mission must fix, not a runtime guess."""
+    from cadx.guide.preassembly import _STEP_REF, _dir_axes, _kind_pool
+
+    findings: list[dict[str, Any]] = []
+    by_no = {st.number: st for st in steps}
+    for st in steps:
+        for ss in st.sub_steps or []:
+            for tgt in (ss.target, ss.target2):
+                if not tgt:
+                    continue
+                m = _STEP_REF.search(tgt)
+                if not m:
+                    continue
+                n = int(m.group(1))
+                ref_pool = _kind_pool(sess, tgt)
+                pinned = by_no.get(n)
+                if pinned is None:
+                    findings.append(
+                        {
+                            "mission": "steps",
+                            "severity": "blocker",
+                            "text": f"step {st.number}: target "
+                            f"'{tgt[:60]}' pins '(Schritt {n})' but the "
+                            "plan has no such step — reference the PLAN "
+                            "step number that placed the part",
+                        }
+                    )
+                    continue
+                # kinds step N provides: placement substep parts +
+                # step-level required_parts (premount/context sources)
+                provided: set[str] = set()
+                ref_axes = dict(_dir_axes(tgt))
+                kind_sides: list[dict[int, float]] = []
+                for pss in pinned.sub_steps or []:
+                    pid = _resolve_part(sess, pss.part, n)
+                    if not pid:
+                        continue
+                    provided.add(pid)
+                    if pss.action in _PLACE_ACTIONS and (
+                        not ref_pool or pid in ref_pool
+                    ):
+                        kind_sides.append(
+                            dict(_dir_axes(f"{pss.target or ''} {pss.part or ''}"))
+                        )
+                for nm in pinned.required_parts or []:
+                    pid = _resolve_part(sess, nm, n)
+                    if pid:
+                        provided.add(pid)
+                if ref_pool and not (ref_pool & provided):
+                    findings.append(
+                        {
+                            "mission": "steps",
+                            "severity": "blocker",
+                            "text": f"step {st.number}: target "
+                            f"'{tgt[:60]}' pins '(Schritt {n})' but that "
+                            f"step provides {sorted(provided) or 'nothing'} — "
+                            f"the ref's kind {sorted(ref_pool)} is placed "
+                            "elsewhere. Fix the reference (plan step "
+                            "number or drop the pin)",
+                        }
+                    )
+                    continue
+                # side check: a ref naming 'rechter … (Schritt N)' is
+                # consistent iff SOME kind-compatible substep of step N
+                # carries no opposite sign on any ref axis
+                if ref_axes and kind_sides and not any(
+                    not any(ks.get(a) == -sg for a, sg in ref_axes.items())
+                    for ks in kind_sides
+                ):
+                    findings.append(
+                        {
+                            "mission": "steps",
+                            "severity": "blocker",
+                            "text": f"step {st.number}: target "
+                            f"'{tgt[:60]}' pins '(Schritt {n})' but "
+                            f"step {n} places that kind at a different "
+                            "side — the pin or the side word is wrong; "
+                            "fix the reference",
+                        }
+                    )
+    return findings
+
+
 def _lint_asset_coverage(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Every uploaded CAD file is real geometry the plan must account
     for — an unregistered upload means the assembly silently dropped a
@@ -740,6 +830,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings += _lint_anchor(sess, steps)
     findings += _lint_premount_refs(sess, steps)
     findings += _lint_side_coverage(sess, steps)
+    findings += _lint_step_refs(sess, steps)
     findings += _lint_asset_coverage(sess)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
     log.info(

@@ -1881,6 +1881,16 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
                     "the pairing cannot be verified against the plan",
                 }
             )
+            # an unresolved name still carries its KIND noun — 'Bohrung
+            # des Adapters (Schritt 1)' cannot bind a part, but a joint
+            # onto the casing is verifiably NOT an adapter mate. Check
+            # the mate against the kind pool instead of dropping the
+            # unexpected-mates check entirely
+            uf, ux = _unresolved_kind_check(
+                s, iid, i.placed_in_step, unresolved, declared, moved
+            )
+            unfulfilled += uf
+            unexpected += ux
         elif extra := sorted(moved.get(iid, set()) - declared):
             unexpected.append(
                 {
@@ -1912,6 +1922,55 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
         "unverifiable_mates": unverifiable,
         "bridge_incomplete": bridge_open,
     }
+
+
+def _unresolved_kind_check(
+    s: GuideToolSession,
+    iid: str,
+    step_no: int,
+    unresolved: list[str],
+    declared: set[str],
+    moved: dict[str, set[str]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Kind-level verification for mates whose target name bound no part:
+    a joint INTO the ref's kind pool satisfies it loosely; a joint fully
+    outside it is both an unfulfilled kind-mate and an unexpected mate."""
+    from cadx.guide.preassembly import _kind_pool
+
+    unfulfilled: list[dict[str, Any]] = []
+    unexpected: list[dict[str, Any]] = []
+    pool: set[str] = set()
+    for nm in unresolved:
+        kp = _kind_pool(s, nm)
+        if kp:
+            pool |= kp
+    if not pool:
+        return unfulfilled, unexpected
+    satisfied = moved.get(iid, set()) & pool
+    if not satisfied:
+        unfulfilled.append(
+            {
+                "instance": iid,
+                "step": step_no,
+                "declared": sorted(declared),
+                "missing": unresolved,
+                "issue": f"{iid} declared mate '{unresolved[0][:50]}' "
+                f"(kind pool {sorted(pool)}) never materialized — it "
+                f"jointed to {sorted(moved.get(iid, set()))} instead",
+            }
+        )
+    if extra := sorted(moved.get(iid, set()) - declared - satisfied):
+        unexpected.append(
+            {
+                "instance": iid,
+                "step": step_no,
+                "declared": sorted(declared),
+                "jointed": extra,
+                "issue": f"{iid} jointed to {extra} — the sub-step "
+                f"declared {sorted(declared)} and ref(s) {unresolved}",
+            }
+        )
+    return unfulfilled, unexpected
 
 
 def _unplaced_substeps(
@@ -1997,6 +2056,14 @@ def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
     probs += [f"{b['instance']} buried" for b in audit["buried_instances"][:4]]
     probs += [d["issue"] for d in audit["disconnected_instances"][:4]]
     probs += [f"collision {c}" for c in col["collisions"][:4]]
+    # plan-vs-joints reconciliation gates too — a mate declared in the
+    # plan that never materialized (or landed on an undeclared part, or
+    # left a bridge leg open) means the SCENE does not match the MANUAL
+    # even when every joint is geometrically clean. Without these the
+    # mission reported success on a bridge with a dangling leg
+    probs += [u["issue"] for u in audit["unfulfilled_mates"][:4]]
+    probs += [u["issue"] for u in audit["unexpected_mates"][:4]]
+    probs += [b["issue"] for b in audit["bridge_incomplete"][:4]]
     if probs:
         return {"ok": False, "error": "unhealthy assembly: " + "; ".join(probs)}
     s.state.assembly.status = "complete"

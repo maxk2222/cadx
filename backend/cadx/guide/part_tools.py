@@ -230,11 +230,12 @@ async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict
         new_name = str(a.get("name", "")).strip()
         made: list[str] = []
         blocked: list[str] = []
+        sibs = [(p.id, p.name, p.mesh_path or "") for p in s.state.parts]
         for alias in {new_name, pid} - {existing.name, existing.id, ""}:
             na = _norm(alias)
             if not na:
                 continue
-            if _name_part_conflict(alias, existing.name, existing.id):
+            if _name_part_conflict(alias, existing.name, existing.id, sibs):
                 blocked.append(alias)
                 continue
             s._aliases_store[na] = existing.id
@@ -346,7 +347,10 @@ def _norm(s: str) -> str:
 
 _CAT_TERMS: list[tuple[str, re.Pattern[str]]] = [
     ("elbow", re.compile(r"rohrbogen|elbow|\bbogen\b")),
-    ("pipe", re.compile(r"\brohr\b|\bpipe\b")),
+    # german compound nouns carry the kind as suffix ("Anschlussrohr",
+    # "Verbindungsrohr") — a word-boundary \brohr\b misses them and
+    # silently declassifies the name to 'other'
+    ("pipe", re.compile(r"rohr|\bpipe\b")),
     ("adapter", re.compile(r"adapter")),
     ("casing", re.compile(r"geh[aä]use|casing|housing")),
     ("coupling", re.compile(r"\bmuffe\b|coupling|kupplung")),
@@ -449,12 +453,23 @@ async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[s
     }
 
 
-def _name_part_conflict(alias: str, part_name: str, part_id: str) -> str | None:
+def _name_part_conflict(
+    alias: str,
+    part_name: str,
+    part_id: str,
+    siblings: list[tuple[str, str, str]] | None = None,
+) -> str | None:
     """An alias must rename the SAME physical part: 'Rohr DN22 l=500mm' on
     the 70mm part corrupts every downstream resolution (targets,
     requirements, lint). Blocks on contradictory size markers present on
     both sides, and on specific-vs-specific category clashes (an elbow
-    name onto a pipe part is nearly always a wrong mapping)."""
+    name onto a pipe part is nearly always a wrong mapping).
+
+    ``siblings`` — (id, name, mesh_path) of every OTHER registered part —
+    gates the generic-name case: an alias whose category matches several
+    parts must carry a discriminator token unique to its target
+    ('anschlussrohr' aliased onto pipe_l500 while pipe_l70 exists bound
+    every pipe reference to the 500mm part — a silent guess)."""
     acat, atoks = _sig(alias)
     pcat, ptoks = _sig(f"{part_name} {part_id}")
     for fam in ("dn", "l"):
@@ -471,6 +486,29 @@ def _name_part_conflict(alias: str, part_name: str, part_id: str) -> str | None:
             f"a {pcat} — aliasing across categories means a different "
             "physical part"
         )
+    if acat != "other" and siblings:
+        same_cat = [
+            (sid, sname)
+            for sid, sname, _ in siblings
+            if sid != part_id and _sig(f"{sname} {sid}")[0] == acat
+        ]
+        if same_cat:
+            from cadx.guide.assembly_tools import _tokset
+
+            own = _tokset(f"{part_name} {part_id}")
+            disc = own - set().union(
+                *(_tokset(f"{sn} {sid}") for sid, sn in same_cat)
+            )
+            if not (_tokset(alias) & (disc | {t for t in atoks})):
+                return (
+                    f"is a generic {acat} name but {len(same_cat) + 1} "
+                    f"{acat} parts are registered ({part_id}, "
+                    f"{', '.join(s for s, _ in same_cat)}) — the alias "
+                    "must carry the part's discriminator "
+                    f"({', '.join(sorted(disc)[:4]) or 'e.g. its size'}) "
+                    "or it silently binds every generic reference to "
+                    "this one part"
+                )
     return None
 
 
@@ -482,7 +520,12 @@ async def alias_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     alias = _norm(raw_alias)
     if not alias:
         return {"ok": False, "error": "alias required"}
-    conflict = _name_part_conflict(raw_alias, part.name, part.id)
+    conflict = _name_part_conflict(
+        raw_alias,
+        part.name,
+        part.id,
+        [(p.id, p.name, p.mesh_path or "") for p in s.state.parts],
+    )
     if conflict:
         return {
             "ok": False,

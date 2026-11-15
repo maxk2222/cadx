@@ -86,13 +86,26 @@ def _ref_step(name: str | None) -> int | None:
 def _kind_pool(sess: GuideToolSession, name: str) -> set[str] | None:
     """Candidate part ids for a reference's kind noun: the resolved pid,
     the tied pids when the name was ambiguous ('Rohrbogen' between two
-    elbow kinds), or the substring-kind pool when nothing scored."""
+    elbow kinds), the category pool for compound kind nouns
+    ('Anschlussrohr' classifies as pipe → every pipe part), or the
+    substring-kind pool when nothing scored."""
     pid = _resolve_name(sess, name or "")
     if pid:
         return {pid}
     amb = getattr(sess, "_ambiguous", {}).get(name or "")
     if amb:
         return set(amb)
+    from cadx.guide.part_tools import _sig
+
+    cat, _ = _sig(name)
+    if cat != "other":
+        pool = {
+            p.id
+            for p in sess.state.parts
+            if _sig(f"{p.name} {p.id}")[0] == cat
+        }
+        if pool:
+            return pool
     n = _norm2(name)
     pool = {
         p
@@ -102,6 +115,27 @@ def _kind_pool(sess: GuideToolSession, name: str) -> set[str] | None:
     return pool or None
 
 
+def _bridge_pools(
+    sess: GuideToolSession, task: dict[str, Any]
+) -> tuple[list[Any] | None, list[Any] | None]:
+    """target/target2 instance pools for the bridge search. A pool of []
+    is a structured MISS — the declared partner doesn't exist (an
+    alias-bound target2 to the wrong pipe family once left the solver
+    pairing l500↔l500) — flag it so the failure reports WHY instead of
+    a bare 'no candidate'."""
+    out: list[list[Any] | None] = []
+    for key in ("target", "target2"):
+        ref = task.get(key)
+        pool = _ref_instances(sess, str(ref or ""))
+        if pool == []:
+            task["target_miss"] = (
+                f"bridge target '{str(ref or '')[:60]}' names a placed "
+                "instance but nothing placed matches it"
+            )
+        out.append(pool)
+    return out[0], out[1]
+
+
 def _ref_instances(sess: GuideToolSession, name: str | None) -> list[Any] | None:
     """Placed-instance pool for a reference that names a placed product.
 
@@ -109,19 +143,26 @@ def _ref_instances(sess: GuideToolSession, name: str | None) -> list[Any] | None
     the kind noun only narrows within that pool (and never overrides it:
     manuals occasionally misname the noun). Without a step pin, the kind
     pool restricts to the matching part ids — never ALL placed instances.
-    None when the name carries no usable instance signal."""
+    None when the name carries no usable instance signal; [] when it does
+    but nothing placed satisfies it (a MISS, callers must not widen)."""
     insts = list(sess.state.assembly.instances)
     step = _ref_step(name)
     pool_pids = _kind_pool(sess, name or "")
+    # a structured ref whose pool comes up EMPTY is a MISS, not "no
+    # signal": '(Schritt 1)' when step 1 placed nothing, or a kind pool
+    # with no placed instance — returning None read as "no constraint"
+    # and the caller fell back to every placed instance (cross-wired an
+    # l70 straight onto the casing, skipping its adapter). An empty list
+    # is terminal: the referenced thing does not exist.
     if step is not None:
         pool = [i for i in insts if (i.placed_in_step or 0) == step]
         if pool_pids:
             typed = [i for i in pool if i.part_id in pool_pids]
             if typed:
                 pool = typed
-        return pool or None
+        return pool
     if pool_pids:
-        return [i for i in insts if i.part_id in pool_pids] or None
+        return [i for i in insts if i.part_id in pool_pids]
     return None
 
 
@@ -1243,12 +1284,20 @@ async def _place_tasks(
             )
         if not placed and task.get("anchor"):
             placed = await _place_anchor(sess, task, pid, lift, anchor_rot)
-        if not placed:
+        # a target_miss must NOT env-fall — the ref says where it belongs
+        # and that place doesn't exist; free-space placement fakes a pose
+        if not placed and not task.get("target_miss"):
             placed = await _try_env(sess, task, pid)
         if placed:
             report["placed"].append({**task, "part_id": pid, "instance_id": placed})
         else:
-            report["failed"].append({**task, "part_id": pid, "reason": "no candidate"})
+            report["failed"].append(
+                {
+                    **task,
+                    "part_id": pid,
+                    "reason": task.get("target_miss") or "no candidate",
+                }
+            )
 
 
 def _attempt_quality(sess: GuideToolSession, report: dict[str, Any]) -> tuple[float, ...]:
@@ -1868,8 +1917,7 @@ def _bridge_search(
     # provenance, the kind noun forms a candidate pool — a part-level pid
     # is not required, which is what killed every instance-ref bridge
     # ('oberes Rohr aus Schritt 3' resolved to None → bridge never ran)
-    p1_pool = _ref_instances(sess, str(task.get("target") or ""))
-    p2_pool = _ref_instances(sess, str(task.get("target2") or ""))
+    p1_pool, p2_pool = _bridge_pools(sess, task)
     if not p1_pool or not p2_pool:
         return None
     st_b = sess.state.step_by_number(task["step"])
@@ -2051,6 +2099,28 @@ def _sibling_port_spots(sess: GuideToolSession, pid: str) -> list[list[float]]:
     return out
 
 
+def _target_pool_iids(
+    sess: GuideToolSession, task: dict[str, Any]
+) -> set[str] | None:
+    """Instance-id set for the task's target ref. Empty set = the ref
+    carried no instance signal (generic grouping may proceed); None = a
+    structured ref matched NOTHING placed — flagged as target_miss so
+    callers fail honestly instead of widening to every placed instance
+    (observed: '(Schritt 1)' pin → free-fall → pipe straight onto the
+    casing, skipping its adapter)."""
+    pool = _ref_instances(sess, task["target"])
+    if pool is None:
+        return set()
+    iids = {i.instance_id or i.part_id for i in pool}
+    if not iids:
+        task["target_miss"] = (
+            f"target '{task['target'][:60]}' names a placed instance "
+            "but nothing placed matches it"
+        )
+        return None
+    return iids
+
+
 async def _try_attach(
     sess: GuideToolSession,
     task: dict[str, Any],
@@ -2104,15 +2174,16 @@ async def _try_attach(
     # pipe-on-pipe stacks). Feature names that resolve to nothing ("linkes
     # oberes Anschlussrohr") fall through to every placed instance.
     resolved_iids = {iid for iid, i in inst_by_iid.items() if i.part_id == resolved_pid}
-    if not resolved_iids:
+    if not resolved_iids and task.get("target"):
         # instance refs ("linkes Rohr aus Schritt 3") and ambiguous kind
         # nouns ("Rohrbogen" between two elbows) resolve no single pid —
         # but they still carry provenance/kind signal: prefer THAT pool
         # over the geometric free-for-all that cross-wired l500 onto the
-        # wrong elbow branch
-        pool = _ref_instances(sess, task["target"]) if task.get("target") else None
-        if pool:
-            resolved_iids = {i.instance_id or i.part_id for i in pool}
+        # wrong elbow branch. None = structured MISS (flagged, no widening)
+        pool_iids = _target_pool_iids(sess, task)
+        if pool_iids is None:
+            return None
+        resolved_iids = pool_iids
     # chain locality: an attachment almost always mates onto something the
     # manual JUST placed (pipe → adapter → casing in the last steps).
     # Recent instances form the middle tier so an unresolvable target

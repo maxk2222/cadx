@@ -1139,3 +1139,37 @@ def test_repeat_reject_breaker() -> None:
     # different args are unaffected
     r2 = asyncio.run(sess._dispatch("place_instance", {"part_id": "ghost2"}))
     assert not r2.get("_streak_exempt"), r2
+
+
+def test_alias_discriminativity_gate() -> None:
+    """A generic family name ('anschlussrohr') aliased onto ONE of two
+    same-kind parts is a silent guess — every later 'anschlussrohr'
+    reference then binds the l500 even when the manual means the l70.
+    The gate demands the alias carry the target's discriminator."""
+    from cadx.guide.part_tools import _name_part_conflict
+
+    sibs = [
+        ("pipe_l500", "Rohr DN22, l = 500 mm", "Pipe_l500_mm.glb"),
+        ("pipe_l70", "Rohr DN22, l = 70 mm", "Pipe_l70_mm.glb"),
+    ]
+    # generic compound → blocked, names the discriminators
+    hit = _name_part_conflict(
+        "Anschlussrohr", "Rohr DN22, l = 500 mm", "pipe_l500", sibs
+    )
+    assert hit and "500" in hit
+    # qualified alias carries the discriminator → allowed
+    assert _name_part_conflict(
+        "oberes Anschlussrohr l=70", "Rohr DN22, l = 70 mm", "pipe_l70", sibs
+    ) is None
+    # single-part category → no gate
+    assert _name_part_conflict(
+        "Verkleidung", "Gehäuse", "casing", [*sibs, ("casing", "Gehäuse", "C.glb")]
+    ) is None
+
+
+def test_sig_compound_rohr_is_pipe() -> None:
+    from cadx.guide.part_tools import _sig
+
+    assert _sig("Anschlussrohr")[0] == "pipe"
+    assert _sig("Anschlussrohre")[0] == "pipe"
+    assert _sig("Rohrbogen DN22")[0] == "elbow"  # elbow still wins

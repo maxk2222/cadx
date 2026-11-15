@@ -880,7 +880,7 @@ def test_ref_instances_provenance_pin() -> None:
     pipes, but provenance pins the instance step 3 placed."""
     from cadx.guide.preassembly import _ref_instances
 
-    sess, insts = _mk_state_with_instances()
+    sess, _insts = _mk_state_with_instances()
     pool = _ref_instances(sess, "linkes oberes Rohr aus Schritt 3")
     assert [i.instance_id for i in pool] == ["pipe_l70#1"]
     # generic elbow noun + step pin → the spigot elbow of step 5
@@ -893,9 +893,39 @@ def test_ref_instances_kind_pool() -> None:
     parts' instances — never every placed instance."""
     from cadx.guide.preassembly import _ref_instances
 
-    sess, insts = _mk_state_with_instances()
+    sess, _insts = _mk_state_with_instances()
     pool = _ref_instances(sess, "Rohrbogen")
     assert sorted(i.instance_id for i in pool) == ["elbow_io#1", "elbow_io#2"]
     # a name carrying no part signal at all → no pool (free fallthrough
-    # for true feature names like 'linkes oberes Anschlussrohr')
+    # for true feature names like 'oberer Anschlusspunkt')
     assert _ref_instances(sess, "oberer Anschlusspunkt") is None
+
+
+def test_ref_instances_empty_pin_pool_is_a_miss() -> None:
+    """'(Schritt 1)' when step 1 placed NOTHING is a structured miss —
+    returning None meant 'no signal' and callers free-fell onto every
+    placed instance (pipe onto casing, skipping its adapter). An empty
+    list is terminal evidence, not a widening license."""
+    from cadx.guide.preassembly import _ref_instances
+
+    sess, _insts = _mk_state_with_instances()
+    assert _ref_instances(sess, "Bohrung des Adapters (Schritt 1)") == []
+    # same without pin: a resolved kind with zero placed instances
+    assert _ref_instances(sess, "Rohrbogen DN22 2x aussen") == []
+
+
+def test_ref_instances_compound_noun_kind_pool() -> None:
+    """German compound kind nouns classify by their suffix head —
+    'Anschlussrohr' is a pipe ref even though '\brohr\b' misses the
+    compound."""
+    from cadx.guide.preassembly import _ref_instances
+
+    sess, _insts = _mk_state_with_instances()
+    pool = _ref_instances(sess, "freies Ende des linken oberen Anschlussrohrs")
+    assert pool is not None
+    assert sorted(i.instance_id for i in pool) == [
+        "pipe_l500#1",
+        "pipe_l500#2",
+        "pipe_l70#1",
+        "pipe_l70#2",
+    ]

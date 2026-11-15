@@ -464,3 +464,67 @@ def test_exact_part_id_bypasses_ambiguity() -> None:
     fs = plan_lint(sess)
     assert not [f for f in fs if f["severity"] == "blocker" and "ambiguous" in f["text"]], fs
     assert sess.state.steps[0].sub_steps[0].part_pid == "elbow_io"
+
+
+def _adapter_plan(pin_target: str, step2_target: str = "linker oberer Anschluss") -> SimpleNamespace:
+    """Steps mimicking the observed mislabel: adapters placed at plan
+    steps 2/3 but referenced as '(Schritt 1)/(Schritt 2)'."""
+    return _sess(
+        [_part("casing"), _part("adapter_dn22"), _part("pipe_l70")],
+        [
+            _step(1, [], atype="prep"),
+            _step(
+                2,
+                [
+                    {
+                        "action": "fasten",
+                        "part": "adapter_dn22",
+                        "target": step2_target,
+                    }
+                ],
+            ),
+            _step(
+                3,
+                [
+                    {
+                        "action": "fasten",
+                        "part": "adapter_dn22",
+                        "target": "rechter oberer Anschluss",
+                    }
+                ],
+            ),
+            _step(
+                4,
+                [{"action": "insert", "part": "pipe_l70", "target": pin_target}],
+            ),
+        ],
+    )
+
+
+def test_step_ref_pin_on_wrong_step_blocks() -> None:
+    """'Bohrung des Adapters (Schritt 1)' — adapters live in plan steps
+    2/3; pinning an empty step yields an honest blocker instead of a
+    runtime free-fall onto any placed instance."""
+    sess = _adapter_plan("Bohrung des linken oberen Adapters (Schritt 1)")
+    fs = plan_lint(sess)
+    assert any(
+        f["severity"] == "blocker" and "Schritt 1" in f["text"] and "step 4" in f["text"]
+        for f in fs
+    ), fs
+
+
+def test_step_ref_side_contradiction_blocks() -> None:
+    """'rechter Adapter (Schritt 2)' — step 2 places the 'linker'
+    adapter: pin and side word contradict, deterministically."""
+    sess = _adapter_plan("Bohrung des rechten oberen Adapters (Schritt 2)")
+    fs = plan_lint(sess)
+    assert any(
+        f["severity"] == "blocker" and "Schritt 2" in f["text"] and "side" in f["text"]
+        for f in fs
+    ), fs
+
+
+def test_step_ref_consistent_pin_passes() -> None:
+    sess = _adapter_plan("Bohrung des linken oberen Adapters (Schritt 2)")
+    fs = plan_lint(sess)
+    assert not [f for f in fs if "pins '(Schritt" in f["text"]], fs
