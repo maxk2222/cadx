@@ -1144,7 +1144,12 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     # planner-driven pre-mounts (initial-state hardware the manual names but
     # never mounts itself — e.g. fittings already on the device) legitimately
     # add instances beyond the step requirements; they still respect the cap
-    premount = bool(a.get("premount"))
+    # premount only makes sense for initial-state hardware NO step mounts
+    # (need==0). Passing premount=true on a step-required part is quota
+    # evasion — the run observed adapter_rn22#3/#4 spawned via this path
+    # while need=2. Treat the flag as inert then: the normal requirement
+    # checks below refuse the surplus with actionable errors.
+    premount = bool(a.get("premount")) and need == 0
     need_here = reqs.get(step_no, {}).get(pid, 0)
     have_here = sum(1 for i in existing if i.placed_in_step == step_no)
     if not premount and need_here and have_here >= need_here:
@@ -1200,7 +1205,9 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             "placed. The plan requires more copies than the kit has: fix "
             "the step plan (wrong part mapping), or unplace_instance one first",
         }
-    cap = (kit if kit is not None else max(need, 2)) + 2  # bound runaway
+    # unknown-kit premounts cap at a pair — initial-state hardware comes
+    # once or doubled (two pre-fitted elbows), never in fours
+    cap = kit if kit is not None else (2 if premount else max(need, 2) + 2)
     if len(existing) >= cap:
         return {
             "ok": False,

@@ -503,6 +503,43 @@ async def _run_mission(
                     "\nThe previous attempt also hit these tool errors — "
                     "do NOT repeat the same calls verbatim:\n" + last_failures
                 )
+            if mission == "assembly":
+                # scoped repair list — an unscoped retry makes the model
+                # re-audit the WHOLE scene and "fix" correct placements,
+                # spawning duplicate instances (adapter_rn22#4 observed).
+                # Name exactly what remains and what is stray.
+                try:
+                    from cadx.guide.assembly_tools import (
+                        _completeness_issues,
+                        joint_geometry_audit,
+                    )
+
+                    open_items = _completeness_issues(sess)
+                    stray = [
+                        d["instance"]
+                        for d in joint_geometry_audit(sess)["disconnected_instances"]
+                    ]
+                    scope: list[str] = []
+                    if open_items:
+                        scope.append(
+                            "MISSING placements still to finish:\n"
+                            + "\n".join(f"  - {m}" for m in open_items)
+                        )
+                    if stray:
+                        scope.append(
+                            f"STRAY instances not connected to the anchor "
+                            f"— unplace_instance or re-mate THESE, never add "
+                            f"extra copies of their part: {stray}"
+                        )
+                    if scope:
+                        nudge += (
+                            "\nScoped repair list — ONLY fix these; every "
+                            "other placed instance is already correct and "
+                            "must stay untouched (no unplace/duplicates):\n"
+                            + "\n".join(scope)
+                        )
+                except Exception:
+                    log.exception("guide.assembly_scope_failed")
         calls_budget = _calls_budget(mission, state)
         try:
             result = await run_session(

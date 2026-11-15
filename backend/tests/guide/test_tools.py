@@ -619,13 +619,14 @@ def test_place_instance_respects_quantity() -> None:
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
     state = GuideState()
     state.parts.append(GuidePart(id="elbow", name="Bogen", quantity=1))
-    state.steps.append(
-        GuideStep(
-            number=1, text="t", display_text="d",
-            required_parts=["Bogen"],
-            sub_steps=[{"action": "attach", "part": "Bogen", "target": ""}],
+    for n in (1, 2):  # the plan needs 2 copies; the kit ships 1
+        state.steps.append(
+            GuideStep(
+                number=n, text="t", display_text="d",
+                required_parts=["Bogen"],
+                sub_steps=[{"action": "attach", "part": "Bogen", "target": ""}],
+            )
         )
-    )
     sess = GuideToolSession(
         ctx, mission="assembly", state=state, state_dir="/tmp/x",
         project_id=None, guide_assets=[], executor=None,
@@ -635,10 +636,10 @@ def test_place_instance_respects_quantity() -> None:
     sess._preview_cache["c2"] = dict(cand)
     r1 = asyncio.run(place_instance(sess, {"part_id": "elbow", "candidate_id": "c1", "step": 1}))
     assert r1["ok"], r1
-    # step quota also fires first (1/1 filled) — use premount path to hit
-    # the kit bound directly: a second premounted copy exceeds quantity=1
+    # step 2 legitimately needs a copy — but the kit's single elbow is
+    # already placed, so the kit bound fires before any step quota
     r2 = asyncio.run(
-        place_instance(sess, {"part_id": "elbow", "candidate_id": "c2", "step": 1, "premount": True})
+        place_instance(sess, {"part_id": "elbow", "candidate_id": "c2", "step": 2})
     )
     assert r2["ok"] is False and "ships only 1x" in r2["error"], r2
 
