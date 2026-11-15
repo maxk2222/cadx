@@ -301,6 +301,20 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
         hit = _fuzzy_pid(n, cands)
         if hit:
             return hit
+    # premounted host hardware: "vormontierter Adapter am linken unteren
+    # Anschluss" is a casing feature, never a kit part — token overlap
+    # ("adapter", "anschluss") must not drag it onto a mountable part
+    # (observed: the guard then rejected every casing mate and the agent
+    # burned its budget hunting adapter targets that don't exist).
+    # Exact/fuzzy hits above still win — an explicitly aliased premount
+    # name stays mapped to its real part.
+    if any(
+        w in n
+        for w in ("vormontiert", "premount", "pre mounted", "preinstall", "pre install")
+    ):
+        host = _host_part_id(s)
+        if host:
+            return host
     # keys shorter than 3 chars would containment-match almost anything
     hits = [(k, pid) for k, pid in cands if len(k) >= 3 and (k in n or n in k)]
     # token-overlap fallback: feature phrases ("Rohrbogen am linken
