@@ -2021,10 +2021,14 @@ def _score_pairs_for_instance(
 
 
 def _used_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
-    """Ports occupied on an instance — expanded over COINCIDENT ports:
-    extraction emits both the spigot's outer rim and its bore lip at the
-    same spot (male+female, same axis) — physically one connection, so
-    mating one occupies all."""
+    """Ports occupied on an instance — expanded over ports on the same
+    MOUTH. Extraction emits several rim detections per opening (outer rim,
+    bore lip, male+female surfaces) spread along the mouth's axis: a spigot
+    shows lips 25mm apart on one barrel. Physical occupancy is per mouth —
+    mating any lip occupies the whole opening — so the grouping key is the
+    axis LINE: ports sharing an axis (either direction) whose positions
+    differ only along it are the same mouth. Positions differing across the
+    axis are genuinely separate openings (a pipe's two ends, twin bores)."""
     used = {
         str(j.get("fixed_port"))
         for j in sess.state.assembly.joints
@@ -2042,12 +2046,23 @@ def _used_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
         p = next((q for q in fp.ports if q.name == name), None)
         if p is None:
             continue
+        pa = solver._unit(solver._v(p.axis))
+        pp = solver._v(p.pos)
         for q in fp.ports:
             if q.name in used:
                 continue
-            same_spot = max(abs(p.pos[i] - q.pos[i]) for i in range(3)) < 2.5
-            same_axis = abs(sum(p.axis[i] * q.axis[i] for i in range(3))) > 0.9
-            if same_spot and same_axis:
+            qa = solver._unit(solver._v(q.axis))
+            dot = float(np.dot(pa, qa))
+            if abs(dot) <= 0.9:
+                continue
+            d = solver._v(q.pos) - pp
+            same_spot = max(abs(float(d[i])) for i in range(3)) < 2.5
+            # lips spread along one barrel share the axis LINE in the same
+            # direction — a pipe's far end is collinear too but faces the
+            # opposite way, so the line-grouping requires signed alignment
+            off_axis = d - float(np.dot(d, pa)) * pa
+            same_line = dot > 0.9 and float(np.linalg.norm(off_axis)) < 2.5
+            if same_spot or same_line:
                 used.add(q.name)
     return used
 

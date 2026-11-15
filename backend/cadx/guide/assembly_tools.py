@@ -715,13 +715,7 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
     fixed = s.state.part_by_id(fixed_inst.part_id)
     if fixed is None:
         return {"ok": False, "error": _part_err(s)}
-    cands = solver.solve_attachment(
-        moving,
-        str(a.get("moving_port", "")),
-        fixed,
-        fixed_inst.transform or solver.identity_transform(),
-        str(a.get("target_port", "")),
-    )
+    cands = _attachment_candidates(s, a, moving, fixed, fixed_inst)
     if not cands:
         return _no_cand_err(moving, fixed)
     # collision-check each candidate against the placed set; also expose the
@@ -799,6 +793,23 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
     return out
 
 
+def _attachment_candidates(
+    s: GuideToolSession,
+    a: dict[str, Any],
+    moving: Any,
+    fixed: Any,
+    fixed_inst: Any,
+) -> list[dict[str, Any]]:
+    """Default-snap candidates plus the analytic cardinal rolls: a
+    multi-mouth fitting's roll DOF carries 'socket faces up', which the
+    solver baseline + 4 snaps rarely includes."""
+    tf = fixed_inst.transform or solver.identity_transform()
+    mp_name, fp_name = str(a.get("moving_port", "")), str(a.get("target_port", ""))
+    return solver.solve_attachment(
+        moving, mp_name, fixed, tf, fp_name
+    ) + solver.cardinal_roll_candidates(moving, mp_name, fixed, tf, fp_name)
+
+
 def _rank_candidates(
     s: GuideToolSession,
     a: dict[str, Any],
@@ -866,6 +877,12 @@ def _out_dir_hint(s: GuideToolSession, a: dict[str, Any], moving: Any) -> tuple[
             refs = (
                 (ss.target or "").split("(")[0].strip(),
                 (ss.target2 or "").split("(")[0].strip(),
+                # canonicalized bindings reach refs that name the part
+                # descriptively ("die freie Öffnung des Rohrbogens") —
+                # without them the follower's direction never reaches the
+                # roll choice here
+                str(getattr(ss, "target_pid", "") or ""),
+                str(getattr(ss, "target2_pid", "") or ""),
             )
             if moving.id not in refs:
                 continue

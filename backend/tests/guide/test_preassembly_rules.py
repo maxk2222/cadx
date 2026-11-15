@@ -1113,3 +1113,92 @@ def test_feeds_bridge_dir_silent_without_partner() -> None:
          "target2": "stub (Schritt 9)", "target2_pid": "stub", "text": "x"},
     ]
     assert pa._feeds_bridge_dir(sess, tasks, 0, tasks[0], "elbow") == []
+
+
+def test_used_ports_share_a_mouth_line() -> None:
+    """Mating one rim occupies the WHOLE mouth — extraction emits several
+    lip detections spread along one barrel (spigot lips 12mm apart on one
+    axis). A follower must not sleeve onto the same occupied mouth at a
+    different depth; only ports on other axis lines stay free."""
+    ports = [
+        # mouth A: +X socket, several rims along the axis
+        PortInfo(name="a0", pos=[5.0, 0.0, 0.0], axis=[1.0, 0.0, 0.0], kind="cylinder", gender="female"),
+        PortInfo(name="a1", pos=[30.0, 0.0, 0.0], axis=[1.0, 0.0, 0.0], kind="cylinder", gender="male"),
+        # mouth B: -Z spigot, lips spread along the barrel
+        PortInfo(name="b0", pos=[0.0, 0.0, -25.0], axis=[0.0, 0.0, -1.0], kind="cylinder", gender="female"),
+        PortInfo(name="b1", pos=[0.0, 0.0, -37.0], axis=[0.0, 0.0, -1.0], kind="cylinder", gender="male"),
+        PortInfo(name="b2", pos=[0.0, 0.0, -49.0], axis=[0.0, 0.0, -1.0], kind="cylinder", gender="male"),
+    ]
+    part = _part("elbow", ports)
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [part]
+    inst = AssemblyInstance(instance_id="elbow#1", part_id="elbow", transform=solver.identity_transform())
+    state.assembly = AssemblyState(
+        instances=[inst],
+        joints=[{"moving_instance": "x#1", "fixed_instance": "elbow#1",
+                 "moving_part": "x", "fixed_part": "elbow", "fixed_port": "b2"}],
+    )
+    sess = SimpleNamespace(state=state)
+    used = pa._used_port_names(sess, inst)
+    assert {"b0", "b1", "b2"} <= used, f"whole spigot mouth must be occupied — {used}"
+    assert not ({"a0", "a1"} & used), f"other mouth stays free — {used}"
+
+
+def test_used_ports_pipe_ends_stay_distinct() -> None:
+    """A pipe's two ends are collinear on its axis but face OPPOSITE ways —
+    same-line grouping must never eat the far end."""
+    ports = [
+        PortInfo(name="e0", pos=[0.0, 0.0, 0.0], axis=[0.0, 1.0, 0.0], kind="cylinder", gender="female"),
+        PortInfo(name="e1", pos=[0.0, 500.0, 0.0], axis=[0.0, -1.0, 0.0], kind="cylinder", gender="female"),
+        # a lip 8mm behind e0 on the same mouth, same direction
+        PortInfo(name="lip", pos=[0.0, -8.0, 0.0], axis=[0.0, 1.0, 0.0], kind="cylinder", gender="female"),
+    ]
+    part = _part("pipe", ports)
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [part]
+    inst = AssemblyInstance(instance_id="pipe#1", part_id="pipe", transform=solver.identity_transform())
+    state.assembly = AssemblyState(
+        instances=[inst],
+        joints=[{"moving_instance": "y#1", "fixed_instance": "pipe#1",
+                 "moving_part": "y", "fixed_part": "pipe", "fixed_port": "e0"}],
+    )
+    sess = SimpleNamespace(state=state)
+    used = pa._used_port_names(sess, inst)
+    assert "e0" in used and "lip" in used, used
+    assert "e1" not in used, f"far pipe end must stay free — {used}"
+
+
+def test_cardinal_rolls_reach_free_mouth() -> None:
+    """A 90° elbow's free socket must be able to face straight up even when
+    the solver's roll baseline is tilted — cardinal snaps alone can't get
+    there, the analytic rolls can."""
+    mp = PortInfo(name="spigot", pos=[0.0, 0.0, -49.0], axis=[0.0, 0.0, -1.0], kind="cylinder", gender="male")
+    sk = PortInfo(name="socket", pos=[30.0, 0.0, 0.0], axis=[1.0, 0.0, 0.0], kind="cylinder", gender="female")
+    elbow = _part("elbow", [mp, sk])
+    host_port = PortInfo(name="stub", pos=[0.0, 0.0, 0.0], axis=[0.0, 1.0, 0.0], kind="cylinder", gender="female")
+    host = _part("host", [host_port])
+    tf = solver.identity_transform()
+    cands = solver.cardinal_roll_candidates(elbow, "spigot", host, tf, "stub")
+    dirs = set()
+    for c in cands:
+        if not c["geometry_ok"]:
+            continue
+        m = np.asarray(c["transform"]).reshape(4, 4)
+        wa = m[0:3, 0:3] @ np.asarray([1.0, 0.0, 0.0])
+        dirs.add(tuple(round(float(x)) for x in wa))
+    assert (0, 0, 1) in dirs, f"socket must be able to face +Z — {dirs}"
+    # mate axis is +Y: ±Y facings are unreachable for a perpendicular mouth
+    assert (0, 1, 0) not in dirs and (0, -1, 0) not in dirs
+
+
+def test_cardinal_rolls_skip_single_axis_part() -> None:
+    """A straight pipe has no roll DOF — every roll produces the same free
+    ends, so no extra candidates are generated."""
+    ports = [
+        PortInfo(name="e0", pos=[0.0, 0.0, 0.0], axis=[0.0, 1.0, 0.0], kind="cylinder", gender="female"),
+        PortInfo(name="e1", pos=[0.0, 500.0, 0.0], axis=[0.0, -1.0, 0.0], kind="cylinder", gender="female"),
+    ]
+    pipe = _part("pipe", ports)
+    host_port = PortInfo(name="stub", pos=[0.0, 0.0, 0.0], axis=[0.0, 0.0, 1.0], kind="cylinder", gender="female")
+    host = _part("host", [host_port])
+    assert solver.cardinal_roll_candidates(pipe, "e0", host, solver.identity_transform(), "stub") == []

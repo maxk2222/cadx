@@ -15,6 +15,7 @@ algorithms are the same:
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -958,6 +959,87 @@ def solve_attachment(
             )
     out.sort(key=lambda c: (not c["geometry_ok"], c["joint_gap_mm"], c["rotation_degrees"]))
     return out
+
+
+_WORLD_DIRS = (
+    (1.0, 0.0, 0.0),
+    (-1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+    (0.0, -1.0, 0.0),
+    (0.0, 0.0, 1.0),
+    (0.0, 0.0, -1.0),
+)
+
+
+def cardinal_roll_candidates(
+    moving: GuidePart,
+    moving_port_name: str,
+    fixed: GuidePart,
+    fixed_transform: list[list[float]],
+    fixed_port_name: str,
+) -> list[dict[str, Any]]:
+    """Roll-exact candidates that face each free mouth along each world
+    axis. ``solve_attachment`` rotates around the world mate axis from a
+    geometry-determined baseline — 4 cardinal snaps only reach 'socket
+    faces up' when the baseline happens to be orthogonal, so a 90° elbow
+    can end up with its free socket stuck 28° off vertical and every
+    downstream mate doomed. For each flip convention's roll=0 baseline the
+    exact roll aligning the free mouth's azimuth with each world direction
+    is computable in closed form (rotation about the mate axis)."""
+    mp = _port(moving, moving_port_name)
+    tp = _port(fixed, fixed_port_name)
+    if mp is None or tp is None:
+        return []
+    tf = np.asarray(fixed_transform, dtype=float).reshape(4, 4)
+    w_mat = _unit(tf[0:3, 0:3] @ _v(tp.axis))
+    mp_line = _unit(_v(mp.axis))
+    mouths: list[np.ndarray] = []
+    for p in moving.ports:
+        a = _unit(_v(p.axis))
+        if abs(float(np.dot(a, mp_line))) > 0.9:
+            continue
+        if any(abs(float(np.dot(a, la))) > 0.9 for la in mouths):
+            continue
+        mouths.append(a)
+    if not mouths:
+        return []
+    snaps: set[float] = set()
+    mp_flip = mp.model_copy(update={"axis": [-a for a in mp.axis]})
+    for mpv in (mp, mp_flip):
+        m0 = transform_port_to_target(moving, mpv, tf, tp, fixed)
+        for la in mouths:
+            w0 = m0[0:3, 0:3] @ la
+            w0p = w0 - float(np.dot(w0, w_mat)) * w_mat
+            n0 = float(np.linalg.norm(w0p))
+            if n0 < 1e-3:
+                continue
+            w0p = w0p / n0
+            for d in _WORLD_DIRS:
+                dp = np.asarray(d, dtype=float)
+                dp = dp - float(np.dot(dp, w_mat)) * w_mat
+                nd = float(np.linalg.norm(dp))
+                if nd < 1e-3:
+                    continue
+                dp = dp / nd
+                if float(np.dot(w0p, dp)) > 0.998:
+                    continue  # already cardinal-facing at roll=0
+                ang = math.degrees(
+                    math.atan2(
+                        float(np.dot(np.cross(w0p, dp), w_mat)),
+                        float(np.dot(w0p, dp)),
+                    )
+                )
+                snaps.add(round(ang % 360.0, 1))
+    if not snaps:
+        return []
+    return solve_attachment(
+        moving,
+        moving_port_name,
+        fixed,
+        fixed_transform,
+        fixed_port_name,
+        rotation_snaps=sorted(snaps),
+    )
 
 
 def solve_multi_attachment(
