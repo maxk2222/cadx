@@ -16,7 +16,7 @@ Work in this order — note the checkpoint discipline: **every tagged part is du
    - `obj['cadx_premount'] = True` for initial-state hardware the manual never mounts
    Untagged mesh objects are treated as modeling clutter and hidden in step renders.
 5. `blender_sync_scene` — read back your scene into the guide state (auto-registers tagged parts, then syncs instances). Fix every binding error it reports (context-tag collisions, missing matrices).
-6. Set up ONE camera framing the whole assembly (plus a light), then `blender_render_step` per step — the render shows the cumulative state at that step and becomes its media image.
+6. `blender_render_step` per step — the render shows the cumulative state at that step and becomes its media image. The camera auto-frames the visible objects (orthographic, consistent angle); pass `direction` only when a step needs a specific face visible. Do NOT hand-tune a camera — if a render's framing looks wrong, pass a different `direction`, never blender_exec camera math.
 7. `blender_save` — persist guide.blend for crash recovery. Then `done_mission`.
 
 Rules:

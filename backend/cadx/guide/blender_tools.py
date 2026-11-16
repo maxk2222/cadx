@@ -577,23 +577,73 @@ async def blender_render_step(s: GuideToolSession, a: dict[str, Any]) -> dict[st
     step_no = int(a.get("step") or 0)
     if step_no <= 0:
         return {"ok": False, "error": "step must be >= 1"}
+    dirs = {
+        "iso": (1.0, -1.0, 0.65),
+        "front": (0.0, -1.0, 0.15),
+        "back": (0.0, 1.0, 0.15),
+        "right": (1.0, 0.0, 0.15),
+        "left": (-1.0, 0.0, 0.15),
+        "top": (0.0, 0.001, 1.0),
+    }
+    direction = str(a.get("direction") or "auto").lower()
+    if direction != "auto" and direction not in dirs:
+        return {
+            "ok": False,
+            "error": f"direction must be auto|{'|'.join(dirs)} — got {direction!r}",
+        }
+    dv = dirs.get(direction)
     try:
         client = blender_client.get_client()
         media = s.state_dir / "media"
         media.mkdir(parents=True, exist_ok=True)
         dst = media / f"step_{step_no:02d}_blender.png"
         host_dst = blender_client.to_host_path(dst)
+        # deterministic auto-frame: an orthographic camera fitted to the
+        # visible tagged objects — camera work is geometry, not judgment;
+        # free-form agents burned whole sessions on lens/track_quat
+        # fumbling (two build sessions killed by the repeat detector on
+        # camera-adjust→render→camera-adjust loops). "auto" keeps an
+        # existing camera's bearing so a deliberate view survives.
         code = (
             "import bpy\n"
+            "from mathutils import Vector\n"
             f"step_n = {step_no}\n"
-            "if bpy.context.scene.camera is None:\n"
-            "    raise RuntimeError('no camera in the scene — create one and "
-            "frame the assembly first')\n"
             "for o in bpy.context.scene.objects:\n"
             "    if o.type == 'MESH':\n"
             "        tag = o.get('cadx_part')\n"
             "        st = int(o.get('cadx_step') or 0)\n"
             "        o.hide_render = tag is None or st > step_n\n"
+            "vis = [o for o in bpy.context.scene.objects\n"
+            "       if o.type == 'MESH' and not o.hide_render]\n"
+            "if not vis:\n"
+            "    raise RuntimeError('no visible tagged objects at this step')\n"
+            "mn = Vector((1e18, 1e18, 1e18))\n"
+            "mx = Vector((-1e18, -1e18, -1e18))\n"
+            "for o in vis:\n"
+            "    for c in o.bound_box:\n"
+            "        w = o.matrix_world @ Vector(c)\n"
+            "        mn = Vector(map(min, mn, w))\n"
+            "        mx = Vector(map(max, mx, w))\n"
+            "center = (mn + mx) * 0.5\n"
+            "diag = max((mx - mn).length, 1.0)\n"
+            "cam = bpy.context.scene.camera\n"
+            "fresh = cam is None\n"
+            "if fresh:\n"
+            "    cam = bpy.data.objects.new('cadx_cam', bpy.data.cameras.new('cadx_cam'))\n"
+            "    bpy.context.scene.collection.objects.link(cam)\n"
+            "    bpy.context.scene.camera = cam\n"
+            f"dv = {dv!r}\n"
+            "if dv is None:\n"
+            "    d = (Vector((0, 0, 0)) if fresh else cam.location) - center\n"
+            "    dv = d.normalized() if d.length > 1e-3 else Vector((1, -1, 0.65)).normalized()\n"
+            "else:\n"
+            "    dv = Vector(dv).normalized()\n"
+            "cam.data.type = 'ORTHO'\n"
+            "cam.data.ortho_scale = diag * 1.15\n"
+            "cam.data.clip_start = 0.001\n"
+            "cam.data.clip_end = max(diag * 10.0, 10000.0)\n"
+            "cam.location = center + dv * (diag * 2.0)\n"
+            "cam.rotation_euler = (center - cam.location).to_track_quat('-Z', 'Y').to_euler()\n"
             f"bpy.context.scene.render.filepath = {host_dst!r}\n"
             "bpy.ops.render.render(write_still=True)\n"
         )
@@ -712,9 +762,15 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "blender_render_step",
         "Render the cumulative assembly state at a step: tagged objects "
         "visible up to that step, later-step and untagged MESH objects "
-        "hidden. Requires a camera in the scene. The PNG becomes the "
-        "step's media image.",
-        {"step": _num("step number to render")},
+        "hidden. The camera is auto-framed (orthographic fit to the "
+        "visible objects, consistent angle across steps) — no camera "
+        "setup needed. 'direction' selects the view bearing: auto keeps "
+        "an existing camera's bearing (default), or iso|front|back|left|"
+        "right|top. The PNG becomes the step's media image.",
+        {
+            "step": _num("step number to render"),
+            "direction": _s("view bearing: auto|iso|front|back|left|right|top"),
+        },
         ["step"],
     ),
     "blender_save": _fn(
