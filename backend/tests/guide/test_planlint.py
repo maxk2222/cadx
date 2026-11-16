@@ -576,6 +576,98 @@ def test_step_ref_consistent_pin_passes() -> None:
     assert not [f for f in fs if "pins '(Schritt" in f["text"]], fs
 
 
+def test_step_ref_blocker_names_resolved_sides() -> None:
+    """The blocker must name the RESOLVED sides — 'places that kind at
+    right/top while the ref says left/top' — not a bare 'different
+    side' (the vague text survived three repair rounds in the wild
+    because the model never learned which side the pin step places)."""
+    sess = _adapter_plan("Bohrung des linken oberen Adapters (Schritt 3)")
+    fs = plan_lint(sess)
+    side = [f for f in fs if "Schritt 3" in f["text"] and "side" in f["text"]]
+    assert side, fs
+    assert "right" in side[0]["text"] and "left" in side[0]["text"], side[0]
+
+
+def test_add_sub_step_refuses_pin_side_contradiction() -> None:
+    """Same check at write time: 'links (Schritt 3)' while step 3 places
+    the right instance is refused immediately, naming both sides."""
+    import asyncio
+
+    from cadx.guide.step_tools import add_sub_step
+
+    sess = _adapter_plan("irrelevant")
+    r = asyncio.run(
+        add_sub_step(
+            sess,
+            {
+                "step": 4,
+                "action": "insert",
+                "part": "pipe_l70",
+                "target": "linker oberer Adapter (Schritt 3)",
+            },
+        )
+    )
+    assert not r["ok"], r
+    assert "right" in r["error"] and "left" in r["error"], r["error"]
+    # refused write leaves no half-written sub-step
+    assert len(sess.state.step_by_number(4).sub_steps) == 1
+
+
+def test_add_sub_step_consistent_pin_and_forward_pin_pass() -> None:
+    import asyncio
+
+    from cadx.guide.step_tools import add_sub_step
+
+    sess = _adapter_plan("irrelevant")
+    r = asyncio.run(
+        add_sub_step(
+            sess,
+            {
+                "step": 4,
+                "action": "insert",
+                "part": "pipe_l70",
+                "target": "rechter oberer Adapter (Schritt 3)",
+            },
+        )
+    )
+    assert r["ok"], r
+    # forward pin — step 9 does not exist yet; lint judges, write tolerates
+    r = asyncio.run(
+        add_sub_step(
+            sess,
+            {
+                "step": 4,
+                "action": "insert",
+                "part": "pipe_l70",
+                "target": "ein Adapter (Schritt 9)",
+            },
+        )
+    )
+    assert r["ok"], r
+
+
+def test_update_sub_step_refuses_pin_contradiction_without_mutating() -> None:
+    import asyncio
+
+    from cadx.guide.step_tools import update_sub_step
+
+    sess = _adapter_plan("irrelevant")
+    step4 = sess.state.step_by_number(4)
+    before = step4.sub_steps[0].target
+    r = asyncio.run(
+        update_sub_step(
+            sess,
+            {
+                "step": 4,
+                "index": 0,
+                "target": "linker oberer Adapter (Schritt 3)",
+            },
+        )
+    )
+    assert not r["ok"], r
+    assert step4.sub_steps[0].target == before  # no half-edit
+
+
 def _u_plan(partner_bore: str):
     """Two-loop plan: anchor → adapter at a bore → elbow bends 'nach
     unten' → l500 descends → closing elbow bridges pipe + partner bore."""

@@ -363,6 +363,52 @@ async def update_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "step": num}
 
 
+def _target_pin_error(s: GuideToolSession, tgt: str) -> str | None:
+    """Eager form of the planlint pin check — a '(Schritt N)' ref whose
+    pinned step already exists must agree with it, or the write is
+    refused here, naming the resolved sides, instead of costing a lint
+    cycle and a repair mission later (observed: '(Schritt 9)' + 'links'
+    survived three repair rounds because the blocker never said WHICH
+    side step 9 places). A pin to a step that does not exist yet is a
+    forward reference — tolerated at write time; the lint judges."""
+    from cadx.guide.planlint import _axes_label, _pin_ref_conflict
+    from cadx.guide.preassembly import _STEP_REF
+
+    m = _STEP_REF.search(tgt or "")
+    if not m:
+        return None
+    n = int(m.group(1))
+    pinned = s.state.step_by_number(n)
+    if pinned is None:
+        return None
+    conflict = _pin_ref_conflict(s, pinned, tgt)
+    if conflict is None:
+        return None
+    if conflict["kind"] == "provides":
+        return (
+            f"target '{tgt[:60]}' pins '(Schritt {n})' but that step "
+            f"provides {conflict['provided'] or 'nothing'} — the ref's "
+            f"kind {conflict['ref_pool']} is placed elsewhere; fix the "
+            "pin or the referenced part"
+        )
+    sides = [_axes_label(ks) for ks in conflict["kind_sides"]]
+    return (
+        f"target '{tgt[:60]}' pins '(Schritt {n})' but step {n} places "
+        f"that kind at {sides} while the ref says "
+        f"{_axes_label(conflict['ref_axes'])} — pin the step that "
+        "places the matching side, or fix the side word"
+    )
+
+
+def _pin_check(s: GuideToolSession, target: str, target2: str) -> str | None:
+    for tgt in (target, target2):
+        if tgt:
+            err = _target_pin_error(s, tgt)
+            if err:
+                return err
+    return None
+
+
 async def add_sub_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     step = s.state.step_by_number(int(a.get("step", 0)))
     if step is None:
@@ -373,6 +419,9 @@ async def add_sub_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
     part = str(a.get("part", "")).strip()
     if not part:
         return {"ok": False, "error": "part is required"}
+    pin_err = _pin_check(s, str(a.get("target", "")), str(a.get("target2", "")))
+    if pin_err:
+        return {"ok": False, "error": pin_err}
     step.sub_steps.append(
         GuideSubStep(
             action=action,
@@ -398,11 +447,17 @@ async def update_sub_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
             f"has {len(step.sub_steps)} sub_steps",
         }
     ss = step.sub_steps[idx]
+    if "action" in a and str(a["action"]) not in _SUB_ACTIONS:
+        return {"ok": False, "error": f"action must be one of {_SUB_ACTIONS}"}
+    # validate the POST-write target before mutating — a refused update
+    # must not leave the sub-step half-edited
+    new_target = str(a["target"]) if "target" in a else (ss.target or "")
+    new_target2 = str(a["target2"]) if "target2" in a else (ss.target2 or "")
+    pin_err = _pin_check(s, new_target, new_target2)
+    if pin_err:
+        return {"ok": False, "error": pin_err}
     if "action" in a:
-        action = str(a["action"])
-        if action not in _SUB_ACTIONS:
-            return {"ok": False, "error": f"action must be one of {_SUB_ACTIONS}"}
-        ss.action = action
+        ss.action = str(a["action"])
     for k in ("part", "target", "target2", "text", "side"):
         if k in a:
             setattr(ss, k, str(a[k]))

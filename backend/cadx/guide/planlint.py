@@ -744,6 +744,75 @@ def _lint_side_coverage(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
     return findings
 
 
+def _axes_label(axes: dict[int, float]) -> str:
+    """Render a {axis: sign} set as the side words the model writes —
+    'left/front/top' — so a pin/side blocker names the RESOLVED sides
+    instead of 'a different side' (the bare message survived three
+    repair cycles: the model renamed the text but kept the wrong pin
+    because it never learned WHICH side the pinned step places)."""
+    names = {
+        0: {-1: "left", 1: "right"},
+        1: {-1: "back", 1: "front"},
+        2: {-1: "bottom", 1: "top"},
+    }
+    return "/".join(
+        names.get(a, {}).get(int(sg), f"ax{a}{int(sg):+d}")
+        for a, sg in sorted(axes.items())
+    )
+
+
+def _pin_ref_conflict(
+    sess: GuideToolSession, pinned: Any, tgt: str
+) -> dict[str, Any] | None:
+    """Deterministic contradiction between a '(Schritt N)' pinned ref and
+    the pinned step's content — shared between planlint and the
+    sub-step write path so an inconsistent ref is refused when it is
+    written, not one lint cycle later.
+
+    Returns ``None`` when consistent (or when the ref is too vague to
+    judge — vague refs are the preassembly resolver's problem, not a
+    plan defect); else a conflict dict:
+      ``{"kind": "provides", "provided": [...], "ref_pool": [...]}``
+      ``{"kind": "side", "ref_axes": {...}, "kind_sides": [{...}]}``
+    """
+    from cadx.guide.preassembly import _dir_axes, _kind_pool
+
+    ref_pool = _kind_pool(sess, tgt)
+    ref_axes = dict(_dir_axes(tgt))
+    provided: set[str] = set()
+    kind_sides: list[dict[int, float]] = []
+    for pss in pinned.sub_steps or []:
+        pid = _resolve_part(sess, pss.part, pinned.number)
+        if not pid:
+            continue
+        provided.add(pid)
+        if pss.action in _PLACE_ACTIONS and (
+            not ref_pool or pid in ref_pool
+        ):
+            kind_sides.append(
+                dict(_dir_axes(f"{pss.target or ''} {pss.part or ''}"))
+            )
+    for nm in pinned.required_parts or []:
+        pid = _resolve_part(sess, nm, pinned.number)
+        if pid:
+            provided.add(pid)
+    if ref_pool and not (ref_pool & provided):
+        return {
+            "kind": "provides",
+            "provided": sorted(provided),
+            "ref_pool": sorted(ref_pool),
+        }
+    # side check: a ref naming 'rechter … (Schritt N)' is consistent iff
+    # SOME kind-compatible substep of step N carries no opposite sign on
+    # any ref axis
+    if ref_axes and kind_sides and not any(
+        not any(ks.get(a) == -sg for a, sg in ref_axes.items())
+        for ks in kind_sides
+    ):
+        return {"kind": "side", "ref_axes": ref_axes, "kind_sides": kind_sides}
+    return None
+
+
 def _lint_step_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
     """'(<part> aus) Schritt N' references must pin a step that actually
     PROVIDES the ref's kind — the pin is the strongest instance
@@ -752,7 +821,7 @@ def _lint_step_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, 
     'rechter Adapter (Schritt 2)' bound the 'linker' adapter step 2
     placed). Manuals number by figure, plans by guide step — a mismatch
     is a plan defect the steps mission must fix, not a runtime guess."""
-    from cadx.guide.preassembly import _STEP_REF, _dir_axes, _kind_pool
+    from cadx.guide.preassembly import _STEP_REF
 
     findings: list[dict[str, Any]] = []
     by_no = {st.number: st for st in steps}
@@ -765,7 +834,6 @@ def _lint_step_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, 
                 if not m:
                     continue
                 n = int(m.group(1))
-                ref_pool = _kind_pool(sess, tgt)
                 pinned = by_no.get(n)
                 if pinned is None:
                     findings.append(
@@ -779,58 +847,37 @@ def _lint_step_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, 
                         }
                     )
                     continue
-                # kinds step N provides: placement substep parts +
-                # step-level required_parts (premount/context sources)
-                provided: set[str] = set()
-                ref_axes = dict(_dir_axes(tgt))
-                kind_sides: list[dict[int, float]] = []
-                for pss in pinned.sub_steps or []:
-                    pid = _resolve_part(sess, pss.part, n)
-                    if not pid:
-                        continue
-                    provided.add(pid)
-                    if pss.action in _PLACE_ACTIONS and (
-                        not ref_pool or pid in ref_pool
-                    ):
-                        kind_sides.append(
-                            dict(_dir_axes(f"{pss.target or ''} {pss.part or ''}"))
-                        )
-                for nm in pinned.required_parts or []:
-                    pid = _resolve_part(sess, nm, n)
-                    if pid:
-                        provided.add(pid)
-                if ref_pool and not (ref_pool & provided):
+                conflict = _pin_ref_conflict(sess, pinned, tgt)
+                if conflict is None:
+                    continue
+                if conflict["kind"] == "provides":
                     findings.append(
                         {
                             "mission": "steps",
                             "severity": "blocker",
                             "text": f"step {st.number}: target "
                             f"'{tgt[:60]}' pins '(Schritt {n})' but that "
-                            f"step provides {sorted(provided) or 'nothing'} — "
-                            f"the ref's kind {sorted(ref_pool)} is placed "
+                            f"step provides {conflict['provided'] or 'nothing'} — "
+                            f"the ref's kind {conflict['ref_pool']} is placed "
                             "elsewhere. Fix the reference (plan step "
                             "number or drop the pin)",
                         }
                     )
                     continue
-                # side check: a ref naming 'rechter … (Schritt N)' is
-                # consistent iff SOME kind-compatible substep of step N
-                # carries no opposite sign on any ref axis
-                if ref_axes and kind_sides and not any(
-                    not any(ks.get(a) == -sg for a, sg in ref_axes.items())
-                    for ks in kind_sides
-                ):
-                    findings.append(
-                        {
-                            "mission": "steps",
-                            "severity": "blocker",
-                            "text": f"step {st.number}: target "
-                            f"'{tgt[:60]}' pins '(Schritt {n})' but "
-                            f"step {n} places that kind at a different "
-                            "side — the pin or the side word is wrong; "
-                            "fix the reference",
-                        }
-                    )
+                findings.append(
+                    {
+                        "mission": "steps",
+                        "severity": "blocker",
+                        "text": f"step {st.number}: target "
+                        f"'{tgt[:60]}' pins '(Schritt {n})' but "
+                        f"step {n} places that kind at "
+                        f"{[_axes_label(ks) for ks in conflict['kind_sides']]} "
+                        f"while the ref says "
+                        f"{_axes_label(conflict['ref_axes'])} — pin the "
+                        "step that places the matching side, or fix "
+                        "the side word",
+                    }
+                )
     return findings
 
 
