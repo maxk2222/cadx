@@ -347,6 +347,14 @@ async def _export_register(
         m = trimesh.load(glb_path)
         if hasattr(m, "to_geometry"):
             m = m.to_geometry()
+        if m.bounds is None:
+            return None, missing, {
+                "ok": False,
+                "error": f"exported GLB for '{pid}' has no geometry — the "
+                "named objects carry no mesh data (empties/group parents) or "
+                "are not linked into the scene collection. Register the mesh "
+                "objects themselves (or join the group into one mesh first).",
+            }
         # bake inverse of the FIRST object's matrix_world -> local frame;
         # the mesh lives in glTF coords, so the matrix converts first
         first_matrix = _np.asarray(next(iter(found.values())), dtype=float)
@@ -403,6 +411,8 @@ async def _export_register(
         tm = trimesh.load(mesh_path)
         if hasattr(tm, "to_geometry"):
             tm = tm.to_geometry()
+        if tm.bounds is None:
+            raise ValueError("normalized mesh has no geometry")
         part.bbox_min = [float(v) for v in tm.bounds[0]]
         part.bbox_max = [float(v) for v in tm.bounds[1]]
         part.status = "analyzed"
