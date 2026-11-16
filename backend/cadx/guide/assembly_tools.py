@@ -124,7 +124,13 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "reset_step",
         "Remove ALL placements of one step — use when the step's assembly "
         "went wrong and must be redone.",
-        {"step": _i("step number")},
+        {
+            "step": _i("step number"),
+            "confirm_demolish": _b(
+                "required when the step holds instances the geometry audit "
+                "does NOT flag — request_repair is the surgical alternative"
+            ),
+        },
         ["step"],
     ),
     "render_assembly": _fn(
@@ -1757,6 +1763,23 @@ def _flagged_instances(s: GuideToolSession) -> set[str]:
 async def reset_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     step_no = str(int(a.get("step", 0)))
     ids = list(s.state.assembly.step_instances.get(step_no, []))
+    # same demolition gate as unplace_instance: while the audit flags
+    # instances SOMEWHERE, resetting a step that holds unflagged ones
+    # destroys healthy geometry along with the defect — request_repair
+    # removes only the flagged. A clean audit (flagged empty) leaves
+    # reset as a legitimate repositioning tool.
+    flagged = _flagged_instances(s)
+    unflagged = [iid for iid in ids if iid not in flagged]
+    if flagged and unflagged and not a.get("confirm_demolish"):
+        return {
+            "ok": False,
+            "error": f"step {step_no} holds unflagged instances {unflagged[:6]} "
+            f"— resetting demolishes healthy placements (flagged overall: "
+            f"{sorted(flagged)[:8]}). request_repair({step_no}) removes only "
+            "the flagged ones; pass confirm_demolish=true for a full reset.",
+            "flagged": sorted(flagged),
+            "unflagged": sorted(unflagged),
+        }
     for iid in ids:
         inst = _inst_by_id(s, iid)
         if inst is None:  # legacy rows stored part_id, not instance_id

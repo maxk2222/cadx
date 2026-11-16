@@ -1312,6 +1312,14 @@ def test_unplace_demolish_gate_and_request_repair(tmp_path, monkeypatch) -> None
     r = asyncio.run(at.request_repair(sess, {"step": 8}))
     assert r["ok"] and r["unplaced"] == ["pipe#1"], r
     assert {i.instance_id for i in state.assembly.instances} == {"elbow#1"}
+    # reset_step obeys the same gate — a step holding unflagged instances
+    # refuses full demolition without the explicit opt-out
+    state.assembly.instances.append(insts[1])
+    state.assembly.step_instances["8"] = ["elbow#1", "pipe#1"]
+    r = asyncio.run(at.reset_step(sess, {"step": 8}))
+    assert r["ok"] is False and "unflagged" in r, r
+    r = asyncio.run(at.reset_step(sess, {"step": 8, "confirm_demolish": True}))
+    assert r["ok"] is True and not state.assembly.instances
 
 
 def test_dedup_tasks_drops_exact_duplicates(tmp_path) -> None:

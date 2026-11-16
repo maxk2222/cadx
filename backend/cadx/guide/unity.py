@@ -363,6 +363,7 @@ def build_unity_guide(state) -> dict[str, Any]:
                         "moving_port",
                         "fixed_port",
                         "bridge",
+                        "materialized",
                     )
                     if j.get(k) is not None
                 },

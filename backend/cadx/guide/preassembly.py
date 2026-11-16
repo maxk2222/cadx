@@ -1575,6 +1575,10 @@ def _attempt_quality(sess: GuideToolSession, report: dict[str, Any]) -> tuple[fl
         legs_by_inst[mv_id] = legs_by_inst.get(mv_id, 0) + 1
     open_mates = 0
     for p in report["placed"]:
+        # only DECLARED mates count — anchors, premounts (ref-placed
+        # initial-state hardware) and free/env placements expect no joint
+        if p.get("premount") or not str(p.get("target") or "").strip():
+            continue
         want = 2 if str(p.get("target2") or "").strip() else 1
         open_mates += max(0, want - legs_by_inst.get(str(p.get("instance_id") or ""), 0))
     return (
