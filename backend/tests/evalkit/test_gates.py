@@ -1231,12 +1231,18 @@ def test_guide_mate_quality_gate():
     doc = _guide_doc()
     doc["joints"] = [
         {
-            "moving_part": "adapter", "fixed_part": "casing", "step": 2,
-            "gap_mm": 0.0, "normal_dot": -1.0,
+            "moving_part": "adapter",
+            "fixed_part": "casing",
+            "step": 2,
+            "gap_mm": 0.0,
+            "normal_dot": -1.0,
         },
         {
-            "moving_part": "pipe_l70", "fixed_part": "adapter", "step": 4,
-            "gap_mm": 8.2, "normal_dot": -1.0,  # partial socket engagement
+            "moving_part": "pipe_l70",
+            "fixed_part": "adapter",
+            "step": 4,
+            "gap_mm": 8.2,
+            "normal_dot": -1.0,  # partial socket engagement
         },
     ]
     o.extras["guide"] = doc
@@ -1263,3 +1269,36 @@ def test_guide_mate_quality_gate():
     gates = run_gates([{"type": "guide_mate_quality"}], o, wall_s=1.0)
     assert gates[0].ok is False
     assert any("buried" in b for b in gates[0].measured["bad"])
+
+
+def test_guide_gates_resolve_model_ref_and_id_aliases():
+    """The display name is the model's choice — the uploaded FILE stem is
+    authoritative evidence of what the part IS. 'wärmepumpe' registered
+    from Casing.glb must satisfy casing-family part and joint needles."""
+    o = _out()
+    doc = _guide_doc()
+    doc["parts"] = [
+        {
+            "part_id": "heat_pump",
+            "name": "Waermepumpe",
+            "model_ref": "uuid__Casing_mm.glb",
+        },
+        {
+            "part_id": "adapter_rn22",
+            "name": "Adapter DN22",
+            "model_ref": "uuid__Adapter_rn22_mm.glb",
+        },
+    ]
+    doc["joints"] = [
+        {"moving_part": "adapter_rn22", "fixed_part": "heat_pump", "step": 2},
+    ]
+    o.extras["guide"] = doc
+    gates = run_gates(
+        [
+            {"type": "guide_parts", "all": [["casing", "gehause"], "adapter"]},
+            {"type": "guide_joints", "all": [["adapter", ["casing", "gehause"]]]},
+        ],
+        o,
+        wall_s=1.0,
+    )
+    assert all(g.ok is True for g in gates), [g.measured for g in gates]

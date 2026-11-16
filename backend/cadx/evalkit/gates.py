@@ -1206,19 +1206,40 @@ def _gate_outcome(  # noqa: C901
                 detail="no unity_guide.json on the outcome — guide emit never ran",
             )
         joints = [j for j in doc.get("joints") or [] if isinstance(j, dict)]
+        parts = [p for p in doc.get("parts") or [] if isinstance(p, dict)]
+        # resolve part ids through their authoritative identity: display
+        # name AND uploaded file stem — the model may call the casing part
+        # 'wärmepumpe' while the asset file is still 'Casing.glb'; a joint
+        # onto it IS an adapter→casing mate whatever the id says
+        id2hay = {
+            str(p.get("part_id") or "").lower(): (
+                f"{p.get('part_id', '')} {p.get('name', '')} {p.get('model_ref', '')}"
+            ).lower()
+            for p in parts
+        }
         pairs = [
-            (f"{j.get('moving_part', '')}".lower(), f"{j.get('fixed_part', '')}".lower())
+            (
+                id2hay.get(
+                    f"{j.get('moving_part', '')}".lower(), f"{j.get('moving_part', '')}".lower()
+                ),
+                id2hay.get(
+                    f"{j.get('fixed_part', '')}".lower(), f"{j.get('fixed_part', '')}".lower()
+                ),
+            )
             for j in joints
         ]
         missing = []
         for pair in g.get("all") or []:
             if not isinstance(pair, (list, tuple)) or len(pair) != 2:
                 continue
-            mov_grp = [str(v).lower() for v in (pair[0] if isinstance(pair[0], list) else [pair[0]])]
-            fix_grp = [str(v).lower() for v in (pair[1] if isinstance(pair[1], list) else [pair[1]])]
+            mov_grp = [
+                str(v).lower() for v in (pair[0] if isinstance(pair[0], list) else [pair[0]])
+            ]
+            fix_grp = [
+                str(v).lower() for v in (pair[1] if isinstance(pair[1], list) else [pair[1]])
+            ]
             hit = any(
-                any(m in mp for m in mov_grp) and any(f in fp for f in fix_grp)
-                for mp, fp in pairs
+                any(m in mp for m in mov_grp) and any(f in fp for f in fix_grp) for mp, fp in pairs
             )
             if not hit:
                 missing.append(f"{mov_grp[0]}→{fix_grp[0]}")
@@ -1254,9 +1275,7 @@ def _gate_outcome(  # noqa: C901
             if nd is not None and float(nd) > min_nd:
                 bad.append(f"{j.get('moving_instance')}→{j.get('fixed_instance')}: nd {nd}")
             if j.get("buried"):
-                bad.append(
-                    f"{j.get('moving_instance')}: buried {j.get('buried_frac')}"
-                )
+                bad.append(f"{j.get('moving_instance')}: buried {j.get('buried_frac')}")
         return GateResult(
             name,
             not bad,
@@ -1327,7 +1346,13 @@ def _gate_outcome(  # noqa: C901
             return GateResult(name, ok, measured=measured, expected={**expected, "all": needles})
         if name == "guide_parts":
             parts = [p for p in doc.get("parts") or [] if isinstance(p, dict)]
-            hay = [f"{p.get('part_id', '')} {p.get('name', '')}".lower() for p in parts]
+            # model_ref carries the uploaded file's stem — authoritative
+            # evidence of what the part IS when the display name differs
+            # ('wärmepumpe' registered from Casing.glb IS casing-family)
+            hay = [
+                f"{p.get('part_id', '')} {p.get('name', '')} {p.get('model_ref', '')}".lower()
+                for p in parts
+            ]
             # `all` entries may be synonym lists — a German manual yields
             # "rohr_*"/"bogen_*" part ids, so expected kinds must match ANY
             # listed alternative per group
