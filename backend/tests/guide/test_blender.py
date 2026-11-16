@@ -277,10 +277,19 @@ async def test_scene_gate_unreachable(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_scene_gate_buried_blocker(tmp_path, monkeypatch):
-    """A non-premounted instance buried inside another part's world AABB
-    blocks; shallow joint overlaps stay warnings."""
+    """A non-premounted instance whose solid sits inside another part's
+    solid blocks; bbox overlap alone only warns."""
+    import trimesh
+
     big = _boxed_part("casing", 200.0)
     small = _boxed_part("nut", 10.0)
+    for p, ext in ((big, (200, 200, 200)), (small, (10, 10, 10))):
+        mesh = trimesh.creation.box(extents=ext)
+        mp = tmp_path / f"{p.id}.glb"
+        mesh.export(mp)
+        p.mesh_path = str(mp)
+        p.bbox_min = [-ext[0] / 2, -ext[1] / 2, -ext[2] / 2]
+        p.bbox_max = [ext[0] / 2, ext[1] / 2, ext[2] / 2]
     sess = _sess(tmp_path, parts=[big, small])
     ident = [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)]
     scene = {
@@ -293,8 +302,8 @@ async def test_scene_gate_buried_blocker(tmp_path, monkeypatch):
             return "__CADX__" + json.dumps(scene)
     monkeypatch.setattr(blender_client, "get_client", lambda: FakeClient())
     blockers, manifest = await blender_check.run_scene_gate(sess)
-    assert any("inside" in b and "bounding box" in b for b in blockers)
-    assert manifest["overlaps"]
+    assert any("solid" in b for b in blockers)
+    assert manifest["overlaps"][0]["solid_fraction"] == 1.0
 
 
 # -- mode plumbing ----------------------------------------------------------- #
@@ -428,3 +437,58 @@ def test_sync_auto_registers_tagged_parts(tmp_path, monkeypatch):
     assert res["auto_registered"] == ["elbow"]
     insts = {i.instance_id: i for i in sess.state.assembly.instances}
     assert "casing#1" in insts and "elbow#1" in insts
+
+
+def test_overlap_solid_check_frees_socketed_pipe(tmp_path):
+    """A thin pipe passing through an elbow's empty bbox corner is a
+    joint, not a burial — only measured SOLID interpenetration blocks."""
+    import trimesh
+
+    elbow = trimesh.creation.annulus(r_min=8, r_max=12, height=20)  # hollow ring
+    elbow_path = tmp_path / "elbow.glb"
+    elbow.export(elbow_path)
+    pipe_path = tmp_path / "pipe.glb"
+    trimesh.creation.cylinder(radius=4, height=30).export(pipe_path)
+
+    p_elbow = _part("elbow")
+    p_elbow.mesh_path = str(elbow_path)
+    p_elbow.bbox_min = [float(v) for v in elbow.bounds[0]]
+    p_elbow.bbox_max = [float(v) for v in elbow.bounds[1]]
+    p_pipe = _part("pipe")
+    p_pipe.mesh_path = str(pipe_path)
+    p_pipe.bbox_min = [-4.0, -4.0, -15.0]
+    p_pipe.bbox_max = [4.0, 4.0, 15.0]
+
+    # pipe centered in the ring's hollow — ~100% bbox overlap with the
+    # elbow, ~0% solid interpenetration -> no blocker
+    inst_e = _inst("elbow#1", "elbow", step=1)
+    inst_p = _inst("pipe#1", "pipe", step=2)
+    manifest = {"overlaps": [], "warnings": []}
+    blockers = blender_check._overlap_scan(
+        [inst_e, inst_p], {"elbow": p_elbow, "pipe": p_pipe}, manifest
+    )
+    assert blockers == []
+    solid = manifest["overlaps"][0].get("solid_fraction")
+    assert solid is not None and solid < blender_check._SOLID_BURY_FRACTION
+
+
+def test_overlap_solid_check_flags_true_burial(tmp_path):
+    import trimesh
+
+    big_path = tmp_path / "big.glb"
+    trimesh.creation.box(extents=(40, 40, 40)).export(big_path)
+    small_path = tmp_path / "small.glb"
+    trimesh.creation.box(extents=(20, 20, 20)).export(small_path)
+    p_big, p_small = _part("big"), _part("small")
+    p_big.mesh_path, p_small.mesh_path = str(big_path), str(small_path)
+    p_big.bbox_min, p_big.bbox_max = [-20, -20, -20], [20, 20, 20]
+    p_small.bbox_min, p_small.bbox_max = [-10, -10, -10], [10, 10, 10]
+
+    manifest = {"overlaps": [], "warnings": []}
+    blockers = blender_check._overlap_scan(
+        [_inst("big#1", "big", step=1), _inst("small#1", "small", step=2)],
+        {"big": p_big, "small": p_small},
+        manifest,
+    )
+    assert len(blockers) == 1 and "small#1" in blockers[0]
+    assert manifest["overlaps"][0]["solid_fraction"] == 1.0

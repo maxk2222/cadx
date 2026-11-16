@@ -27,6 +27,13 @@ from cadx.logging import get_logger
 log = get_logger(__name__)
 
 _BURY_FRACTION = 0.5
+# solid-level confirmation: the bbox scan is only a cheap filter — a
+# DN22 pipe socketed into an elbow can score >90% AABB overlap while
+# interpenetrating almost none of the elbow's wall material. "Buried"
+# means this share of the smaller part's VOLUME inside the other's
+# solid — measured, not inferred.
+_SOLID_BURY_FRACTION = 0.30
+_BURY_SAMPLES = 400
 
 
 def _world_aabb(inst: Any, part: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -96,12 +103,52 @@ def _duplicate_warnings(instances: list) -> list[str]:
     return out
 
 
+def _load_part_mesh(part: Any) -> Any:
+    """part.mesh_path -> trimesh (cached by the caller's dict)."""
+    import trimesh
+
+    m = trimesh.load(part.mesh_path)
+    if hasattr(m, "to_geometry"):
+        m = m.to_geometry()
+    return m
+
+
+def _solid_buried_fraction(small: Any, big: Any) -> float | None:
+    """Share of ``small``'s volume inside ``big``'s solid — measured via
+    boolean intersection volume, with interior point sampling as the
+    fallback when the boolean engine refuses (non-watertight meshes).
+    ``None`` = unmeasurable — callers never block on an unmeasured
+    suspicion, they warn."""
+    try:
+        v_small = float(small.volume)
+        if v_small > 1e-9:
+            inter = small.intersection(big)
+            if inter is not None:
+                return max(0.0, float(inter.volume) / v_small)
+    except Exception:
+        pass
+    try:
+        lo, hi = small.bounds
+        rng = np.random.default_rng(0)
+        pts = rng.uniform(lo, hi, (_BURY_SAMPLES * 4, 3))
+        inside_small = np.asarray(small.contains(pts), dtype=bool)
+        core = pts[inside_small]
+        if len(core) < 20:
+            return None
+        return float(np.mean(np.asarray(big.contains(core), dtype=bool)))
+    except Exception:
+        return None
+
+
 def _overlap_scan(instances: list, parts: dict, manifest: dict) -> list[str]:
     """World-AABB overlap scan between instances of DIFFERENT parts —
     joint interpenetration is normal (warning); a mostly-buried
-    non-premounted instance is a placement error (blocker)."""
+    non-premounted instance is a placement error (blocker). Bbox only
+    SUSPECTS burial — the verdict needs the measured solid overlap,
+    because socketed joints legitimately fill a neighbor's bounding box."""
     insts = {i.instance_id: i for i in instances}
     aabbs: dict[str, tuple] = {}
+    meshes: dict[str, Any] = {}
     for iid, inst in insts.items():
         part = parts.get(inst.part_id)
         if part is None or part.bbox_min == part.bbox_max:
@@ -120,18 +167,42 @@ def _overlap_scan(instances: list, parts: dict, manifest: dict) -> list[str]:
             frac = _overlap_fraction(aabbs[ids[i]], aabbs[ids[j]])
             if frac <= 0.0:
                 continue
-            manifest["overlaps"].append(
-                {"a": ids[i], "b": ids[j], "fraction": round(frac, 3)}
-            )
+            entry = {"a": ids[i], "b": ids[j], "fraction": round(frac, 3)}
+            manifest["overlaps"].append(entry)
             if frac >= _BURY_FRACTION:
                 va = float(np.prod(np.maximum(aabbs[ids[i]][1] - aabbs[ids[i]][0], 0.0)))
                 vb = float(np.prod(np.maximum(aabbs[ids[j]][1] - aabbs[ids[j]][0], 0.0)))
                 buried = ia if va <= vb else ib
-                if not buried.premounted:
+                other = ib if buried is ia else ia
+                if buried.premounted:
+                    continue
+                solid = None
+                try:
+                    for inst in (buried, other):
+                        if inst.instance_id not in meshes:
+                            part = parts[inst.part_id]
+                            m = _load_part_mesh(part).copy()
+                            m.apply_transform(np.asarray(inst.transform, dtype=float))
+                            meshes[inst.instance_id] = m
+                    solid = _solid_buried_fraction(
+                        meshes[buried.instance_id], meshes[other.instance_id]
+                    )
+                except Exception:
+                    solid = None
+                entry["solid_fraction"] = round(solid, 3) if solid is not None else None
+                if solid is not None and solid >= _SOLID_BURY_FRACTION:
                     blockers.append(
-                        f"{buried.instance_id} is {frac * 100:.0f}% inside "
-                        f"{ids[j] if buried is ia else ids[i]}'s bounding box "
-                        "— reposition the buried object in Blender."
+                        f"{buried.instance_id}: {solid * 100:.0f}% of its "
+                        f"volume sits inside {other.instance_id}'s solid "
+                        f"(bbox overlap {frac * 100:.0f}%) — reposition the "
+                        "buried object in Blender."
+                    )
+                elif solid is None:
+                    manifest["warnings"].append(
+                        f"{buried.instance_id} vs {other.instance_id}: "
+                        f"{frac * 100:.0f}% bbox overlap but the solid-level "
+                        "check could not measure — verify the placement "
+                        "visually in the render."
                     )
     return blockers
 
@@ -201,8 +272,18 @@ async def run_scene_gate(s: Any) -> tuple[list[str], dict[str, Any]]:
 
     manifest["warnings"].extend(
         f"{o['a']} vs {o['b']}: {o['fraction'] * 100:.0f}% bbox overlap"
+        + (
+            f" (solid check: only {o['solid_fraction'] * 100:.0f}% real "
+            "interpenetration — joint, not burial)"
+            if o.get("solid_fraction") is not None
+            else ""
+        )
         for o in manifest["overlaps"]
         if o["fraction"] < _BURY_FRACTION
+        or (
+            o.get("solid_fraction") is not None
+            and o["solid_fraction"] < _SOLID_BURY_FRACTION
+        )
     )
     manifest["blockers"] = blockers
     manifest["renders"] = sorted(
