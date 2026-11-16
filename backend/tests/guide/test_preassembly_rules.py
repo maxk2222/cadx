@@ -1601,6 +1601,73 @@ def test_bridge_search_rejects_same_instance_legs() -> None:
     assert i1.part_id == "pipe_tall" and i2.part_id == "pipe_short", (i1.instance_id, i2.instance_id)
 
 
+def test_candidate_burial_exempts_both_bridge_legs() -> None:
+    """Retry regression: a bridge's second mouth legitimately overlaps its
+    tip's box — counting it as burial killed every honest retry
+    (buried_frac 0.53 on the l70 tip while the close was 0.55mm). The
+    gate must exempt BOTH mate instances, not only leg-1's."""
+    from cadx.guide.assembly_tools import _candidate_burial
+    from cadx.guide.state import (
+        AssemblyInstance,
+        AssemblyState,
+        GuideState,
+    )
+
+    state = GuideState(output_dir="/tmp/x")
+    tip = _part(
+        "pipe_l70",
+        [PortInfo(name="tip", pos=[0, 35, 0], axis=[0, 1, 0], kind="cylinder", radius=5)],
+        bbox=((-11, -40, -11), (11, 40, 11)),
+    )
+    riser = _part(
+        "pipe_l500",
+        [PortInfo(name="top", pos=[0, 0, 500], axis=[0, 0, 1], kind="cylinder", radius=5)],
+        bbox=((-11, -11, 0), (11, 11, 500)),
+    )
+    elbow = _part(
+        "elbow",
+        [
+            PortInfo(name="mA", pos=[49, 0, 0], axis=[1, 0, 0], kind="cylinder", radius=5.5, gender="male"),
+            PortInfo(name="mB", pos=[0, 0, -49], axis=[0, 0, -1], kind="cylinder", radius=5.5, gender="male"),
+        ],
+        bbox=((-10, -10, -55), (55, 10, 10)),
+    )
+    state.parts = [tip, riser, elbow]
+    # tip at (-47, 120, 505): free end +Y at y=155 — riser top directly
+    # below the bridge arm, elbow mated on riser reaching -Y onto the tip
+    state.assembly = AssemblyState(
+        instances=[
+            AssemblyInstance(
+                instance_id="pipe_l70#1", part_id="pipe_l70", placed_in_step=3,
+                transform=[[1, 0, 0, -47], [0, 1, 0, 120], [0, 0, 1, 505], [0, 0, 0, 1]],
+            ),
+            AssemblyInstance(
+                instance_id="pipe_l500#1", part_id="pipe_l500", placed_in_step=7,
+                transform=[[1, 0, 0, -47], [0, 1, 0, 204], [0, 0, 1, 5], [0, 0, 0, 1]],
+            ),
+        ]
+    )
+    sess = SimpleNamespace(state=state, _aliases_store={}, state_dir="/tmp/x")
+    # the closing pose: mB (-Z mouth) down on the riser top, mA (+X) at
+    # (-47+49=2 ... ) — any transform that puts the elbow body beside the
+    # tip so its mouth wraps it; use identity-shifted pose near both legs
+    m = [[1, 0, 0, -96], [0, 1, 0, 154], [0, 0, 1, 554], [0, 0, 0, 1]]
+    # without mate_instances the tip's overlap reads as burial
+    bf_no, _bh_no, _sf, _si = _candidate_burial(
+        sess, elbow, {"transform": m, "fixed_instance": "pipe_l500#1"}
+    )
+    bf_yes, _bh_yes, _sf2, _si2 = _candidate_burial(
+        sess,
+        elbow,
+        {
+            "transform": m,
+            "fixed_instance": "pipe_l500#1",
+            "mate_instances": ["pipe_l500#1", "pipe_l70#1"],
+        },
+    )
+    assert bf_no > bf_yes, (bf_no, bf_yes)
+
+
 def test_mid_link_prefers_downstream_progress() -> None:
     """A two-mouth mid fitting can mate the link above through either
     mouth — 'socket-up' continues the chain toward the premount, the

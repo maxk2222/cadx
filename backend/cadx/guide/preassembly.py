@@ -1342,9 +1342,17 @@ async def _retry_bridges(
         _key, res, m, (i1, p1), (i2, p2), _rv, flip1, ndot2 = best
         # the surgical re-transform must not buy the closure by burying the
         # bridge inside a third part — re-run the same burial/swallow gates
-        # place_instance applies, neighbours of leg-1 as the mate set
+        # place_instance applies. BOTH legs are mates: leg-2's mouth
+        # legitimately overlaps its tip's box — without mate_instances the
+        # second engagement reads as burial and every honest retry dies
         bf, bh, sf, _si = _candidate_burial(
-            sess, moving, {"transform": m, "fixed_instance": i1.instance_id}
+            sess,
+            moving,
+            {
+                "transform": m,
+                "fixed_instance": i1.instance_id,
+                "mate_instances": [i1.instance_id, i2.instance_id],
+            },
         )
         if bf > 0.45 or (sf > 0.6 and moving.id != _host_part_id(sess)):
             sess.state.assembly.joints.extend(old_joints)
@@ -1356,6 +1364,14 @@ async def _retry_bridges(
                     "buried_in": bh,
                     "swallow_frac": round(sf, 2),
                 }
+            )
+            log.info(
+                "guide.preassembly.bridge_retry_failed",
+                step=task["step"],
+                reason="burial",
+                buried_frac=round(bf, 2),
+                buried_in=bh,
+                swallow_frac=round(sf, 2),
             )
             continue
         inst.transform = [[float(v) for v in row] for row in np.asarray(m).tolist()]
