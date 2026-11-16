@@ -682,6 +682,7 @@ async def run_session(  # noqa: C901
     last_sig = ""
     last_text = ""
     repeat_streak = 0
+    sig_history: list[str] = []
     edits_since_check = 0
     nudged = False
     churn_exceeded = False
@@ -930,6 +931,17 @@ async def run_session(  # noqa: C901
         text_hit = len(text_sig) >= 16 and text_sig == last_text
         repeat_streak = repeat_streak + 1 if (sig == last_sig or text_hit) else 0
         last_sig, last_text = sig, text_sig
+        # multi-turn cycle: A→B→C→A→B→C never repeats a sig CONSECUTIVELY,
+        # so the streak above misses it. Detect a period-k cycle by
+        # comparing the last k sigs to the k before them (k = 2..4).
+        sig_history.append(sig)
+        if len(sig_history) > 24:
+            sig_history.pop(0)
+        cycle_loop = any(
+            len(sig_history) >= 2 * k
+            and sig_history[-k:] == sig_history[-2 * k : -k]
+            for k in (2, 3, 4)
+        )
         # churn detector: weak models burn turns on read/edit pairs without
         # ever validating — nudge once, then end the session
         names = {tc.name for tc in tool_calls}
@@ -957,6 +969,7 @@ async def run_session(  # noqa: C901
             or turns >= max_turns
             or error_streak >= 4
             or repeat_streak >= 2
+            or cycle_loop
             or churn_exceeded
             or verify_loop
             or infra_kill
