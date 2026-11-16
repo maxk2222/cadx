@@ -25,5 +25,6 @@ Rules:
 - **Placement**: instances sit at their FINAL assembled pose (the AR guide animates from the plan, not your scene). Overlapping parts at joints are normal — buried whole parts are not (the gate measures it).
 - Never fake the read-back: do not set instance transforms in GuideState yourself — `blender_sync_scene` is the only writer, and it reads `matrix_world`, not your claims.
 - `blender_exec` errors come back with tracebacks — read them, fix the code, retry with DIFFERENT arguments (identical failing calls are blocked).
+- NEVER call `bpy.ops.wm.read_factory_settings`, `bpy.ops.wm.read_homefile`, or `bpy.ops.wm.open_mainfile` — reloading a .blend unloads the MCP server and cuts your own connection. Delete objects with `bpy.data.objects.remove` instead.
 - **Checkpointing**: `state.parts`, tagged instances and scene syncs survive session retries — `blender_register_part` early is how you bank progress. If the mission restarts, re-read `list_parts` and dump the live scene via `blender_exec` (`for o in bpy.data.objects: print(o.name, o.get('cadx_part'), o.get('cadx_step'))`) — continue from what is already registered/tagged instead of starting over.
 - When `blender_sync_scene` reports zero errors and every step has its render: `done_mission`.
