@@ -213,14 +213,27 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[
     return metrics, buried, audit
 
 
+def _extent_along(mn: list[float], mx: list[float], axis: np.ndarray) -> float:
+    """AABB projection onto a unit axis: Σ|axis_i|·dims_i — the part's
+    world extent along that direction (exact for axis-aligned boxes, a
+    safe upper bound otherwise)."""
+    dims = np.asarray(mx, dtype=float) - np.asarray(mn, dtype=float)
+    return float(np.abs(axis) @ dims)
+
+
 def _joint_arrows(joints: list[dict], inst_by_id: dict, parts: dict) -> list[dict]:
-    """Approach-direction arrows from this step's recorded joints — anchored
-    at the fixed port's world position (the mate surface, not the part
-    origin which can sit at a bbox corner)."""
+    """Approach-direction arrows from this step's recorded joints — tip on
+    the fixed port (the mate surface, not the part origin which can sit at
+    a bbox corner), tail outside along the approach direction.
+
+    Convention: ``direction`` is the arrow's travel direction TOWARD the
+    target (same as annotation arrows) — ``approach_axis`` is the fixed
+    port's outward normal (where the moving part comes FROM), so the
+    emitted direction is its negation."""
     arrows = []
     for j in joints:
         to_inst = inst_by_id.get(j.get("fixed_instance") or j.get("fixed_part", ""))
-        if to_inst is None:
+        if to_inst is None or to_inst.transform is None:
             continue
         m = np.asarray(to_inst.transform, dtype=float).reshape(4, 4)
         axis_local = np.asarray(j.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float)
@@ -231,11 +244,27 @@ def _joint_arrows(joints: list[dict], inst_by_id: dict, parts: dict) -> list[dic
             port = next((p for p in fixed_part.ports if p.name == j.get("fixed_port")), None)
             if port is not None:
                 anchor = m[0:3, 0:3] @ np.asarray(port.pos, dtype=float) + m[0:3, 3]
+        # tail where the moving part comes from — its own extent along the
+        # approach axis makes the arrow read as the real insertion slide
+        moving = parts.get(str(j.get("moving_part", "")))
+        mov_inst = inst_by_id.get(j.get("moving_instance") or j.get("moving_part", ""))
+        standoff = 30.0
+        if moving is not None and mov_inst is not None and mov_inst.transform is not None:
+            mn, mx = world_bbox(
+                moving.bbox_min,
+                moving.bbox_max,
+                np.asarray(mov_inst.transform, dtype=float).reshape(4, 4),
+            )
+            standoff = max(30.0, 0.5 * _extent_along(mn, mx, axis_world) + 15.0)
+        origin = anchor + axis_world * standoff
         arrows.append(
             {
                 "instance_id": j.get("moving_instance") or j.get("moving_part", ""),
-                "origin": to_unity_position((anchor - axis_world * 30.0).tolist()),
-                "direction": to_unity_position((axis_world * 1000.0).tolist()),
+                "origin": to_unity_position(origin.tolist()),
+                "direction": to_unity_position((-axis_world * 1000.0).tolist()),
+                "label_position": to_unity_position(
+                    (origin - axis_world * min(20.0, standoff * 0.5)).tolist()
+                ),
             }
         )
     return arrows
@@ -244,8 +273,10 @@ def _joint_arrows(joints: list[dict], inst_by_id: dict, parts: dict) -> list[dic
 def _annotation_arrows(
     annotations: list[dict], step_no: int, inst_by_id: dict, parts: dict
 ) -> list[dict]:
-    """User-authored annotation arrows: WORLD-frame direction hints anchored
-    at the annotated part's world bbox center — never rotated."""
+    """User-authored annotation arrows: WORLD-frame direction hints, tip on
+    the annotated part's world bbox center, tail pushed past the bbox face
+    along the axis — a fixed standoff would bury the shaft inside any part
+    larger than 60mm along the direction."""
     from cadx.guide import solver as _solver
 
     arrows = []
@@ -254,20 +285,88 @@ def _annotation_arrows(
             continue
         tgt = inst_by_id.get(str(an.get("part_id", "")))
         part = parts.get(str(an.get("part_id", "")))
-        if tgt is None or part is None:
+        if tgt is None or part is None or tgt.transform is None:
             continue
         mn, mx = _solver.transform_bbox(part, tgt.transform)
         anchor = (np.asarray(mn) + np.asarray(mx)) / 2.0
         axis = _unit(np.asarray(an.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float))
+        standoff = max(25.0, 0.5 * _extent_along(mn, mx, axis) + 15.0)
+        origin = anchor - axis * standoff
         arrows.append(
             {
                 "instance_id": str(an.get("part_id", "")),
-                "origin": to_unity_position((anchor - axis * 30.0).tolist()),
+                "origin": to_unity_position(origin.tolist()),
                 "direction": to_unity_position((axis * 1000.0).tolist()),
                 "label": str(an.get("label", "")),
+                "label_position": to_unity_position(
+                    (origin - axis * min(20.0, standoff * 0.5)).tolist()
+                ),
             }
         )
     return arrows
+
+
+def _annotation_texts(
+    annotations: list[dict],
+    step_no: int,
+    inst_by_id: dict,
+    parts: dict,
+    placed: list[str],
+) -> list[dict]:
+    """Free text fields (kind:"text"): every field emits the SAME constant
+    orientation — identity quaternion, the prefab renders upright — while
+    ``position`` is freely settable (REST PATCH / editor translate gizmo /
+    add_text tool). Missing/zero position falls back deterministically to
+    above this step's placed parts, else the visible assembly."""
+    from cadx.guide import solver as _solver
+
+    texts = []
+    for an in annotations:
+        if an.get("kind") != "text" or int(an.get("step", -1)) != step_no:
+            continue
+        pos = an.get("position")
+        if not pos or len(pos) != 3 or all(abs(float(c)) < 1e-9 for c in pos):
+            pos = _default_text_pos(inst_by_id, parts, placed, _solver)
+        row: dict[str, Any] = {
+            "text": str(an.get("text", "")),
+            "position": to_unity_position([float(c) for c in pos]),
+            # every text field identical orientation — consumers must NOT
+            # derive rotation from the anchor part's transform
+            "rotation": [0.0, 0.0, 0.0, 1.0],
+        }
+        if an.get("part_id"):
+            row["part_id"] = str(an["part_id"])
+        if an.get("color"):
+            row["color"] = str(an["color"])
+        if an.get("size") not in (None, 1.0):
+            row["size"] = an["size"]
+        texts.append(row)
+    return texts
+
+
+def _default_text_pos(inst_by_id: dict, parts: dict, placed: list[str], _solver: Any) -> list[float]:
+    """Deterministic text-field anchor: centered above the bbox of this
+    step's placed instances (fallback: all placed instances) + a fixed
+    45mm standoff — an unset position must land somewhere readable, not
+    at the world origin inside the assembly."""
+    mn_o: list[float] | None = None
+    mx_o: list[float] | None = None
+    for iids in (placed, list(inst_by_id)):
+        for iid in iids:
+            inst = inst_by_id.get(iid)
+            if inst is None or inst.transform is None:
+                continue
+            part = parts.get(inst.part_id)
+            if part is None:
+                continue
+            mn, mx = _solver.transform_bbox(part, inst.transform)
+            mn_o = mn if mn_o is None else [min(a, b) for a, b in zip(mn_o, mn, strict=True)]
+            mx_o = mx if mx_o is None else [max(a, b) for a, b in zip(mx_o, mx, strict=True)]
+        if mn_o is not None:
+            break
+    if mn_o is None or mx_o is None:
+        return [0.0, 0.0, 45.0]
+    return [(mn_o[0] + mx_o[0]) / 2.0, (mn_o[1] + mx_o[1]) / 2.0, mx_o[2] + 45.0]
 
 
 def build_unity_guide(state) -> dict[str, Any]:
@@ -308,6 +407,7 @@ def build_unity_guide(state) -> dict[str, Any]:
                 visible.append(inst.instance_id or iid)
         arrows = _joint_arrows(joint_by_step.get(step.number, []), inst_by_id, parts)
         arrows += _annotation_arrows(state.annotations, step.number, inst_by_id, parts)
+        texts = _annotation_texts(state.annotations, step.number, inst_by_id, parts, placed)
         row: dict[str, Any] = {
             "index": step.number,
             "display_text": step.display_text or step.text,
@@ -315,6 +415,7 @@ def build_unity_guide(state) -> dict[str, Any]:
             "placements": placements,
             "highlights": list(placed),
             "arrows": arrows,
+            "texts": texts,
             "visible_instance_ids": list(visible),
         }
         # media_image is copied into output/media/ by _emit_artifacts —

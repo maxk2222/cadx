@@ -155,6 +155,7 @@ MISSION_TOOLS: dict[str, list[str]] = {
     ],
     "annotate": [
         "add_arrow",
+        "add_text",
         "list_arrows",
         "remove_arrow",
         "render_assembly",

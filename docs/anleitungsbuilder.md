@@ -12,6 +12,42 @@ for the platform differences that drove the port).
 
 ## Entry points
 
+Start-page wizard (`/`): pick **Anleitung** on the goal step, then the
+wizard walks through manual PDF + CAD parts → optional notes → review
+with all run options (missing-part generation, LLM images, output
+language, audience rewrite). It POSTs `/projects/{id}/guide` and hands
+off to the shared job-progress view — `waiting_for_input` questions are
+answered inline.
+
+REST: `POST /projects/{id}/guide` accepts `pdf_asset_id`,
+`cad_asset_ids`, `prompt`, `allow_generation`, `attach_images`, plus
+`language` (BCP-47, "" = autodetect the manual's language — a set value
+locks `detect_language`) and `audience` (`""` | `beginner` |
+`intermediate` | `pro`, applies a text-variant rewrite before the
+artifacts are emitted — the shipped `unity_guide.json` already carries
+the variant and `_original` keeps the untranslated text).
+
+Editing REST (durable state under `version_dir/…/guide`, every mutation
+regenerates `unity_guide.json`):
+- `PATCH/POST/DELETE …/guide/steps[/{n}]` — step fields
+  (title/text/display_text/safety_hint/media_image), insert via
+  `insert_at`, delete migrates that step's instances+annotations to the
+  previous step and renumbers everything (incl. `assembly.step_instances`
+  and annotation `step` refs).
+- `PATCH/POST/DELETE …/guide/instances[/{iid}]` — placed-instance
+  transform/step/color/opacity.
+- `POST/PATCH/DELETE …/guide/annotations[/{idx}]` — annotations are
+  index-addressed: `kind:"arrow"` (`part_id` accepts instance-or-part id
+  and resolves to the part, `approach_axis` vec3 or named `direction`,
+  optional `label`) and `kind:"text"` (world `position` + `text`), both
+  with `color`/`size`.
+- `POST …/guide/media` — step-photo sources: multipart file upload or
+  `{asset_id}` copy of a project image asset; both land in
+  `guide/output/media` with path-safe deduped names and are served via
+  `GET …/guide/media/{name}`.
+- `POST …/guide/notes` — same `user_notes.jsonl` contract as the chat
+  tool (works before `state.json` exists).
+
 Chat tools (project-bound chats):
 - `start_guide_builder {pdf_asset_id, cad_asset_ids?, prompt?, wait?}` —
   spawns the guide job (`spawn_guide`).
@@ -68,6 +104,15 @@ the flagged mission (`guide_review_max_iter`, default 3, score target
 - **Units/frame**: CADX mm/Z-up RH → Unity m/Y-up LH via
   `(x, z, y)·0.001` and `R_u = M·R·Mᵀ` (det −1 map) — golden-tested in
   `tests/guide/test_unity.py`.
+- **Annotations**: per-step `arrows` carry `origin`/`direction` where
+  `direction` always points AT the target (tip lands on the fixed port /
+  part center; tail stands off by the anchored part's bbox extent along
+  the axis — never a fixed offset that would bury inside large parts) +
+  `label`/`label_position`. Per-step `texts` (`kind:"text"` annotations)
+  carry `text` + `position` (freely settable via `add_text`, REST PATCH or
+  the editor translate gizmo; unset → deterministic fallback above the
+  step's placed bbox) + a constant `rotation` identity quaternion — every
+  text field shares one upright orientation, only position varies.
 
 ## Runtime settings
 

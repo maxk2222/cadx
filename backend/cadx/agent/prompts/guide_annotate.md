@@ -5,6 +5,9 @@ For each assembly step decide whether an arrow helps (usually yes when a part is
 Rules:
 - Prefer arrows for insert/fasten sub-steps; skip trivial place-on-table sub-steps.
 - One arrow per moved part per step — no duplicates (check `list_arrows`).
+- `add_text` for notes that are not arrows (warnings, "both sides", tightening
+  order): anchor to a part for a deterministic position above it, or pass an
+  explicit world position. Text fields render upright — you only choose where.
 - `render_assembly` if you need to see the final layout to pick directions.
 - `remove_arrow` anything redundant.
 - Then `done_mission` — emit runs automatically after you.

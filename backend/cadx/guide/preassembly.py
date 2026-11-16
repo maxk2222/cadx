@@ -1425,7 +1425,7 @@ async def _retry_bridges(
                     "moving_port": p1["moving_port"],
                     "fixed_port": p1["fixed_port"],
                     "axis_flipped": bool(flip1),
-                    "approach_axis": p1.get("axis") or [0.0, 0.0, 1.0],
+                    "approach_axis": _port_axis(sess, i1, p1["fixed_port"]),
                 },
                 {
                     "step": task["step"],
@@ -1436,7 +1436,7 @@ async def _retry_bridges(
                     "moving_port": p2["moving_port"],
                     "fixed_port": p2["fixed_port"],
                     "axis_flipped": bool(ndot2 > 0.0),
-                    "approach_axis": p2.get("axis") or [0.0, 0.0, 1.0],
+                    "approach_axis": _port_axis(sess, i2, p2["fixed_port"]),
                     "bridge": True,
                 },
             ]
@@ -2560,7 +2560,7 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
             "fixed_instance": i2.instance_id,
             "moving_port": p2["moving_port"],
             "fixed_port": p2["fixed_port"],
-            "approach_axis": p2.get("axis") or [0.0, 0.0, 1.0],
+            "approach_axis": _port_axis(sess, i2, p2["fixed_port"]),
             # rim-axis extraction carries an ambiguous sign: raw ndot > 0
             # under the committed transform means the audit must read the
             # recorded axis negated — same convention as axis_flipped on
@@ -2577,6 +2577,16 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
 
 def _used(sess: GuideToolSession, inst: Any) -> set[str]:
     return _used_port_names(sess, inst)
+
+
+def _port_axis(sess: GuideToolSession, inst: Any, port_name: str) -> list[float]:
+    """FIXED port's axis in the fixed part's LOCAL frame — the joint's
+    approach_axis convention (unity.py rotates it by the fixed instance's
+    transform). find_matching_ports candidates carry no axis, so every
+    joint site must look the port up by name."""
+    part = sess.state.part_by_id(str(inst.part_id))
+    port = next((p for p in (part.ports if part else []) if p.name == port_name), None)
+    return [float(v) for v in port.axis] if port else [0.0, 0.0, 1.0]
 
 
 def _sibling_port_spots(sess: GuideToolSession, pid: str) -> list[list[float]]:

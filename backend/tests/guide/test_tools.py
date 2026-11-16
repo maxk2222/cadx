@@ -428,6 +428,57 @@ def test_add_arrow_resolves_forgiving_ids() -> None:
     assert res["ok"] is False and "valid steps" in res["error"]
 
 
+def test_add_text_defaults_and_explicit_position() -> None:
+    """Text fields: part anchor → deterministic position above its bbox top;
+    explicit position passes through; no anchor at all → assembly top."""
+    import asyncio
+
+    from cadx.guide.annotate_tools import add_text
+    from cadx.guide.state import AssemblyInstance, GuidePart, GuideStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.parts.append(
+        GuidePart(
+            id="pipe_l70",
+            name="Rohr DN22, l = 70 mm",
+            mesh_path="/tmp/a.glb",
+            bbox_min=[-10, -10, 0],
+            bbox_max=[10, 10, 70],
+        )
+    )
+    state.steps.append(GuideStep(number=2, text="t", display_text="d"))
+    state.assembly.instances.append(
+        AssemblyInstance(
+            instance_id="pipe_l70#1",
+            part_id="pipe_l70",
+            placed_in_step=2,
+            transform=[[1, 0, 0, 50], [0, 1, 0, 50], [0, 0, 1, 0], [0, 0, 0, 1]],
+        )
+    )
+    sess = GuideToolSession(
+        ctx, mission="annotate", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,  # type: ignore[arg-type]
+    )
+    res = asyncio.run(add_text(sess, {"step": 2, "text": "beide Seiten", "part_id": "pipe_l70#1"}))
+    assert res["ok"] is True
+    ann = state.annotations[-1]
+    assert ann["kind"] == "text" and ann["part_id"] == "pipe_l70"
+    # world bbox: x 40..60, y 40..60, z 0..70 → center xy, top+45
+    assert ann["position"] == [50.0, 50.0, 115.0]
+    res = asyncio.run(
+        add_text(sess, {"step": 2, "text": "oben", "position": [1, 2, 3]})
+    )
+    assert res["ok"] is True and state.annotations[-1]["position"] == [1.0, 2.0, 3.0]
+    res = asyncio.run(add_text(sess, {"step": 2, "text": "frei"}))
+    assert res["ok"] is True and state.annotations[-1]["position"] == [50.0, 50.0, 115.0]
+    res = asyncio.run(add_text(sess, {"step": 2, "text": "", "part_id": "pipe_l70"}))
+    assert res["ok"] is False
+    res = asyncio.run(add_text(sess, {"step": 2, "text": "x", "part_id": "ghost"}))
+    assert res["ok"] is False and "no placed instance" in res["error"]
+
+
 def test_resolve_asset_rescues_hallucinated_uuid() -> None:
     """The LLM passed a stale/invented asset UUID 5x in a row and the
     parts mission died on error_streak — the resolver must fall back to
