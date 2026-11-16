@@ -238,6 +238,19 @@ def _mission_prompt(
             "register_uploaded_part on a covered asset errors): "
             + ", ".join(f"{p.id} ({p.name})" for p in state.parts[:30])
         )
+    if mission == "build" and (state.parts or state.assembly.instances):
+        # After a retry the Blender scene and state persist — the agent
+        # must continue from what exists instead of re-modeling.
+        registered = ", ".join(f"{p.id} ({p.name})" for p in state.parts[:30])
+        synced = len(state.assembly.instances)
+        ctx_lines.append(
+            "Progress banked from earlier attempts (durable — do NOT redo): "
+            f"{len(state.parts)} part(s) registered"
+            + (f" [{registered}]" if registered else "")
+            + f", {synced} tagged instance(s) synced. Re-dump the Blender "
+            "scene via blender_exec to see its state, then continue from "
+            "there — remaining unregistered parts first."
+        )
     if mission == "steps" and not state.allow_part_generation:
         kit = ", ".join(
             a["filename"] for a in (_guide_assets(ctx) if ctx else []) if a["kind"] != "pdf"
