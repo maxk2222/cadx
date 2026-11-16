@@ -143,6 +143,25 @@ def test_review_verdict_cad_maps_build_to_assembly(tmp_path: Path) -> None:
     assert "assembly" not in state.missions_done
 
 
+def test_unbury_hint_blender_axes(tmp_path: Path) -> None:
+    """The burial blocker must give the repair session a concrete delta —
+    'reposition' alone produced re-measurement loops. Frames: the gate's
+    world AABBs are glTF y-up; the agent moves objects in Blender z-up
+    (gltf y->blender z, gltf z->blender -y)."""
+    from cadx.guide.blender_check import _unbury_hint
+
+    # buried box sits ABOVE the other in glTF-Y -> +Z in Blender
+    buried = (np.array([0, 8, -5]), np.array([10, 12, 5]))   # overlap d=2 on y
+    other = (np.array([-10, 0, -10]), np.array([20, 10, 10]))
+    hint = _unbury_hint(buried, other)
+    assert "location.z +=" in hint, hint
+    # buried BELOW the other in glTF-Z (escapes gltf -z) -> +Y in Blender
+    buried = (np.array([0, -5, -14]), np.array([10, 5, -8]))  # overlap d=2 on z
+    other = (np.array([-5, -10, -10]), np.array([15, 10, 0]))
+    hint = _unbury_hint(buried, other)
+    assert "location.y +=" in hint, hint
+
+
 def test_build_missing_outputs_scene_truth(tmp_path: Path) -> None:
     """Blender build sessions died on budget/repeat AFTER the scene was
     complete — done_mission never fired and the run aborted before the

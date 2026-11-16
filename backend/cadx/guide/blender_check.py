@@ -140,6 +140,40 @@ def _solid_buried_fraction(small: Any, big: Any) -> float | None:
         return None
 
 
+def _unbury_hint(buried: tuple, other: tuple) -> str:
+    """Least-escape translation for a buried instance's world AABB — the
+    axis of smallest overlap, signed away from the other's center. Repair
+    sessions stall on open-ended 'reposition' findings (re-measurement
+    loops observed: bbox dumps re-emitted 5-6x instead of a move); a
+    concrete delta converts the finding into an action. AABB clearance
+    bounds but does not guarantee solid clearance — the agent must
+    re-verify after moving.
+
+    Frame: the AABBs live in glTF y-up (instance transforms are stored
+    via _to_gltf_frame), the agent moves objects in Blender z-up —
+    glTF (x,y,z) maps to Blender (x,z,-y)."""
+    lo_b, hi_b = buried
+    lo_o, hi_o = other
+    best_axis, best_d = -1, float("inf")
+    for ax in range(3):
+        d = min(hi_b[ax], hi_o[ax]) - max(lo_b[ax], lo_o[ax])
+        if 0 < d < best_d:
+            best_axis, best_d = ax, d
+    if best_axis < 0:
+        return ""
+    sign = (
+        1
+        if (lo_b[best_axis] + hi_b[best_axis]) >= (lo_o[best_axis] + hi_o[best_axis])
+        else -1
+    )
+    b_axis, b_sign = ((("X", 1), ("Z", 1), ("Y", -1)))[best_axis]
+    s = "+" if sign * b_sign > 0 else "-"
+    return (
+        f"; suggested delta: obj.location.{b_axis.lower()} {s}= "
+        f"{best_d + 1.0:.0f} (Blender world axes, then re-verify)"
+    )
+
+
 def _overlap_scan(instances: list, parts: dict, manifest: dict) -> list[str]:
     """World-AABB overlap scan between instances of DIFFERENT parts —
     joint interpenetration is normal (warning); a mostly-buried
@@ -195,7 +229,9 @@ def _overlap_scan(instances: list, parts: dict, manifest: dict) -> list[str]:
                         f"{buried.instance_id}: {solid * 100:.0f}% of its "
                         f"volume sits inside {other.instance_id}'s solid "
                         f"(bbox overlap {frac * 100:.0f}%) — reposition the "
-                        "buried object in Blender."
+                        "buried object in Blender"
+                        + _unbury_hint(aabbs[buried.instance_id], aabbs[other.instance_id])
+                        + "."
                     )
                 elif solid is None:
                     manifest["warnings"].append(
