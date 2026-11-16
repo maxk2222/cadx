@@ -1351,7 +1351,13 @@ async def _retry_bridges(
             {
                 "transform": m,
                 "fixed_instance": i1.instance_id,
-                "mate_instances": [i1.instance_id, i2.instance_id],
+                # the instance's own stale box is not a foreign body —
+                # without it in mates the retry buries itself (1.0 self-overlap)
+                "mate_instances": [
+                    i1.instance_id,
+                    i2.instance_id,
+                    inst.instance_id,
+                ],
             },
         )
         if bf > 0.45 or (sf > 0.6 and moving.id != _host_part_id(sess)):
