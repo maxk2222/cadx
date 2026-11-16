@@ -25,6 +25,7 @@ Deterministic choices, in order:
 from __future__ import annotations
 
 import itertools
+import math
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -1810,11 +1811,14 @@ def _reach_score(
     arm: float,
     feed_perp: int,
 ) -> float:
-    """Bonus when a free mouth's position lands about one arm-span away
-    from a bridge tip (projected onto the plane the chain grows through —
-    the riser column must stand within the bridge's sideways reach). A
-    smooth ring locus: any bearing around the tip is equally reachable,
-    peak at the arm span, decaying with the mismatch."""
+    """Bonus when a free mouth's axis reaches about one arm-span off a
+    bridge tip at the tip's level. The chain grows ALONG the mouth's axis —
+    the column's far end is where the mouth's ray crosses the tip's
+    feed-coordinate, so a tilted socket that merely stands nearer the ring
+    at its own height no longer fakes a reachable column: its far end
+    lands hundreds of mm off. Ports whose axis doesn't point toward the
+    tip's level score 0 (a mouth opening sideways can't raise a column to
+    the tip)."""
     if not tips or not transform or arm <= 0.0:
         return 0.0
     pl = [i for i in range(3) if i != feed_perp]
@@ -1823,9 +1827,21 @@ def _reach_score(
     for p in moving.ports or []:
         if p.kind != "cylinder" or p.name == mated_port:
             continue
-        wp = _world_pos(transform, p.pos)
+        wp = np.asarray(_world_pos(transform, p.pos), dtype=float)
+        wa = np.asarray(_world_dir(transform, p.axis), dtype=float)
+        a = float(wa[feed_perp])
+        if abs(a) < 0.15:
+            continue
         for tip in tips:
-            d = float(np.hypot(wp[pl[0]] - tip[pl[0]], wp[pl[1]] - tip[pl[1]]))
+            t = (float(tip[feed_perp]) - float(wp[feed_perp])) / a
+            if t <= 0.0:
+                continue
+            d = float(
+                math.hypot(
+                    wp[pl[0]] + wa[pl[0]] * t - float(tip[pl[0]]),
+                    wp[pl[1]] + wa[pl[1]] * t - float(tip[pl[1]]),
+                )
+            )
             best = max(best, float(np.exp(-(((d - arm) / tol) ** 2))))
     return 2.0 * best
 
@@ -2999,6 +3015,8 @@ def _solve_bridge_onto_tip(
 ) -> tuple[float, np.ndarray, str] | None:
     """Bridge pose on the tip: whichever socket mates, its OTHER socket
     must face down the chain leg — otherwise the bridge can never close."""
+    ctr_local = (np.asarray(t2part.bbox_min, dtype=float) + np.asarray(t2part.bbox_max, dtype=float)) / 2.0
+    ctr_w = tf_tip[0:3, 0:3] @ ctr_local + tf_tip[0:3, 3]
     best: tuple[float, np.ndarray, str] | None = None
     for bs in b_cyl:
         rest = [p for p in b_cyl if p.name != bs.name]
@@ -3010,6 +3028,15 @@ def _solve_bridge_onto_tip(
         bs_pos = solver._v(bs.pos)
         other = max(rest, key=lambda p: float(np.linalg.norm(solver._v(p.pos) - bs_pos)))
         for tp_p in free_tip:
+            tip_w = tf_tip[0:3, 0:3] @ solver._v(tp_p.pos) + tf_tip[0:3, 3]
+            # the fitting's body sits OUTSIDE the mated end — a mirrored
+            # (inside-out) convention puts the second mouth behind the tip
+            # face where the chain can never rise; both score identically on
+            # axis alignment, so break the tie by which side the other mouth
+            # lands on relative to the fixed part's body
+            away = tip_w - ctr_w
+            an = float(np.linalg.norm(away))
+            away = away / an if an > 1e-6 else np.zeros(3)
             for c in solver.solve_attachment(
                 bpart, bs.name, t2part, tf_tip.tolist(), tp_p.name,
                 rotation_snaps=snaps,
@@ -3018,7 +3045,13 @@ def _solve_bridge_onto_tip(
                     continue
                 m = np.asarray(c["transform"], dtype=float).reshape(4, 4)
                 wa = solver._unit(m[0:3, 0:3] @ solver._v(other.axis))
-                s = float(np.dot(wa, leg_axis)) - c["joint_gap_mm"] / 50.0
+                ow = m[0:3, 0:3] @ solver._v(other.pos) + m[0:3, 3]
+                out_s = float(np.dot(ow - tip_w, away))
+                s = (
+                    float(np.dot(wa, leg_axis))
+                    - c["joint_gap_mm"] / 50.0
+                    + 0.5 * float(math.tanh(out_s / 25.0))
+                )
                 if best is None or s > best[0]:
                     best = (s, m, other.name)
     return best
@@ -3069,6 +3102,15 @@ def _solve_mid_link(
                 s -= 3.0 * float(np.dot(wa[:2], flat))
             else:
                 s -= 3.0 * float(np.dot(wa, -leg_axis))
+            # the chain unwinds monotonically toward the premount: the
+            # continuation port must sit further along the leg than the
+            # mouth it just mated — a fitting mounted 'upside-down' (its
+            # continuation ABOVE the mate) reads identical on direction
+            # scoring but sends the chain back toward the bridge and
+            # floats the premount mid-air
+            mw = m[0:3, 0:3] @ solver._v(mp_p.pos) + m[0:3, 3]
+            nw = m[0:3, 0:3] @ solver._v(nxt.pos) + m[0:3, 3]
+            s += float(np.dot(nw - mw, leg_axis)) / 50.0
             if best is None or s > best[0]:
                 best = (s, m, nxt)
     if best is None:

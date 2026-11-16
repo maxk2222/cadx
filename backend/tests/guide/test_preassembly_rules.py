@@ -1328,3 +1328,126 @@ def test_reach_score_ring_locus() -> None:
     # silent without tips or transform
     assert pa._reach_score(moving, "spigot", t_with_socket_at(40.0), [], arm, perp) == 0.0
     assert pa._reach_score(moving, "spigot", [], tip, arm, perp) == 0.0
+
+
+def test_reach_score_projects_chain_end_not_mouth() -> None:
+    """A socket tilted ~30deg toward the ring stands closer to the tip at
+    its own height, but the column it raises lands hundreds of mm off —
+    the score must evaluate where the mouth's axis REACHES the tip's
+    level, not where the mouth sits."""
+    import math as _m
+
+    tilt = _m.radians(30.0)
+    moving = _part(
+        "elbow",
+        [
+            PortInfo(name="spigot", pos=[0, 0, 0], axis=[0, -1, 0], kind="cylinder", radius=5),
+            PortInfo(name="socket", pos=[20, 0, 0], axis=[0, 0, 1], kind="cylinder", radius=6),
+        ],
+    )
+    tip = [[-47.0, 127.6, 541.0]]
+    arm, perp = 49.0, 2
+    # transform: socket mouth at (-20, 123, 20), axis tilted +X by 30deg —
+    # position-only scoring loves it (27mm off the tip -> near the ring)
+    rot = np.eye(4)
+    rot[0, 0], rot[0, 2] = _m.cos(tilt), _m.sin(tilt)
+    rot[2, 0], rot[2, 2] = -_m.sin(tilt), _m.cos(tilt)
+    port = next(p for p in moving.ports if p.name == "socket")
+    rot[0:3, 3] = np.array([-20.0, 123.0, 20.0]) - rot[0:3, 0:3] @ np.asarray(port.pos)
+    tilted = pa._reach_score(moving, "spigot", rot.tolist(), tip, arm, perp)
+    assert tilted < 0.05, tilted
+    # the same socket position with a straight-up axis: the column top
+    # lands 27mm off the ring — rewarded, but only through the projection
+    up = np.eye(4)
+    up[0:3, 3] = np.array([-20.0, 123.0, 20.0]) - np.asarray(port.pos)
+    straight = pa._reach_score(moving, "spigot", up.tolist(), tip, arm, perp)
+    assert straight > tilted
+    # a mouth facing AWAY from the tip's level can never raise the column
+    down = np.eye(4)
+    down[2, 2] = -1.0
+    down[0, 0] = -1.0
+    down[0:3, 3] = np.array([-20.0, 123.0, 20.0]) - down[0:3, 0:3] @ np.asarray(port.pos)
+    assert pa._reach_score(moving, "spigot", down.tolist(), tip, arm, perp) == 0.0
+
+
+def test_bridge_onto_tip_prefers_outside_family() -> None:
+    """The two mounting conventions put the bridge's second mouth inside
+    vs beyond the tip — both satisfy axis alignment identically. The
+    fitting's body physically sits OUTSIDE the mated end, so the outside
+    family must win the tie or the back-solved chain rises inside the
+    partner where no second leg can reach."""
+    stub = _part(
+        "stub",
+        [
+            PortInfo(name="seat", pos=[0, 0, 0], axis=[0, -1, 0], kind="cylinder", radius=6, gender="female"),
+            PortInfo(name="tip", pos=[0, 50, 0], axis=[0, 1, 0], kind="cylinder", radius=6, gender="female"),
+        ],
+        bbox=((-10, -10, -10), (10, 60, 10)),
+    )
+    elbow = _part(
+        "elbow",
+        [
+            PortInfo(name="mouthA", pos=[49, 0, 0], axis=[1, 0, 0], kind="cylinder", radius=5.5, gender="male"),
+            PortInfo(name="mouthB", pos=[0, 0, -49], axis=[0, 0, -1], kind="cylinder", radius=5.5, gender="male"),
+        ],
+        bbox=((-10, -10, -55), (55, 10, 10)),
+    )
+    tip_port = next(p for p in stub.ports if p.name == "tip")
+    snaps = [float(a) for a in range(0, 360, 15)]
+    r = pa._solve_bridge_onto_tip(
+        elbow, [p for p in elbow.ports if p.kind == "cylinder"], stub,
+        np.eye(4), [tip_port], np.array([0.0, 0.0, -1.0]), snaps,
+    )
+    assert r is not None
+    _s, m, other = r
+    op = next(p for p in elbow.ports if p.name == other)
+    ow = np.asarray(m)[0:3, 0:3] @ np.asarray(op.pos) + np.asarray(m)[0:3, 3]
+    # the second mouth must stand BEYOND the tip (y>50), not inside the
+    # stub's body line (y<50) — the inside pose is an inside-out mount
+    assert ow[1] > 50.0, ow
+
+
+def test_mid_link_prefers_downstream_progress() -> None:
+    """A two-mouth mid fitting can mate the link above through either
+    mouth — 'socket-up' continues the chain toward the premount, the
+    inverted 'spigot-up' mount sends it back toward the bridge and floats
+    the chain start mid-air. Direction scoring ties; progress along the
+    leg must break it."""
+    pipe = _part(
+        "pipe",
+        [
+            PortInfo(name="top", pos=[0, 0, 500], axis=[0, 0, 1], kind="cylinder", radius=6, gender="female"),
+            PortInfo(name="bot", pos=[0, 0, 0], axis=[0, 0, -1], kind="cylinder", radius=6, gender="female"),
+        ],
+        bbox=((-10, -10, 0), (10, 10, 500)),
+    )
+    elbow = _part(
+        "elbow",
+        [
+            PortInfo(name="socket", pos=[0, 0, 49], axis=[0, 0, 1], kind="cylinder", radius=5.5, gender="male"),
+            PortInfo(name="spigot", pos=[0, -49, 0], axis=[0, -1, 0], kind="cylinder", radius=5.5, gender="male"),
+        ],
+        bbox=((-10, -55, -10), (10, 10, 55)),
+    )
+    sess = SimpleNamespace(state=SimpleNamespace(part_by_id=lambda i: {"elbow": elbow, "pipe": pipe}.get(i)))
+    prev_m = np.eye(4)
+    r = pa._solve_mid_link(
+        sess, "elbow", pipe, prev_m, "bot",
+        np.array([0.0, 0.0, -1.0]), np.array([0.0, 1.0, 0.0]),
+        [float(a) for a in range(0, 360, 15)],
+    )
+    assert r is not None
+    _s, m, _pp, nxt = r
+    # the spigot is the end that plugs the machine-side socket — the
+    # inverted mount would continue with the socket mouth instead
+    assert nxt == "spigot", nxt
+    nxt_p = next(p for p in elbow.ports if p.name == nxt)
+    mp_p = next(
+        p for p in elbow.ports
+        if p.name != nxt and p.kind == "cylinder"
+    )
+    mm = np.asarray(m)
+    nw = mm[0:3, 0:3] @ np.asarray(nxt_p.pos) + mm[0:3, 3]
+    mw = mm[0:3, 0:3] @ np.asarray(mp_p.pos) + mm[0:3, 3]
+    # continuation sits BELOW the mate — the chain descends monotonically
+    assert nw[2] < mw[2] + 1.0, (nw, mw)
