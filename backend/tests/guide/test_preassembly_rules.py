@@ -1350,17 +1350,20 @@ def test_feeds_bridge_reach_returns_partner_tips() -> None:
     assert arm > 0.0, f"bridge arm span expected — {arm}"
     assert len(tips) == 2, f"both free cylinder tips surface — {tips}"
     assert any(
-        abs(t[0] - (-40.0)) < 1 and abs(t[1] - 135.0) < 1 and abs(t[2] - 500.0) < 1
-        for t in tips
-    ), f"world tip position must track the partner transform — {tips}"
+        abs(pos[0] - (-40.0)) < 1 and abs(pos[1] - 135.0) < 1 and abs(pos[2] - 500.0) < 1
+        and abs(axis[1] - 1.0) < 1e-6
+        for pos, axis in tips
+    ), f"world tip pos+axis must track the partner transform — {tips}"
     # no feed axis → the mechanism stays silent
     assert pa._feeds_bridge_reach(sess, tasks, 0, tasks[0], "elbow", None) == ([], 0.0)
 
 
-def test_reach_score_ring_locus() -> None:
-    """Position scoring: a free mouth ~arm away from the bridge tip scores
-    near 2.0; a mouth on the wrong side of the stub scores ~0 — the roll
-    that leaves the loop reachable always wins direction-tied candidates."""
+def test_reach_score_beyond_tip_locus() -> None:
+    """Position scoring is ONE-SIDED: a bridge's body sits BEYOND the mated
+    end along the tip's outward axis, so the free mouth's column must rise
+    at tip + axis·arm. A socket standing the same arm-span off on the NEAR
+    side is the inside-out family — same ring distance, unreachable mouth
+    direction — and must score ~0, not tie."""
     moving = _part(
         "elbow",
         [
@@ -1368,8 +1371,8 @@ def test_reach_score_ring_locus() -> None:
             PortInfo(name="socket", pos=[30, 0, 0], axis=[0, 0, 1], kind="cylinder", radius=6),
         ],
     )
-    tip = [[0.0, 100.0, 500.0]]
-    arm, perp = 60.0, 2
+    tip = [([0.0, 100.0, 500.0], [0.0, 1.0, 0.0])]  # tip faces +Y
+    arm, perp = 60.0, 2  # closing spot: y = 100 + 60 = 160
 
     def t_with_socket_at(y: float) -> list[list[float]]:
         port = next(p for p in moving.ports if p.name == "socket")
@@ -1377,21 +1380,21 @@ def test_reach_score_ring_locus() -> None:
         tr[0:3, 3] = np.array([0.0, y, 60.0]) - np.asarray(port.pos)
         return tr.tolist()
 
-    near = pa._reach_score(moving, "spigot", t_with_socket_at(55.0), tip, arm, perp)
     ideal = pa._reach_score(moving, "spigot", t_with_socket_at(160.0), tip, arm, perp)
-    wrong = pa._reach_score(moving, "spigot", t_with_socket_at(-80.0), tip, arm, perp)
-    assert ideal > near > wrong, (wrong, near, ideal)
-    assert wrong < 0.05, wrong
+    near_side = pa._reach_score(moving, "spigot", t_with_socket_at(40.0), tip, arm, perp)
+    at_tip = pa._reach_score(moving, "spigot", t_with_socket_at(100.0), tip, arm, perp)
+    assert ideal > 1.5, ideal
+    assert near_side < 0.05 and at_tip < 0.2, (near_side, at_tip)
     # silent without tips or transform
-    assert pa._reach_score(moving, "spigot", t_with_socket_at(40.0), [], arm, perp) == 0.0
+    assert pa._reach_score(moving, "spigot", t_with_socket_at(160.0), [], arm, perp) == 0.0
     assert pa._reach_score(moving, "spigot", [], tip, arm, perp) == 0.0
 
 
 def test_reach_score_projects_chain_end_not_mouth() -> None:
-    """A socket tilted ~30deg toward the ring stands closer to the tip at
-    its own height, but the column it raises lands hundreds of mm off —
-    the score must evaluate where the mouth's axis REACHES the tip's
-    level, not where the mouth sits."""
+    """A socket tilted ~30deg stands at the closing spot's position at its
+    own height, but the column it raises lands hundreds of mm off — the
+    score must evaluate where the mouth's axis REACHES the tip's level,
+    not where the mouth sits."""
     import math as _m
 
     tilt = _m.radians(30.0)
@@ -1402,28 +1405,28 @@ def test_reach_score_projects_chain_end_not_mouth() -> None:
             PortInfo(name="socket", pos=[20, 0, 0], axis=[0, 0, 1], kind="cylinder", radius=6),
         ],
     )
-    tip = [[-47.0, 127.6, 541.0]]
+    # tip faces +Y — closing spot sits arm beyond it: (-47, 176.6, 541)
+    tip = [([-47.0, 127.6, 541.0], [0.0, 1.0, 0.0])]
     arm, perp = 49.0, 2
-    # transform: socket mouth at (-20, 123, 20), axis tilted +X by 30deg —
-    # position-only scoring loves it (27mm off the tip -> near the ring)
+    # transform: socket mouth at (-40, 170, 20) — straight-up ray crosses
+    # the tip's level 10mm off the closing spot — rewarded via projection
+    port = next(p for p in moving.ports if p.name == "socket")
+    up = np.eye(4)
+    up[0:3, 3] = np.array([-40.0, 170.0, 20.0]) - np.asarray(port.pos)
+    straight = pa._reach_score(moving, "spigot", up.tolist(), tip, arm, perp)
+    assert straight > 1.5, straight
+    # same mouth position tilted +X by 30deg: its column lands ~300mm off
     rot = np.eye(4)
     rot[0, 0], rot[0, 2] = _m.cos(tilt), _m.sin(tilt)
     rot[2, 0], rot[2, 2] = -_m.sin(tilt), _m.cos(tilt)
-    port = next(p for p in moving.ports if p.name == "socket")
-    rot[0:3, 3] = np.array([-20.0, 123.0, 20.0]) - rot[0:3, 0:3] @ np.asarray(port.pos)
+    rot[0:3, 3] = np.array([-40.0, 170.0, 20.0]) - rot[0:3, 0:3] @ np.asarray(port.pos)
     tilted = pa._reach_score(moving, "spigot", rot.tolist(), tip, arm, perp)
     assert tilted < 0.05, tilted
-    # the same socket position with a straight-up axis: the column top
-    # lands 27mm off the ring — rewarded, but only through the projection
-    up = np.eye(4)
-    up[0:3, 3] = np.array([-20.0, 123.0, 20.0]) - np.asarray(port.pos)
-    straight = pa._reach_score(moving, "spigot", up.tolist(), tip, arm, perp)
-    assert straight > tilted
     # a mouth facing AWAY from the tip's level can never raise the column
     down = np.eye(4)
     down[2, 2] = -1.0
     down[0, 0] = -1.0
-    down[0:3, 3] = np.array([-20.0, 123.0, 20.0]) - down[0:3, 0:3] @ np.asarray(port.pos)
+    down[0:3, 3] = np.array([-40.0, 170.0, 20.0]) - down[0:3, 0:3] @ np.asarray(port.pos)
     assert pa._reach_score(moving, "spigot", down.tolist(), tip, arm, perp) == 0.0
 
 

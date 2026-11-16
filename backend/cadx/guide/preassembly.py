@@ -1791,14 +1791,15 @@ def _feeds_bridge_reach(
     task: dict[str, Any],
     pid: str,
     feed_perp: int | None,
-) -> tuple[list[list[float]], float]:
-    """World points a bridge-feeding chain's free mouth should stand NEAR:
-    for every placed instance of the bridge's OTHER leg, the free-port tips
-    the bridge will plug into. A 90°-style bridge closes only when the
-    rising column stands about one bridge arm-span away from the tip —
-    direction scoring alone can't see that a roll put the socket 150mm off
-    the closing spot. Returns (tip points, arm span). [] when the loop
-    partner is not placed yet."""
+) -> tuple[list[tuple[list[float], list[float]]], float]:
+    """World tips a bridge-feeding chain's free mouth should stand NEAR:
+    for every placed instance of the bridge's OTHER leg, the free-port
+    (position, outward axis) pairs the bridge will plug into. A 90°-style
+    bridge closes only when the rising column stands about one arm-span
+    BEYOND the tip along its axis — the elbow's body sits past the mated
+    end so its second mouth can face back at the leg; a column on the
+    tip's near side is inside-out and can never close. Returns
+    ((pos, axis) tips, arm span). [] when the loop partner is not placed."""
     if feed_perp is None:
         return [], 0.0
     downstream = {pid}
@@ -1814,7 +1815,7 @@ def _feeds_bridge_reach(
             bpid = _tpart(sess, t)
             bpart = sess.state.part_by_id(bpid) if bpid else None
             arm = max(_horiz_port_span(bpart), 20.0) if bpart else 40.0
-            tips: list[list[float]] = []
+            tips: list[tuple[list[float], list[float]]] = []
             for inst in pool:
                 if not inst.transform:
                     continue
@@ -1824,7 +1825,12 @@ def _feeds_bridge_reach(
                 used = _used_port_names(sess, inst)
                 for port in pt.ports or []:
                     if port.kind == "cylinder" and port.name not in used:
-                        tips.append(_world_pos(inst.transform, port.pos))
+                        tips.append(
+                            (
+                                _world_pos(inst.transform, port.pos),
+                                _world_dir(inst.transform, port.axis),
+                            )
+                        )
             return tips, arm
         if pp and tp in downstream:
             downstream.add(pp)
@@ -1835,18 +1841,24 @@ def _reach_score(
     moving: Any,
     mated_port: str,
     transform: list[list[float]],
-    tips: list[list[float]],
+    tips: list[tuple[list[float], list[float]]],
     arm: float,
     feed_perp: int,
 ) -> float:
-    """Bonus when a free mouth's axis reaches about one arm-span off a
-    bridge tip at the tip's level. The chain grows ALONG the mouth's axis —
-    the column's far end is where the mouth's ray crosses the tip's
-    feed-coordinate, so a tilted socket that merely stands nearer the ring
-    at its own height no longer fakes a reachable column: its far end
-    lands hundreds of mm off. Ports whose axis doesn't point toward the
-    tip's level score 0 (a mouth opening sideways can't raise a column to
-    the tip)."""
+    """Bonus when a free mouth's axis reaches the closing spot of a bridge
+    tip at the tip's level. The chain grows ALONG the mouth's axis — the
+    column's far end is where the mouth's ray crosses the tip's
+    feed-coordinate, so a tilted socket that merely stands nearer at its
+    own height no longer fakes a reachable column: its far end lands
+    hundreds of mm off.
+
+    The closing spot is ONE-SIDED: the bridge body must sit BEYOND the
+    mated end along the tip's outward axis (target = tip + axis·arm,
+    measured in the plane perpendicular to the leg). A column standing
+    between the tip and its own pipe is the inside-out solution — same
+    ring distance, unreachable mouth direction — and must score 0. Ports
+    whose axis doesn't point toward the tip's level score 0 too (a mouth
+    opening sideways can't raise a column to the tip)."""
     if not tips or not transform or arm <= 0.0:
         return 0.0
     pl = [i for i in range(3) if i != feed_perp]
@@ -1860,17 +1872,19 @@ def _reach_score(
         a = float(wa[feed_perp])
         if abs(a) < 0.15:
             continue
-        for tip in tips:
-            t = (float(tip[feed_perp]) - float(wp[feed_perp])) / a
+        for tip_pos, tip_axis in tips:
+            t = (float(tip_pos[feed_perp]) - float(wp[feed_perp])) / a
             if t <= 0.0:
                 continue
             d = float(
                 math.hypot(
-                    wp[pl[0]] + wa[pl[0]] * t - float(tip[pl[0]]),
-                    wp[pl[1]] + wa[pl[1]] * t - float(tip[pl[1]]),
+                    wp[pl[0]] + wa[pl[0]] * t
+                    - (float(tip_pos[pl[0]]) + float(tip_axis[pl[0]]) * arm),
+                    wp[pl[1]] + wa[pl[1]] * t
+                    - (float(tip_pos[pl[1]]) + float(tip_axis[pl[1]]) * arm),
                 )
             )
-            best = max(best, float(np.exp(-(((d - arm) / tol) ** 2))))
+            best = max(best, float(np.exp(-((d / tol) ** 2))))
     return 2.0 * best
 
 

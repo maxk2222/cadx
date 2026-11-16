@@ -42,12 +42,39 @@ log = get_logger(__name__)
 
 
 def _resolve_part(sess: GuideToolSession, name: str | None, step_no: int) -> str | None:
-    """Part resolution with step context — mirrors preassembly._rp."""
+    """Part resolution with step context — mirrors preassembly._rp.
+
+    A '(Schritt N)' pin is provenance, not a name: when the free-text
+    cascade can't bind ('äußere Muffe des linken unteren Rohrbogens' —
+    the genitive never token-matches 'Rohrbogen'), the ref's kind pool
+    intersected with what step N places gives the deterministic binding.
+    Only a UNIQUE intersection resolves — ambiguity stays a finding."""
     if not name:
         return None
     st = sess.state.step_by_number(step_no)
     ctx = f"{st.text} {st.title}" if st else ""
-    return _resolve_name(sess, name, context=ctx)
+    pid = _resolve_name(sess, name, context=ctx)
+    if pid:
+        return pid
+    from cadx.guide.preassembly import _STEP_REF, _kind_pool
+
+    m = _STEP_REF.search(name)
+    if not m:
+        return None
+    pinned = sess.state.step_by_number(int(m.group(1)))
+    if pinned is None:
+        return None
+    pin_ctx = f"{pinned.text} {pinned.title}"
+    placed = {
+        p
+        for pss in pinned.sub_steps or []
+        if pss.action in _PLACE_ACTIONS
+        for p in [_resolve_name(sess, pss.part or "", context=pin_ctx)]
+        if p
+    }
+    pool = _kind_pool(sess, name)
+    narrow = placed & pool if pool else placed
+    return narrow.pop() if len(narrow) == 1 else None
 
 
 def _suggest(sess: GuideToolSession, name: str) -> str:
