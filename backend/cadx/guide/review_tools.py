@@ -24,8 +24,10 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "write_review_report",
         "Submit the final review for this iteration: overall score 0..10 "
         "plus findings. Every finding MUST name the mission that owns the "
-        "fix (doc|steps|parts|assembly) — blocker findings restart that "
-        "mission in the repair loop (bounded).",
+        "fix (doc|steps|parts|assembly|build|annotate) — blocker findings "
+        "restart that mission in the repair loop (bounded). Blender-mode "
+        "runs: spatial/placement/joint faults belong to 'build' (or "
+        "'assembly'/'parts' — both map onto build).",
         {
             "score": _num("overall guide quality 0..10"),
             "findings": _arr(
@@ -35,7 +37,14 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                         "severity": {"type": "string", "enum": ["blocker", "warning", "note"]},
                         "mission": {
                             "type": "string",
-                            "enum": ["doc", "steps", "parts", "assembly", "annotate"],
+                            "enum": [
+                                "doc",
+                                "steps",
+                                "parts",
+                                "assembly",
+                                "build",
+                                "annotate",
+                            ],
                         },
                         "step": {"type": "integer"},
                         "text": {"type": "string"},
@@ -117,8 +126,10 @@ async def write_review_report(s: GuideToolSession, a: dict[str, Any]) -> dict[st
             mission = str(f.get("mission", ""))
             if sev not in ("blocker", "warning", "note"):
                 sev = "note"
-            if mission not in ("doc", "steps", "parts", "assembly", "annotate"):
-                mission = "assembly"
+            if mission not in ("doc", "steps", "parts", "assembly", "build", "annotate"):
+                mission = (
+                    "build" if s.state.guide_mode == "blender" else "assembly"
+                )
             findings.append(
                 ReviewFinding(
                     severity=sev,

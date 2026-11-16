@@ -49,6 +49,16 @@ def _mission_order(state: GuideState) -> list[str]:
     return BLENDER_MISSION_ORDER if state.guide_mode == "blender" else MISSION_ORDER
 
 
+def _repair_owner(state: GuideState, mission: str) -> str:
+    """Map a finding's declared mission onto this mode's mission order —
+    blender mode has no parts/assembly missions (the free-form 'build'
+    mission owns modeling AND placement); cad mode has no 'build' (the
+    review schema lists it for blender-mode findings)."""
+    if state.guide_mode == "blender":
+        return "build" if mission in ("parts", "assembly") else mission
+    return "assembly" if mission == "build" else mission
+
+
 def _resolve_auto_mode(
     state: GuideState, assets: list[dict[str, Any]], state_dir: Path
 ) -> None:
@@ -476,9 +486,9 @@ def _review_verdict(
         )
         return "fail", ""
     order = _mission_order(state)
-    flagged = {f.mission for f in blockers if f.mission in order} or {
-        "build" if state.guide_mode == "blender" else "assembly"
-    }
+    flagged = {
+        m for f in blockers if (m := _repair_owner(state, f.mission)) in order
+    } or {"build" if state.guide_mode == "blender" else "assembly"}
     notes = "\n".join(f"- [{f.severity}] {f.text}" for f in blockers)[:2000]
     # "review" must reopen too — the repaired assembly needs a FRESH verdict
     # (rep.iteration only advances inside write_review_report; keeping review
@@ -549,10 +559,10 @@ def _gate_reopen(
     """Reopen the missions a gate flagged with the blocker texts as notes,
     or report the blockers as fatal once the reopen cap is spent.
 
-    In blender mode lint findings name cad-side missions — "parts" and
-    "assembly" both collapse onto the "build" mission that owns them."""
-    if state.guide_mode == "blender":
-        flagged = {"build" if m in ("parts", "assembly") else m for m in flagged}
+    Findings name the review-schema missions — _repair_owner maps them
+    onto this mode's order ("parts"/"assembly" collapse onto "build" in
+    blender mode; "build" collapses onto "assembly" in cad mode)."""
+    flagged = {_repair_owner(state, m) for m in flagged}
     if not allow_reopen:
         log.info(
             "guide.gate_uncapped",
@@ -870,7 +880,17 @@ async def run_guide(
     mission_order = _mission_order(state)
     rt = ctx.runtime_settings
     score_target = float(getattr(rt, "guide_review_score_target", 8.0))
-    max_iter = int(getattr(rt, "guide_review_max_iter", 3))
+    # blender-mode repair rounds cost a full free-form build each — own
+    # knob so cad-mode bounding stays tight
+    max_iter = int(
+        getattr(
+            rt,
+            "guide_review_max_iter_blender"
+            if state.guide_mode == "blender"
+            else "guide_review_max_iter",
+            5 if state.guide_mode == "blender" else 3,
+        )
+    )
 
     async def _park(questions: list[dict[str, Any]]) -> None:
         if park_job is not None:

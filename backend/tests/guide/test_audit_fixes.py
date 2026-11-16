@@ -104,6 +104,45 @@ def test_review_verdict_cap_is_fail_not_ship(tmp_path: Path) -> None:
     assert verdict == "ship"
 
 
+def test_review_verdict_blender_routes_spatial_to_build(tmp_path: Path) -> None:
+    """Blender mode has no 'assembly'/'parts' missions — spatial blockers
+    flagged 'assembly' (the reviewer names the review-schema owner) were
+    silently dropped by `f.mission in order`, leaving only 'steps'
+    findings to reopen a mission that cannot move Blender geometry.
+    Observed: 5 spatial blockers discarded, steps reopened twice, the same
+    blockers persisted to the iteration cap (needs_review)."""
+    state = GuideState(output_dir=str(tmp_path), guide_mode="blender")
+    state.missions_done = ["doc", "steps", "build", "review", "annotate"]
+    state.review.iteration = 1
+    state.review.score = 1.0
+    state.review.findings = [
+        ReviewFinding(severity="blocker", mission="assembly", text="pipe buried in host"),
+        ReviewFinding(severity="blocker", mission="parts", text="joints=[]"),
+        ReviewFinding(severity="blocker", mission="steps", text="step refs unplaced part"),
+    ]
+    verdict, notes = _review_verdict(state, tmp_path, score_target=8.0, max_iter=5)
+    assert verdict == "repair" and notes
+    assert "build" not in state.missions_done, "spatial blockers must reopen build"
+    assert "steps" not in state.missions_done, "steps finding must still reopen steps"
+    assert "review" not in state.missions_done
+    assert "doc" in state.missions_done
+
+
+def test_review_verdict_cad_maps_build_to_assembly(tmp_path: Path) -> None:
+    """The schema lists 'build' for blender-mode findings — a cad-mode
+    reviewer naming it must not silently drop the finding."""
+    state = GuideState(output_dir=str(tmp_path))
+    state.missions_done = ["doc", "steps", "parts", "assembly", "review", "annotate"]
+    state.review.iteration = 1
+    state.review.score = 5.0
+    state.review.findings = [
+        ReviewFinding(severity="blocker", mission="build", text="part floats")
+    ]
+    verdict, _ = _review_verdict(state, tmp_path, score_target=8.0, max_iter=3)
+    assert verdict == "repair"
+    assert "assembly" not in state.missions_done
+
+
 def test_review_report_consistency_gates(tmp_path: Path) -> None:
     """A sub-target score without blockers (or ≥8 with them, or without
     visual evidence) is rejected — score 6.0 + only warnings used to
