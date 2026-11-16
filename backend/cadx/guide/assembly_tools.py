@@ -307,6 +307,12 @@ def _fuzzy_pid(n: str, cands: list[tuple[str, str]]) -> str | None:
 
 _UNRESOLVED = object()  # sentinel: no context word found — keep resolving
 
+# locative phrases attaching a feature noun to a host part —
+# 'Anschlussrohr AM Gehäuse', 'Muffe DES Rohrs', 'socket OF the pipe'
+_LOCATIVE = re.compile(
+    r"\b(?:am|an|ans|auf|bei|des|dem|den|der|im|in|of|on)\s+", re.IGNORECASE
+)
+
 
 def _resolve_context_ref(s: GuideToolSession, name: str, n: str) -> object:
     """Resolve a reference containing a declared context word.
@@ -360,7 +366,9 @@ def _resolve_context_ref(s: GuideToolSession, name: str, n: str) -> object:
     return _host_part_id(s)
 
 
-def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | None:
+def _resolve_name(
+    s: GuideToolSession, name: str, context: str = "", _depth: int = 0
+) -> str | None:
     """Resolve a manual label to a part id: alias → exact name/id →
     containment. Manuals attach qualifiers to part names ("Gehäuse, linker
     oberer Anschluss", "Adapter links oben") — containment on the LONGEST
@@ -432,7 +440,48 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
         # tokens = the meant part. Bare names keep longest-key.
         tie = -len(_tokset(k) - nt - ctx) if ctx else 0
         scored.append((overlap, tie, len(k), pid))
-    return _pick_resolution(s, name, hits, scored)
+    pid = _pick_resolution(s, name, hits, scored)
+    if pid or _depth:
+        return pid
+    return _feature_of_host_pid(s, name, context)
+
+
+def _feature_of_host_pid(s: GuideToolSession, name: str, context: str) -> str | None:
+    """'<head> am/des/of <host>' names a feature living ON a host part —
+    'linkes oberes Anschlussrohr am Gehäuse' is the casing's premounted
+    stub, not one of the two kit pipes (the pipe-category head killed
+    the casing token, resolved to None, and preassembly cascade-failed
+    every target in the run).
+
+    The head decides: tokens that also appear in registered part names
+    mean the head names a real kit kind ('Rohr am Anschluss' = a pipe
+    instance — positional machinery must pick which one, so we leave it
+    unresolved rather than flipping to the host). A head sharing NO
+    token with any registered name is a feature noun ('Anschlussrohr',
+    'Seite', 'Stutzen') — it can't denote a kit part, so the resolved
+    host is the mate target. This is the same conclusion a
+    mark_context_part declaration produces, derived from the
+    attachment phrase when the model skipped the declaration."""
+    n = _norm2(name)
+    name_toks = {
+        t
+        for p in s.state.parts
+        for t in _tokset(_norm2(f"{p.name} {p.id}"))
+    }
+    for m in _LOCATIVE.finditer(n):
+        tail = n[m.end() :].strip()
+        if len(tail) < 3:
+            continue
+        host_pid = _resolve_name(s, tail, context, 1)
+        if not host_pid:
+            continue
+        head = n[: m.start()].strip()
+        if _tokset(head) & name_toks:
+            # the head names a real kit kind — an ambiguous or
+            # positional ref; the normal machinery must decide
+            continue
+        return host_pid
+    return None
 
 
 def _record_ambiguous(s: GuideToolSession, name: str, pids: set[str]) -> None:

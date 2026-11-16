@@ -944,6 +944,63 @@ def test_resolve_name_context_feature_never_token_scores() -> None:
     assert _resolve_part(s, "oberes Anschlussrohr (Schritt 2)", 4) == "adapter"
 
 
+def test_resolve_name_feature_of_host_when_context_undeclared() -> None:
+    """Live bug (run 4f7e23f8): the parts mission never declared
+    'Anschlussrohr' context — it appeared only in step targets, so
+    match_required_parts showed nothing missing and the model moved on.
+    'linkes oberes Anschlussrohr am Gehäuse' then token-resolved to
+    None (the pipe-category head killed the casing candidate),
+    instance-ref-linted as a mere warning, and every preassembly task
+    cascade-failed (placed=0/12).
+
+    The attachment phrase itself carries the semantics: 'X am Gehäuse'
+    names a feature living ON the host. A head naming a unique kit kind
+    keeps it; an ambiguous/kindless head demotes to the resolved host —
+    identical to what mark_context_part yields, derived when the model
+    skipped the declaration."""
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import _resolve_name
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        _phys_part("heat_pump_casing", [], bbox=((0, 0, 0), (300, 200, 600))),
+        _phys_part("adapter_rn22", [], bbox=((0, 0, 0), (1, 1, 1))),
+        _phys_part("pipe_l70", [], bbox=((0, 0, 0), (1, 1, 1))),
+        _phys_part("pipe_l500", [], bbox=((0, 0, 0), (1, 1, 1))),
+    ]
+    state.parts[0].name = "KIARA-Wärmepumpe (Gehäuse)"
+    state.parts[1].name = "Adapter DN22, Innengewinde/Muffe"
+    state.parts[2].name = "Rohr DN22, l = 70 mm"
+    state.parts[3].name = "Rohr DN 22, l = 500 mm"
+    s = SimpleNamespace(state=state, _aliases_store={})
+    # the observed run's actual targets — ambiguous pipe head → host
+    assert (
+        _resolve_name(s, "linkes oberes Anschlussrohr am Gehäuse")
+        == "heat_pump_casing"
+    )
+    assert (
+        _resolve_name(s, "rechtes oberes Anschlussrohr am Gehäuse")
+        == "heat_pump_casing"
+    )
+    # unique kind head keeps the mountable — host demotion precedent
+    assert (
+        _resolve_name(
+            s, "vormontierter Adapter am linken unteren Anschluss der Wärmepumpe"
+        )
+        == "adapter_rn22"
+    )
+    # kindless head ('Seite') demotes to the resolved host
+    assert (
+        _resolve_name(s, "freie obere Seite des linken Rohrs DN 22, l = 70 mm")
+        == "pipe_l70"
+    )
+    # no locative → no rescue: a bare ambiguous kind still blocks
+    assert _resolve_name(s, "Anschlussrohr") is None
+    # positional instance refs keep their own path (no host phrase)
+    assert _resolve_name(s, "linkes vertikales Rohr") is None
+
+
 def test_context_name_resolves_to_host_and_refuses_alias() -> None:
     """Live bug (run aee696f6): the model declared 'linkes oberes
     Anschlussrohr in der Verkleidung' a context feature AND aliased it
