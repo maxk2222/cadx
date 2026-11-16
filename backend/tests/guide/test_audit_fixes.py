@@ -361,7 +361,8 @@ def test_mission_retries_once_on_bare_final():
     from cadx.guide import guide_runner
 
     src = inspect.getsource(guide_runner._run_mission)
-    assert "for attempt in (0, 1)" in src and "CONTINUATION" in src
+    assert 'total_attempts = 3 if mission == "build" else 2' in src
+    assert "CONTINUATION" in src
     assert "mission_retry" in src
 
 

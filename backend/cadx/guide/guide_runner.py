@@ -665,7 +665,13 @@ async def _run_mission(
     # after preassembly: a retry must restore the deterministic floor, not
     # the half-stripped state the crashed first attempt left behind.
     assembly_snapshot = None
-    for attempt in (0, 1):
+    # the free-form Blender build is by far the longest mission — one
+    # continuation rarely suffices to finish modeling + tagging +
+    # rendering a whole assembly. Durable state + forced checkpoints mean
+    # each extra attempt RESUMES, so extra attempts buy real progress, not
+    # restarts. Every other mission keeps the original single retry.
+    total_attempts = 3 if mission == "build" else 2
+    for attempt in range(total_attempts):
         sess = mk_session(mission)
         if mission == "assembly" and not state.assembly.planner.get("ran"):
             # deterministic pre-assembly: place everything the step plan
@@ -770,11 +776,12 @@ async def _run_mission(
             return None
         fails = _tool_failures(result)
         last_reason = result.end_reason or ""
-        if attempt == 0:
+        if attempt < total_attempts - 1:
             last_failures = "\n".join(f"- {f}" for f in fails)
             log.info(
                 "guide.mission_retry",
                 mission=mission,
+                attempt=attempt,
                 reason=last_reason,
                 failures=fails,
             )
