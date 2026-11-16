@@ -445,6 +445,19 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
         " ",
         first_clause,
     )
+    # ...unless the mount point BELONGS to an already-located part:
+    # "obere Anschlussstelle des linken unteren Rohrbogens" locates the
+    # elbow {l,d} — "obere" only selects which of its sockets. Strip the
+    # side-qualified mount phrase when the possessive tail still carries
+    # the locating side words; "linker Anschluss des Gehäuses" keeps {l}
+    # because nothing else locates that connector.
+    _mount = r"anschluss\w*|stutzen|verbindung\w*|bohrung\w*|steckplatz\w*|connector"
+    _poss = r"(?:des|der|dem|vom|am|an\s+der|of\s+the|of\s+a|on\s+the)"
+    _mount_sub = re.compile(
+        rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+\w*(?:{_mount})\w*"
+        rf"(?=\s+{_poss}\b[^,;.]*?\b(?:{_side_stem})\b)"
+    )
+    first_clause = _mount_sub.sub(" ", first_clause)
     # the TARGET carries the same traps — "(Spitzende, zeigt nach oben)"
     # describes the part's opening, not another instance's side
     target = re.sub(
@@ -457,6 +470,7 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
         " ",
         target,
     )
+    target = _mount_sub.sub(" ", target)
     return _side_words(f"{target} {first_clause}")
 
 

@@ -1227,6 +1227,33 @@ def test_side_signature_feature_phrases() -> None:
     assert "l" not in sig, sig
 
 
+def test_side_signature_mount_point_owned_by_located_part() -> None:
+    """A side-qualified MOUNT point that belongs to an already-located
+    part is a port selector, not a locator: 'obere Anschlussstelle des
+    linken unteren Rohrbogens' locates the elbow {l,d} — 'obere' picks
+    its socket. But 'linker Anschluss des Gehäuses' keeps {l}: nothing
+    else locates that connector."""
+    sig = pa._task_side_signature(
+        {"target": "Rohrbogen DN22, Anschluss 1x außen 1x innen links unten",
+         "text": "Langes Rohr in die obere Anschlussstelle des linken "
+                 "unteren Rohrbogens stecken, bis zum Anschlag."}
+    )
+    assert sig == {"d", "l"}, sig
+    sig = pa._task_side_signature(
+        {"target": "Rohrbogen DN22, Anschluss 1x außen 1x innen rechts unten",
+         "text": "Langes Rohr in die obere Anschlussstelle des rechten "
+                 "unteren Rohrbogens stecken."}
+    )
+    assert sig == {"d", "r"}, sig
+    # the connector itself is the located object — its side word is the
+    # ONLY discriminator and must survive
+    sig = pa._task_side_signature(
+        {"target": "linker Anschluss des Gehäuses",
+         "text": "Adapter am linken Anschluss des Gehäuses anschrauben."}
+    )
+    assert sig == {"l"}, sig
+
+
 def test_orient_score_tolerates_empty_next_axes() -> None:
     """Callers may hand back ([], 'V') or nothing at all — lookahead is a
     hint, never a shape requirement."""
