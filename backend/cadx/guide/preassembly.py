@@ -492,7 +492,21 @@ def _spawn_premounts(
     referencing step."""
     host_pid = next((t["part"] for t in tasks if t.get("anchor")), None)
     if host_pid is None:
-        host_pid = tasks[0]["part"] if tasks else ""
+        # no anchor task — the device/host is the registered part the plan
+        # never installs (it exists before step 1). tasks[0].part is just
+        # the first placement (a fitting, not a host): premounts spawned
+        # onto it target an instance that does not exist yet.
+        planned_pids = {_tpart(sess, t) for t in tasks}
+        spare = [p for p in sess.state.parts if p.id not in planned_pids]
+        if spare:
+
+            def _vol(p: Any) -> float:
+                lo, hi = p.bbox_min or [0, 0, 0], p.bbox_max or [0, 0, 0]
+                return float(np.prod([abs(hi[k] - lo[k]) for k in range(3)]))
+
+            host_pid = max(spare, key=_vol).id
+        else:
+            host_pid = tasks[0]["part"] if tasks else ""
     def _ref_sides(t: dict[str, Any]) -> set[str]:
         return _task_side_signature(t)
 

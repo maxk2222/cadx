@@ -298,6 +298,20 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
     hit = s._aliases_store.get(n) or _name_index(s).get(n)
     if hit:
         return hit
+    from cadx.guide.part_tools import _context_tokens
+
+    ctx_toks = [c for c in _context_tokens(s, name) if n != _norm2(c)]
+    if ctx_toks:
+        # the name denotes a feature of the context device ("vormontiertes
+        # oberes Anschlussrohr") — resolve ONLY through a feature's own
+        # binding (alias onto the host part). Its qualifier tokens must
+        # never guess a kit part: 'oberes' aliased uniquely to pipe_l500
+        # bound the device stub to a 500mm pipe and spawned phantoms.
+        pids = {p for c in ctx_toks if (p := _resolve_name(s, c))}
+        if len(pids) > 1:
+            _record_ambiguous(s, name, pids)
+            return None
+        return pids.pop() if pids else None
     cands = list(s._aliases_store.items()) + list(_name_index(s).items())
     # typo-robust match for long names — registered part names come from
     # upload filenames and carry the SOURCE'S typos ("soket_to_socket");

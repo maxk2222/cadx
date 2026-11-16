@@ -270,6 +270,36 @@ def test_no_premount_without_marker() -> None:
     assert not [t for t in out if t.get("premount")]
 
 
+def test_premount_host_falls_back_to_unplaced_registered_part() -> None:
+    """No anchor task — premounts must mount onto the registered part the
+    plan never installs (the device), not tasks[0].part (the first
+    fitting): a spawn targeting an unplaced fitting deadlocks every task
+    behind it (observed: 14/14 failed on 'adapter' as host)."""
+    host = _part("casing", bbox=((-100, -100, -100), (100, 100, 100)))
+    adapter = _part("adapter")
+    elbow = _part("elbow")
+    sess = _sess([host, adapter, elbow])
+    tasks = [
+        {
+            "step": 2, "substep_idx": 0, "part": "adapter",
+            "target": "casing oberer linker", "text": "Adapter am oberen linken Anschluss",
+        },
+        {
+            "step": 3, "substep_idx": 0, "part": "adapter",
+            "target": "casing oberer rechter", "text": "Adapter am oberen rechten Anschluss",
+        },
+        {
+            "step": 5, "substep_idx": 0, "part": "elbow",
+            "target": "unterer linker vormontierter adapter",
+            "text": "Bogen auf unteren linken Adapter",
+        },
+    ]
+    out = pa._spawn_premounts(sess, tasks)
+    prems = [t for t in out if t.get("premount")]
+    assert len(prems) == 1 and prems[0]["part"] == "adapter"
+    assert prems[0]["target"] == "casing"  # the device, not 'adapter'
+
+
 # --------------------------------------------------------------------- #
 # chain height + coincident occupancy
 # --------------------------------------------------------------------- #

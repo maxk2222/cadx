@@ -387,6 +387,36 @@ def _is_context(s: GuideToolSession, name: str) -> bool:
     return bool(n) and n in {_norm(x) for x in s.state.context_names}
 
 
+def _context_tokens(s: GuideToolSession, name: str) -> list[str]:
+    """Declared context names appearing inside ``name`` — 'vormontiertes
+    linkes oberes Anschlussrohr in der Verkleidung' denotes a FEATURE of
+    the context device, not the kit part its qualifier tokens happen to
+    share. Compounds keep the mark: 'anschlussrohrs' (genitive) or
+    'verkleidungsrohr' still name the context feature."""
+    n = _norm(name)
+    if not n:
+        return []
+    toks = set(n.split())
+    out = []
+    for ctx in s.state.context_names:
+        c = _norm(ctx)
+        if len(c) < 3:
+            continue
+        if " " in c:
+            # multi-word context names match on word boundaries
+            if re.search(rf"\b{re.escape(c)}\w*", n):
+                out.append(ctx)
+            continue
+        if any(t == c or t.startswith(c) or (len(c) >= 4 and t.endswith(c)) for t in toks):
+            out.append(ctx)
+    return out
+
+
+def _context_token(s: GuideToolSession, name: str) -> str | None:
+    toks = _context_tokens(s, name)
+    return toks[0] if toks else None
+
+
 async def mark_context_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     name = str(a.get("name", "")).strip()
     if not name:

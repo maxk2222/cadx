@@ -207,21 +207,23 @@ def _lint_target(sess: GuideToolSession, st: Any, i: int, name: str) -> list[dic
     """One placement target reference: context-marked, ambiguous,
     instance-style, or simply unresolvable — each routes to the mission
     that can actually fix it."""
-    from cadx.guide.part_tools import _is_context
+    from cadx.guide.part_tools import _context_token, _is_context
 
     # alias wins over a context mark — the last explicit agent action is
     # the intended resolution; a stale context mark repaired via
     # alias_part must not keep blocking placement targets
-    if _is_context(sess, name) and not _resolve_name(sess, name):
+    ctx_tok = _context_token(sess, name)
+    if (_is_context(sess, name) or ctx_tok) and not _resolve_name(sess, name):
+        feat = ctx_tok or name
         return [
             {
                 "mission": "parts",
                 "severity": "blocker",
                 "text": f"step {st.number} sub {i}: target '{name}' "
-                "is marked context but a placement mates to it — "
-                "the name denotes a FEATURE of an existing part "
+                f"names context feature '{feat}' but a placement mates "
+                "to it — the name denotes a FEATURE of an existing part "
                 "(nozzle/port on the host): alias_part "
-                f"'{name}' onto that registered part (e.g. the "
+                f"'{feat}' onto that registered part (e.g. the "
                 "enclosure/base), or mark_context_part it only "
                 "if the substep gets retargeted",
             }

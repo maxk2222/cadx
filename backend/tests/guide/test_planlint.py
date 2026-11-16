@@ -188,6 +188,52 @@ def test_context_target_routes_to_parts_for_aliasing() -> None:
     assert ctx and ctx[0]["mission"] == "parts", fs
 
 
+def test_nested_context_target_is_blocked_not_guessed() -> None:
+    """A target containing a declared context name denotes a feature of
+    the device — its qualifier tokens must never guess a kit part
+    ('oberes Anschlussrohr' bound pipe_l500 through a single-owner
+    alias token and spawned phantom premounts). Once the feature is
+    aliased onto the host the same reference resolves cleanly."""
+    pipe = _part("pipe_l500")
+    pipe.name = "Rohr DN22, l = 500 mm"
+    sess = _sess(
+        [_part("casing"), _part("adapter"), pipe],
+        [
+            _step(
+                1,
+                [
+                    {
+                        "action": "attach",
+                        "part": "adapter",
+                        "target": "vormontiertes linkes oberes Anschlussrohr "
+                        "in der Verkleidung",
+                    }
+                ],
+            )
+        ],
+    )
+    sess.state.context_names = ["Verkleidung", "Anschlussrohr"]
+    # the trap alias: 'oberes' is owned only by pipe_l500 — token scoring
+    # would bind the device stub to a 500mm pipe
+    sess._aliases_store = {"freies oberes ende des linken rohrs": "pipe_l500"}
+    fs = plan_lint(sess)
+    b = [
+        f
+        for f in fs
+        if f["severity"] == "blocker" and "Anschlussrohr" in f["text"]
+    ]
+    assert b and b[0]["mission"] == "parts", fs
+    # the repair path: alias the context feature onto the host part —
+    # the reference then resolves to the host, not a kit part
+    sess._aliases_store["anschlussrohr"] = "casing"
+    fs = plan_lint(sess)
+    assert not [
+        f
+        for f in fs
+        if f["severity"] == "blocker" and "Anschlussrohr" in f["text"]
+    ], fs
+
+
 def test_detected_qty_bounds_plan_when_register_omits() -> None:
     """Register calls that omit `quantity` still get bounded by the
     Stückliste numbers the doc mission captured (heatpump: qty=None →
