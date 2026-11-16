@@ -79,8 +79,13 @@ missions in order, each a bounded `run_session` with a mission-scoped
 | emit | (no LLM) | `output/unity_guide.json` artifact |
 
 The review verdict drives a bounded repair loop: blocker findings reopen
-the flagged mission (`guide_review_max_iter`, default 3, score target
-`guide_review_score_target`, default 8).
+the flagged mission (`guide_review_max_iter`, default 3 — blender mode
+uses `guide_review_max_iter_blender`, default 5, since each repair costs
+a free-form build; score target `guide_review_score_target`, default 8).
+Findings name review-schema missions (`doc|steps|parts|assembly|build|
+annotate`); `_repair_owner` maps them onto the mode's order — in blender
+mode `parts`/`assembly` collapse onto `build` (the only mission that can
+move scene geometry), in cad mode `build` collapses onto `assembly`.
 
 ## Blender mode (`guide_mode`)
 
@@ -103,8 +108,20 @@ contract is scene tags: every placed object carries
 (`blender_check.run_scene_gate`, fires at `review` instead of the cad
 lint's `assembly` gate) read `matrix_world` back deterministically —
 instances, bboxes and the manifest come from measured scene facts, never
-from LLM claims. Buried non-premounted instances block; joint
-interpenetration stays a warning in `state.blender_manifest`.
+from LLM claims. Buried non-premounted instances block — the blocker
+carries a least-escape `obj.location` delta (Blender axes) so the repair
+session acts instead of re-measuring; joint interpenetration stays a
+warning in `state.blender_manifest`.
+
+Session-death safety nets for the free-form mission: `blender_exec`
+counts calls since the last durable checkpoint and nudges (then forces)
+`blender_sync_scene`, so tagged work reaches `state` even mid-session.
+`blender_render_step` auto-frames an orthographic camera to the visible
+tagged objects (`direction` arg selects the bearing) — no manual camera
+setup. And a session dying after the durable state already satisfies the
+contract (steps exist, parts registered, instances synced, every step
+rendered) completes the mission from scene truth — the scene gate still
+verifies physical quality before review.
 
 **Units**: 1 Blender unit = 1 mm (`blender_exec` enforces
 `scale_length=0.001` so glTF export + `normalize_mesh_units` compose
