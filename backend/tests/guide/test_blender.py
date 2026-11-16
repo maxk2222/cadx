@@ -492,3 +492,18 @@ def test_overlap_solid_check_flags_true_burial(tmp_path):
     )
     assert len(blockers) == 1 and "small#1" in blockers[0]
     assert manifest["overlaps"][0]["solid_fraction"] == 1.0
+
+
+def test_checkpoint_nudge_counts_and_resets(tmp_path):
+    sess = _sess(tmp_path)
+    sess.tool_log = [{"name": "blender_exec"}] * 39
+    assert blender_tools._checkpoint_nudge(sess) is None
+    sess.tool_log.append({"name": "blender_exec"})
+    nudge = blender_tools._checkpoint_nudge(sess)
+    assert nudge and "40" in nudge and "URGENT" not in nudge
+    sess.tool_log += [{"name": "blender_exec"}] * 40
+    assert "URGENT" in blender_tools._checkpoint_nudge(sess)
+    # a sync resets the counter — checkpoints are durable evidence
+    sess.tool_log.append({"name": "blender_sync_scene"})
+    sess.tool_log += [{"name": "blender_exec"}] * 10
+    assert blender_tools._checkpoint_nudge(sess) is None

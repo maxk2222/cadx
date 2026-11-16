@@ -63,6 +63,45 @@ def _to_gltf_frame(matrix_blender) -> list[list[float]]:
     return (_BLENDER_TO_GLTF @ m @ _BLENDER_TO_GLTF.T).tolist()
 
 
+_CHECKPOINT_TOOLS = {"blender_sync_scene", "blender_register_part", "blender_save"}
+_CHECKPOINT_WARN = 40
+_CHECKPOINT_ESCALATE = 80
+
+
+def _calls_since_checkpoint(s: GuideToolSession) -> int:
+    """Tool calls since the last durable checkpoint — scans the
+    append-only tool log backwards until a register/sync/save call. The
+    current in-flight call is not yet logged, so it counts too."""
+    n = 0
+    for entry in reversed(s.tool_log):
+        if entry.get("name") in _CHECKPOINT_TOOLS:
+            break
+        n += 1
+    return n
+
+
+def _checkpoint_nudge(s: GuideToolSession) -> str | None:
+    """Escalating reminder appended to blender_exec results: unsynced
+    modeling work survives only in Blender's memory — a session that
+    dies at budget loses it all, so checkpoint early and often."""
+    n = _calls_since_checkpoint(s)
+    if n < _CHECKPOINT_WARN:
+        return None
+    if n >= _CHECKPOINT_ESCALATE:
+        return (
+            f"URGENT: {n} tool calls with NO durable checkpoint — everything "
+            "you modeled exists only in Blender's memory and will be LOST if "
+            "this session ends. STOP refining: tag every placed object "
+            "(cadx_part/cadx_step) and call blender_sync_scene NOW — it "
+            "auto-registers tagged parts into durable state."
+        )
+    return (
+        f"checkpoint reminder: {n} tool calls without syncing. Call "
+        "blender_sync_scene soon — it auto-registers tagged parts and "
+        "rebuilds durable instance state from the live scene."
+    )
+
+
 def _wait_for_file(
     path: Path, expected_bytes: int | None = None, timeout_s: float = 15.0
 ) -> bool:
@@ -196,11 +235,15 @@ async def blender_exec(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
     except BlenderError as exc:
         return _err(exc)
     truncated = len(out) > _EXEC_STDOUT_CAP
-    return {
+    result: dict[str, Any] = {
         "ok": True,
         "output": out[:_EXEC_STDOUT_CAP],
         "truncated": truncated,
     }
+    nudge = _checkpoint_nudge(s)
+    if nudge:
+        result["checkpoint"] = nudge
+    return result
 
 
 async def blender_screenshot(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
