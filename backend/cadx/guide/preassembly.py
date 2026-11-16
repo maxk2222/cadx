@@ -1328,6 +1328,16 @@ async def _retry_bridges(
             or abs(best[7]) < 0.8
         ):
             sess.state.assembly.joints.extend(old_joints)  # keep the honest miss
+            log.info(
+                "guide.preassembly.bridge_retry_failed",
+                step=task["step"],
+                reason="no_solve" if best is None else "residual",
+                res_mm=round(best[1], 2) if best else None,
+                bound_mm=round(_bridge_bound(sess, task, pid, best), 2)
+                if best
+                else None,
+                ndot2=round(best[7], 2) if best else None,
+            )
             continue
         _key, res, m, (i1, p1), (i2, p2), _rv, flip1, ndot2 = best
         # the surgical re-transform must not buy the closure by burying the
@@ -2397,6 +2407,17 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
             "res": float(res),
             "ndot": float(ndot2),
         }
+        log.info(
+            "guide.preassembly.bridge_miss",
+            step=task["step"],
+            part=pid,
+            res_mm=round(res, 2),
+            bound_mm=round(_bridge_bound(sess, task, pid, best), 2),
+            ndot2=round(ndot2, 2),
+            i1=str(i1.instance_id),
+            i2=str(i2.instance_id),
+            resid=[round(float(v), 1) for v in resid_v],
+        )
         return None
     cid = f"bridge-{pid}-{task['step']}-{task['substep_idx']}"
     sess._preview_cache[cid] = {
@@ -2423,6 +2444,16 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
         },
     )
     if not res.get("ok"):
+        # the two-leg solve exists but placement gates refused it — log the
+        # reason or the miss is indistinguishable from an unsolvable bridge
+        log.info(
+            "guide.preassembly.bridge_place_failed",
+            step=task["step"],
+            part=pid,
+            i1=str(i1.instance_id),
+            i2=str(i2.instance_id),
+            error=str(res.get("error") or "")[:140],
+        )
         return None
     insts = sess.state.assembly.instances
     iid = insts[-1].instance_id if insts else None
