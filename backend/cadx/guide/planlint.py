@@ -215,6 +215,14 @@ def _lint_target(sess: GuideToolSession, st: Any, i: int, name: str) -> list[dic
     ctx_tok = _context_token(sess, name)
     if (_is_context(sess, name) or ctx_tok) and not _resolve_name(sess, name):
         feat = ctx_tok or name
+        # marking context AGAIN is a no-op — the name is already marked;
+        # the only repair that lets the mate resolve is aliasing the
+        # feature onto the registered host part
+        retarget = (
+            ""
+            if ctx_tok
+            else ", or mark_context_part it only if the substep gets retargeted"
+        )
         return [
             {
                 "mission": "parts",
@@ -224,8 +232,7 @@ def _lint_target(sess: GuideToolSession, st: Any, i: int, name: str) -> list[dic
                 "to it — the name denotes a FEATURE of an existing part "
                 "(nozzle/port on the host): alias_part "
                 f"'{feat}' onto that registered part (e.g. the "
-                "enclosure/base), or mark_context_part it only "
-                "if the substep gets retargeted",
+                f"enclosure/base){retarget}",
             }
         ]
     if _resolve_name(sess, name):
