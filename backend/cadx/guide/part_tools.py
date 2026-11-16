@@ -471,15 +471,47 @@ async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[s
         )
         if pid is None and not _is_context(s, name):
             missing.append(name)
+    # actionable guidance per missing name — 'alias it' is NOT always a
+    # valid move: a generic family name ('Anschlussrohr' with two pipe
+    # parts registered) is refused by the discriminativity gate, and a
+    # premounted host feature must be mark_context_part'd, not aliased.
+    # Naming the valid path per name breaks the alias->match reject loop
+    # (observed: 48 alias/match rounds trying to satisfy an unaliasable
+    # generic name until the mission died on budget).
+    hints: dict[str, str] = {}
+    for name in missing:
+        cat, _ = _sig(name)
+        same_cat = [
+            p.id
+            for p in s.state.parts
+            if cat != "other" and _sig(f"{p.name} {p.id}")[0] == cat
+        ]
+        if len(same_cat) >= 2:
+            hints[name] = (
+                f"generic {cat} name over {len(same_cat)} candidates "
+                f"({', '.join(same_cat[:4])}) — a generic alias is refused: "
+                "if it denotes premounted/host geometry, mark_context_part; "
+                "if it is a real kit part, alias a QUALIFIED variant "
+                "(size/end-type) or pick via plan note"
+            )
+        elif cat == "other":
+            hints[name] = (
+                "no category recognized — if it denotes host/device "
+                "geometry or a tool, mark_context_part; else "
+                "generate_missing_part (when allowed) or refine the "
+                "manual name in the steps"
+            )
     return {
         "ok": True,
         "required_count": len(required),
         "matched": sum(1 for r in rows if r["matched_part_id"]),
         "missing": missing,
+        "hints": hints,
         "matches": rows,
-        "note": "resolve every missing name via alias_part onto a suggested "
-        "candidate (or generate_missing_part when generation is allowed) "
-        "before done_mission — assembly needs a CAD source for each",
+        "note": "resolve every missing name — see 'hints' for which path "
+        "fits each name (qualified alias_part / mark_context_part / "
+        "generate_missing_part) — assembly needs a CAD source or an "
+        "explicit context declaration for each",
     }
 
 
@@ -561,7 +593,9 @@ def _name_part_conflict(
                     f"({part_id}, {', '.join(s for s, _, _ in same_cat)}) — "
                     "the alias must carry a discriminator naming THIS "
                     "part (size, end-type, or a feature no sibling has) "
-                    "or it silently binds every generic reference"
+                    "or it silently binds every generic reference. If the "
+                    "name denotes premounted/host geometry instead of a "
+                    "kit part, mark_context_part is the correct tool"
                 )
     return None
 

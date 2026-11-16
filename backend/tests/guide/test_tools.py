@@ -1396,6 +1396,42 @@ def test_sig_compound_rohr_is_pipe() -> None:
     assert _sig("Rohrbogen DN22")[0] == "elbow"  # elbow still wins
 
 
+def test_match_required_hints_generic_names_to_context() -> None:
+    """Live bug (run 4735a2f7): 'Anschlussrohr' stayed missing because
+    the generic alias is correctly refused — but match_required_parts
+    only said 'alias it', sending the model into a 48-round
+    alias->match loop until the parts mission died on budget. The
+    missing report must name the valid path: mark_context_part for host
+    geometry, or a qualified alias."""
+    import asyncio
+
+    from cadx.guide.part_tools import match_required_parts
+    from cadx.guide.state import DocumentIndex, GuidePart
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        GuidePart(id="casing", name="Gehäuse"),
+        GuidePart(id="pipe_l70", name="Rohr DN22, l = 70 mm"),
+        GuidePart(id="pipe_l500", name="Rohr DN22, l = 500 mm"),
+    ]
+    state.document = DocumentIndex(detected_part_names=["Anschlussrohr"])
+    sess = GuideToolSession(
+        ctx,
+        mission="parts",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    r = asyncio.run(match_required_parts(sess, {}))
+    assert r["ok"] and r["missing"] == ["Anschlussrohr"], r
+    hint = r["hints"].get("Anschlussrohr", "")
+    assert "mark_context_part" in hint and "generic" in hint, r["hints"]
+
+
 def test_declared_mates_audits_orient_substep_leg() -> None:
     """The l70 leg was declared on an `orient` sub-step (non-placement)
     with a clean target_pid — the elbow only jointed to l500. The audit
