@@ -454,11 +454,19 @@ async def assign_media(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
 async def reorder_steps(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     order = [int(x) for x in (a.get("order") or [])]
     cur = sorted(s.state.steps, key=lambda x: x.number)
-    if sorted(order) != [x.number for x in cur]:
+    expected = [x.number for x in cur]
+    if sorted(order) != expected:
+        seen: set[int] = set()
+        dup = sorted({n for n in order if n in seen or seen.add(n)})
+        missing = sorted(set(expected) - set(order))
         return {
             "ok": False,
             "error": "order must contain every existing step number exactly once",
-            "current": [x.number for x in cur],
+            "missing": missing,
+            "duplicated": dup,
+            "current": expected,
+            "hint": "build the permutation from 'current' — insert 'missing' "
+            "numbers, drop 'duplicated' repeats — then retry once",
         }
     rank = {old: i + 1 for i, old in enumerate(order)}
     for step in s.state.steps:

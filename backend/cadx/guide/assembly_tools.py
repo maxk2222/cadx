@@ -102,8 +102,23 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "unplace_instance": _fn(
         "unplace_instance",
         "Remove a part's placement (and its joints) so it can be re-placed.",
-        {"part_id": _s("part_id or instance_id to unplace")},
+        {
+            "part_id": _s("part_id or instance_id to unplace"),
+            "confirm_demolish": _b(
+                "required to remove an instance the geometry audit does NOT "
+                "flag — proves the teardown is intentional, not a panic loop"
+            ),
+        },
         ["part_id"],
+    ),
+    "request_repair": _fn(
+        "request_repair",
+        "Surgical repair of one step: removes ONLY the instances the "
+        "geometry audit currently flags for that step (bad joints, burial, "
+        "disconnected, open declared mates) — healthy placements and their "
+        "joints stay. Returns what the step must re-place.",
+        {"step": _i("step number")},
+        ["step"],
     ),
     "reset_step": _fn(
         "reset_step",
@@ -373,11 +388,7 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
     # means the name is more generic than the parts ('rohrbogen'
     # substring-matches BOTH elbow kinds) — picking the longest name was
     # an arbitrary guess that bound the wrong elbow kind.
-    hits = [
-        (k, pid, k in n)
-        for k, pid in cands
-        if len(k) >= 3 and (k in n or n in k)
-    ]
+    hits = [(k, pid, k in n) for k, pid in cands if len(k) >= 3 and (k in n or n in k)]
     # token-overlap fallback: feature phrases ("Rohrbogen am linken
     # Anschluss", "vertikales Rohr 500mm") share a part's distinctive
     # tokens even with no alias/containment — ≥2 shared tokens keeps it
@@ -466,11 +477,7 @@ def _pick_resolution(
 
         name_cat, _ = _sig(name)
         if name_cat != "other":
-            side_pids |= {
-                p.id
-                for p in s.state.parts
-                if _sig(f"{p.name} {p.id}")[0] == name_cat
-            }
+            side_pids |= {p.id for p in s.state.parts if _sig(f"{p.name} {p.id}")[0] == name_cat}
     if len(side_pids) > 1:
         # numeric model tokens are identity, not position: "l = 70 mm"
         # can never mean the 500mm sibling — resolve on numeric coverage
@@ -501,9 +508,7 @@ def _pick_resolution(
     return None
 
 
-def _narrow_by_numerics(
-    s: GuideToolSession, name: str, pids: set[str]
-) -> set[str]:
+def _narrow_by_numerics(s: GuideToolSession, name: str, pids: set[str]) -> set[str]:
     """Restrict candidates to those covering the ref's numeric tokens —
     'l = 70 mm' can never mean the 500mm sibling. Model numbers are
     identity, not position, so this runs before positional evidence."""
@@ -521,9 +526,7 @@ def _narrow_by_numerics(
     return {pid for pid, c in cov.items() if c == best}
 
 
-def _ref_side_disambiguate(
-    s: GuideToolSession, name: str, pids: set[str]
-) -> str | None:
+def _ref_side_disambiguate(s: GuideToolSession, name: str, pids: set[str]) -> str | None:
     """Side words in a reference pin WHICH of the tied parts is meant:
     "Rohrbogen am rechten unteren Anschluss" — both elbow kinds tie on
     rohrbogen/anschluss, but only the spigot elbow is placed in a
@@ -543,18 +546,14 @@ def _ref_side_disambiguate(
         for pid in pids:
             for st in s.state.steps:
                 placed_here = any(
-                    (ss.part_pid or _resolve_name(s, str(ss.part or ""), st.text))
-                    == pid
+                    (ss.part_pid or _resolve_name(s, str(ss.part or ""), st.text)) == pid
                     for ss in st.sub_steps
                 )
                 if not placed_here:
                     placed_here = any(
-                        _resolve_name(s, n, st.text) == pid
-                        for n in st.required_parts
+                        _resolve_name(s, n, st.text) == pid for n in st.required_parts
                     )
-                if placed_here and ref_sides <= _side_words(
-                    f"{st.title} {st.text}"
-                ):
+                if placed_here and ref_sides <= _side_words(f"{st.title} {st.text}"):
                     winners.add(pid)
                     break
         return winners.pop() if len(winners) == 1 else None
@@ -564,11 +563,7 @@ def _ref_side_disambiguate(
 
 def _tokset(text: str) -> set[str]:
     """Content tokens (letters / digit-runs) of a normalized name."""
-    return {
-        t
-        for t in re.findall(r"[a-zäöüß]+|\d+", _norm2(text))
-        if len(t) >= 2 or t.isdigit()
-    }
+    return {t for t in re.findall(r"[a-zäöüß]+|\d+", _norm2(text)) if len(t) >= 2 or t.isdigit()}
 
 
 # sub_step actions that consume a NEW part occurrence — orient/check inspect
@@ -648,9 +643,7 @@ def _completeness_issues(s: GuideToolSession) -> list[str]:
             continue
         for ss in st.sub_steps:
             for nm, bound in ((ss.target, ss.target_pid), (ss.target2, ss.target2_pid)):
-                pid = bound or _resolve_name(
-                    s, nm, context=f"{ss.text or ''} {st.text} {st.title}"
-                )
+                pid = bound or _resolve_name(s, nm, context=f"{ss.text or ''} {st.text} {st.title}")
                 if pid and pid not in placed_parts and pid not in seen_target_issues:
                     seen_target_issues.add(pid)
                     issues.append(
@@ -733,9 +726,7 @@ async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[st
         for j in s.state.assembly.joints
         if j.get("moving_instance") == fixed_inst.instance_id
     }
-    cands = solver.find_matching_ports(
-        moving, fixed, used_fixed_ports=used, include_mismatch=True
-    )
+    cands = solver.find_matching_ports(moving, fixed, used_fixed_ports=used, include_mismatch=True)
     if not cands:
         return {
             "ok": True,
@@ -779,35 +770,7 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
     # collision-check each candidate against the placed set; also expose the
     # burial fraction so the LLM can prefer a candidate whose body stays
     # OUTSIDE foreign parts instead of discovering the sink only at commit
-    sc = _scene(s)
-    for c in cands:
-        c["fixed_part"] = fixed.id
-        c["fixed_instance"] = fixed_inst.instance_id
-        if moving.mesh_path:
-            rep = sc.collision_report(moving.id, moving.mesh_path, c["transform"])
-            c["collision_free"] = rep["ok"]
-            c["collisions"] = rep["collisions"][:3]
-        bf, bh, sf, si = _candidate_burial(s, moving, c)
-        if bf > 0.05:
-            c["buried_frac"] = round(bf, 2)
-            c["buried_in"] = bh
-        if sf > 0.05 and moving.id != _host_part_id(s):
-            c["swallow_frac"] = round(sf, 2)
-            c["swallows"] = si
-        # the commit gates (buried >0.45, swallow >0.6) reject these at
-        # place_instance — fold them into geometry_ok NOW so the agent
-        # only ever sees viable candidates ranked on top; committing a
-        # buried candidate is deterministic rejection, not a choice
-        if bf > 0.45:
-            c["geometry_ok"] = False
-            c["rejected_reason"] = (
-                f"mates the body {round(bf * 100)}% inside foreign '{bh}'"
-            )
-        elif sf > 0.6 and moving.id != _host_part_id(s):
-            c["geometry_ok"] = False
-            c["rejected_reason"] = (
-                f"lands on top of '{si}' ({round(sf * 100)}% enveloped)"
-            )
+    _annotate_candidates(s, _scene(s), cands, moving, fixed, fixed_inst)
     gvec, gspec = _grow_dir_hint(s, a)
     ovec, ospec = _out_dir_hint(s, a, moving)
     _rank_candidates(s, a, cands, moving, fixed, fixed_inst, gvec, gspec, ovec, ospec)
@@ -849,6 +812,43 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
     if not any(c["geometry_ok"] for c in cands):
         _add_alternative_pairs(out, s, moving, fixed, a)
     return out
+
+
+def _annotate_candidates(
+    s: GuideToolSession,
+    sc: Any,
+    cands: list[dict[str, Any]],
+    moving: Any,
+    fixed: Any,
+    fixed_inst: Any,
+) -> None:
+    """Per-candidate collision + burial annotation: flags collision_free,
+    buried/swallow fractions, and folds the commit gates into geometry_ok
+    so the agent only ever sees viable candidates ranked on top."""
+    for c in cands:
+        c["fixed_part"] = fixed.id
+        c["fixed_instance"] = fixed_inst.instance_id
+        if moving.mesh_path:
+            rep = sc.collision_report(moving.id, moving.mesh_path, c["transform"])
+            c["collision_free"] = rep["ok"]
+            c["collisions"] = rep["collisions"][:3]
+        bf, bh, sf, si = _candidate_burial(s, moving, c)
+        if bf > 0.05:
+            c["buried_frac"] = round(bf, 2)
+            c["buried_in"] = bh
+        if sf > 0.05 and moving.id != _host_part_id(s):
+            c["swallow_frac"] = round(sf, 2)
+            c["swallows"] = si
+        # the commit gates (buried >0.45, swallow >0.6) reject these at
+        # place_instance — fold them into geometry_ok NOW so the agent
+        # only ever sees viable candidates ranked on top; committing a
+        # buried candidate is deterministic rejection, not a choice
+        if bf > 0.45:
+            c["geometry_ok"] = False
+            c["rejected_reason"] = f"mates the body {round(bf * 100)}% inside foreign '{bh}'"
+        elif sf > 0.6 and moving.id != _host_part_id(s):
+            c["geometry_ok"] = False
+            c["rejected_reason"] = f"lands on top of '{si}' ({round(sf * 100)}% enveloped)"
 
 
 def _attachment_candidates(
@@ -999,7 +999,11 @@ def _sibling_dir_hint(s: GuideToolSession, pid: str) -> tuple[Any, str]:
         fi = insts.get(str(j.get("fixed_instance"))) if j else None
         fp_part = s.state.part_by_id(fi.part_id) if fi else None
         fp = next(
-            (p for p in (fp_part.ports if fp_part else []) if p.name == (j or {}).get("fixed_port")),
+            (
+                p
+                for p in (fp_part.ports if fp_part else [])
+                if p.name == (j or {}).get("fixed_port")
+            ),
             None,
         )
         part = s.state.part_by_id(pid)
@@ -1033,8 +1037,7 @@ def _no_cand_err(moving: Any, fixed: Any) -> dict[str, Any]:
         empty.append(fixed.id)
     if empty:
         err_out["error"] = (
-            f"{empty} have no extracted ports — run get_part_features "
-            "on them first, then retry"
+            f"{empty} have no extracted ports — run get_part_features on them first, then retry"
         )
         err_out["next_action"] = f"get_part_features({empty[0]!r})"
         return err_out
@@ -1094,10 +1097,7 @@ def _add_alternative_pairs(
     re-probing this sink."""
     auto = solver.find_matching_ports(moving, fixed, include_mismatch=True)
     probed = (str(a.get("moving_port", "")), str(a.get("target_port", "")))
-    alt = [
-        p for p in auto
-        if (p.get("moving_port"), p.get("fixed_port")) != probed
-    ]
+    alt = [p for p in auto if (p.get("moving_port"), p.get("fixed_port")) != probed]
     if alt:
         out["alternative_pairs"] = alt[:6]
         out["hint"] = (
@@ -1171,8 +1171,7 @@ def _target_mismatch(
         (i, ss)
         for i, ss in enumerate(step.sub_steps)
         if ss.action in _PLACE_ACTIONS
-        and (ss.part_pid or _resolve_name(s, ss.part, context=f"{ss.text or ''} {ctx}"))
-        == pid
+        and (ss.part_pid or _resolve_name(s, ss.part, context=f"{ss.text or ''} {ctx}")) == pid
     ]
     targets: list[tuple[str, str | None]] = []
     for idx, ss in subs:
@@ -1305,9 +1304,7 @@ def _burial_gate_error(
     """Rejection payload when a candidate's transform puts the part inside
     foreign geometry — either direction (part swallowed by a host, or
     landing on top of placed hardware)."""
-    buried_frac, buried_host, swallow_frac, swallowed_id = _candidate_burial(
-        s, part, cand
-    )
+    buried_frac, buried_host, swallow_frac, swallowed_id = _candidate_burial(s, part, cand)
     # enclosure exemption: a cover/host-scale part legitimately contains
     # already-built hardware (last-step "Verkleidung über alles"); the
     # swallow gate targets parts that duplicate a branch at the same spot
@@ -1337,9 +1334,7 @@ def _burial_gate_error(
         # device when they mean the hardware mounted ON it. The real
         # mate is a placed non-host instance (adapter/socket).
         fittings = [
-            i.instance_id
-            for i in s.state.assembly.instances
-            if i.part_id != _host_part_id(s)
+            i.instance_id for i in s.state.assembly.instances if i.part_id != _host_part_id(s)
         ]
         hint = (
             f"'{cand.get('fixed_part')}' is the host SHELL, not a "
@@ -1389,6 +1384,101 @@ def _kit_bound(s: GuideToolSession, part: Any) -> int | None:
     return None
 
 
+def _quota_error(
+    s: GuideToolSession,
+    pid: str,
+    step_no: int,
+    existing: list[Any],
+    reqs: dict[Any, dict[str, int]],
+    need: int,
+    premount: bool,
+    premount_allow: int,
+    kit: int | None,
+) -> dict[str, Any] | None:
+    """Placement-quota gates: per-step counts, global requirement counts,
+    host singletons, and the Stückliste hard bound. Returns the rejection
+    dict or None when the placement may proceed."""
+    need_here = reqs.get(step_no, {}).get(pid, 0)
+    have_here = sum(1 for i in existing if i.placed_in_step == step_no)
+    if not premount and need_here and have_here >= need_here:
+        still_open = [
+            st_no
+            for st_no, req in reqs.items()
+            if req.get(pid, 0)
+            > sum(1 for i in existing if i.placed_in_step == st_no and i.part_id == pid)
+        ]
+        hint = (
+            f" — step(s) {still_open} still need it: call place_instance "
+            f"with step={still_open[0]} (or unplace_instance first to move "
+            "an existing one)"
+            if still_open
+            else f" — all {need} required instance(s) already placed"
+        )
+        return {
+            "ok": False,
+            "error": f"step {step_no} already has its {have_here}/{need_here} "
+            f"required '{pid}' instance(s){hint}",
+        }
+    if not premount and need and need_here == 0 and len(existing) >= need:
+        return {
+            "ok": False,
+            "error": f"all {need} required '{pid}' instance(s) already placed — "
+            "use unplace_instance to reposition instead of adding more",
+        }
+    if not premount and need == 0 and existing:
+        # parts the manual never mounts (host/anchor referenced only in
+        # check steps) exist exactly once — never let a repair loop add
+        # another casing/base. Name the still-open requirements too: the
+        # caller usually wants the OTHER part id that is actually missing
+        open_req = [
+            f"{p}@step{st_no}"
+            for st_no, req in reqs.items()
+            for p, n in req.items()
+            if n
+            > sum(
+                1
+                for i in s.state.assembly.instances
+                if i.placed_in_step == st_no and i.part_id == p
+            )
+        ]
+        hint = f" — still needed elsewhere: {open_req[:6]}" if open_req else ""
+        return {
+            "ok": False,
+            "error": f"'{pid}' is already placed and not required by any "
+            f"assembly step — it is the fixed host, not a mountable part{hint}",
+        }
+    # Stückliste quantity is a hard bound — the kit ships exactly N copies
+    # (premounts live OUTSIDE it: "N + M vormontiert" ships N in the kit
+    # and M already on the device — their own quota caps them below);
+    # a plan overflowing it is a steps bug, not a geometry problem,
+    # and the error must say so
+    if not premount and kit is not None and len(existing) >= kit:
+        return {
+            "ok": False,
+            "error": f"parts list ships only {kit}x '{pid}' — all "
+            "placed. The plan requires more copies than the kit has: fix "
+            "the step plan (wrong part mapping), or unplace_instance one first",
+        }
+    if premount:
+        err = _premount_quota_error(pid, existing, premount_allow, kit)
+        if err:
+            return err
+    cap = (
+        (kit + premount_allow)
+        if kit is not None and premount
+        else kit
+        if kit is not None
+        else (need + premount_allow if premount else max(need, 2) + 2)
+    )
+    if len(existing) >= cap:
+        return {
+            "ok": False,
+            "error": f"'{pid}' already has {len(existing)} instances (required {need}) — "
+            "unplace_instance one first or ask_user",
+        }
+    return None
+
+
 async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     pid = str(a.get("part_id", ""))
     part = s.state.part_by_id(pid)
@@ -1418,63 +1508,7 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
     # agent on a step-required part remains quota evasion — only the
     # planner's spawned task carries the _premount_task marker.
     premount = bool(a.get("premount")) and (need == 0 or bool(a.get("_premount_task")))
-    need_here = reqs.get(step_no, {}).get(pid, 0)
-    have_here = sum(1 for i in existing if i.placed_in_step == step_no)
-    if not premount and need_here and have_here >= need_here:
-        still_open = [
-            st_no
-            for st_no, req in reqs.items()
-            if req.get(pid, 0)
-            > sum(1 for i in existing if i.placed_in_step == st_no and i.part_id == pid)
-        ]
-        hint = (
-            f" — step(s) {still_open} still need it: call place_instance "
-            f"with step={still_open[0]} (or unplace_instance first to move "
-            "an existing one)" if still_open
-            else f" — all {need} required instance(s) already placed"
-        )
-        return {
-            "ok": False,
-            "error": f"step {step_no} already has its {have_here}/{need_here} "
-            f"required '{pid}' instance(s){hint}",
-        }
-    if not premount and need and need_here == 0 and len(existing) >= need:
-        return {
-            "ok": False,
-            "error": f"all {need} required '{pid}' instance(s) already placed — "
-            "use unplace_instance to reposition instead of adding more",
-        }
-    if not premount and need == 0 and existing:
-        # parts the manual never mounts (host/anchor referenced only in
-        # check steps) exist exactly once — never let a repair loop add
-        # another casing/base. Name the still-open requirements too: the
-        # caller usually wants the OTHER part id that is actually missing
-        open_req = [
-            f"{p}@step{st_no}"
-            for st_no, req in reqs.items()
-            for p, n in req.items()
-            if n
-            > sum(1 for i in s.state.assembly.instances if i.placed_in_step == st_no and i.part_id == p)
-        ]
-        hint = f" — still needed elsewhere: {open_req[:6]}" if open_req else ""
-        return {
-            "ok": False,
-            "error": f"'{pid}' is already placed and not required by any "
-            f"assembly step — it is the fixed host, not a mountable part{hint}",
-        }
-    # Stückliste quantity is a hard bound — the kit ships exactly N copies
-    # (premounts live OUTSIDE it: "N + M vormontiert" ships N in the kit
-    # and M already on the device — their own quota caps them below);
-    # a plan overflowing it is a steps bug, not a geometry problem,
-    # and the error must say so
     kit = _kit_bound(s, part)
-    if not premount and kit is not None and len(existing) >= kit:
-        return {
-            "ok": False,
-            "error": f"parts list ships only {kit}x '{pid}' — all "
-            "placed. The plan requires more copies than the kit has: fix "
-            "the step plan (wrong part mapping), or unplace_instance one first",
-        }
     # unknown-kit premounts are bounded by the planner's spawned quota
     # (kit-mounted copies don't consume it); the placed-premounted count
     # keeps the allowance durable across session rebuilds, 2 is the
@@ -1488,23 +1522,9 @@ async def place_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
         if premount
         else 0
     )
-    if premount:
-        err = _premount_quota_error(pid, existing, premount_allow, kit)
-        if err:
-            return err
-    cap = (
-        (kit + premount_allow)
-        if kit is not None and premount
-        else kit
-        if kit is not None
-        else (need + premount_allow if premount else max(need, 2) + 2)
-    )
-    if len(existing) >= cap:
-        return {
-            "ok": False,
-            "error": f"'{pid}' already has {len(existing)} instances (required {need}) — "
-            "unplace_instance one first or ask_user",
-        }
+    err = _quota_error(s, pid, step_no, existing, reqs, need, premount, premount_allow, kit)
+    if err:
+        return err
     if not cand.get("collision_free", True):
         return {
             "ok": False,
@@ -1628,10 +1648,9 @@ async def rotate_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
     return {"ok": True, "instance_id": inst.instance_id, "rolled_deg": deg}
 
 
-async def unplace_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
-    inst, err = _resolve_inst(s, str(a.get("part_id", "")))
-    if inst is None:
-        return {"ok": False, "error": err}
+def _remove_instance(s: GuideToolSession, inst: Any) -> str:
+    """Delete one instance, its step mapping and every joint touching it —
+    the shared teardown primitive for unplace/reset/repair."""
     iid = inst.instance_id
     s.state.assembly.instances = [i for i in s.state.assembly.instances if i.instance_id != iid]
     for k, ids in list(s.state.assembly.step_instances.items()):
@@ -1651,6 +1670,30 @@ async def unplace_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
         or (j.get("moving_part") != inst.part_id and j.get("fixed_part") != inst.part_id)
     ]
     s._scene_cache = None
+    return str(iid)
+
+
+async def unplace_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    inst, err = _resolve_inst(s, str(a.get("part_id", "")))
+    if inst is None:
+        return {"ok": False, "error": err}
+    iid = inst.instance_id
+    # demolition gate: the audit names WHICH instances are wrong — removing
+    # a healthy one while a flagged repair target exists is a panic
+    # teardown, not a fix (observed: one open bridge leg → all 12
+    # instances demolished, never recovered). 'confirm_demolish' is the
+    # explicit opt-out; request_repair is the surgical alternative.
+    flagged = _flagged_instances(s)
+    if flagged and str(iid) not in flagged and not a.get("confirm_demolish"):
+        return {
+            "ok": False,
+            "error": f"'{iid}' is not flagged by the geometry audit — "
+            f"flagged: {sorted(flagged)[:8]}. Use request_repair(step) for "
+            "surgical teardown of the flagged instances, or pass "
+            "confirm_demolish=true if this removal is genuinely intended.",
+            "flagged": sorted(flagged),
+        }
+    iid = _remove_instance(s, inst)
     # tell the caller IMMEDIATELY which step requirement just lost its
     # instance — otherwise the hole only surfaces at completeness
     # validation, after the repair loop already spent turns elsewhere
@@ -1676,9 +1719,6 @@ async def unplace_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
         )
     # surgical-repair hint: the audit already names WHICH instances are
     # wrong — unplacing a healthy one rebuilds more than it repairs
-    # (observed: one open bridge leg → the agent demolished all 12
-    # instances and never recovered within budget)
-    flagged = _flagged_instances(s)
     if flagged and iid not in flagged:
         out.setdefault("warning", "")
         out["warning"] += (
@@ -1731,15 +1771,47 @@ async def reset_step(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "unplaced": ids}
 
 
+async def request_repair(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    step_no = int(a.get("step", 0))
+    flagged = _flagged_instances(s)
+    targets = [
+        i
+        for i in s.state.assembly.instances
+        if i.placed_in_step == step_no and (i.instance_id or i.part_id) in flagged
+    ]
+    if not targets:
+        return {
+            "ok": True,
+            "unplaced": [],
+            "note": f"no audit-flagged instances in step {step_no} "
+            f"(flagged overall: {sorted(flagged)[:8]}) — nothing to repair; "
+            "if the step still fails checks, the defect is upstream",
+        }
+    removed = [_remove_instance(s, i) for i in targets]
+    parts_needed = sorted({i.part_id for i in targets})
+    log.info(
+        "guide.request_repair",
+        step=step_no,
+        removed=removed,
+        flagged=sorted(flagged)[:8],
+    )
+    return {
+        "ok": True,
+        "unplaced": removed,
+        "re_place": parts_needed,
+        "note": f"removed {len(removed)} flagged instance(s); healthy "
+        "placements and joints kept — re-place "
+        f"{parts_needed} in step {step_no} to close it",
+    }
+
+
 async def render_assembly(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     if s.executor is None:
         return {"ok": False, "error": "executor unavailable"}
     upto = int(a.get("step", 0) or 0)
     each = bool(a.get("each_step"))
     step_nos = (
-        sorted({i.placed_in_step for i in s.state.assembly.instances} | {0})
-        if each
-        else [upto]
+        sorted({i.placed_in_step for i in s.state.assembly.instances} | {0}) if each else [upto]
     )
     images: list[str] = []
     rendered_total = 0
@@ -1761,9 +1833,7 @@ async def render_assembly(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
             )
         if not entries:
             continue
-        out = (
-            s.state_dir / "renders" / f"assembly_s{sn}_{uuid.uuid4().hex[:8]}.png"
-        )
+        out = s.state_dir / "renders" / f"assembly_s{sn}_{uuid.uuid4().hex[:8]}.png"
         res = await s.executor.render_assembly(
             {"entries": entries, "view": str(a.get("view") or "iso"), "out_path": str(out)}
         )
@@ -1964,17 +2034,9 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
     }
 
 
-def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
-    """Plan-vs-joints reconciliation: a placement sub-step declares its
-    mates (``target``/``target2``); the joint it materialized must match.
-
-    ``unfulfilled`` — a declared mate part has no joint to the instance
-    (a bridge that closed only one leg, a target the solver quietly
-    dropped). ``unexpected`` — a joint the instance's own placement
-    created lands on a part the sub-step never declared (the mate went
-    somewhere the plan did not intend). Both fire regardless of whether
-    the joint itself is geometrically clean — a perfect mate on the
-    wrong part is still the wrong assembly."""
+def _joint_maps(
+    s: GuideToolSession,
+) -> tuple[dict[str, Any], dict[str, set[str]], dict[str, set[str]], dict[str, int]]:
     insts = {i.instance_id or i.part_id: i for i in s.state.assembly.instances}
     jointed: dict[str, set[str]] = {}
     moved: dict[str, set[str]] = {}
@@ -1991,6 +2053,117 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
         moved.setdefault(mv_id, set()).add(fx.part_id)
         joint_n[mv_id] = joint_n.get(mv_id, 0) + 1
         joint_n[fx_id] = joint_n.get(fx_id, 0) + 1
+    return insts, jointed, moved, joint_n
+
+
+def _materialize_declared_mates(
+    s: GuideToolSession,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Audit-time self-heal: a declared mate whose transforms already seat
+    the port pair (gap inside post-hoc tolerance, normals antiparallel) is
+    physically real — the missing joint is bookkeeping, not a placement
+    error. Materialize it deterministically instead of sending the model
+    into a repair loop that demolishes correct geometry (observed: bridge
+    leg-2 joints geometrically perfect but absent → mission unplaced both
+    elbows). Verified with the same post-hoc gate the joint audit applies;
+    failures stay durable as unfulfilled findings."""
+    insts, jointed, _, _ = _joint_maps(s)
+    materialized: list[dict[str, Any]] = []
+    still_missing: list[dict[str, Any]] = []
+    for i in insts.values():
+        iid = i.instance_id or i.part_id
+        st = s.state.step_by_number(i.placed_in_step)
+        if st is None or not i.transform or len(i.transform) != 4:
+            continue
+        mv_tf = np.asarray(i.transform, dtype=float).reshape(4, 4)
+        declared, _un = _substep_declared_mates(s, i, st, f"{st.text} {st.title}")
+        for pid in sorted(declared - jointed.get(iid, set())):
+            mv_part = s.state.part_by_id(i.part_id)
+            best: tuple[float, float, Any, Any, Any] | None = None
+            for fx in s.state.assembly.instances:
+                fxid = fx.instance_id or fx.part_id
+                if fx.part_id != pid or fxid == iid or not fx.transform or len(fx.transform) != 4:
+                    continue
+                fx_part = s.state.part_by_id(fx.part_id)
+                if mv_part is None or fx_part is None:
+                    continue
+                fx_tf = np.asarray(fx.transform, dtype=float).reshape(4, 4)
+                for mp in mv_part.ports:
+                    for tp in fx_part.ports:
+                        if not solver._gender_ok(mp, tp):
+                            continue
+                        gap, ndot = solver.evaluate_mate(
+                            mp,
+                            mv_tf,
+                            tp,
+                            fx_tf,
+                            moving_part=mv_part,
+                            fixed_part=fx_part,
+                        )
+                        if best is None or gap < best[0]:
+                            best = (gap, ndot, fx, mp, tp)
+            if best is None:
+                still_missing.append({"instance": iid, "missing": pid})
+                continue
+            gap, ndot, fx, mp, tp = best
+            socket_depth = 0.0
+            if str(getattr(tp, "gender", "")) == "female":
+                socket_depth = float(getattr(tp, "depth", 0.0) or 0.0)
+            elif str(getattr(mp, "gender", "")) == "female":
+                socket_depth = float(getattr(mp, "depth", 0.0) or 0.0)
+            allow = max(solver.GAP_GATE_MM * 20, min(socket_depth, 30.0))
+            if not (gap < allow and ndot <= -0.95):
+                still_missing.append({"instance": iid, "missing": pid, "gap_mm": round(gap, 2)})
+                continue
+            s.state.assembly.joints.append(
+                {
+                    "step": st.number,
+                    "moving_part": i.part_id,
+                    "fixed_part": fx.part_id,
+                    "moving_instance": iid,
+                    "fixed_instance": fx.instance_id or fx.part_id,
+                    "moving_port": mp.name,
+                    "fixed_port": tp.name,
+                    "axis_flipped": bool(ndot > 0.0),
+                    "approach_axis": [
+                        float(v) for v in (mv_tf[0:3, 0:3] @ np.asarray(mp.axis, dtype=float))
+                    ],
+                    "materialized": True,
+                }
+            )
+            jointed.setdefault(iid, set()).add(pid)
+            materialized.append(
+                {
+                    "instance": iid,
+                    "fixed_instance": fx.instance_id or fx.part_id,
+                    "part": pid,
+                    "gap_mm": round(gap, 2),
+                    "normal_dot": round(ndot, 3),
+                }
+            )
+            log.info(
+                "guide.audit.materialized_mate",
+                instance=iid,
+                fixed=fx.instance_id or fx.part_id,
+                gap_mm=round(gap, 2),
+            )
+    return materialized, still_missing
+
+
+def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
+    """Plan-vs-joints reconciliation: a placement sub-step declares its
+    mates (``target``/``target2``); the joint it materialized must match.
+
+    ``unfulfilled`` — a declared mate part has no joint to the instance
+    (a bridge that closed only one leg, a target the solver quietly
+    dropped). ``unexpected`` — a joint the instance's own placement
+    created lands on a part the sub-step never declared (the mate went
+    somewhere the plan did not intend). Both fire regardless of whether
+    the joint itself is geometrically clean — a perfect mate on the
+    wrong part is still the wrong assembly. Geometrically satisfied
+    mates are materialized first — see _materialize_declared_mates."""
+    materialized, _still = _materialize_declared_mates(s)
+    insts, jointed, moved, joint_n = _joint_maps(s)
     unfulfilled: list[dict[str, Any]] = []
     unexpected: list[dict[str, Any]] = []
     unverifiable: list[dict[str, Any]] = []
@@ -2037,9 +2210,7 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
             # onto the casing is verifiably NOT an adapter mate. Check
             # the mate against the kind pool instead of dropping the
             # unexpected-mates check entirely
-            uf, ux = _unresolved_kind_check(
-                s, iid, i.placed_in_step, unresolved, declared, moved
-            )
+            uf, ux = _unresolved_kind_check(s, iid, i.placed_in_step, unresolved, declared, moved)
             unfulfilled += uf
             unexpected += ux
         elif extra := sorted(moved.get(iid, set()) - declared):
@@ -2068,6 +2239,7 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
             )
     unfulfilled += _unplaced_substeps(s, insts)
     return {
+        "materialized_mates": materialized,
         "unfulfilled_mates": unfulfilled,
         "unexpected_mates": unexpected,
         "unverifiable_mates": unverifiable,
@@ -2164,9 +2336,7 @@ def _unresolved_kind_check(
     return unfulfilled, unexpected
 
 
-def _unplaced_substeps(
-    s: GuideToolSession, insts: dict[str, Any]
-) -> list[dict[str, Any]]:
+def _unplaced_substeps(s: GuideToolSession, insts: dict[str, Any]) -> list[dict[str, Any]]:
     """Placement sub-steps that left NO instance — silent task loss no
     per-instance check can see (e.g. a place sub-step under a step the
     planner skipped, or a failed placement). Legs merged into a bridge's
@@ -2175,14 +2345,10 @@ def _unplaced_substeps(
     try:
         from cadx.guide.preassembly import _plan
 
-        leg_keys = {
-            (t["step"], t["substep_idx"]) for t in _plan(s) if t.get("_leg_of") is not None
-        }
+        leg_keys = {(t["step"], t["substep_idx"]) for t in _plan(s) if t.get("_leg_of") is not None}
     except Exception:
         leg_keys = set()
-    placed_keys = {
-        (i.placed_in_step, i.substep_idx) for i in insts.values() if i.substep_idx >= 0
-    }
+    placed_keys = {(i.placed_in_step, i.substep_idx) for i in insts.values() if i.substep_idx >= 0}
     out: list[dict[str, Any]] = []
     for st in s.state.steps:
         for i, ss in enumerate(st.sub_steps):
@@ -2285,6 +2451,7 @@ HANDLERS = {
     "place_instance": place_instance,
     "rotate_instance": rotate_instance,
     "unplace_instance": unplace_instance,
+    "request_repair": request_repair,
     "reset_step": reset_step,
     "render_assembly": render_assembly,
     "check_collisions": check_collisions,

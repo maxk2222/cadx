@@ -17,6 +17,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -47,6 +48,37 @@ _REPEAT_REJECT_TOOLS = {
     "solve_free_preview",
 }
 _REPEAT_REJECT_CAP = 3
+# error-class loop breaker: the same tool failing the SAME WAY N times in
+# one mission is a stuck model, not bad luck — 'create_step exists' and
+# 'update_step not found' loops burned whole mission budgets because the
+# failures varied in args but not in class. Once a class trips the tool
+# short-circuits for the rest of the mission. Meta tools stay exempt:
+# done_mission/ask_user failures are legitimate gates the model must
+# retry after fixing.
+_ERR_CLASS_CAP = 3
+_ERR_CLASS_EXEMPT = {"done_mission", "ask_user"}
+
+
+def _err_class(res: dict[str, Any]) -> str | None:
+    """Error-class key for the loop breaker: the failure text with digits
+    folded to 'N' (step 3 vs step 12 is the same class) plus a digest of
+    the structured errors list — finalize_steps legitimately fails while
+    the model works through DIFFERENT items, which is progress, not a loop.
+    Stagnation only trips when the same class repeats unchanged."""
+    if res.get("_streak_exempt"):
+        return None
+    err = res.get("error")
+    if not err:
+        return None
+    cls = re.sub(r"\d+", "N", str(err))[:120]
+    extra = res.get("errors")
+    if extra:
+        cls += "|" + json.dumps(
+            [re.sub(r"\d+", "N", str(e))[:80] for e in extra],
+            default=str,
+        )
+    return cls
+
 
 # shared session-owned tool schemas (dispatched via _tool_* methods below)
 SESSION_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -220,6 +252,8 @@ class GuideToolSession(ToolSession):
         self._premount_quota: dict[str, int] = {}
         self._bad_image_calls = 0
         self._reject_counts: dict[str, int] = {}
+        # (tool, error-class) -> repeat count for the loop breaker
+        self._err_class_counts: dict[tuple[str, str], int] = {}
         self.parked = False
         self.parked_questions: list[dict[str, Any]] = []
         # image budget for _images results (page images, assembly renders)
@@ -284,6 +318,49 @@ class GuideToolSession(ToolSession):
             self._bad_image_calls += 1
         if sig is not None and isinstance(res, dict) and not res.get("ok"):
             self._reject_counts[sig] = self._reject_counts.get(sig, 0) + 1
+        if (
+            name not in _ERR_CLASS_EXEMPT
+            and isinstance(res, dict)
+            and not res.get("ok")
+            and not res.get("_streak_exempt")
+        ):
+            cls = _err_class(res)
+            if cls is not None:
+                key = (name, cls)
+                self._err_class_counts[key] = self._err_class_counts.get(key, 0) + 1
+                n_fail = self._err_class_counts[key]
+                if n_fail > _ERR_CLASS_CAP:
+                    log.info(
+                        "guide.tool_circuit",
+                        mission=self.mission,
+                        tool=name,
+                        err_class=cls[:120],
+                        count=n_fail,
+                    )
+                if n_fail > _ERR_CLASS_CAP * 2:
+                    # stubborn loop: the streak-exempt phase did not break
+                    # it — let the honest error feed error_streak again so
+                    # the mission aborts instead of burning its whole budget
+                    res = {
+                        "ok": False,
+                        "error": f"'{name}' keeps failing with the same "
+                        f"error class ({n_fail}x): '{cls[:100]}' — the "
+                        "mission cannot make progress this way.",
+                    }
+                elif n_fail > _ERR_CLASS_CAP:
+                    # the first CAP calls returned honest errors; past the
+                    # cap the same class is a deterministic loop — answer
+                    # with a streak-exempt guardrail that redirects the
+                    # model instead of feeding mission-abort
+                    res = {
+                        "ok": False,
+                        "_streak_exempt": True,
+                        "error": f"'{name}' already failed {n_fail}x with "
+                        f"the same error class — '{cls[:100]}'. The state "
+                        "will not change on its own; inspect live state "
+                        "(list_steps/list_parts/validate), use a DIFFERENT "
+                        "tool, or record a plan note and move on.",
+                    }
         return res
 
     async def _emit(self, progress: float, label: str, **fields: Any) -> None:
@@ -311,10 +388,7 @@ class GuideToolSession(ToolSession):
 
             # keys may predate the umlaut-folding normalizer — re-fold on
             # load so old aliases still resolve ("wärmepumpe" → "warmepumpe")
-            return {
-                _norm2(str(k)): str(v)
-                for k, v in json.loads(p.read_text()).items()
-            }
+            return {_norm2(str(k)): str(v) for k, v in json.loads(p.read_text()).items()}
         except Exception:
             return {}
 

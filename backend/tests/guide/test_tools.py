@@ -1136,9 +1136,14 @@ def test_repeat_reject_breaker() -> None:
         assert r["ok"] is False and not r.get("_streak_exempt"), r
     r = asyncio.run(sess._dispatch("place_instance", dict(args)))
     assert r["ok"] is False and r["_streak_exempt"], r
-    # different args are unaffected
+    # different args, same error class → the class breaker answers with a
+    # guardrail too (a 'part not found' retry under different spellings is
+    # the same deterministic loop)
     r2 = asyncio.run(sess._dispatch("place_instance", {"part_id": "ghost2"}))
-    assert not r2.get("_streak_exempt"), r2
+    assert r2["ok"] is False and r2.get("_streak_exempt"), r2
+    # a DIFFERENT failure class still returns its honest error
+    r3 = asyncio.run(sess._dispatch("update_step", {"number": 99, "text": "x"}))
+    assert r3["ok"] is False and not r3.get("_streak_exempt"), r3
 
 
 def test_alias_discriminativity_gate() -> None:

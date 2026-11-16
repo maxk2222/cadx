@@ -117,9 +117,7 @@ def test_review_report_consistency_gates(tmp_path: Path) -> None:
     s = SimpleNamespace(state=state)
     vis = "pipe: expected vertical below casing — observed vertical — match. " * 2
     res = asyncio.run(
-        write_review_report(
-            s, {"score": 6.0, "findings": [], "visual_comparison": vis}
-        )
+        write_review_report(s, {"score": 6.0, "findings": [], "visual_comparison": vis})
     )
     assert not res["ok"] and "blocker" in res["error"]
     res = asyncio.run(
@@ -127,9 +125,7 @@ def test_review_report_consistency_gates(tmp_path: Path) -> None:
             s,
             {
                 "score": 9.0,
-                "findings": [
-                    {"severity": "blocker", "mission": "assembly", "text": "x"}
-                ],
+                "findings": [{"severity": "blocker", "mission": "assembly", "text": "x"}],
                 "visual_comparison": vis,
             },
         )
@@ -218,8 +214,12 @@ def test_done_mission_preloads_guards(tmp_path) -> None:
     # path this test protects)
     gtools.DONE_GUARDS.clear()
     for name in (
-        "doc_tools", "step_tools", "part_tools",
-        "assembly_tools", "review_tools", "annotate_tools",
+        "doc_tools",
+        "step_tools",
+        "part_tools",
+        "assembly_tools",
+        "review_tools",
+        "annotate_tools",
     ):
         mod = sys.modules.get(f"cadx.guide.{name}")
         if mod is not None:
@@ -386,7 +386,11 @@ def test_optional_mission_failure_does_not_fail_job(monkeypatch) -> None:
     ctx = SimpleNamespace(check_cancel=None)
     out = asyncio.run(
         guide_runner._run_mission(
-            "annotate", "", ctx=ctx, state=state, state_dir=Path("/tmp/x"),
+            "annotate",
+            "",
+            ctx=ctx,
+            state=state,
+            state_dir=Path("/tmp/x"),
             mk_session=lambda m: sess,
         )
     )
@@ -413,7 +417,11 @@ def test_required_mission_failure_still_fails(monkeypatch) -> None:
     ctx = SimpleNamespace(check_cancel=None)
     out = asyncio.run(
         guide_runner._run_mission(
-            "steps", "", ctx=ctx, state=state, state_dir=Path("/tmp/x"),
+            "steps",
+            "",
+            ctx=ctx,
+            state=state,
+            state_dir=Path("/tmp/x"),
             mk_session=lambda m: sess,
         )
     )
@@ -441,7 +449,11 @@ def test_llm_outage_is_clean_mission_failure_not_crash(monkeypatch) -> None:
     ctx = SimpleNamespace(check_cancel=None)
     out = asyncio.run(
         guide_runner._run_mission(
-            "steps", "", ctx=ctx, state=state, state_dir=Path("/tmp/x"),
+            "steps",
+            "",
+            ctx=ctx,
+            state=state,
+            state_dir=Path("/tmp/x"),
             mk_session=lambda m: sess,
         )
     )
@@ -457,25 +469,41 @@ def test_llm_outage_is_clean_mission_failure_not_crash(monkeypatch) -> None:
 
 def _phys_part(pid: str, ports: list[PortInfo], bbox=((-20, -20, -20), (20, 20, 20))) -> GuidePart:
     return GuidePart(
-        id=pid, name=pid, ports=ports,
-        bbox_min=list(bbox[0]), bbox_max=list(bbox[1]),
+        id=pid,
+        name=pid,
+        ports=ports,
+        bbox_min=list(bbox[0]),
+        bbox_max=list(bbox[1]),
     )
 
 
-def _sock(name: str, *, axis=(0, 0, -1), pos=(0, 0, 0), lip=11.0, inner=9.9,
-          seat=18.0, outer=12.8) -> PortInfo:
+def _sock(
+    name: str, *, axis=(0, 0, -1), pos=(0, 0, 0), lip=11.0, inner=9.9, seat=18.0, outer=12.8
+) -> PortInfo:
     return PortInfo(
-        name=name, kind="cylinder", pos=list(pos), axis=list(axis),
-        radius=lip, inner_radius=inner, outer_radius=outer,
-        depth=seat, gender="female",
+        name=name,
+        kind="cylinder",
+        pos=list(pos),
+        axis=list(axis),
+        radius=lip,
+        inner_radius=inner,
+        outer_radius=outer,
+        depth=seat,
+        gender="female",
     )
 
 
 def _plug(name: str, *, axis=(0, 0, 1), pos=(0, 0, 0), outer=11.0) -> PortInfo:
     return PortInfo(
-        name=name, kind="cylinder", pos=list(pos), axis=list(axis),
-        radius=outer, inner_radius=0.0, outer_radius=outer,
-        depth=0.0, gender="male",
+        name=name,
+        kind="cylinder",
+        pos=list(pos),
+        axis=list(axis),
+        radius=outer,
+        inner_radius=0.0,
+        outer_radius=outer,
+        depth=0.0,
+        gender="male",
     )
 
 
@@ -546,20 +574,21 @@ def test_joint_audit_part_alias_is_not_a_foreign_host(tmp_path) -> None:
     tp[0, 3] = 200.0  # pipe placed inside the shell, away from the host
     asm = AssemblyState()
     asm.instances = [
+        AssemblyInstance(part_id="host", instance_id="host#1", transform=np.eye(4).tolist()),
         AssemblyInstance(
-            part_id="host", instance_id="host#1", transform=np.eye(4).tolist()
+            part_id="pipe",
+            instance_id="pipe#1",
+            transform=tp.tolist(),
         ),
-        AssemblyInstance(
-            part_id="pipe", instance_id="pipe#1", transform=tp.tolist(),
-        ),
-        AssemblyInstance(
-            part_id="shell", instance_id="shell#1", transform=np.eye(4).tolist()
-        ),
+        AssemblyInstance(part_id="shell", instance_id="shell#1", transform=np.eye(4).tolist()),
     ]
     asm.joints = [
         {
-            "step": 1, "moving_instance": "pipe#1", "fixed_instance": "host#1",
-            "moving_port": "e", "fixed_port": "m",
+            "step": 1,
+            "moving_instance": "pipe#1",
+            "fixed_instance": "host#1",
+            "moving_port": "e",
+            "fixed_port": "m",
         }
     ]
     state.assembly = asm
@@ -589,7 +618,8 @@ def test_joint_audit_socket_depth_is_engagement_allowance(tmp_path) -> None:
             bbox=((-20, -20, 0), (20, 20, 60)),
         )
         moving = _phys_part(
-            "pipe", [_plug("e", axis=(0, 0, 1), outer=11.0)],
+            "pipe",
+            [_plug("e", axis=(0, 0, 1), outer=11.0)],
             bbox=((-5, -5, -60), (5, 5, 0)),
         )
         state.parts = [fixed, moving]
@@ -604,8 +634,13 @@ def test_joint_audit_socket_depth_is_engagement_allowance(tmp_path) -> None:
             AssemblyInstance(part_id="pipe", instance_id="pipe#1", transform=tm.tolist()),
         ]
         asm.joints = [
-            {"step": 1, "moving_instance": "pipe#1", "fixed_instance": "elbow#1",
-             "moving_port": "e", "fixed_port": "m"}
+            {
+                "step": 1,
+                "moving_instance": "pipe#1",
+                "fixed_instance": "elbow#1",
+                "moving_port": "e",
+                "fixed_port": "m",
+            }
         ]
         state.assembly = asm
         return state
@@ -661,13 +696,15 @@ def test_step_requirements_resolve_with_step_context(tmp_path) -> None:
     state.parts = [a, b]
     state.steps = [
         GuideStep(
-            number=11, action_type="assembly",
+            number=11,
+            action_type="assembly",
             text="Rohrbogen (Muffe auf Muffe) auf Rohr 500 und Rohr 70 stecken",
             sub_steps=[
                 GuideSubStep(
                     action="attach",
                     part="Rohrbogen DN 22, Anschluss 2x außen",
-                    target="Rohr 500", target2="Rohr 70",
+                    target="Rohr 500",
+                    target2="Rohr 70",
                 )
             ],
         )
@@ -688,11 +725,13 @@ def test_review_report_rejects_high_score_on_bad_audit(tmp_path) -> None:
 
     state = GuideState(output_dir=str(tmp_path))
     fixed = _phys_part(
-        "elbow", [_sock("m", pos=(0, 0, 50), axis=(0, 0, -1), seat=2.0)],
+        "elbow",
+        [_sock("m", pos=(0, 0, 50), axis=(0, 0, -1), seat=2.0)],
         bbox=((-20, -20, 0), (20, 20, 60)),
     )
     moving = _phys_part(
-        "pipe", [_plug("e", axis=(0, 0, 1), outer=11.0)],
+        "pipe",
+        [_plug("e", axis=(0, 0, 1), outer=11.0)],
         bbox=((-5, -5, -60), (5, 5, 0)),
     )
     state.parts = [fixed, moving]
@@ -704,16 +743,19 @@ def test_review_report_rejects_high_score_on_bad_audit(tmp_path) -> None:
             AssemblyInstance(part_id="pipe", instance_id="pipe#1", transform=tm.tolist()),
         ],
         joints=[
-            {"step": 1, "moving_instance": "pipe#1", "fixed_instance": "elbow#1",
-             "moving_port": "e", "fixed_port": "m"}
+            {
+                "step": 1,
+                "moving_instance": "pipe#1",
+                "fixed_instance": "elbow#1",
+                "moving_port": "e",
+                "fixed_port": "m",
+            }
         ],
     )
     s = SimpleNamespace(state=state)
     vis = "pipe: expected seated on elbow — observed floating 8mm above — deviation"
     r = asyncio.run(
-        write_review_report(
-            s, {"score": 9.0, "findings": [], "visual_comparison": vis}
-        )
+        write_review_report(s, {"score": 9.0, "findings": [], "visual_comparison": vis})
     )
     assert not r["ok"], "score ≥8 must be rejected while the audit reports findings"
     # an honest low score goes through (blocker finding names the fault)
@@ -734,9 +776,16 @@ def test_review_report_rejects_high_score_on_bad_audit(tmp_path) -> None:
 
 def _stub(name: str, *, pos=(0, 0, 0), outer: float, nested_in: str | None) -> PortInfo:
     return PortInfo(
-        name=name, kind="cylinder", pos=list(pos), axis=[0.0, 0.0, -1.0],
-        radius=outer, inner_radius=outer, outer_radius=outer,
-        depth=0.0, gender="male", nested_in=nested_in,
+        name=name,
+        kind="cylinder",
+        pos=list(pos),
+        axis=[0.0, 0.0, -1.0],
+        radius=outer,
+        inner_radius=outer,
+        outer_radius=outer,
+        depth=0.0,
+        gender="male",
+        nested_in=nested_in,
     )
 
 
@@ -763,9 +812,7 @@ def test_thread_seat_beats_oversized_socket() -> None:
     funnel = next(c for c in cands if c["fixed_port"] == "funnel")
     assert funnel["score"] < cands[0]["score"]
     # seat engagement: a few mm tuck at the mouth plane, not a dive
-    assert 0.0 < solver._engage_mm(
-        nut.ports[0], host.ports[1]
-    ) <= 4.0
+    assert 0.0 < solver._engage_mm(nut.ports[0], host.ports[1]) <= 4.0
 
 
 def test_no_seat_on_bare_stub() -> None:
@@ -787,20 +834,21 @@ def test_deep_socket_seats_below_thread_mouth() -> None:
         "adapter",
         [
             _sock("mouth", pos=(0, 0, -20), inner=11.0, outer=15.5, seat=0.3, lip=14.75),
-            _sock("muffe", pos=(0, 0, 20), axis=(0, 0, 1), inner=9.9, outer=12.8,
-                  seat=500.0, lip=11.0),
+            _sock(
+                "muffe", pos=(0, 0, 20), axis=(0, 0, 1), inner=9.9, outer=12.8, seat=500.0, lip=11.0
+            ),
         ],
     )
     host = _phys_part(
         "casing",
-        [_sock("funnel", pos=(0, 0, -20), inner=27.0, seat=15.0),
-         _stub("stub", pos=(0, 0, -20), outer=21.4, nested_in="funnel")],
+        [
+            _sock("funnel", pos=(0, 0, -20), inner=27.0, seat=15.0),
+            _stub("stub", pos=(0, 0, -20), outer=21.4, nested_in="funnel"),
+        ],
     )
     cands = solver.find_matching_ports(mover, host, include_mismatch=True)
     assert cands and cands[0]["moving_port"] == "mouth"
-    muffe = next(
-        c for c in cands if c["moving_port"] == "muffe" and c["fixed_port"] == "stub"
-    )
+    muffe = next(c for c in cands if c["moving_port"] == "muffe" and c["fixed_port"] == "stub")
     assert muffe["score"] < cands[0]["score"]
 
 
@@ -866,25 +914,26 @@ def test_resolve_name_context_feature_never_token_scores() -> None:
             number=2,
             title="Adapter vormontiert",
             text="Adapter vormontiert",
-            sub_steps=[GuideSubStep(
-                action="attach", part="adapter", part_pid="adapter",
-            )],
+            sub_steps=[
+                GuideSubStep(
+                    action="attach",
+                    part="adapter",
+                    part_pid="adapter",
+                )
+            ],
         )
     ]
     s = SimpleNamespace(state=state, _aliases_store={})
     # the pure feature form: device stub → host, NEVER a kit pipe
     assert (
-        _resolve_name(s, "linkes oberes vormontiertes Anschlussrohr in der Verkleidung")
-        == "casing"
+        _resolve_name(s, "linkes oberes vormontiertes Anschlussrohr in der Verkleidung") == "casing"
     )
     assert (
         _resolve_name(s, "rechtes oberes vormontiertes Anschlussrohr in der Verkleidung")
         == "casing"
     )
     # a part noun next to the context word still binds the kit part
-    assert (
-        _resolve_name(s, "vormontierter Adapter am Anschlussrohr") == "adapter"
-    )
+    assert _resolve_name(s, "vormontierter Adapter am Anschlussrohr") == "adapter"
     # an exact feature binding beats host demotion
     s._aliases_store["anschlussrohr"] = "pipe_l70"
     assert _resolve_name(s, "oberes Anschlussrohr") == "pipe_l70"
@@ -917,28 +966,52 @@ def test_resolve_name_side_position_beats_incidental_token() -> None:
     state.parts = [spigot, outside]
     state.steps = [
         GuideStep(
-            number=5, title="Rohrbogen links unten", text="Rohrbogen links unten",
-            sub_steps=[GuideSubStep(
-                action="attach", part="spigot", part_pid="elbow_socket_spigot",
-            )],
+            number=5,
+            title="Rohrbogen links unten",
+            text="Rohrbogen links unten",
+            sub_steps=[
+                GuideSubStep(
+                    action="attach",
+                    part="spigot",
+                    part_pid="elbow_socket_spigot",
+                )
+            ],
         ),
         GuideStep(
-            number=6, title="Rohrbogen rechts unten", text="Rohrbogen rechts unten",
-            sub_steps=[GuideSubStep(
-                action="attach", part="spigot", part_pid="elbow_socket_spigot",
-            )],
+            number=6,
+            title="Rohrbogen rechts unten",
+            text="Rohrbogen rechts unten",
+            sub_steps=[
+                GuideSubStep(
+                    action="attach",
+                    part="spigot",
+                    part_pid="elbow_socket_spigot",
+                )
+            ],
         ),
         GuideStep(
-            number=8, title="Rohrbogen links", text="Bogen auf linkes Rohr",
-            sub_steps=[GuideSubStep(
-                action="attach", part="2x", part_pid="elbow_2x_outside",
-            )],
+            number=8,
+            title="Rohrbogen links",
+            text="Bogen auf linkes Rohr",
+            sub_steps=[
+                GuideSubStep(
+                    action="attach",
+                    part="2x",
+                    part_pid="elbow_2x_outside",
+                )
+            ],
         ),
         GuideStep(
-            number=10, title="Rohrbogen rechts", text="Bogen auf rechtes Rohr",
-            sub_steps=[GuideSubStep(
-                action="attach", part="2x", part_pid="elbow_2x_outside",
-            )],
+            number=10,
+            title="Rohrbogen rechts",
+            text="Bogen auf rechtes Rohr",
+            sub_steps=[
+                GuideSubStep(
+                    action="attach",
+                    part="2x",
+                    part_pid="elbow_2x_outside",
+                )
+            ],
         ),
     ]
     s = SimpleNamespace(state=state, _aliases_store={})
@@ -953,10 +1026,7 @@ def test_resolve_name_side_position_beats_incidental_token() -> None:
         == "elbow_socket_spigot"
     )
     # explicit registered name still wins outright
-    assert (
-        _resolve_name(s, "Rohrbogen DN22, Anschluss 2x außen")
-        == "elbow_2x_outside"
-    )
+    assert _resolve_name(s, "Rohrbogen DN22, Anschluss 2x außen") == "elbow_2x_outside"
     # bare noun stays honestly ambiguous
     assert _resolve_name(s, "Rohrbogen") is None
 
@@ -986,9 +1056,7 @@ def test_assembly_snapshot_survives_preassembly(monkeypatch, tmp_path) -> None:
     state.missions_done = ["doc", "steps", "parts"]
 
     async def fake_preassembly(sess) -> None:
-        state.assembly.instances.append(
-            AssemblyInstance(instance_id="pipe#1", part_id="pipe")
-        )
+        state.assembly.instances.append(AssemblyInstance(instance_id="pipe#1", part_id="pipe"))
         state.assembly.planner = {"ran": True}
 
     async def fake_session(*a, **kw):
@@ -997,15 +1065,17 @@ def test_assembly_snapshot_survives_preassembly(monkeypatch, tmp_path) -> None:
         state.assembly.instances.clear()
         return SimpleNamespace(end_reason="repeat_loop", tool_log=[])
 
-    monkeypatch.setattr(
-        "cadx.guide.preassembly.run_preassembly", fake_preassembly
-    )
+    monkeypatch.setattr("cadx.guide.preassembly.run_preassembly", fake_preassembly)
     monkeypatch.setattr(guide_runner, "run_session", fake_session)
     sess = SimpleNamespace(parked=False, parked_questions=[], state=state)
     ctx = SimpleNamespace(check_cancel=None)
     out = asyncio.run(
         guide_runner._run_mission(
-            "assembly", "", ctx=ctx, state=state, state_dir=tmp_path,
+            "assembly",
+            "",
+            ctx=ctx,
+            state=state,
+            state_dir=tmp_path,
             mk_session=lambda m: sess,
         )
     )
@@ -1014,7 +1084,7 @@ def test_assembly_snapshot_survives_preassembly(monkeypatch, tmp_path) -> None:
     assert [i.instance_id for i in state.assembly.instances] == ["pipe#1"]
 
 
-def _mate_state(tmp_path, *, sub_action="place") -> "object":
+def _mate_state(tmp_path, *, sub_action="place") -> object:
     """Two parts: moving declared a mate onto fixed but jointed elsewhere."""
     from types import SimpleNamespace
 
@@ -1036,25 +1106,17 @@ def _mate_state(tmp_path, *, sub_action="place") -> "object":
             number=1,
             action_type="assembly",
             text="pipe_a auf pipe_b stecken",
-            sub_steps=[
-                GuideSubStep(action=sub_action, part="pipe_a", target="pipe_b")
-            ],
+            sub_steps=[GuideSubStep(action=sub_action, part="pipe_a", target="pipe_b")],
         )
     ]
     state.assembly.instances = [
-        AssemblyInstance(
-            part_id="host", instance_id="host#1", placed_in_step=1, substep_idx=-1
-        ),
-        AssemblyInstance(
-            part_id="pipe_a", instance_id="pipe_a#1", placed_in_step=1, substep_idx=0
-        ),
+        AssemblyInstance(part_id="host", instance_id="host#1", placed_in_step=1, substep_idx=-1),
+        AssemblyInstance(part_id="pipe_a", instance_id="pipe_a#1", placed_in_step=1, substep_idx=0),
         AssemblyInstance(
             part_id="pipe_b", instance_id="pipe_b#1", placed_in_step=1, substep_idx=-1
         ),
     ]
-    state.assembly.joints = [
-        {"moving_instance": "pipe_a#1", "fixed_instance": "host#1"}
-    ]
+    state.assembly.joints = [{"moving_instance": "pipe_a#1", "fixed_instance": "host#1"}]
     return SimpleNamespace(state=state, _aliases_store={})
 
 
@@ -1073,27 +1135,19 @@ def test_declared_mates_flags_unplaced_substep(tmp_path) -> None:
     """A place sub-step whose instance never materialized is silent plan
     loss (dropped task, quota block, prep-mislabeled step)."""
     from cadx.guide.assembly_tools import _declared_mates
-    from cadx.guide.state import AssemblyInstance
 
     s = _mate_state(tmp_path)
-    s.state.assembly.instances = [
-        i for i in s.state.assembly.instances if i.part_id != "pipe_a"
-    ]
+    s.state.assembly.instances = [i for i in s.state.assembly.instances if i.part_id != "pipe_a"]
     s.state.assembly.joints = []
     out = _declared_mates(s)
-    assert any(
-        "no instance materialized" in m["issue"]
-        for m in out["unfulfilled_mates"]
-    )
+    assert any("no instance materialized" in m["issue"] for m in out["unfulfilled_mates"])
 
 
 def test_declared_mates_clean_when_plan_matches(tmp_path) -> None:
     from cadx.guide.assembly_tools import _declared_mates
 
     s = _mate_state(tmp_path)
-    s.state.assembly.joints = [
-        {"moving_instance": "pipe_a#1", "fixed_instance": "pipe_b#1"}
-    ]
+    s.state.assembly.joints = [{"moving_instance": "pipe_a#1", "fixed_instance": "pipe_b#1"}]
     out = _declared_mates(s)
     assert not out["unfulfilled_mates"]
     assert not out["unexpected_mates"]
@@ -1114,11 +1168,7 @@ def test_lint_dropped_placements_blocks_prep_step(tmp_path) -> None:
             number=1,
             action_type="prep",
             text="vorbereitung",
-            sub_steps=[
-                GuideSubStep(
-                    action="place", part="elbow", target="host", target2="pipe"
-                )
-            ],
+            sub_steps=[GuideSubStep(action="place", part="elbow", target="host", target2="pipe")],
         )
     ]
     s = SimpleNamespace(state=state, _aliases_store={})
@@ -1127,3 +1177,185 @@ def test_lint_dropped_placements_blocks_prep_step(tmp_path) -> None:
     # assembly steps are untouched
     state.steps[0].action_type = "assembly"
     assert not _lint_dropped_placements(s, state.steps)
+
+
+def _mate_geom_state(tmp_path, mv_z: float = 0.0):
+    """Declared pipe_a→pipe_b mate with real ports; mv_z positions the
+    moving plug. Returns (session-like, engage_mm, move_transform)."""
+    from types import SimpleNamespace
+
+    from cadx.guide.state import AssemblyInstance, GuideStep, GuideSubStep
+
+    pa = _plug("pa", axis=(0, 0, 1), pos=(0, 0, 0))
+    sb = _sock("sb", axis=(0, 0, -1), pos=(0, 0, 10))
+    state = GuideState(output_dir=str(tmp_path))
+    state.parts = [_phys_part("pipe_a", [pa]), _phys_part("pipe_b", [sb])]
+    state.steps = [
+        GuideStep(
+            number=1,
+            action_type="assembly",
+            text="pipe_a auf pipe_b",
+            sub_steps=[GuideSubStep(action="place", part="pipe_a", target="pipe_b")],
+        )
+    ]
+    eng = solver._engage_mm(pa, sb, moving_part=state.parts[0], fixed_part=state.parts[1])
+    ident = [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+    ]
+    moved = [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 10 + eng + mv_z],
+        [0, 0, 0, 1],
+    ]
+    state.assembly.instances = [
+        AssemblyInstance(
+            part_id="pipe_a",
+            instance_id="pipe_a#1",
+            placed_in_step=1,
+            substep_idx=0,
+            transform=moved,
+        ),
+        AssemblyInstance(
+            part_id="pipe_b",
+            instance_id="pipe_b#1",
+            placed_in_step=1,
+            substep_idx=-1,
+            transform=ident,
+        ),
+    ]
+    return SimpleNamespace(state=state, _aliases_store={})
+
+
+def test_materialize_geometrically_satisfied_mate(tmp_path) -> None:
+    """A declared mate whose persisted transforms already seat the port
+    pair is a physical fact — the audit records the joint instead of
+    flagging a correct placement for an LLM repair loop."""
+    from cadx.guide.assembly_tools import _declared_mates
+
+    s = _mate_geom_state(tmp_path)
+    out = _declared_mates(s)
+    assert any(m["part"] == "pipe_b" for m in out["materialized_mates"]), out
+    assert not out["unfulfilled_mates"]
+    j = s.state.assembly.joints[0]
+    assert j["materialized"] and j["moving_instance"] == "pipe_a#1"
+
+
+def test_materialize_rejects_unsatisfied_mate(tmp_path) -> None:
+    """A declared mate NOT geometrically seated stays an honest
+    unfulfilled finding — materialization never fakes the joint."""
+    from cadx.guide.assembly_tools import _declared_mates
+
+    s = _mate_geom_state(tmp_path, mv_z=50.0)
+    out = _declared_mates(s)
+    assert not out["materialized_mates"]
+    assert any("pipe_b" in m["missing"] for m in out["unfulfilled_mates"])
+    assert not s.state.assembly.joints
+
+
+def test_unplace_demolish_gate_and_request_repair(tmp_path, monkeypatch) -> None:
+    """unplace_instance refuses a healthy instance while the audit flags
+    others; request_repair removes ONLY the flagged ones."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide import assembly_tools as at
+    from cadx.guide.session import GuideToolSession
+    from cadx.guide.state import AssemblyInstance, GuideStep
+
+    state = GuideState(output_dir=str(tmp_path))
+    state.parts = [_phys_part("elbow", []), _phys_part("pipe", [])]
+    state.steps = [GuideStep(number=8, action_type="assembly", text="x")]
+    eye = [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+    ]
+    insts = [
+        AssemblyInstance(
+            part_id="elbow",
+            instance_id="elbow#1",
+            placed_in_step=8,
+            substep_idx=0,
+            transform=eye,
+        ),
+        AssemblyInstance(
+            part_id="pipe",
+            instance_id="pipe#1",
+            placed_in_step=8,
+            substep_idx=-1,
+            transform=eye,
+        ),
+    ]
+    state.assembly.instances = insts
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    sess = GuideToolSession(
+        ctx,
+        mission="assembly",
+        state=state,
+        state_dir=str(tmp_path),
+        project_id=None,
+        guide_assets=[],
+        executor=None,  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(at, "_flagged_instances", lambda s: {"pipe#1"})
+    r = asyncio.run(at.unplace_instance(sess, {"part_id": "elbow#1"}))
+    assert r["ok"] is False and "pipe#1" in str(r.get("flagged")), r
+    r = asyncio.run(at.unplace_instance(sess, {"part_id": "elbow#1", "confirm_demolish": True}))
+    assert r["ok"] is True
+    state.assembly.instances.append(insts[0])
+    r = asyncio.run(at.request_repair(sess, {"step": 8}))
+    assert r["ok"] and r["unplaced"] == ["pipe#1"], r
+    assert {i.instance_id for i in state.assembly.instances} == {"elbow#1"}
+
+
+def test_dedup_tasks_drops_exact_duplicates(tmp_path) -> None:
+    """Identical place tasks (recreated sub-steps) collapse; tasks that
+    differ in mate or qualifier text are genuine operations and stay."""
+    from types import SimpleNamespace
+
+    from cadx.guide.preassembly import _dedup_tasks
+
+    s = SimpleNamespace(state=GuideState(output_dir=str(tmp_path)), _aliases_store={})
+    base = {
+        "step": 3,
+        "substep_idx": 0,
+        "part": "adapter",
+        "part_pid": "adapter",
+        "target": "rohr",
+        "target_pid": "rohr",
+        "target2": "",
+        "text": "x",
+    }
+    tasks = [
+        dict(base),
+        dict(base, substep_idx=1),  # exact duplicate → drop
+        dict(base, substep_idx=2, text="y"),  # different qualifier → keep
+        dict(base, substep_idx=3, target_pid="rohr2"),  # other mate → keep
+    ]
+    out = _dedup_tasks(s, tasks)
+    assert len(out) == 3
+    assert s._plan_dedup == [{"step": 3, "part": "adapter"}]
+
+
+def test_reorder_reports_missing_and_duplicated(tmp_path) -> None:
+    """reorder_steps must name WHAT is wrong — 'current' alone left the
+    model guessing which numbers to fix."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide.state import GuideStep
+    from cadx.guide.step_tools import reorder_steps
+
+    state = GuideState(output_dir=str(tmp_path))
+    state.steps = [GuideStep(number=i, text=f"s{i}", display_text=f"d{i}") for i in (1, 2, 3)]
+    s = SimpleNamespace(state=state)
+    r = asyncio.run(reorder_steps(s, {"order": [1, 1, 2]}))
+    assert r["ok"] is False
+    assert r["missing"] == [3] and r["duplicated"] == [1]
+    assert r["current"] == [1, 2, 3]
