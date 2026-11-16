@@ -358,17 +358,33 @@ async def _export_register(
             "error": f"exported GLB failed to load: {exc!r}"[:400],
         }
 
-    # scale guard — the exported mesh's extents must agree with the
-    # scene-side world extents within 15%; a m/mm mixup blows past that
+    # scale guard — the exported mesh lives in the LOCAL frame
+    # (mesh_world x inv(matrix_world), glTF axes), so compare like with
+    # like: pull the scene's world AABB through the same inverse, then
+    # compare SORTED extents — the up-axis swap permutes axes, and a
+    # rotated placement inflates the raw world AABB. Only a real unit
+    # error (m vs mm ~ 1000x) survives both corrections.
     scene_min, scene_max = info.get("min"), info.get("max")
     if scene_min and scene_max:
-        scene_dims = [float(scene_max[i]) - float(scene_min[i]) for i in range(3)]
-        glb_dims = [float(v) for v in (m.bounds[1] - m.bounds[0])]
+        lo = _np.asarray(scene_min, dtype=float)
+        hi = _np.asarray(scene_max, dtype=float)
+        corners = _np.array(
+            [
+                [x, y, z, 1.0]
+                for x in (lo[0], hi[0])
+                for y in (lo[1], hi[1])
+                for z in (lo[2], hi[2])
+            ]
+        )
+        inv_local = _np.linalg.inv(_np.asarray(first_matrix, dtype=float))
+        local = (inv_local @ corners.T).T[:, :3]
+        scene_dims = sorted((local.max(axis=0) - local.min(axis=0)).tolist())
+        glb_dims = sorted(float(v) for v in (m.bounds[1] - m.bounds[0]))
         for sd, gd in zip(scene_dims, glb_dims, strict=True):
             if sd > 1e-6 and not (sd / 1.15 <= gd <= sd * 1.15):
                 return None, missing, {
                     "ok": False,
-                    "error": f"scale guard: Blender extents {scene_dims} vs "
+                    "error": f"scale guard: Blender local extents {scene_dims} vs "
                     f"exported GLB extents {glb_dims} disagree — verify the "
                     "1 BU = 1 mm contract",
                 }
