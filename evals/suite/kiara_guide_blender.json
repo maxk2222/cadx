@@ -1,0 +1,48 @@
+{
+ "name": "kiara_guide_blender",
+ "project": "eval:kiara-guide-blender",
+ "difficulty": 5,
+ "description": "Anleitungsbuilder blender-mode — PDF only, zero CAD uploads. A free Blender-MCP agent reconstructs every part, places tagged instances, renders steps; CADX gates on the read-back scene. Requires Blender running with the MCP addon.",
+ "stages": [
+  {
+   "id": "guide",
+   "type": "guide",
+   "timeout_s": 10800,
+   "pdf": "evals/assets/kiara_heatpump/Montageanleitung_Demonstrator_KIARA_v2.pdf",
+   "cad_parts": [],
+   "guide_mode": "blender",
+   "prompt": "AR-Montageanleitung fuer den KIARA-Waermepumpen-Demonstrator aus der beigefuegten PDF erstellen. KEINE 3D-Teile wurden hochgeladen — modelliere jeden benoetigten Bausatz-Teil selbst in Blender (echte mm-Masse aus der PDF), platziere die Instanzen in der Szene und tagge sie per cadx_part/cadx_step. Vormontierte Komponenten (Verkleidung, Anschlussrohre, vormontierte Adapter) gehoeren zum Ausgangszustand — als cadx_step=0 + cadx_premount markieren. WICHTIG: Dichtungsscheiben/Dichtringe sind KEINE eigenen Teile — nur Schritttext-Hinweise, niemals modellieren oder registrieren.",
+   "answers": [
+    "Die vormontierten Komponenten gehoeren zum Ausgangszustand — positioniere sie plausibel laut PDF-Abbildungen und dokumentiere die Annahme.",
+    "Nutze die PDF-Abbildungen als Referenz; bei Unsicherheit waehle die geometrisch konsistenteste Loesung und dokumentiere sie."
+   ],
+   "allow_generation": true,
+   "max_resumes": 3,
+   "gates": [
+    {
+     "type": "status",
+     "expect": ["succeeded", "needs_review"]
+    },
+    {
+     "type": "guide_steps",
+     "min": 8,
+     "all": [
+      "adapter",
+      ["pipe", "rohr"],
+      ["elbow", "bogen"]
+     ]
+    },
+    {
+     "type": "guide_parts",
+     "min": 5,
+     "all": [
+      ["casing", "gehause", "gehäuse", "housing"],
+      "adapter",
+      ["elbow", "bogen", "rohrbogen"]
+     ],
+     "none": ["dicht", "seal", "washer"]
+    }
+   ]
+  }
+ ]
+}

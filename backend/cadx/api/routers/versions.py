@@ -206,6 +206,7 @@ async def guide(project_id: uuid.UUID, body: GuideRequest, db: AsyncSession = De
             attach_images=body.attach_images,
             language=body.language,
             audience=body.audience,
+            mode=body.mode,
         )
     except SpawnError as e:
         raise HTTPException(e.status, str(e)) from e

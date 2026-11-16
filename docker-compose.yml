@@ -125,6 +125,15 @@ services:
       # external providers must not be serialized by a low job cap; local
       # sidecar backends stay capped via per-service io_slots in the clients.
       CADX_AGENT_MAX_JOBS: ${CADX_AGENT_MAX_JOBS:-8}
+      # guide blender-mode bridge — Blender runs on the HOST with the
+      # BlenderMCP addon (socket :9876); files travel through the
+      # host-mounted ./data dir, so the worker needs the host-side
+      # absolute path of that same dir
+      CADX_BLENDER_HOST: ${CADX_BLENDER_HOST:-host.docker.internal}
+      CADX_BLENDER_PORT: ${CADX_BLENDER_PORT:-9876}
+      # ${PWD} resolves to the compose invocation dir = repo root →
+      # ./data's host path with zero config; override if invoked elsewhere
+      CADX_DATA_HOST_ROOT: ${CADX_DATA_HOST_ROOT:-${PWD}/data}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

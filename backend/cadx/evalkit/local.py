@@ -916,6 +916,7 @@ class LocalDriver:
                 prompt=stage.prompt,
                 allow_generation=stage.allow_generation,
                 attach_images=stage.attach_images,
+                mode=stage.guide_mode,
                 enqueue_fn=_noop_enqueue,
             )
         vid, jid = v.id, j.id

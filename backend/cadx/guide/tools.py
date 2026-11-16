@@ -142,6 +142,29 @@ MISSION_TOOLS: dict[str, list[str]] = {
         "ask_user",
         "done_mission",
     ],
+    # blender-mode build mission — replaces parts+assembly entirely: the
+    # agent models/places/renders freely in Blender; registration and
+    # scene read-back go through the thin blender_* tools
+    "build": [
+        "blender_ping",
+        "blender_exec",
+        "blender_screenshot",
+        "blender_register_part",
+        "blender_sync_scene",
+        "blender_render_step",
+        "blender_save",
+        "blender_export_scene",
+        "register_uploaded_part",
+        "match_required_parts",
+        "alias_part",
+        "mark_context_part",
+        "list_user_notes",
+        "ask_user",
+        *SHARED_PAGE_TOOLS,
+        *SHARED_STATE_TOOLS,
+        *SHARED_PLAN_TOOLS,
+        "done_mission",
+    ],
     "review": [
         "render_assembly",
         "check_collisions",
@@ -171,6 +194,7 @@ def merged_schemas() -> dict[str, dict[str, Any]]:
     from cadx.guide import (
         annotate_tools,
         assembly_tools,
+        blender_tools,
         doc_tools,
         part_tools,
         review_tools,
@@ -178,7 +202,15 @@ def merged_schemas() -> dict[str, dict[str, Any]]:
     )
 
     out: dict[str, dict[str, Any]] = {}
-    for mod in (doc_tools, step_tools, part_tools, assembly_tools, review_tools, annotate_tools):
+    for mod in (
+        doc_tools,
+        step_tools,
+        part_tools,
+        assembly_tools,
+        review_tools,
+        annotate_tools,
+        blender_tools,
+    ):
         out.update(mod.SCHEMAS)
     return out
 
@@ -187,6 +219,7 @@ def merged_handlers() -> dict[str, Handler]:
     from cadx.guide import (
         annotate_tools,
         assembly_tools,
+        blender_tools,
         doc_tools,
         part_tools,
         review_tools,
@@ -194,7 +227,15 @@ def merged_handlers() -> dict[str, Handler]:
     )
 
     out: dict[str, Handler] = {}
-    for mod in (doc_tools, step_tools, part_tools, assembly_tools, review_tools, annotate_tools):
+    for mod in (
+        doc_tools,
+        step_tools,
+        part_tools,
+        assembly_tools,
+        review_tools,
+        annotate_tools,
+        blender_tools,
+    ):
         out.update(mod.HANDLERS)
     return out
 

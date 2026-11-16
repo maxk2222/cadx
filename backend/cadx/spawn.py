@@ -222,6 +222,7 @@ async def spawn_guide(
     attach_images: bool = True,
     language: str = "",
     audience: str = "",
+    mode: str = "cad",
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> tuple[Version, Job]:
     """Spawn an anleitungsbuilder run: companion Part+Version (kind=guide)
@@ -268,6 +269,7 @@ async def spawn_guide(
                 "guide_attach_images": attach_images,
                 "guide_language": language.strip(),
                 "guide_audience": audience.strip(),
+                "guide_mode": mode if mode in ("cad", "blender", "auto") else "cad",
             },
         },
         extra_job={

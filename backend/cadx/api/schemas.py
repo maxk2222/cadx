@@ -173,6 +173,10 @@ class GuideRequest(BaseModel):
     # text-variant rewrite applied at the end of the run; "" = ship the
     # original step text (rewrites remain available post-hoc)
     audience: Literal["", "beginner", "intermediate", "pro"] = ""
+    # pipeline branch: "cad" = uploads+port solver (default), "blender" =
+    # free Blender-MCP build mission reconstructs everything, "auto" =
+    # blender when no CAD assets were uploaded and Blender is reachable
+    mode: Literal["cad", "blender", "auto"] = "cad"
 
 
 # --------------------------------------------------------------------------- #

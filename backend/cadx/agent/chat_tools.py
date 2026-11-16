@@ -213,6 +213,7 @@ class ChatToolSession(ProjectToolSession):
                 pdf_asset_id=pdf_id,
                 cad_asset_ids=[str(x) for x in a.get("cad_asset_ids") or []],
                 prompt=str(a.get("prompt") or ""),
+                mode=str(a.get("mode") or "cad"),
                 enqueue_fn=self._enqueue_fn,
             )
 

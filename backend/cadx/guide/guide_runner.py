@@ -39,7 +39,45 @@ from cadx.logging import get_logger
 log = get_logger(__name__)
 
 MISSION_ORDER = ["doc", "steps", "parts", "assembly", "review", "annotate"]
-_MAX_CALLS = {"doc": 24, "steps": 60, "parts": 40, "assembly": 80, "review": 24, "annotate": 24}
+# blender-mode order: the free Blender build mission replaces
+# parts+assembly entirely — no ports, no solver; the scene IS the
+# placement state and gets gated by blender_check after the mission
+BLENDER_MISSION_ORDER = ["doc", "steps", "build", "review", "annotate"]
+
+
+def _mission_order(state: GuideState) -> list[str]:
+    return BLENDER_MISSION_ORDER if state.guide_mode == "blender" else MISSION_ORDER
+
+
+def _resolve_auto_mode(
+    state: GuideState, assets: list[dict[str, Any]], state_dir: Path
+) -> None:
+    """Decide guide_mode=="auto" once, durably: blender only when the run
+    ships zero CAD assets AND a Blender MCP endpoint answers — 'auto'
+    falls back honestly to cad when Blender is not running."""
+    if state.guide_mode != "auto":
+        return
+    from cadx.guide import blender_client, cadmeta
+
+    has_cad = any(
+        Path(str(x.get("path") or x.get("filename") or "")).suffix.lower()
+        in cadmeta._BREP_EXTS | cadmeta._MESH_EXTS
+        for x in assets
+    )
+    state.guide_mode = (
+        "cad" if has_cad or blender_client.probe_client() is None else "blender"
+    )
+    state.save(state_dir)
+    log.info("guide.mode_resolved", mode=state.guide_mode, has_cad=has_cad)
+_MAX_CALLS = {
+    "doc": 24,
+    "steps": 60,
+    "parts": 40,
+    "assembly": 80,
+    "build": 80,
+    "review": 24,
+    "annotate": 24,
+}
 # missions whose failure degrades to a warning instead of killing the
 # whole job — annotations are cosmetic overlays; the review verdict is
 # the real quality gate and already ran by the time annotate executes
@@ -144,6 +182,13 @@ def _calls_budget(mission: str, state: GuideState) -> int:
         names = len((state.document.detected_part_names if state.document else []) or [])
         names += sum(len(st.required_parts) for st in state.steps)
         base = max(base, 15 + 5 * names)
+    elif mission == "build":
+        # free Blender modeling: ~12-15 calls per distinct part (exec
+        # iterations + screenshot checks + register) plus one render per
+        # step — a fixed cap starves manuals with many part types
+        names = len((state.document.detected_part_names if state.document else []) or [])
+        names += sum(len(st.required_parts) for st in state.steps)
+        base = max(base, 30 + 12 * names + 2 * len(state.steps))
     return base
 
 
@@ -267,6 +312,21 @@ async def _emit_artifacts(
         dst = media_dir / src.name
         dst.write_bytes(src.read_bytes())
         artifacts[f"guide:media:{src.name}"] = storage.relpath(dst)
+    # blender-mode durable evidence: the scene file, the full-scene GLB
+    # and the measured manifest ship alongside the standard artifacts
+    if state.guide_mode == "blender":
+        for extra, key in (
+            (state_dir / "blender" / "guide.blend", "guide:blend"),
+            (state_dir / "blender" / "assembly_blender.glb", "guide:assembly_blender_glb"),
+        ):
+            if extra.exists():
+                artifacts[key] = storage.relpath(extra)
+        if state.blender_manifest:
+            manifest_path = out_dir / "blender_manifest.json"
+            manifest_path.write_text(
+                json.dumps(state.blender_manifest, indent=1), encoding="utf-8"
+            )
+            artifacts["guide:blender_manifest"] = storage.relpath(manifest_path)
     artifacts.update(await _emit_assembly_artifacts(state, out_dir, executor))
     state.save(state_dir)
     return artifacts
@@ -327,6 +387,7 @@ def _load_or_init_state(
     allow_generation: bool,
     language: str = "",
     audience: str = "",
+    mode: str = "cad",
 ) -> GuideState:
     state = GuideState.load(state_dir)
     if state is None:
@@ -339,6 +400,7 @@ def _load_or_init_state(
             language=lang or "de",
             language_locked=bool(lang),
             audience=audience.strip(),
+            guide_mode=mode if mode in ("cad", "blender", "auto") else "cad",
         )
         # the user's request is durable context for EVERY mission —
         # without this the prompt only lives on the version row and the
@@ -400,7 +462,10 @@ def _review_verdict(
             blockers=len(blockers),
         )
         return "fail", ""
-    flagged = {f.mission for f in blockers if f.mission in MISSION_ORDER} or {"assembly"}
+    order = _mission_order(state)
+    flagged = {f.mission for f in blockers if f.mission in order} or {
+        "build" if state.guide_mode == "blender" else "assembly"
+    }
     notes = "\n".join(f"- [{f.severity}] {f.text}" for f in blockers)[:2000]
     # "review" must reopen too — the repaired assembly needs a FRESH verdict
     # (rep.iteration only advances inside write_review_report; keeping review
@@ -456,28 +521,82 @@ def _plan_lint_reopen(
         state.save(state_dir)
         return None, []
     texts = [f["text"] for f in blockers]
-    if not allow_reopen:
-        log.info("guide.plan_lint_uncapped", blockers=len(blockers), texts=texts)
-        state.save(state_dir)
-        return None, texts
     flagged = {f["mission"] for f in blockers}
+    return _gate_reopen(state, state_dir, texts, flagged, allow_reopen=allow_reopen)
+
+
+def _gate_reopen(
+    state: GuideState,
+    state_dir: Path,
+    blocker_texts: list[str],
+    flagged: set[str],
+    *,
+    allow_reopen: bool,
+) -> tuple[str | None, list[str]]:
+    """Reopen the missions a gate flagged with the blocker texts as notes,
+    or report the blockers as fatal once the reopen cap is spent.
+
+    In blender mode lint findings name cad-side missions — "parts" and
+    "assembly" both collapse onto the "build" mission that owns them."""
+    if state.guide_mode == "blender":
+        flagged = {"build" if m in ("parts", "assembly") else m for m in flagged}
+    if not allow_reopen:
+        log.info(
+            "guide.gate_uncapped",
+            mode=state.guide_mode,
+            blockers=len(blocker_texts),
+            texts=blocker_texts,
+        )
+        state.save(state_dir)
+        return None, blocker_texts
     for m in flagged:
         if m in state.missions_done:
             state.missions_done.remove(m)
     state.save(state_dir)
-    log.info("guide.plan_lint_reopen", reopen=sorted(flagged), blockers=len(blockers))
-    return "\n".join(f"- {t}" for t in texts), []
+    log.info(
+        "guide.gate_reopen",
+        mode=state.guide_mode,
+        reopen=sorted(flagged),
+        blockers=len(blocker_texts),
+    )
+    return "\n".join(f"- {t}" for t in blocker_texts), []
 
 
-def _assembly_lint_gate(
+async def _plan_gate(
     mission: str, lint_sess: Any, state: GuideState, state_dir: Path, *, lint_cycles: int
 ) -> RunOutcome | str | None:
-    """Pre-assembly plan lint gate — a no-op for any mission but the
-    pending assembly. Returns a failed RunOutcome when blockers outlive
-    the reopen cap, the repair-notes string when the owning missions were
-    reopened, or None on a clean plan."""
-    if mission != "assembly" or mission in state.missions_done:
+    """Plan gate before the state-consuming mission — cad mode gates
+    before ``assembly``, blender mode before ``review`` (parts only exist
+    after the build mission registers them). Returns a failed RunOutcome
+    when blockers outlive the reopen cap, repair notes when the owning
+    missions were reopened, or None on a clean plan."""
+    gate_at = "review" if state.guide_mode == "blender" else "assembly"
+    if mission != gate_at or mission in state.missions_done:
         return None
+    # blender mode first re-reads the scene: the placement truth lives in
+    # Blender, and only measured scene facts may gate the run
+    if state.guide_mode == "blender":
+        from cadx.guide import blender_check
+
+        scene_blockers, manifest = await blender_check.run_scene_gate(lint_sess)
+        state.blender_manifest = manifest
+        state.save(state_dir)
+        if scene_blockers:
+            notes, fatal = _gate_reopen(
+                state,
+                state_dir,
+                scene_blockers,
+                {"build"},
+                allow_reopen=lint_cycles < 2,
+            )
+            if fatal:
+                return RunOutcome(
+                    status="failed",
+                    error="blender scene gate blockers persist after "
+                    f"{lint_cycles} reopen cycles — unrepairable by the "
+                    "build mission: " + " | ".join(fatal),
+                )
+            return notes
     notes, fatal = _plan_lint_reopen(
         lint_sess, state, state_dir, allow_reopen=lint_cycles < 2
     )
@@ -717,15 +836,18 @@ async def run_guide(
     attach_images: bool = True,
     language: str = "",
     audience: str = "",
+    mode: str = "cad",
     park_job: Any = None,
 ) -> RunOutcome:
     """Mission loop. ``park_job`` (optional) is invoked with the question
     payload when a mission calls ask_user — it persists job.questions etc;
     either way the runner returns waiting_for_input."""
     state = _load_or_init_state(
-        ctx, state_dir, resume_state, allow_generation, language, audience
+        ctx, state_dir, resume_state, allow_generation, language, audience, mode
     )
     assets = _guide_assets(ctx)
+    _resolve_auto_mode(state, assets, state_dir)
+    mission_order = _mission_order(state)
     rt = ctx.runtime_settings
     score_target = float(getattr(rt, "guide_review_score_target", 8.0))
     max_iter = int(getattr(rt, "guide_review_max_iter", 3))
@@ -758,12 +880,15 @@ async def run_guide(
     failed_review = False
     while True:
         lint_reopened = False
-        for mission in MISSION_ORDER:
-            # deterministic plan lint before assembly spends its budget:
+        for mission in mission_order:
+            # deterministic plan lint before the state-consuming mission
+            # spends its budget (cad: assembly, blender: review — the
+            # blender gate also re-measures the scene first):
             # unresolvable refs / ordering bugs are routed back to the
-            # owning mission (steps|parts) with the lint text as notes —
-            # a degenerate extraction gets fixed, not faithfully placed
-            gate = _assembly_lint_gate(
+            # owning mission (steps|parts|build) with the lint text as
+            # notes — a degenerate extraction gets fixed, not faithfully
+            # placed
+            gate = await _plan_gate(
                 mission, _session("assembly"), state, state_dir, lint_cycles=lint_cycles
             )
             if isinstance(gate, RunOutcome):

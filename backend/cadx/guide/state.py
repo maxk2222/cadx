@@ -43,7 +43,7 @@ class GuidePart(BaseModel):
 
     id: str  # slug, unique within the guide
     name: str
-    source: str = "uploaded"  # uploaded | generated
+    source: str = "uploaded"  # uploaded | generated | blender
     asset_id: str | None = None
     version_id: str | None = None  # generated Version id
     mesh_path: str | None = None  # normalized GLB (mm) for scene/solver
@@ -149,6 +149,9 @@ class AssemblyInstance(BaseModel):
     # editor overrides — rendering-only, keep pipeline palette semantics
     color: str | None = None
     opacity: float | None = None
+    # blender-mode provenance: bpy object name this instance was read
+    # back from ("" for solver-placed instances)
+    blender_object: str = ""
 
 
 class AssemblyState(BaseModel):
@@ -201,6 +204,14 @@ class GuideState(BaseModel):
     # only a dimension callout). mark_context_part writes them; resolution
     # treats them as matched-context instead of missing.
     context_names: list[str] = Field(default_factory=list)
+    # pipeline branch: "cad" (parts→assembly solver path, default) or
+    # "blender" (free Blender-MCP build mission replaces parts+assembly).
+    # Persisted so resumes keep the mode the run was decided under.
+    guide_mode: str = "cad"
+    # blender-mode scene evidence written by blender_check: tagged-object
+    # map, overlap report, render paths, blend file — durable proof of the
+    # scene facts the gates measured, never LLM claims
+    blender_manifest: dict = Field(default_factory=dict)
     document: DocumentIndex | None = None
     steps: list[GuideStep] = Field(default_factory=list)
     parts: list[GuidePart] = Field(default_factory=list)

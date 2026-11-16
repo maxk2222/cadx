@@ -110,6 +110,7 @@ async def test_run_guide_job_waiting_then_resume(_db, monkeypatch):
         attach_images=True,
         language="",
         audience="",
+        mode="cad",
         park_job=None,
     ):
         calls["n"] += 1

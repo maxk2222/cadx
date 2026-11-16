@@ -653,6 +653,7 @@ class HttpDriver:
                 "prompt": stage.prompt,
                 "allow_generation": stage.allow_generation,
                 "attach_images": stage.attach_images,
+                "mode": stage.guide_mode,
             },
         )
         vid, jid = str(enq.get("version_id")), str(enq.get("job_id"))

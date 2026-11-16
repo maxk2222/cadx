@@ -103,6 +103,9 @@ class EvalStage(BaseModel):
     answers: list[str] = Field(default_factory=list)
     # False = uploads must cover every required part (no agent generation)
     allow_generation: bool = True
+    # guide pipeline branch: "cad" uploads+solver (default), "blender"
+    # free Blender-MCP reconstruction, "auto" = blender iff zero CAD
+    guide_mode: str = "cad"
     # False = text-only ablation: no page/figure/render images reach the
     # agent — extraction and assembly must work from text + geometry
     attach_images: bool = True

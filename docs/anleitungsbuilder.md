@@ -82,6 +82,46 @@ The review verdict drives a bounded repair loop: blocker findings reopen
 the flagged mission (`guide_review_max_iter`, default 3, score target
 `guide_review_score_target`, default 8).
 
+## Blender mode (`guide_mode`)
+
+`POST /guide` accepts `mode: cad|blender|auto` (default `cad`; chat tool
+`start_guide_builder` takes the same `mode` arg). `blender` replaces the
+`parts`+`assembly` missions with one free-build mission `build`; `auto`
+picks blender only when zero CAD assets were uploaded AND a Blender MCP
+endpoint answers a ping — otherwise it falls back honestly to cad. The
+resolved mode persists on `state.guide_mode` so resumes stay consistent.
+
+| Mission | Tools | Output |
+|---|---|---|
+| `build` | blender_ping/exec/screenshot/register_part/sync_scene/render_step/save/export_scene + register_uploaded_part/match/alias/mark_context | `state.parts` (GLB, bbox) + `state.assembly` (scene read-back) |
+
+The agent models/places/renders with full bpy freedom inside a running
+Blender instance (BlenderMCP addon, JSON/TCP `:9876`). The semantic
+contract is scene tags: every placed object carries
+`obj['cadx_part']='part_id'`, `obj['cadx_step']=N` (0 = initial state),
+`obj['cadx_premount']=True`. `blender_sync_scene` and the scene gate
+(`blender_check.run_scene_gate`, fires at `review` instead of the cad
+lint's `assembly` gate) read `matrix_world` back deterministically —
+instances, bboxes and the manifest come from measured scene facts, never
+from LLM claims. Buried non-premounted instances block; joint
+interpenetration stays a warning in `state.blender_manifest`.
+
+**Units**: 1 Blender unit = 1 mm (`blender_exec` enforces
+`scale_length=0.001` so glTF export + `normalize_mesh_units` compose
+exactly). Blender is Z-up like CADX — `matrix_world` IS the mm transform.
+
+**Networking/files**: worker→`host.docker.internal:9876` (compose sets
+`extra_hosts`; env `CADX_BLENDER_HOST`/`CADX_BLENDER_PORT`). Blender
+writes only host paths — `CADX_DATA_HOST_ROOT` is the host-side absolute
+path of this repo's `./data` (compose defaults to `${PWD}/data`). Native
+dev-worker: `localhost:9876`, root = `storage.data_root()`. Blender must
+be open with the addon enabled (server auto-starts on .blend load);
+`blender_ping` reports unreachability honestly and the mission may
+`ask_user` to park until it is.
+
+Extra artifacts in blender mode: `guide.blend`, `assembly_blender.glb`,
+`blender_manifest.json` (tagged-object map, overlap report, renders).
+
 ## Key contracts
 
 - **Dual text**: `GuideStep.text` = detailed internal description;
