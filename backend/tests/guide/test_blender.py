@@ -7,6 +7,7 @@ server; execute_code paths get stubbed clients.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import socket
 import threading
@@ -507,3 +508,34 @@ def test_checkpoint_nudge_counts_and_resets(tmp_path):
     sess.tool_log.append({"name": "blender_sync_scene"})
     sess.tool_log += [{"name": "blender_exec"}] * 10
     assert blender_tools._checkpoint_nudge(sess) is None
+
+
+def test_forced_checkpoint_syncs_and_resets(tmp_path, monkeypatch):
+    """80 unsaved calls -> blender_exec runs sync itself and records it;
+    the tool result explains the checkpoint to the model."""
+    sess = _sess(tmp_path, parts=[_part("pipe")])
+    ident = [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)]
+
+    class FakeClient:
+        def execute_code(self, code, **kw):
+            if "matrix_world" in code or "__CADX__" in code:
+                return "__CADX__" + json.dumps(
+                    {"TubeA": {"part": "pipe", "step": 1, "matrix": ident}}
+                )
+            return "print ok"
+
+        def export_scene(self, path, **kw):
+            Path(path).write_bytes(b"glb")
+
+    monkeypatch.setattr(blender_client, "get_client", lambda: FakeClient())
+    sess.tool_log = [{"name": "blender_exec"}] * (
+        blender_tools._CHECKPOINT_ESCALATE + 5
+    )
+
+    res = asyncio.run(blender_tools.blender_exec(sess, {"code": "print('x')"}))
+    assert "auto_checkpoint" in res
+    # the forced sync logged itself -> counter resets -> next call only nudges late
+    assert sess.tool_log[-1]["name"] == "blender_sync_scene"
+    assert len(sess.state.assembly.instances) == 1
+    res2 = asyncio.run(blender_tools.blender_exec(sess, {"code": "print('y')"}))
+    assert "auto_checkpoint" not in res2

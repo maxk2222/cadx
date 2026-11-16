@@ -240,8 +240,28 @@ async def blender_exec(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
         "output": out[:_EXEC_STDOUT_CAP],
         "truncated": truncated,
     }
-    nudge = _checkpoint_nudge(s)
-    if nudge:
+    n = _calls_since_checkpoint(s)
+    if n >= _CHECKPOINT_ESCALATE:
+        # the model ignored 40+ written reminders — checkpoint FOR it:
+        # whatever is tagged right now becomes durable (auto-registration
+        # handles unregistered tags; untagged work is simply not synced)
+        try:
+            sync_res = await blender_sync_scene(s, {})
+        except Exception as exc:  # sync failing must not break exec
+            sync_res = {"ok": False, "error": str(exc)[:300]}
+        s.tool_log.append(
+            {
+                "name": "blender_sync_scene",
+                "args": {"auto": "checkpoint_nudge"},
+                "result": sync_res,
+            }
+        )
+        result["auto_checkpoint"] = {
+            "reason": f"{n} tool calls without a checkpoint — the system "
+            "synced the scene itself so tagged work is durable.",
+            "sync": sync_res,
+        }
+    elif (nudge := _checkpoint_nudge(s)):
         result["checkpoint"] = nudge
     return result
 
