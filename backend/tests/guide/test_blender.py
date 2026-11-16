@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -354,3 +355,27 @@ def test_unit_preamble_enforced(fake_server):
     c = BlenderClient("127.0.0.1", srv.port)
     c.execute_code(blender_tools._UNIT_PREAMBLE + "pass")
     assert "scale_length" in captured[0]["params"]["code"]
+
+
+def test_wait_for_file_byte_match(tmp_path):
+    """exists() passing early must not fool the consumer — the gate waits
+    for the exporter-reported byte count (partial-sync race)."""
+    target = tmp_path / "part.glb"
+    target.write_bytes(b"glTF")  # header visible, body not yet
+
+    def _fill():
+        time.sleep(0.3)
+        target.write_bytes(b"glTF" + b"\x00" * 100)
+
+    t = threading.Thread(target=_fill, daemon=True)
+    t.start()
+    assert blender_tools._wait_for_file(target, expected_bytes=104, timeout_s=3.0)
+    t.join()
+
+
+def test_wait_for_file_stability(tmp_path):
+    """Without a byte count the gate accepts once the size holds steady."""
+    target = tmp_path / "shot.png"
+    assert not blender_tools._wait_for_file(target, timeout_s=0.5)
+    target.write_bytes(b"pngdata")
+    assert blender_tools._wait_for_file(target, timeout_s=2.0)

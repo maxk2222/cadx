@@ -62,6 +62,35 @@ def _to_gltf_frame(matrix_blender) -> list[list[float]]:
     m = _np.asarray(matrix_blender, dtype=float)
     return (_BLENDER_TO_GLTF @ m @ _BLENDER_TO_GLTF.T).tolist()
 
+
+def _wait_for_file(
+    path: Path, expected_bytes: int | None = None, timeout_s: float = 15.0
+) -> bool:
+    """Blender writes on the HOST; the worker reads through the shared
+    mount, where visibility is eventually consistent — exists() can pass
+    while only the file header has synced (trimesh then dies on a
+    'chunk was not expected length' partial read). Wait until the size
+    matches the exporter-reported byte count, or stabilizes nonzero when
+    no count is known (renders/screenshots/saves)."""
+    deadline = time.monotonic() + timeout_s
+    last = -1
+    while time.monotonic() < deadline:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = -1
+        if expected_bytes is not None:
+            if size == expected_bytes:
+                return True
+        elif size > 0 and size == last:
+            return True
+        last = size
+        time.sleep(0.15)
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
+
 # enforced before every agent exec — the mm contract is a gate, not a
 # prompt wish: 1 BU = 1 mm, scale_length makes the glTF exporter emit
 # meters so normalize_mesh_units lands on exact mm
@@ -181,7 +210,8 @@ async def blender_screenshot(s: GuideToolSession, a: dict[str, Any]) -> dict[str
         res = client.viewport_screenshot(blender_client.to_host_path(dst))
     except BlenderError as exc:
         return _err(exc)
-    if not dst.exists():
+    expected = res.get("bytes") if isinstance(res, dict) else None
+    if not _wait_for_file(dst, expected_bytes=expected):
         return {
             "ok": False,
             "error": f"Blender reported success but {dst.name} did not appear "
@@ -227,13 +257,14 @@ async def blender_register_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
             }
         missing = [n for n in names if n not in found]
         glb_path = _blender_dir(s) / f"{pid}.glb"
-        client.export_scene(
+        res = client.export_scene(
             blender_client.to_host_path(glb_path),
             object_names=list(found),
         )
     except BlenderError as exc:
         return _err(exc)
-    if not glb_path.exists():
+    expected = res.get("bytes") if isinstance(res, dict) else None
+    if not _wait_for_file(glb_path, expected_bytes=expected):
         return {
             "ok": False,
             "error": "export_scene returned success but the GLB never "
@@ -416,7 +447,7 @@ async def blender_render_step(s: GuideToolSession, a: dict[str, Any]) -> dict[st
         client.execute_code(code, timeout_s=300.0)
     except BlenderError as exc:
         return _err(exc)
-    if not dst.exists():
+    if not _wait_for_file(dst):
         return {
             "ok": False,
             "error": "render reported success but the PNG never reached "
@@ -439,7 +470,7 @@ async def blender_save(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
         )
     except BlenderError as exc:
         return _err(exc)
-    if not dst.exists():
+    if not _wait_for_file(dst):
         return {
             "ok": False,
             "error": "save_as_mainfile reported success but the .blend "
@@ -453,10 +484,11 @@ async def blender_export_scene(s: GuideToolSession, a: dict[str, Any]) -> dict[s
     try:
         client = blender_client.get_client()
         dst = _blender_dir(s) / "assembly_blender.glb"
-        client.export_scene(blender_client.to_host_path(dst))
+        res = client.export_scene(blender_client.to_host_path(dst))
     except BlenderError as exc:
         return _err(exc)
-    if not dst.exists():
+    expected = res.get("bytes") if isinstance(res, dict) else None
+    if not _wait_for_file(dst, expected_bytes=expected):
         return {
             "ok": False,
             "error": "export returned success but the GLB never reached "
