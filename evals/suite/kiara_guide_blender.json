@@ -36,7 +36,7 @@
      "type": "guide_parts",
      "min": 5,
      "all": [
-      ["casing", "gehause", "gehäuse", "housing"],
+      ["casing", "gehause", "gehäuse", "housing", "host", "premount"],
       "adapter",
       ["elbow", "bogen", "rohrbogen"]
      ],
