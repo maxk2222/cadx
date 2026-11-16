@@ -57,6 +57,30 @@ _REPEAT_REJECT_CAP = 3
 # retry after fixing.
 _ERR_CLASS_CAP = 3
 _ERR_CLASS_EXEMPT = {"done_mission", "ask_user"}
+# entity-keyed write-streak breaker: SUCCESSFUL rewrites of the SAME
+# entity are invisible to every other breaker — a repair mission rewrote
+# update_sub_step(12, index 2) 47 times while context condensation kept
+# erasing the model's memory of having already fixed it (repeat_streak
+# needs identical args/prose, churn only covers edit/codegen kinds, the
+# error-class breaker only sees failures). Writes past the warn cap
+# still execute — the model's latest intent is stored honestly — but
+# carry a warning; past the block cap the call short-circuits with a
+# streak-exempt guardrail showing the stored content; past 2x the block
+# cap the honest error returns so a truly stuck mission aborts.
+_WRITE_ENTITY_TOOLS = {
+    "update_step": lambda a: str(a.get("number", "")),
+    "update_sub_step": lambda a: f"{a.get('step', '')}:{a.get('index', '')}",
+}
+# writes 4+ carry an in-result warning; once _WRITE_BLOCK_AT writes are
+# stored the next call is blocked (streak-exempt), and past 2x that the
+# honest error returns so a truly stuck mission aborts
+_WRITE_WARN_AT = 4
+_WRITE_BLOCK_AT = 6
+# page-image streak hint: sequential get_page_image reads burn the doc
+# mission's small call budget — a model that paged 22 images one by one
+# died on budget without ever calling classify_pages. The counter only
+# hints (image reads are legitimate work), it never blocks.
+_PAGE_IMAGE_HINT_AT = 6
 
 
 def _err_class(res: dict[str, Any]) -> str | None:
@@ -254,6 +278,10 @@ class GuideToolSession(ToolSession):
         self._reject_counts: dict[str, int] = {}
         # (tool, error-class) -> repeat count for the loop breaker
         self._err_class_counts: dict[tuple[str, str], int] = {}
+        # (tool, entity-key) -> successful write count for the write-streak
+        # breaker; successful page-image reads for the triage hint
+        self._write_counts: dict[tuple[str, str], int] = {}
+        self._page_image_calls = 0
         self.parked = False
         self.parked_questions: list[dict[str, Any]] = []
         # image budget for _images results (page images, assembly renders)
@@ -302,6 +330,16 @@ class GuideToolSession(ToolSession):
                     "with a documented plan note (list_parts/list_steps show "
                     "the live state). Retrying verbatim cannot succeed.",
                 }
+        # entity-keyed write-streak breaker: successful rewrites of the
+        # same entity count up — warns inside the result, then blocks
+        # with a streak-exempt guardrail, then re-escalates to an honest
+        # error so a model that ignores the guardrail aborts the mission
+        wkey_fn = _WRITE_ENTITY_TOOLS.get(name)
+        wkey = (name, wkey_fn(args)) if wkey_fn else None
+        wn = self._write_counts.get(wkey, 0) if wkey else 0
+        gate = self._write_streak_gate(name, args, wn) if wkey else None
+        if gate is not None:
+            return gate
         handler = getattr(self, f"_tool_{name}", None)
         if handler is not None:
             res = handler(args)
@@ -318,50 +356,132 @@ class GuideToolSession(ToolSession):
             self._bad_image_calls += 1
         if sig is not None and isinstance(res, dict) and not res.get("ok"):
             self._reject_counts[sig] = self._reject_counts.get(sig, 0) + 1
+        if wkey and isinstance(res, dict) and res.get("ok"):
+            self._write_counts[wkey] = wn + 1
+            if wn + 1 >= _WRITE_WARN_AT:
+                res["warning"] = (
+                    f"this entity was already updated {wn + 1}x in this "
+                    "mission — verify it is now correct and move on; "
+                    "rewriting without new information burns the call "
+                    "budget"
+                )
+        if name == "get_page_image" and isinstance(res, dict) and res.get("ok"):
+            self._page_image_calls += 1
+            if self._page_image_calls >= _PAGE_IMAGE_HINT_AT:
+                res["hint"] = (
+                    f"{self._page_image_calls} page images fetched — "
+                    "classify_pages triages which pages actually carry "
+                    "steps/figures before more image reads; the mission "
+                    "call budget is finite"
+                )
+        return self._err_class_gate(name, res)
+
+    def _err_class_gate(self, name: str, res: Any) -> Any:
+        """Error-class loop breaker: the same tool failing the SAME WAY N
+        times in one mission is a stuck model, not bad luck. Past the cap
+        the call short-circuits with a streak-exempt guardrail; past 2x
+        the cap the honest error returns so the mission can abort."""
         if (
-            name not in _ERR_CLASS_EXEMPT
-            and isinstance(res, dict)
-            and not res.get("ok")
-            and not res.get("_streak_exempt")
+            name in _ERR_CLASS_EXEMPT
+            or not isinstance(res, dict)
+            or res.get("ok")
+            or res.get("_streak_exempt")
         ):
-            cls = _err_class(res)
-            if cls is not None:
-                key = (name, cls)
-                self._err_class_counts[key] = self._err_class_counts.get(key, 0) + 1
-                n_fail = self._err_class_counts[key]
-                if n_fail > _ERR_CLASS_CAP:
-                    log.info(
-                        "guide.tool_circuit",
-                        mission=self.mission,
-                        tool=name,
-                        err_class=cls[:120],
-                        count=n_fail,
-                    )
-                if n_fail > _ERR_CLASS_CAP * 2:
-                    # stubborn loop: the streak-exempt phase did not break
-                    # it — let the honest error feed error_streak again so
-                    # the mission aborts instead of burning its whole budget
-                    res = {
-                        "ok": False,
-                        "error": f"'{name}' keeps failing with the same "
-                        f"error class ({n_fail}x): '{cls[:100]}' — the "
-                        "mission cannot make progress this way.",
-                    }
-                elif n_fail > _ERR_CLASS_CAP:
-                    # the first CAP calls returned honest errors; past the
-                    # cap the same class is a deterministic loop — answer
-                    # with a streak-exempt guardrail that redirects the
-                    # model instead of feeding mission-abort
-                    res = {
-                        "ok": False,
-                        "_streak_exempt": True,
-                        "error": f"'{name}' already failed {n_fail}x with "
-                        f"the same error class — '{cls[:100]}'. The state "
-                        "will not change on its own; inspect live state "
-                        "(list_steps/list_parts/validate), use a DIFFERENT "
-                        "tool, or record a plan note and move on.",
-                    }
+            return res
+        cls = _err_class(res)
+        if cls is None:
+            return res
+        key = (name, cls)
+        self._err_class_counts[key] = self._err_class_counts.get(key, 0) + 1
+        n_fail = self._err_class_counts[key]
+        if n_fail > _ERR_CLASS_CAP:
+            log.info(
+                "guide.tool_circuit",
+                mission=self.mission,
+                tool=name,
+                err_class=cls[:120],
+                count=n_fail,
+            )
+        if n_fail > _ERR_CLASS_CAP * 2:
+            # stubborn loop: the streak-exempt phase did not break it —
+            # let the honest error feed error_streak again so the mission
+            # aborts instead of burning its whole budget
+            return {
+                "ok": False,
+                "error": f"'{name}' keeps failing with the same "
+                f"error class ({n_fail}x): '{cls[:100]}' — the "
+                "mission cannot make progress this way.",
+            }
+        if n_fail > _ERR_CLASS_CAP:
+            # the first CAP calls returned honest errors; past the cap
+            # the same class is a deterministic loop — answer with a
+            # streak-exempt guardrail that redirects the model instead of
+            # feeding mission-abort
+            return {
+                "ok": False,
+                "_streak_exempt": True,
+                "error": f"'{name}' already failed {n_fail}x with "
+                f"the same error class — '{cls[:100]}'. The state "
+                "will not change on its own; inspect live state "
+                "(list_steps/list_parts/validate), use a DIFFERENT "
+                "tool, or record a plan note and move on.",
+            }
         return res
+
+    def _write_streak_gate(
+        self, name: str, args: dict[str, Any], wn: int
+    ) -> dict[str, Any] | None:
+        """Block an entity write once _WRITE_BLOCK_AT writes are already
+        stored: streak-exempt guardrail (with the stored content) up to
+        2x the cap, then the honest error so a truly stuck mission can
+        abort — an exempt-forever response is its own loop."""
+        if wn < _WRITE_BLOCK_AT:
+            return None
+        wkey = (name, _WRITE_ENTITY_TOOLS[name](args))
+        self._write_counts[wkey] = wn + 1
+        if wn >= _WRITE_BLOCK_AT * 2:
+            return {
+                "ok": False,
+                "error": f"'{name}' already wrote this entity {wn}x "
+                "in this mission — the mission cannot make progress "
+                "this way.",
+            }
+        stored = json.dumps(self._entity_snapshot(name, args), ensure_ascii=False)
+        return {
+            "ok": False,
+            "_streak_exempt": True,
+            "error": f"'{name}' already wrote this entity {wn}x in "
+            f"this mission — stored content: {stored}. If it is still "
+            "wrong, state WHICH field and why in a plan note, then "
+            "done_mission; blind rewrites cannot converge.",
+        }
+
+    def _entity_snapshot(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Current stored content of the entity a write-streak guardrail is
+        blocking — the model must see what already exists instead of
+        rewriting blind."""
+        try:
+            if name == "update_step":
+                st = self.state.step_by_number(int(args.get("number", 0)))
+                return (
+                    {"title": st.title, "text": st.text[:200]} if st else {"missing": True}
+                )
+            if name == "update_sub_step":
+                st = self.state.step_by_number(int(args.get("step", 0)))
+                idx = int(args.get("index", -1))
+                if st is None or not (0 <= idx < len(st.sub_steps)):
+                    return {"missing": True}
+                ss = st.sub_steps[idx]
+                return {
+                    "action": ss.action,
+                    "part": ss.part,
+                    "target": ss.target,
+                    "target2": ss.target2,
+                    "text": ss.text[:160],
+                }
+        except (TypeError, ValueError):
+            return {"missing": True}
+        return {}
 
     async def _emit(self, progress: float, label: str, **fields: Any) -> None:
         if self._emit_fn is not None:

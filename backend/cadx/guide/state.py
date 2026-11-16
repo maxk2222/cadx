@@ -214,6 +214,11 @@ class GuideState(BaseModel):
     variants: dict[str, list[dict]] = Field(default_factory=dict)
     missions_done: list[str] = Field(default_factory=list)
     missions_failed: list[str] = Field(default_factory=list)
+    # deterministic plan-lint history per reopen cycle — blocker/warning
+    # texts are forensic evidence (which ref failed, which mission owned
+    # it, whether the cycle converged); entries live only in the runner
+    # log today and are unrecoverable after the job ends
+    lint_cycles: list[dict] = Field(default_factory=list)
     output_dir: str = ""
     unity_guide_path: str | None = None
     # opaque placement candidates: solve_*_preview writes, place_instance

@@ -1146,6 +1146,207 @@ def test_repeat_reject_breaker() -> None:
     assert r3["ok"] is False and not r3.get("_streak_exempt"), r3
 
 
+def test_write_streak_breaker() -> None:
+    """Live bug (run 872d11ef): a review-repair mission rewrote
+    update_sub_step(12, index 2) 47 times — every call SUCCEEDED, so the
+    error-class breaker never saw it; args/prose varied, so repeat_streak
+    never fired; condensation kept erasing the model's memory.
+
+    The entity-keyed breaker warns inside the ok result at 4, blocks with
+    a streak-exempt guardrail at 6 (showing the stored content), and
+    re-escalates to an honest error at 12 so a truly stuck model aborts."""
+    import asyncio
+
+    from cadx.guide.state import GuideStep, GuideSubStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState(output_dir="/tmp/x")
+    state.steps = [
+        GuideStep(
+            number=12,
+            title="Crimpung",
+            text="x",
+            sub_steps=[
+                GuideSubStep(action="check", part="Adapter", target="Gehäuse"),
+                GuideSubStep(action="check", part="Rohrbogen", target="l500"),
+                GuideSubStep(action="check", part="Rohr l70", target="Adapter oben"),
+            ],
+        )
+    ]
+    sess = GuideToolSession(
+        ctx,
+        mission="steps",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    base = {"step": "12", "index": "2", "text": "check the short pipe crimp"}
+    # writes 1-3: plain ok; writes 4-6: ok + convergence warning
+    for n in (1, 2, 3):
+        r = asyncio.run(sess._dispatch("update_sub_step", dict(base)))
+        assert r["ok"] and "warning" not in r, (n, r)
+    for n in (4, 5, 6):
+        r = asyncio.run(sess._dispatch("update_sub_step", dict(base)))
+        assert r["ok"] and "warning" in r, (n, r)
+    # write 7: blocked — streak-exempt, carries the stored content
+    r = asyncio.run(sess._dispatch("update_sub_step", dict(base, text="rewritten again")))
+    assert r["ok"] is False and r["_streak_exempt"] and "stored content" in r["error"], r
+    assert "Rohr l70" in r["error"], r
+    # the entity was NOT written by the blocked call
+    assert state.steps[0].sub_steps[2].text == "check the short pipe crimp"
+    # blocked retries stay exempt until 2x cap, then honestly error
+    for _ in range(5):
+        r = asyncio.run(sess._dispatch("update_sub_step", dict(base)))
+        assert r["ok"] is False and r["_streak_exempt"], r
+    r = asyncio.run(sess._dispatch("update_sub_step", dict(base)))
+    assert r["ok"] is False and not r.get("_streak_exempt"), r
+    # a different entity is unaffected
+    r = asyncio.run(
+        sess._dispatch("update_sub_step", {"step": "12", "index": "1", "text": "v"})
+    )
+    assert r["ok"], r
+
+
+def test_write_streak_counts_successes_only() -> None:
+    """A FAILED update must not burn the streak — 'index out of range'
+    errors belong to the error-class breaker."""
+    import asyncio
+
+    from cadx.guide.state import GuideStep, GuideSubStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState(output_dir="/tmp/x")
+    state.steps = [
+        GuideStep(
+            number=1,
+            title="x",
+            text="x",
+            sub_steps=[GuideSubStep(action="check", part="p", target="t")],
+        )
+    ]
+    sess = GuideToolSession(
+        ctx,
+        mission="steps",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    for _ in range(8):
+        r = asyncio.run(
+            sess._dispatch("update_sub_step", {"step": "1", "index": "9", "text": "x"})
+        )
+        assert r["ok"] is False, r  # index out of range — never reaches the streak
+    r = asyncio.run(
+        sess._dispatch("update_sub_step", {"step": "1", "index": "0", "text": "ok"})
+    )
+    assert r["ok"], r
+
+
+def test_page_image_streak_hint() -> None:
+    """22 sequential get_page_image reads killed a doc mission on budget —
+    past the hint threshold the result tells the model to triage with
+    classify_pages first. The hint never blocks."""
+    import asyncio
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState(output_dir="/tmp/x")
+    sess = GuideToolSession(
+        ctx,
+        mission="doc",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    sess._tool_get_page_image = lambda a: {"ok": True, "page": 1}  # type: ignore[attr-defined]
+    for n in range(5):
+        r = asyncio.run(sess._dispatch("get_page_image", {"page": 1}))
+        assert r["ok"] and "hint" not in r, (n, r)
+    r = asyncio.run(sess._dispatch("get_page_image", {"page": 1}))
+    assert r["ok"] and "classify_pages" in r["hint"], r
+
+
+def test_tool_log_seq_monotonic_across_reopens() -> None:
+    """A reopened mission restarts its attempt counter — naming logs by
+    attempt alone silently overwrote the first mission's forensic file."""
+    import tempfile
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from cadx.guide.guide_runner import _persist_tool_log
+
+    res = SimpleNamespace(tool_log=[{"name": "x", "args": {}, "result": {"ok": True}}])
+    with tempfile.TemporaryDirectory() as td:
+        _persist_tool_log(td, "steps", 0, res)
+        _persist_tool_log(td, "steps", 1, res)
+        # a reopened mission's attempt 0 must NOT overwrite tool_log_steps_0
+        _persist_tool_log(td, "steps", 0, res)
+        files = sorted(p.name for p in Path(td).glob("tool_log_steps_*.jsonl"))
+        assert files == [
+            "tool_log_steps_0.jsonl",
+            "tool_log_steps_1.jsonl",
+            "tool_log_steps_2.jsonl",
+        ], files
+
+
+def test_lint_cycles_persisted(tmp_path) -> None:
+    """plan_lint findings were log-only — the blocker texts that killed
+    run aee696f6 were unrecoverable. Every cycle now persists its blocker
+    texts + owning missions, including the clean converging cycle."""
+    from types import SimpleNamespace
+
+    from cadx.guide.guide_runner import _plan_lint_reopen
+
+    # blocker plan: step 1 targets a part that is first placed in step 3
+    from cadx.guide.state import GuidePart, GuideStep, GuideSubStep
+
+    state = GuideState(output_dir=str(tmp_path))
+    state.missions_done = ["doc", "steps", "parts"]
+    state.parts = [
+        GuidePart(id="casing", name="Gehäuse"),
+        GuidePart(id="pipe", name="Rohr DN22"),
+    ]
+    state.steps = [
+        GuideStep(
+            number=1,
+            title="x",
+            text="x",
+            action_type="assembly",
+            sub_steps=[
+                GuideSubStep(action="attach", part="Adapter", target="Rohr DN22")
+            ],
+        ),
+        GuideStep(
+            number=3,
+            title="y",
+            text="y",
+            action_type="assembly",
+            sub_steps=[GuideSubStep(action="place", part="Rohr DN22")],
+        ),
+    ]
+    sess = SimpleNamespace(state=state, _aliases_store={})
+    _plan_lint_reopen(sess, state, tmp_path, allow_reopen=True)
+    assert state.lint_cycles and state.lint_cycles[-1]["cycle"] == 1
+    entry = state.lint_cycles[-1]
+    assert any("first placed in step 3" in b for b in entry["blockers"]), entry
+    assert "steps" in entry["missions"], entry
+    # a clean cycle is evidence too — lint converged
+    state.lint_cycles.clear()
+    state2 = GuideState(output_dir=str(tmp_path))
+    sess2 = SimpleNamespace(state=state2, _aliases_store={})
+    notes2, fatal2 = _plan_lint_reopen(sess2, state2, tmp_path, allow_reopen=True)
+    assert notes2 is None and fatal2 == []
+    assert state2.lint_cycles == [{"blockers": [], "cycle": 1, "missions": [], "warnings": 0}]
+
+
 def test_alias_discriminativity_gate() -> None:
     """A generic family name ('anschlussrohr') aliased onto ONE of two
     same-kind parts is a silent guess — every later 'anschlussrohr'

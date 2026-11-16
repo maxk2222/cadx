@@ -49,9 +49,14 @@ _OPTIONAL = {"annotate"}
 def _persist_tool_log(state_dir: Any, mission: str, attempt: int, result: Any) -> None:
     """Durable failure forensics: the per-call tool log dies with the
     session — persist it per mission+attempt so a repeat_loop or budget
-    death can be audited from the actual call sequence."""
+    death can be audited from the actual call sequence. The index is
+    MONOTONIC across mission re-opens: a reopened mission restarts its
+    attempt counter at 0, so naming by attempt alone silently overwrote
+    the earlier mission's log (observed: the 100-call first steps run
+    vanished under the 94-call repair churn)."""
     try:
-        p = Path(state_dir) / f"tool_log_{mission}_{attempt}.jsonl"
+        seq = len(list(Path(state_dir).glob(f"tool_log_{mission}_*.jsonl")))
+        p = Path(state_dir) / f"tool_log_{mission}_{seq}.jsonl"
         with p.open("w", encoding="utf-8") as fh:
             for e in result.tool_log or []:
                 fh.write(json.dumps(e, ensure_ascii=False, default=str)[:8000] + "\n")
@@ -430,12 +435,30 @@ def _plan_lint_reopen(
     burns its whole budget placing a plan that cannot succeed."""
     from cadx.guide.planlint import plan_lint
 
-    blockers = [f for f in plan_lint(lint_sess) if f["severity"] == "blocker"]
+    findings = plan_lint(lint_sess)
+    blockers = [f for f in findings if f["severity"] == "blocker"]
+    # durable lint evidence — every cycle is recorded, including the clean
+    # one that converged the plan; the blocker texts are the forensic
+    # trail of which reference failed and which mission owned the fix
+    n_warnings = sum(1 for f in findings if f["severity"] != "blocker")
+    state.lint_cycles = [
+        *state.lint_cycles[-11:],
+        {
+            "cycle": (state.lint_cycles[-1].get("cycle", 0) + 1)
+            if state.lint_cycles
+            else 1,
+            "blockers": [f["text"] for f in blockers],
+            "missions": sorted({f["mission"] for f in blockers}),
+            "warnings": n_warnings,
+        },
+    ]
     if not blockers:
+        state.save(state_dir)
         return None, []
     texts = [f["text"] for f in blockers]
     if not allow_reopen:
         log.info("guide.plan_lint_uncapped", blockers=len(blockers), texts=texts)
+        state.save(state_dir)
         return None, texts
     flagged = {f["mission"] for f in blockers}
     for m in flagged:
