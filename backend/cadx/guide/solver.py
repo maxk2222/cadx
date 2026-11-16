@@ -1105,38 +1105,47 @@ def solve_bridge_attachment(
     )
     if not primary:
         return None
-    base = np.asarray(primary[0]["transform"], dtype=float).reshape(4, 4)
     tf0 = np.asarray(tf0_list, dtype=float).reshape(4, 4)
     tp0 = _port(fx0, fp0_name)
     mp0 = _port(moving, mp0_name)
     if tp0 is None or mp0 is None:
-        return base.tolist(), bool(primary[0].get("axis_flipped"))
+        return np.asarray(primary[0]["transform"], dtype=float).tolist(), bool(
+            primary[0].get("axis_flipped")
+        )
     pivot = tf0[0:3, 0:3] @ (_v(tp0.pos) - _v(tp0.axis) * _engage_mm(mp0, tp0)) + tf0[0:3, 3]
     axis = tf0[0:3, 0:3] @ _v(tp0.axis)
-    best, best_res = base, float("inf")
-    for deg in np.linspace(0.0, 360.0, 72, endpoint=False):
-        m = delta_about_pivot(axis, float(deg), pivot) @ base
-        res = 0.0
-        for mpn, fxn, tfn_list, fpn in pairs[1:]:
-            sp = _port(moving, mpn)
-            tpp = _port(fxn, fpn)
-            if sp is None or tpp is None:
-                continue
-            gap2, ndot2 = evaluate_mate(
-                sp, m, tpp, np.asarray(tfn_list, dtype=float).reshape(4, 4)
-            )
-            # a leg is only a mate when its port axes land (anti)parallel —
-            # extracted rim axes carry an ambiguous sign, so either reading
-            # can be the consistent one; a PERPENDICULAR second mouth is no
-            # mate in any convention and must never close the bridge on
-            # position alone (observed: spigot tip coinciding near the
-            # bore-interior point while pointing the wrong way)
-            res += gap2**2 + 400.0 * (1.0 - abs(ndot2)) ** 2
-        if res < best_res:
-            best, best_res = m, res
-    return [[float(v) for v in row] for row in best.tolist()], bool(
-        primary[0].get("axis_flipped")
-    )
+    best, best_res, best_flip = None, float("inf"), False
+    # BOTH primary conventions must seed the sweep: the single best
+    # primary can be the inside-out mount (plug entering the socket
+    # through the wall) whose roll can never close the second leg, while
+    # the opposite convention closes with residual ~0 (observed: bridge
+    # elbow hanging below the pipe tip instead of sitting on it)
+    for prim in {
+        bool(p.get("axis_flipped")): p for p in reversed(primary)
+    }.values():
+        base = np.asarray(prim["transform"], dtype=float).reshape(4, 4)
+        for deg in np.linspace(0.0, 360.0, 72, endpoint=False):
+            m = delta_about_pivot(axis, float(deg), pivot) @ base
+            res = 0.0
+            for mpn, fxn, tfn_list, fpn in pairs[1:]:
+                sp = _port(moving, mpn)
+                tpp = _port(fxn, fpn)
+                if sp is None or tpp is None:
+                    continue
+                gap2, ndot2 = evaluate_mate(
+                    sp, m, tpp, np.asarray(tfn_list, dtype=float).reshape(4, 4)
+                )
+                # a leg is only a mate when its port axes land
+                # (anti)parallel — extracted rim axes carry an ambiguous
+                # sign, so either reading can be the consistent one; a
+                # PERPENDICULAR second mouth is no mate in any convention
+                # and must never close the bridge on position alone
+                res += gap2**2 + 400.0 * (1.0 - abs(ndot2)) ** 2
+            if res < best_res:
+                best, best_res, best_flip = m, res, bool(prim.get("axis_flipped"))
+    if best is None:
+        return None
+    return [[float(v) for v in row] for row in best.tolist()], best_flip
 
 
 # --------------------------------------------------------------------------- #

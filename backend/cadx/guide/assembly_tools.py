@@ -1162,7 +1162,10 @@ def _candidate_burial(
         part.bbox_min, part.bbox_max, np.asarray(cand["transform"], dtype=float)
     )
     partner = str(cand.get("fixed_instance") or "")
-    boxes = _placed_boxes(s, exclude=partner)
+    # a bridge candidate engages TWO instances — both mouths legitimately
+    # overlap the mate's box; without this the second mouth reads as burial
+    mates = {partner} | {str(v) for v in cand.get("mate_instances") or ()}
+    boxes = _placed_boxes(s, exclude=mates)
     enclosures = _enclosure_hosts(boxes)
     chain2 = _joint_neighbours(s, partner)
     foreign: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -1197,12 +1200,13 @@ def _candidate_burial(
 
 
 def _placed_boxes(
-    s: GuideToolSession, *, exclude: str = ""
+    s: GuideToolSession, *, exclude: str | set[str] = ""
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     """instance_id → world AABB for every placed instance (minus ``exclude``)."""
+    skip = {exclude} if isinstance(exclude, str) else set(exclude)
     boxes: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for inst in s.state.assembly.instances:
-        if inst.instance_id == exclude or inst.transform is None:
+        if inst.instance_id in skip or inst.transform is None:
             continue
         p2 = s.state.part_by_id(inst.part_id)
         if p2 is None or p2.bbox_min is None or p2.bbox_max is None:

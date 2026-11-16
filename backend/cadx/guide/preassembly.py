@@ -2333,6 +2333,9 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
         "fixed_port": p1["fixed_port"],
         "fixed_part": i1.part_id,
         "fixed_instance": i1.instance_id,
+        # BOTH legs engage — the second mouth's overlap with its mate's
+        # box is engagement space, not burial
+        "mate_instances": [i1.instance_id, i2.instance_id],
         "candidate_id": cid,
         "axis_flipped": flip1,
     }
