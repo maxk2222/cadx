@@ -1467,6 +1467,140 @@ def test_bridge_onto_tip_prefers_outside_family() -> None:
     assert ow[1] > 50.0, ow
 
 
+def test_bridge_pools_narrow_to_declared_pids() -> None:
+    """The kind pool ('Rohr' → every pipe kind) spans sibling parts, but
+    the canonicalized target_pid/target2_pid is authoritative: a bridge
+    must solve between the two DECLARED families. An unnarrowed pool let
+    the search mate both legs onto the l70 pair — place_instance then
+    correctly rejected it as a target mismatch and the leg never
+    materialized as a joint."""
+    from cadx.guide.state import (
+        AssemblyInstance,
+        AssemblyState,
+        GuideState,
+    )
+
+    state = GuideState(output_dir="/tmp/x")
+    l70 = _part(
+        "pipe_l70",
+        [PortInfo(name="tip", pos=[0, 35, 0], axis=[0, 1, 0], kind="cylinder", radius=5)],
+    )
+    l500 = _part(
+        "pipe_l500",
+        [PortInfo(name="tip", pos=[0, 0, 500], axis=[0, 0, 1], kind="cylinder", radius=5)],
+    )
+    state.parts = [_part("casing"), _part("bridge"), l70, l500]
+    state.assembly = AssemblyState(
+        instances=[
+            AssemblyInstance(
+                instance_id="pipe_l70#1", part_id="pipe_l70", placed_in_step=3,
+                transform=[[1, 0, 0, -50], [0, 1, 0, 100], [0, 0, 1, 500], [0, 0, 0, 1]],
+            ),
+            AssemblyInstance(
+                instance_id="pipe_l70#2", part_id="pipe_l70", placed_in_step=4,
+                transform=[[1, 0, 0, 50], [0, 1, 0, 100], [0, 0, 1, 500], [0, 0, 0, 1]],
+            ),
+            AssemblyInstance(
+                instance_id="pipe_l500#1", part_id="pipe_l500", placed_in_step=7,
+                transform=[[1, 0, 0, -50], [0, 1, 0, 200], [0, 0, 1, 0], [0, 0, 0, 1]],
+            ),
+            AssemblyInstance(
+                instance_id="pipe_l500#2", part_id="pipe_l500", placed_in_step=9,
+                transform=[[1, 0, 0, 50], [0, 1, 0, 200], [0, 0, 1, 0], [0, 0, 0, 1]],
+            ),
+        ]
+    )
+    sess = SimpleNamespace(state=state, _aliases_store={}, state_dir="/tmp/x")
+    task = {
+        "step": 10,
+        "part": "bridge",
+        "part_pid": "bridge",
+        # 'linkes vertikales Rohr' — kind pool sees both pipe kinds
+        "target": "freie obere Seite des linken vertikalen Rohrs",
+        "target_pid": "pipe_l500",
+        "target2": "freie untere Seite des linken oberen Kurzrohrs",
+        "target2_pid": "pipe_l70",
+        "text": "",
+    }
+    p1, p2 = pa._bridge_pools(sess, task)
+    assert {i.part_id for i in p1} == {"pipe_l500"}, p1
+    assert {i.part_id for i in p2} == {"pipe_l70"}, p2
+
+
+def test_bridge_search_rejects_same_instance_legs() -> None:
+    """Both legs on ONE instance is the degenerate self-loop — two rim
+    detections of one mouth can always fake a closure on residual alone.
+    The search must skip i1 == i2 pairs so a self-mate can never win."""
+    from cadx.guide.state import (
+        AssemblyInstance,
+        AssemblyState,
+        GuideState,
+    )
+
+    state = GuideState(output_dir="/tmp/x")
+    # two mouths ~49mm apart: a 90deg bridge elbow
+    elbow = _part(
+        "bridge",
+        [
+            PortInfo(name="m1", pos=[49, 0, 0], axis=[1, 0, 0], kind="cylinder", radius=5.5, gender="male"),
+            PortInfo(name="m2", pos=[0, 0, -49], axis=[0, 0, -1], kind="cylinder", radius=5.5, gender="male"),
+            PortInfo(name="m2b", pos=[0, 1, -49], axis=[0, 0, -1], kind="cylinder", radius=5.5, gender="male"),
+        ],
+        bbox=((-10, -10, -55), (55, 10, 10)),
+    )
+    short = _part(
+        "pipe_short",
+        [
+            PortInfo(name="near", pos=[0, -35, 0], axis=[0, -1, 0], kind="cylinder", radius=5, gender="female"),
+            PortInfo(name="tip", pos=[0, 35, 0], axis=[0, 1, 0], kind="cylinder", radius=5, gender="female"),
+        ],
+        bbox=((-10, -40, -10), (10, 40, 10)),
+    )
+    tall = _part(
+        "pipe_tall",
+        [
+            PortInfo(name="top", pos=[0, 0, 500], axis=[0, 0, 1], kind="cylinder", radius=5, gender="female"),
+            PortInfo(name="bot", pos=[0, 0, 0], axis=[0, 0, -1], kind="cylinder", radius=5, gender="female"),
+        ],
+        bbox=((-10, -10, 0), (10, 10, 500)),
+    )
+    state.parts = [_part("casing"), elbow, short, tall]
+    state.assembly = AssemblyState(
+        instances=[
+            AssemblyInstance(
+                instance_id="pipe_short#1", part_id="pipe_short", placed_in_step=3,
+                transform=[[1, 0, 0, -47], [0, 1, 0, 120], [0, 0, 1, 500], [0, 0, 0, 1]],
+            ),
+            AssemblyInstance(
+                instance_id="pipe_tall#1", part_id="pipe_tall", placed_in_step=7,
+                transform=[[1, 0, 0, -47], [0, 1, 0, 205], [0, 0, 1, 0], [0, 0, 0, 1]],
+            ),
+        ],
+        joints=[
+            # the short pipe's near end is already mated — its free tip is rim_1-equivalent 'tip'
+            {"moving_instance": "pipe_short#1", "fixed_instance": "casing#1",
+             "moving_port": "near", "fixed_port": "x", "step": 3},
+        ],
+    )
+    sess = SimpleNamespace(state=state, _aliases_store={}, state_dir="/tmp/x")
+    task = {
+        "step": 8,
+        "part": "bridge",
+        "part_pid": "bridge",
+        "target": "oberes Ende des vertikalen Rohrs",
+        "target_pid": "pipe_tall",
+        "target2": "freies Ende des kurzen Rohrs",
+        "target2_pid": "pipe_short",
+        "text": "",
+    }
+    best = pa._bridge_search(sess, task, "bridge")
+    assert best is not None
+    _key, _res, _m, (i1, _p1), (i2, _p2), _rv, _f1, _n2 = best
+    assert i1.instance_id != i2.instance_id, "self-loop leg pair must be filtered"
+    # the only real close: tall top <-> short tip
+    assert i1.part_id == "pipe_tall" and i2.part_id == "pipe_short", (i1.instance_id, i2.instance_id)
+
+
 def test_mid_link_prefers_downstream_progress() -> None:
     """A two-mouth mid fitting can mate the link above through either
     mouth — 'socket-up' continues the chain toward the premount, the

@@ -168,6 +168,18 @@ def _bridge_pools(
     for key in ("target", "target2"):
         ref = task.get(key)
         pool = _ref_instances(sess, str(ref or ""))
+        decl = task.get(f"{key}_pid")
+        if decl:
+            # the canonicalized pid is authoritative — kind pools span
+            # sibling parts ('Rohr' matches l70 AND l500); an unbound leg
+            # let the search mate the bridge onto the wrong pipe family,
+            # which place_instance then correctly rejected as a target
+            # mismatch (bridge leg never materialized)
+            pool = [
+                i
+                for i in (pool or sess.state.assembly.instances)
+                if i.part_id == decl
+            ]
         if pool == []:
             task["target_miss"] = (
                 f"bridge target '{str(ref or '')[:60]}' names a placed "
@@ -2277,7 +2289,10 @@ def _bridge_search(
         fixed1 = sess.state.part_by_id(i1.part_id)
         if fixed1 is None:
             continue
-        for i2 in p2_pool:
+        # a bridge joins two DISTINCT free ends — mating both mouths
+        # onto one tip is the degenerate self-loop a roll can always
+        # fake on residual, never a physical closure
+        for i2 in (x for x in p2_pool if x.instance_id != i1.instance_id):
             fixed2 = sess.state.part_by_id(i2.part_id)
             if fixed2 is None:
                 continue
