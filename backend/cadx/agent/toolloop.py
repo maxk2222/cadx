@@ -804,6 +804,7 @@ async def run_session(  # noqa: C901
 
         native = not all(tc.via_content for tc in tool_calls)
         msgs.append(_assistant_echo(resp, native))
+        turn_ok = False
         for tc in tool_calls:
             calls += 1
             if tc.arguments_error:
@@ -851,6 +852,7 @@ async def run_session(  # noqa: C901
                             preview={"path": img, "label": tc.name},
                         )
             msgs.extend(_result_messages(tc, result, native, session._sent_image_hashes))
+            turn_ok = turn_ok or bool(result.get("ok", True))
             error_streak = (
                 error_streak + 1
                 if not result.get("ok", True) and not result.get("_streak_exempt")
@@ -926,9 +928,12 @@ async def run_session(  # noqa: C901
             [[tc.name, tc.arguments] for tc in tool_calls], sort_keys=True, default=str
         )
         # only fingerprint substantive prose — empty/trivial text repeats
-        # legitimately across different tool calls and must not count
+        # legitimately across different tool calls and must not count; and
+        # identical prose is only a loop when the turn produced NO new
+        # information — "reviewing the next page" over 7 successful page
+        # fetches is a scan, not a stall
         text_sig = re.sub(r"\s+", " ", (resp.text or "")[:200]).strip()
-        text_hit = len(text_sig) >= 16 and text_sig == last_text
+        text_hit = len(text_sig) >= 16 and text_sig == last_text and not turn_ok
         repeat_streak = repeat_streak + 1 if (sig == last_sig or text_hit) else 0
         last_sig, last_text = sig, text_sig
         # multi-turn cycle: A→B→C→A→B→C never repeats a sig CONSECUTIVELY,
