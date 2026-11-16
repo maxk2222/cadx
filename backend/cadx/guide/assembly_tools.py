@@ -321,7 +321,7 @@ def _resolve_context_ref(s: GuideToolSession, name: str, n: str) -> object:
     name carries no context word at all."""
     from cadx.guide.part_tools import _context_tokens, _sig
 
-    ctx_toks = [c for c in _context_tokens(s, name) if n != _norm2(c)]
+    ctx_toks = _context_tokens(s, name)
     if not ctx_toks:
         return _UNRESOLVED
     residual = n

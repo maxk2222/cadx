@@ -944,6 +944,50 @@ def test_resolve_name_context_feature_never_token_scores() -> None:
     assert _resolve_part(s, "oberes Anschlussrohr (Schritt 2)", 4) == "adapter"
 
 
+def test_context_name_resolves_to_host_and_refuses_alias() -> None:
+    """Live bug (run aee696f6): the model declared 'linkes oberes
+    Anschlussrohr in der Verkleidung' a context feature AND aliased it
+    onto pipe_l70 — the alias won resolution, the pipes placed in step 3
+    became forward-referenced targets of step 1, and lint reopened the
+    parts mission until the job died.
+
+    Two guards: a reference that IS a declared context name resolves
+    through the context path to the host (no filter may exempt it); and
+    alias_part rejects the contradictory declaration outright instead of
+    poisoning the alias store."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import _resolve_name
+    from cadx.guide.part_tools import alias_part
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        _phys_part("casing", [], bbox=((0, 0, 0), (300, 200, 600))),
+        _phys_part("pipe_l70", [], bbox=((0, 0, 0), (1, 1, 1))),
+    ]
+    state.parts[0].name = "Wärmepumpe (Gehäuse)"
+    state.parts[1].name = "Rohr DN22, l = 70 mm"
+    state.context_names = [
+        "linkes oberes Anschlussrohr in der Verkleidung",
+        "rechtes oberes Anschlussrohr in der Verkleidung",
+    ]
+    s = SimpleNamespace(state=state, _aliases_store={})
+    # exact context-name reference → host demotion, never a kit pipe
+    assert (
+        _resolve_name(s, "linkes oberes Anschlussrohr in der Verkleidung") == "casing"
+    )
+    # the contradictory alias is refused, not stored
+    r = asyncio.run(
+        alias_part(
+            s,
+            {"part_id": "pipe_l70", "alias": "linkes oberes Anschlussrohr in der Verkleidung"},
+        )
+    )
+    assert r["ok"] is False and "context" in r["error"], r
+    assert "linkes oberes anschlussrohr in der verkleidung" not in s._aliases_store
+
+
 def test_resolve_name_side_position_beats_incidental_token() -> None:
     """Live bug from run 214939: the parts mission named the spigot elbow
     'Muffe auf Spitzende' — the ref 'Rohrbogen am rechten unteren

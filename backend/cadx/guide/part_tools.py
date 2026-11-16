@@ -586,6 +586,20 @@ async def alias_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
             "error": f"alias '{raw_alias}' {conflict}. Check whether the "
             "manual name belongs to another registered part instead.",
         }
+    # a declared context name must never alias onto a kit part — the
+    # mission itself marked it as host/device geometry, so both claims
+    # cannot hold. The reference already resolves to the host through
+    # context handling; binding it to a kit part manufactures phantom
+    # forward-references.
+    if _is_context(s, raw_alias):
+        return {
+            "ok": False,
+            "error": f"'{raw_alias}' is a declared context feature (host "
+            "geometry), not a kit part — context names already resolve to "
+            "the host part. If the name really denotes a loose kit part, "
+            "the context declaration is wrong and must be corrected "
+            "first.",
+        }
     s._aliases_store[alias] = part.id
     return {"ok": True, "alias": alias, "part_id": part.id}
 
