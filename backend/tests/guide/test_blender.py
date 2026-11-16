@@ -496,13 +496,14 @@ def test_overlap_solid_check_flags_true_burial(tmp_path):
 
 
 def test_checkpoint_nudge_counts_and_resets(tmp_path):
+    warn, esc = blender_tools._CHECKPOINT_WARN, blender_tools._CHECKPOINT_ESCALATE
     sess = _sess(tmp_path)
-    sess.tool_log = [{"name": "blender_exec"}] * 39
+    sess.tool_log = [{"name": "blender_exec"}] * (warn - 1)
     assert blender_tools._checkpoint_nudge(sess) is None
     sess.tool_log.append({"name": "blender_exec"})
     nudge = blender_tools._checkpoint_nudge(sess)
-    assert nudge and "40" in nudge and "URGENT" not in nudge
-    sess.tool_log += [{"name": "blender_exec"}] * 40
+    assert nudge and str(warn) in nudge and "URGENT" not in nudge
+    sess.tool_log += [{"name": "blender_exec"}] * (esc - warn)
     assert "URGENT" in blender_tools._checkpoint_nudge(sess)
     # a sync resets the counter — checkpoints are durable evidence
     sess.tool_log.append({"name": "blender_sync_scene"})
