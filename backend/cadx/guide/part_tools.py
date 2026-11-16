@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cadx.guide import cadmeta
-from cadx.guide.assembly_tools import _norm2, _tokset
+from cadx.guide.assembly_tools import _host_part_id, _norm2, _resolve_name, _tokset
 from cadx.guide.state import GuidePart
 from cadx.guide.tools import _b, _fn, _s
 from cadx.logging import get_logger
@@ -393,22 +393,78 @@ def _squash(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", _norm(name))
 
 
+_PREMOUNT_RX = re.compile(r"vormontiert|premount|pre mounted")
+
+
+def _ctx_phrase_in(ctx_norm: str, ref_norm: str) -> bool:
+    """Would the context name demote this reference — the same matching
+    ``_context_tokens`` applies: multi-word names on word boundaries,
+    single words by token equality/prefix or (len>=4) suffix so compound
+    inflections ('Anschlussrohrs') keep the mark."""
+    if " " in ctx_norm:
+        return bool(re.search(rf"\b{re.escape(ctx_norm)}\w*", ref_norm))
+    return any(
+        t == ctx_norm
+        or t.startswith(ctx_norm)
+        or (len(ctx_norm) >= 4 and t.endswith(ctx_norm))
+        for t in ref_norm.split()
+    )
+
+
+def _plan_ref_names(s: GuideToolSession) -> list[str]:
+    """Reference strings a context declaration could steal — the part
+    and mate-target names the plan actually uses."""
+    refs: list[str] = []
+    for st in s.state.steps:
+        refs += st.required_parts
+        for ss in st.sub_steps:
+            refs += (ss.part, ss.target, ss.target2)
+    return [r for r in refs if r]
+
+
 def _context_kit_collisions(s: GuideToolSession, name: str) -> list[str]:
-    """Registered kit parts the context ``name`` actually denotes —
-    declaring 'Rohrbogen DN 22' context while both elbows are kit parts
-    poisons the resolver (feature phrases demote to the host). Compared
-    on squashed strings: either-direction containment means same-or-
-    narrower referent = collision."""
+    """Registered kit parts this context name would wrongly claim —
+    directly as a registered name/alias, or by demoting plan references
+    that resolve to them.
+
+    A context entry steals every reference containing it, so it is
+    poison exactly when such a reference denotes a mountable kit part.
+    The steal check resolves context-free (the ``_cc_guard`` flag
+    empties ``_context_tokens`` for the nested call) so a stale
+    declaration cannot mask what a reference means — this is what makes
+    paraphrases like 'Rohrbogen DN 22, Anschluss 2x außen' fail even
+    though no registered name contains them as a substring. References
+    flagged premounted are skipped: demoting them is the declaration's
+    intent, not a steal. The host part is never a collision — context
+    features demote to it by design ('Anschlussrohr der Wärmepumpe')."""
     sq = _squash(name)
     if len(sq) < 3:
         return []
-    out = []
+    out: set[str] = set()
     for p in s.state.parts:
         keys = {_squash(p.name)}
         keys |= {_squash(k) for k, pid in s._aliases_store.items() if pid == p.id}
         if any(len(k) >= 3 and (k in sq or sq in k) for k in keys):
-            out.append(p.id)
-    return out
+            out.add(p.id)
+    if not getattr(s, "_cc_guard", False):
+        s._cc_guard = True
+        try:
+            n = _norm(name)
+            for ref in _plan_ref_names(s):
+                rn = _norm(ref)
+                if not rn or _PREMOUNT_RX.search(rn) or not _ctx_phrase_in(n, rn):
+                    continue
+                pid = _resolve_name(s, ref)
+                if pid:
+                    out.add(pid)
+                else:
+                    # an ambiguous-over-kit-parts reference is still a
+                    # kit reference — demoting it would be a steal
+                    out |= set(getattr(s, "_ambiguous", {}).get(ref) or [])
+        finally:
+            s._cc_guard = False
+    out.discard(_host_part_id(s))
+    return sorted(out)
 
 
 def _context_tokens(s: GuideToolSession, name: str) -> list[str]:
@@ -420,20 +476,17 @@ def _context_tokens(s: GuideToolSession, name: str) -> list[str]:
     collide with a registered kit part are ignored — a stale/contradictory
     declaration must not demote real part references to the host."""
     n = _norm(name)
-    if not n:
+    # ``_cc_guard``: a collision check resolving plan references must see
+    # them context-free — otherwise the very poison under test would
+    # demote the probe references and validate itself
+    if not n or getattr(s, "_cc_guard", False):
         return []
-    toks = set(n.split())
     out = []
     for ctx in s.state.context_names:
         c = _norm(ctx)
         if len(c) < 3 or _context_kit_collisions(s, ctx):
             continue
-        if " " in c:
-            # multi-word context names match on word boundaries
-            if re.search(rf"\b{re.escape(c)}\w*", n):
-                out.append(ctx)
-            continue
-        if any(t == c or t.startswith(c) or (len(c) >= 4 and t.endswith(c)) for t in toks):
+        if _ctx_phrase_in(c, n):
             out.append(ctx)
     return out
 
@@ -451,11 +504,12 @@ async def mark_context_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str,
     if collide:
         return {
             "ok": False,
-            "error": f"'{name}' already denotes registered kit part(s) {collide} — "
-            "context names describe device geometry the kit never installs. "
-            "If the manual shows premounted copies of that kind on the "
-            "device, qualify the name ('vormontierte {name} am Gerät') so "
-            "references to the kit part stay unambiguous.",
+            "error": f"'{name}' denotes registered kit part(s) {collide} — "
+            "references using it already resolve there, so no context "
+            "declaration is needed. Only declare context for device-side "
+            "features the kit never installs (qualify them: 'vormontierter "
+            "Anschluss am Gerät') — a name matching kit references "
+            "demotes them to the host.",
         }
     n = _norm(name)
     if n not in {_norm(x) for x in s.state.context_names}:

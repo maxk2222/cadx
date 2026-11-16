@@ -1318,6 +1318,108 @@ def test_context_tokens_ignore_kit_collisions(tmp_path) -> None:
     assert _context_tokens(sess, "oberes Anschlussrohr") == ["Anschlussrohr"]
 
 
+def test_mark_context_part_rejects_paraphrase_steal(tmp_path) -> None:
+    """Baseline4-r1: 'Rohrbogen DN 22, Anschluss 2x außen' was accepted as
+    context while denoting a kit elbow registered as '…Muffe auf
+    Spitzende' — no shared substring, so string containment stayed blind.
+    The steal check asks the real question: would a plan reference
+    containing this name resolve to a kit part? Elbow refs do → reject."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide.part_tools import mark_context_part
+    from cadx.guide.state import GuideStep, GuideSubStep
+
+    st = GuideState(output_dir=str(tmp_path))
+    st.parts = [
+        GuidePart(id="elbow_spigot", name="Rohrbogen DN22, Muffe auf Spitzende"),
+        GuidePart(id="elbow_socket_socket", name="Rohrbogen DN22, Muffe auf Muffe"),
+        GuidePart(
+            id="casing",
+            name="Gehäuse",
+            bbox_min=[0.0, 0.0, 0.0],
+            bbox_max=[600.0, 400.0, 400.0],
+        ),
+    ]
+    st.steps = [
+        GuideStep(
+            number=1,
+            sub_steps=[
+                GuideSubStep(
+                    action="attach",
+                    part="Rohrbogen DN22, Anschluss 2x aussen",
+                    target="linkes oberes Anschlussrohr",
+                ),
+                GuideSubStep(
+                    action="attach",
+                    part="Rohrbogen DN22, Anschluss 1x aussen 1x innen",
+                    target="rechtes oberes Anschlussrohr",
+                ),
+            ],
+        )
+    ]
+    sess = SimpleNamespace(state=st, _aliases_store={"waermepumpe": "casing"})
+
+    # paraphrase denoting an elbow via its plan reference → steal → reject
+    res = asyncio.run(
+        mark_context_part(sess, {"name": "Rohrbogen DN22, Anschluss 2x außen"})
+    )
+    assert res["ok"] is False and "denotes registered kit part" in res["error"]
+    # bare connector-spec suffix of the same reference → also a steal
+    res = asyncio.run(mark_context_part(sess, {"name": "Anschluss 2x Aussen"}))
+    assert res["ok"] is False
+    # host-feature names demote to the host by design — never a collision
+    res = asyncio.run(mark_context_part(sess, {"name": "Anschlussrohr"}))
+    assert res["ok"] is True
+    # names resolving to the HOST are legitimate context — '…der
+    # Wärmepumpe' is the qualified host-feature form (baseline4-r1:
+    # wrongly rejected as a casing collision)
+    res = asyncio.run(
+        mark_context_part(sess, {"name": "Anschlussrohr der Wärmepumpe"})
+    )
+    assert res["ok"] is True
+
+
+def test_mark_context_part_premount_ref_not_stolen(tmp_path) -> None:
+    """'vormontierter Adapter am Gerät' SHOULD demote premount references
+    to the host — demoting them is the declaration's purpose, so the
+    steal check skips premount-flagged refs."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide.part_tools import mark_context_part
+    from cadx.guide.state import GuideStep, GuideSubStep
+
+    st = GuideState(output_dir=str(tmp_path))
+    st.parts = [
+        GuidePart(id="adapter_rn22", name="Adapter DN22"),
+        GuidePart(
+            id="casing",
+            name="Gehäuse",
+            bbox_min=[0.0, 0.0, 0.0],
+            bbox_max=[600.0, 400.0, 400.0],
+        ),
+    ]
+    st.steps = [
+        GuideStep(
+            number=1,
+            sub_steps=[
+                GuideSubStep(
+                    action="attach",
+                    part="Adapter DN22",
+                    target="vormontierter Adapter am Gerät",
+                ),
+            ],
+        )
+    ]
+    sess = SimpleNamespace(state=st, _aliases_store={})
+    # 'vormontierter Adapter' matches inside the premount target — without
+    # the premount skip the ref would resolve to adapter_rn22 and the
+    # declaration would read as a steal
+    res = asyncio.run(mark_context_part(sess, {"name": "vormontierter Adapter"}))
+    assert res["ok"] is True
+
+
 def test_lint_dropped_placements_blocks_prep_step(tmp_path) -> None:
     """A place sub-step under a non-assembly step is silently dropped by
     the planner — plan_lint must block it before preassembly."""
