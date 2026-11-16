@@ -35,6 +35,8 @@ import structlog
 from cadx.guide import solver
 from cadx.guide.assembly_tools import (
     _PLACE_ACTIONS,
+    _candidate_burial,
+    _host_part_id,
     _name_index,
     _norm2,
     _resolve_name,
@@ -1279,10 +1281,32 @@ async def _retry_bridges(
             )
         ]
         best = _bridge_search(sess, task, pid)
-        if best is None or best[1] > _bridge_bound(sess, task, pid, best):
+        if (
+            best is None
+            or best[1] > _bridge_bound(sess, task, pid, best)
+            or abs(best[7]) < 0.8
+        ):
             sess.state.assembly.joints.extend(old_joints)  # keep the honest miss
             continue
-        _key, res, m, (i1, p1), (i2, p2), _rv = best
+        _key, res, m, (i1, p1), (i2, p2), _rv, flip1, ndot2 = best
+        # the surgical re-transform must not buy the closure by burying the
+        # bridge inside a third part — re-run the same burial/swallow gates
+        # place_instance applies, neighbours of leg-1 as the mate set
+        bf, bh, sf, _si = _candidate_burial(
+            sess, moving, {"transform": m, "fixed_instance": i1.instance_id}
+        )
+        if bf > 0.45 or (sf > 0.6 and moving.id != _host_part_id(sess)):
+            sess.state.assembly.joints.extend(old_joints)
+            report.setdefault("bridge_retries", []).append(
+                {
+                    "step": task["step"],
+                    "rejected": "burial",
+                    "buried_frac": round(bf, 2),
+                    "buried_in": bh,
+                    "swallow_frac": round(sf, 2),
+                }
+            )
+            continue
         inst.transform = [[float(v) for v in row] for row in np.asarray(m).tolist()]
         sess.state.assembly.joints.extend(
             [
@@ -1294,6 +1318,7 @@ async def _retry_bridges(
                     "fixed_instance": i1.instance_id,
                     "moving_port": p1["moving_port"],
                     "fixed_port": p1["fixed_port"],
+                    "axis_flipped": bool(flip1),
                     "approach_axis": p1.get("axis") or [0.0, 0.0, 1.0],
                 },
                 {
@@ -1304,6 +1329,7 @@ async def _retry_bridges(
                     "fixed_instance": i2.instance_id,
                     "moving_port": p2["moving_port"],
                     "fixed_port": p2["fixed_port"],
+                    "axis_flipped": bool(ndot2 > 0.0),
                     "approach_axis": p2.get("axis") or [0.0, 0.0, 1.0],
                     "bridge": True,
                 },
@@ -1361,13 +1387,13 @@ async def _place_tasks(
             )
             if not placed:
                 placed = await _try_attach(
-                    sess, task, pid, lookahead, feed_perp, tasks=tasks
+                    sess, task, pid, lookahead, feed_perp, tasks=tasks, ti=ti
                 )
         else:
             placed = await _try_bridge(sess, task, pid)
         if not placed:
             placed = await _try_attach(
-                sess, task, pid, lookahead, feed_perp, tasks=tasks
+                sess, task, pid, lookahead, feed_perp, tasks=tasks, ti=ti
             )
         if not placed and task.get("anchor"):
             placed = await _place_anchor(sess, task, pid, lift, anchor_rot)
@@ -1729,6 +1755,81 @@ def _feeds_bridge_dir(
     return []
 
 
+def _feeds_bridge_reach(
+    sess: GuideToolSession,
+    tasks: list[dict[str, Any]],
+    ti: int,
+    task: dict[str, Any],
+    pid: str,
+    feed_perp: int | None,
+) -> tuple[list[list[float]], float]:
+    """World points a bridge-feeding chain's free mouth should stand NEAR:
+    for every placed instance of the bridge's OTHER leg, the free-port tips
+    the bridge will plug into. A 90°-style bridge closes only when the
+    rising column stands about one bridge arm-span away from the tip —
+    direction scoring alone can't see that a roll put the socket 150mm off
+    the closing spot. Returns (tip points, arm span). [] when the loop
+    partner is not placed yet."""
+    if feed_perp is None:
+        return [], 0.0
+    downstream = {pid}
+    for t in tasks[ti + 1 :]:
+        pp = _tpart(sess, t)
+        tp = _ttgt(sess, t)
+        t2 = _ttgt(sess, t, "target2")
+        if t2 and (tp in downstream or t2 in downstream):
+            other = t.get("target") if t2 in downstream else t.get("target2")
+            pool = _ref_instances(sess, other)
+            if not pool:
+                return [], 0.0
+            bpid = _tpart(sess, t)
+            bpart = sess.state.part_by_id(bpid) if bpid else None
+            arm = max(_horiz_port_span(bpart), 20.0) if bpart else 40.0
+            tips: list[list[float]] = []
+            for inst in pool:
+                if not inst.transform:
+                    continue
+                pt = sess.state.part_by_id(inst.part_id)
+                if pt is None:
+                    continue
+                used = _used_port_names(sess, inst)
+                for port in pt.ports or []:
+                    if port.kind == "cylinder" and port.name not in used:
+                        tips.append(_world_pos(inst.transform, port.pos))
+            return tips, arm
+        if pp and tp in downstream:
+            downstream.add(pp)
+    return [], 0.0
+
+
+def _reach_score(
+    moving: Any,
+    mated_port: str,
+    transform: list[list[float]],
+    tips: list[list[float]],
+    arm: float,
+    feed_perp: int,
+) -> float:
+    """Bonus when a free mouth's position lands about one arm-span away
+    from a bridge tip (projected onto the plane the chain grows through —
+    the riser column must stand within the bridge's sideways reach). A
+    smooth ring locus: any bearing around the tip is equally reachable,
+    peak at the arm span, decaying with the mismatch."""
+    if not tips or not transform or arm <= 0.0:
+        return 0.0
+    pl = [i for i in range(3) if i != feed_perp]
+    tol = max(arm * 0.6, 15.0)
+    best = 0.0
+    for p in moving.ports or []:
+        if p.kind != "cylinder" or p.name == mated_port:
+            continue
+        wp = _world_pos(transform, p.pos)
+        for tip in tips:
+            d = float(np.hypot(wp[pl[0]] - tip[pl[0]], wp[pl[1]] - tip[pl[1]]))
+            best = max(best, float(np.exp(-(((d - arm) / tol) ** 2))))
+    return 2.0 * best
+
+
 def _mounted_on_host(sess: GuideToolSession, fixed_inst: Any) -> bool:
     """Is the fixed instance the assembly's base/host — the anchor every
     fitting mounts onto? Hardware on a host presents its free port
@@ -1813,7 +1914,7 @@ def _orient_score(
     'unten' keeps its free socket pointing down for the vertical pipe),
     and 'vertikal'/'horizontal' pin the part's dominant bbox axis."""
     score = 0.0
-    n_axes, n_orient = next_axes
+    n_axes, n_orient = next_axes if next_axes else ([], None)
     free = [p for p in moving.ports if p.name != mated_port]
     if axes:
         best = 0.0
@@ -2113,7 +2214,7 @@ def _bridge_search(
         )
         return sum(sg * wp[ax] for ax, sg in axes_b)
 
-    best: tuple[float, float, Any, tuple, tuple, np.ndarray] | None = None
+    best: tuple[float, float, Any, tuple, tuple, np.ndarray, bool, float] | None = None
     for i1 in p1_pool:
         fixed1 = sess.state.part_by_id(i1.part_id)
         if fixed1 is None:
@@ -2132,15 +2233,16 @@ def _bridge_search(
                 for p2 in p2s:
                     if p1["moving_port"] == p2["moving_port"]:
                         continue
-                    m = solver.solve_bridge_attachment(
+                    solved = solver.solve_bridge_attachment(
                         moving,
                         [
                             (p1["moving_port"], fixed1, i1.transform, p1["fixed_port"]),
                             (p2["moving_port"], fixed2, i2.transform, p2["fixed_port"]),
                         ],
                     )
-                    if m is None:
+                    if solved is None:
                         continue
+                    m, flip1 = solved
                     mp2 = next(
                         p for p in moving.ports if p.name == p2["moving_port"]
                     )
@@ -2159,6 +2261,12 @@ def _bridge_search(
                     )
                     resid_v = mpw - fpw
                     res = float(np.linalg.norm(resid_v))
+                    # the second leg is only a mate when its port axes land
+                    # (anti)parallel under the shared transform — extracted
+                    # rim axes carry an ambiguous sign, so the convention is
+                    # settled at commit time, but a PERPENDICULAR mouth is no
+                    # mate in either convention and must not win on position
+                    _g2, ndot2 = solver.evaluate_mate(mp2, t_m, fp2, t_f)
                     # side words ("linkes Rohr … linkes oberes Rohr")
                     # disambiguate which INSTANCE pair the bridge closes —
                     # bounded: a direction hint may break near-ties but can
@@ -2166,16 +2274,20 @@ def _bridge_search(
                     side = _side(i1, fixed1, p1["fixed_port"]) + _side(
                         i2, fixed2, p2["fixed_port"]
                     )
-                    key = res - 15.0 * float(np.tanh(side / 40.0))
+                    key = (
+                        res
+                        + 400.0 * (1.0 - abs(ndot2)) ** 2
+                        - 15.0 * float(np.tanh(side / 40.0))
+                    )
                     if best is None or key < best[0]:
-                        best = (key, res, m, (i1, p1), (i2, p2), resid_v)
+                        best = (key, res, m, (i1, p1), (i2, p2), resid_v, flip1, ndot2)
     return best
 
 
 def _bridge_bound(sess: GuideToolSession, task: dict[str, Any], pid: str, best: tuple) -> float:
     """Acceptance limit for a bridge residual: at most half the second
     socket's grip (plug must reach well into the bore)."""
-    _key, _res, _m, _p1, (_i2, p2), _rv = best
+    _key, _res, _m, _p1, (_i2, p2), _rv, _f1, _n2 = best
     moving = sess.state.part_by_id(pid)
     # the fixed part of the SECOND leg is whichever instance the search
     # committed — instance pools may span sibling pids
@@ -2196,19 +2308,21 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
     best = _bridge_search(sess, task, pid)
     if best is None:
         return None
-    _key, res, m, (i1, p1), (i2, p2), resid_v = best
+    _key, res, m, (i1, p1), (i2, p2), resid_v, flip1, ndot2 = best
     # a bridge that can't physically close isn't a bridge — when the best
     # residual exceeds half the second socket's grip the plug barely
-    # reaches the bore; fall back to the primary mate instead of
-    # recording an open gap as a joint. The measured residual is KEPT on
-    # the task — a mostly-vertical miss is a lift error the correction
-    # pass can still close, after which the bridge is retried.
-    if res > _bridge_bound(sess, task, pid, best):
+    # reaches the bore, and a second mouth whose axes land perpendicular
+    # is no mate in either sign convention. Fall back to the primary mate
+    # instead of recording an open/rotated gap as a joint. The measured
+    # residual is KEPT on the task — a mostly-vertical miss is a lift
+    # error the correction pass can still close, then the bridge retries.
+    if res > _bridge_bound(sess, task, pid, best) or abs(ndot2) < 0.8:
         task["bridge_miss"] = {
             "resid": [float(v) for v in resid_v],
             "i1": str(i1.instance_id),
             "i2": str(i2.instance_id),
             "res": float(res),
+            "ndot": float(ndot2),
         }
         return None
     cid = f"bridge-{pid}-{task['step']}-{task['substep_idx']}"
@@ -2220,6 +2334,7 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
         "fixed_part": i1.part_id,
         "fixed_instance": i1.instance_id,
         "candidate_id": cid,
+        "axis_flipped": flip1,
     }
     res = await place_instance(
         sess,
@@ -2245,6 +2360,11 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
             "moving_port": p2["moving_port"],
             "fixed_port": p2["fixed_port"],
             "approach_axis": p2.get("axis") or [0.0, 0.0, 1.0],
+            # rim-axis extraction carries an ambiguous sign: raw ndot > 0
+            # under the committed transform means the audit must read the
+            # recorded axis negated — same convention as axis_flipped on
+            # single-mate joints
+            "axis_flipped": bool(ndot2 > 0.0),
             "bridge": True,
         }
     )
@@ -2308,6 +2428,7 @@ async def _try_attach(
     next_axes: tuple[list[tuple[int, float]], str | None] = ([], None),
     feed_perp: int | None = None,
     tasks: list[dict[str, Any]] | None = None,
+    ti: int | None = None,
 ) -> str | None:
     """Port-driven attach onto the best target instance; None if nothing
     works (no pairs / all candidates collide).
@@ -2405,6 +2526,14 @@ async def _try_attach(
             if feed_perp is not None
             else None
         )
+        # the bridge tip the chain must reach: a free mouth's POSITION is
+        # what the roll actually chooses — direction terms alone can't see
+        # a socket sitting 150mm off the closing spot
+        reach_tips, reach_arm = (
+            _feeds_bridge_reach(sess, tasks, ti, task, pid, feed_perp)
+            if (tasks and ti is not None and feed_perp is not None)
+            else ([], 0.0)
+        )
         for iid in group:
             # the perpendicular-port rule applies where a bridge-feeding
             # chain STARTS — the host port — not mid-chain, where a
@@ -2492,6 +2621,17 @@ async def _try_attach(
                     )
                     if _mounted_on_host(sess, fixed_inst)
                     else 0.0
+                )
+                + _reach_score(
+                    moving,
+                    pair.get("moving_port", ""),
+                    (sess._preview_cache.get(c.get("candidate_id") or "") or {}).get(
+                        "transform"
+                    )
+                    or [],
+                    reach_tips,
+                    reach_arm,
+                    feed_perp if feed_perp is not None else 0,
                 ),
                 -_cluster_bbox_growth(
                     sess,

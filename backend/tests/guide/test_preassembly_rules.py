@@ -1225,3 +1225,106 @@ def test_side_signature_feature_phrases() -> None:
         {"target": "Rohr", "text": "Muffe auf das linke Ende des Rohrs"}
     )
     assert "l" not in sig, sig
+
+
+def test_orient_score_tolerates_empty_next_axes() -> None:
+    """Callers may hand back ([], 'V') or nothing at all — lookahead is a
+    hint, never a shape requirement."""
+    moving = _part(
+        "m",
+        [PortInfo(name="p", kind="cylinder", pos=[0, 0, 0], axis=[0, 0, 1], radius=5)],
+    )
+    ident = solver.identity_transform()
+    assert pa._orient_score(moving, "p", ident, [], None, ([], "V")) >= 0.0
+    assert pa._orient_score(moving, "p", ident, [], None, None) >= 0.0
+    assert pa._orient_score(moving, "p", ident, [], None, []) >= 0.0
+
+
+def test_feeds_bridge_reach_returns_partner_tips() -> None:
+    """The chain's free mouth must stand within the bridge's sideways
+    reach — the helper surfaces the partner's free tip points plus the
+    bridge part's arm span, [] when the partner is not placed."""
+    from cadx.guide.state import (
+        AssemblyInstance,
+        AssemblyState,
+        GuideState,
+    )
+
+    state = GuideState(output_dir="/tmp/x")
+    bridge_part = _part(
+        "bridge",
+        [
+            PortInfo(name="m1", pos=[0, 0, 0], axis=[0, 0, -1], kind="cylinder", radius=5),
+            PortInfo(name="m2", pos=[0, 60, 0], axis=[0, 1, 0], kind="cylinder", radius=5),
+        ],
+    )
+    tip_part = _part(
+        "tip",
+        [
+            PortInfo(name="used", pos=[0, -35, 0], axis=[0, -1, 0], kind="cylinder", radius=5),
+            PortInfo(name="free", pos=[0, 35, 0], axis=[0, 1, 0], kind="cylinder", radius=5),
+        ],
+    )
+    state.parts = [_part("casing"), _part("adapter"), _part("elbow"), _part("pipe"), bridge_part, tip_part]
+    state.assembly = AssemblyState(
+        instances=[
+            AssemblyInstance(
+                instance_id="casing#1", part_id="casing", placed_in_step=1,
+                transform=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+            ),
+            AssemblyInstance(
+                instance_id="tip#1", part_id="tip", placed_in_step=3,
+                transform=[[1, 0, 0, -40], [0, 1, 0, 100], [0, 0, 1, 500], [0, 0, 0, 1]],
+                joints=[],
+            ),
+        ]
+    )
+    sess = SimpleNamespace(state=state, _aliases_store={}, state_dir="/tmp/x")
+    tasks = [
+        {"step": 4, "part": "elbow", "part_pid": "elbow",
+         "target": "adapter links", "target_pid": "adapter", "text": "x"},
+        {"step": 5, "part": "pipe", "part_pid": "pipe",
+         "target": "elbow links", "target_pid": "elbow", "text": "x"},
+        {"step": 6, "part": "bridge", "part_pid": "bridge",
+         "target": "pipe links", "target_pid": "pipe",
+         "target2": "tip links", "target2_pid": "tip", "text": "x"},
+    ]
+    tips, arm = pa._feeds_bridge_reach(sess, tasks, 0, tasks[0], "elbow", 2)
+    assert arm > 0.0, f"bridge arm span expected — {arm}"
+    assert len(tips) == 2, f"both free cylinder tips surface — {tips}"
+    assert any(
+        abs(t[0] - (-40.0)) < 1 and abs(t[1] - 135.0) < 1 and abs(t[2] - 500.0) < 1
+        for t in tips
+    ), f"world tip position must track the partner transform — {tips}"
+    # no feed axis → the mechanism stays silent
+    assert pa._feeds_bridge_reach(sess, tasks, 0, tasks[0], "elbow", None) == ([], 0.0)
+
+
+def test_reach_score_ring_locus() -> None:
+    """Position scoring: a free mouth ~arm away from the bridge tip scores
+    near 2.0; a mouth on the wrong side of the stub scores ~0 — the roll
+    that leaves the loop reachable always wins direction-tied candidates."""
+    moving = _part(
+        "elbow",
+        [
+            PortInfo(name="spigot", pos=[0, 0, 0], axis=[0, 0, -1], kind="cylinder", radius=5),
+            PortInfo(name="socket", pos=[30, 0, 0], axis=[0, 0, 1], kind="cylinder", radius=6),
+        ],
+    )
+    tip = [[0.0, 100.0, 500.0]]
+    arm, perp = 60.0, 2
+
+    def t_with_socket_at(y: float) -> list[list[float]]:
+        port = next(p for p in moving.ports if p.name == "socket")
+        tr = np.eye(4)
+        tr[0:3, 3] = np.array([0.0, y, 60.0]) - np.asarray(port.pos)
+        return tr.tolist()
+
+    near = pa._reach_score(moving, "spigot", t_with_socket_at(55.0), tip, arm, perp)
+    ideal = pa._reach_score(moving, "spigot", t_with_socket_at(160.0), tip, arm, perp)
+    wrong = pa._reach_score(moving, "spigot", t_with_socket_at(-80.0), tip, arm, perp)
+    assert ideal > near > wrong, (wrong, near, ideal)
+    assert wrong < 0.05, wrong
+    # silent without tips or transform
+    assert pa._reach_score(moving, "spigot", t_with_socket_at(40.0), [], arm, perp) == 0.0
+    assert pa._reach_score(moving, "spigot", [], tip, arm, perp) == 0.0

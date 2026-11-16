@@ -1110,7 +1110,7 @@ def solve_bridge_attachment(
     tp0 = _port(fx0, fp0_name)
     mp0 = _port(moving, mp0_name)
     if tp0 is None or mp0 is None:
-        return base.tolist()
+        return base.tolist(), bool(primary[0].get("axis_flipped"))
     pivot = tf0[0:3, 0:3] @ (_v(tp0.pos) - _v(tp0.axis) * _engage_mm(mp0, tp0)) + tf0[0:3, 3]
     axis = tf0[0:3, 0:3] @ _v(tp0.axis)
     best, best_res = base, float("inf")
@@ -1122,12 +1122,21 @@ def solve_bridge_attachment(
             tpp = _port(fxn, fpn)
             if sp is None or tpp is None:
                 continue
-            res += evaluate_mate(
+            gap2, ndot2 = evaluate_mate(
                 sp, m, tpp, np.asarray(tfn_list, dtype=float).reshape(4, 4)
-            )[0] ** 2
+            )
+            # a leg is only a mate when its port axes land (anti)parallel —
+            # extracted rim axes carry an ambiguous sign, so either reading
+            # can be the consistent one; a PERPENDICULAR second mouth is no
+            # mate in any convention and must never close the bridge on
+            # position alone (observed: spigot tip coinciding near the
+            # bore-interior point while pointing the wrong way)
+            res += gap2**2 + 400.0 * (1.0 - abs(ndot2)) ** 2
         if res < best_res:
             best, best_res = m, res
-    return [[float(v) for v in row] for row in best.tolist()]
+    return [[float(v) for v in row] for row in best.tolist()], bool(
+        primary[0].get("axis_flipped")
+    )
 
 
 # --------------------------------------------------------------------------- #
