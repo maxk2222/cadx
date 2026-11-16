@@ -387,12 +387,38 @@ def _is_context(s: GuideToolSession, name: str) -> bool:
     return bool(n) and n in {_norm(x) for x in s.state.context_names}
 
 
+def _squash(name: str) -> str:
+    """Alnum-only squash — 'rohrbogen dn 22' and 'Rohrbogen DN22, …' both
+    become 'rohrbogendn22…' so whitespace/hyphen variants compare equal."""
+    return re.sub(r"[^a-z0-9]+", "", _norm(name))
+
+
+def _context_kit_collisions(s: GuideToolSession, name: str) -> list[str]:
+    """Registered kit parts the context ``name`` actually denotes —
+    declaring 'Rohrbogen DN 22' context while both elbows are kit parts
+    poisons the resolver (feature phrases demote to the host). Compared
+    on squashed strings: either-direction containment means same-or-
+    narrower referent = collision."""
+    sq = _squash(name)
+    if len(sq) < 3:
+        return []
+    out = []
+    for p in s.state.parts:
+        keys = {_squash(p.name)}
+        keys |= {_squash(k) for k, pid in s._aliases_store.items() if pid == p.id}
+        if any(len(k) >= 3 and (k in sq or sq in k) for k in keys):
+            out.append(p.id)
+    return out
+
+
 def _context_tokens(s: GuideToolSession, name: str) -> list[str]:
     """Declared context names appearing inside ``name`` — 'vormontiertes
     linkes oberes Anschlussrohr in der Verkleidung' denotes a FEATURE of
     the context device, not the kit part its qualifier tokens happen to
     share. Compounds keep the mark: 'anschlussrohrs' (genitive) or
-    'verkleidungsrohr' still name the context feature."""
+    'verkleidungsrohr' still name the context feature. Entries that
+    collide with a registered kit part are ignored — a stale/contradictory
+    declaration must not demote real part references to the host."""
     n = _norm(name)
     if not n:
         return []
@@ -400,7 +426,7 @@ def _context_tokens(s: GuideToolSession, name: str) -> list[str]:
     out = []
     for ctx in s.state.context_names:
         c = _norm(ctx)
-        if len(c) < 3:
+        if len(c) < 3 or _context_kit_collisions(s, ctx):
             continue
         if " " in c:
             # multi-word context names match on word boundaries
@@ -421,6 +447,16 @@ async def mark_context_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str,
     name = str(a.get("name", "")).strip()
     if not name:
         return {"ok": False, "error": "name required"}
+    collide = _context_kit_collisions(s, name)
+    if collide:
+        return {
+            "ok": False,
+            "error": f"'{name}' already denotes registered kit part(s) {collide} — "
+            "context names describe device geometry the kit never installs. "
+            "If the manual shows premounted copies of that kind on the "
+            "device, qualify the name ('vormontierte {name} am Gerät') so "
+            "references to the kit part stay unambiguous.",
+        }
     n = _norm(name)
     if n not in {_norm(x) for x in s.state.context_names}:
         s.state.context_names.append(name)

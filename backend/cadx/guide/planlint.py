@@ -736,9 +736,11 @@ def _lint_side_coverage(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
                 f"locates a '{tpid}' at side {{{','.join(sorted(ref))}}} "
                 "but the plan only places it at "
                 f"{{{'; '.join(','.join(sorted(s)) for s in sigs)}}} — "
-                "either mark the target 'vormontierter <part>' (a "
-                "device-side piece the kit never installs) or fix the "
-                "side words to name a placed instance",
+                "either place a '{tpid}' sub-step at side "
+                f"{{{','.join(sorted(ref))}}} FIRST (the plan has no "
+                "instance there), mark the target 'vormontierter <part>' "
+                "(a device-side piece the kit never installs), or fix "
+                "the side words to name a placed instance",
             }
         )
     return findings

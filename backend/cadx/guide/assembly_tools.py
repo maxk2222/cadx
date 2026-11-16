@@ -2263,7 +2263,8 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
                     "step": i.placed_in_step,
                     "declared": sorted(declared),
                     "missing": missing,
-                    "issue": f"{iid} declared mate(s) {missing} never materialized as joints",
+                    "issue": f"{iid} declared mate(s) {missing} never materialized "
+                    f"as joints{_mate_gaps(s, i, missing)}",
                 }
             )
         if unresolved:
@@ -2317,6 +2318,36 @@ def _declared_mates(s: GuideToolSession) -> dict[str, list[dict[str, Any]]]:
         "unverifiable_mates": unverifiable,
         "bridge_incomplete": bridge_open,
     }
+
+
+def _mate_gaps(s: GuideToolSession, inst: Any, missing: list[str]) -> str:
+    """Measured port distance to each unmaterialized mate — '392mm apart'
+    reads as a broken plan, '2mm' as a retryable miss. Without the number
+    the mission cannot tell these apart and churns on the impossible."""
+    import numpy as np
+
+    part = s.state.part_by_id(inst.part_id)
+    if part is None or inst.transform is None or not part.ports:
+        return ""
+    tm = np.asarray(inst.transform, dtype=float).reshape(4, 4)
+    mv = np.array([tm[0:3, 0:3] @ np.asarray(p.pos) + tm[0:3, 3] for p in part.ports])
+    out = []
+    for pid in missing:
+        tp = s.state.part_by_id(pid)
+        if tp is None or not tp.ports:
+            continue
+        best = None
+        for tgt in s.state.assembly.instances:
+            if tgt.part_id != pid or tgt.transform is None:
+                continue
+            tt = np.asarray(tgt.transform, dtype=float).reshape(4, 4)
+            for q in tp.ports:
+                qw = tt[0:3, 0:3] @ np.asarray(q.pos, dtype=float) + tt[0:3, 3]
+                d = float(np.linalg.norm(mv - qw, axis=1).min())
+                best = d if best is None else min(best, d)
+        if best is not None:
+            out.append(f"{pid}~{round(best)}mm")
+    return f" (nearest port gaps: {', '.join(out)})" if out else ""
 
 
 def _substep_declared_mates(

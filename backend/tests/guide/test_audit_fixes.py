@@ -1257,6 +1257,67 @@ def test_declared_mates_clean_when_plan_matches(tmp_path) -> None:
     assert not out["unexpected_mates"]
 
 
+def test_unfulfilled_mate_reports_port_gap(tmp_path) -> None:
+    """The issue must carry the measured port distance — '392mm' reads as
+    a broken plan, '2mm' as a retryable miss; without it the mission
+    cannot tell them apart (baseline r1 churned 94 calls on a 390mm gap)."""
+    from cadx.guide.assembly_tools import _declared_mates
+
+    s = _mate_state(tmp_path)
+    s.state.parts[1].ports = [PortInfo(name="p", pos=[0, 0, 0])]
+    s.state.parts[2].ports = [PortInfo(name="q", pos=[0, 0, 0])]
+    t_a = np.eye(4).tolist()
+    t_b = np.eye(4)
+    t_b[0, 3] = 390.0
+    s.state.assembly.instances[1].transform = t_a
+    s.state.assembly.instances[2].transform = t_b.tolist()
+    s.state.assembly.joints = [{"moving_instance": "pipe_a#1", "fixed_instance": "host#1"}]
+    out = _declared_mates(s)
+    issue = next(m["issue"] for m in out["unfulfilled_mates"] if "pipe_b" in m["missing"])
+    assert "pipe_b~390mm" in issue
+
+
+def test_mark_context_part_rejects_kit_name_collision(tmp_path) -> None:
+    """'Rohrbogen DN 22' as context while both elbows are kit parts
+    poisoned the resolver in baseline r1 (targets → host → 390mm
+    bridges) — the contradictory declaration must fail honestly."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide.part_tools import mark_context_part
+
+    st = GuideState(output_dir=str(tmp_path))
+    st.parts = [
+        GuidePart(id="elbow_socket_socket", name="Rohrbogen DN22, Anschluss 2x außen"),
+        GuidePart(id="elbow_socket_spigot", name="Rohrbogen DN 22, 1x außen 1x innen"),
+        GuidePart(id="pipe_l500", name="Pipe l500"),
+    ]
+    sess = SimpleNamespace(state=st, _aliases_store={})
+    res = asyncio.run(mark_context_part(sess, {"name": "Rohrbogen DN 22"}))
+    assert res["ok"] is False and "kit part" in res["error"]
+    res = asyncio.run(mark_context_part(sess, {"name": "Anschlussrohr"}))
+    assert res["ok"] is True and "Anschlussrohr" in st.context_names
+    # qualified premount name does not collide — device-side copies of a
+    # kit kind stay declarable
+    res = asyncio.run(mark_context_part(sess, {"name": "vormontierte Bögen am Gerät"}))
+    assert res["ok"] is True
+
+
+def test_context_tokens_ignore_kit_collisions(tmp_path) -> None:
+    """A stale colliding declaration in a saved state must not demote real
+    part references to the host — the token is dropped, not trusted."""
+    from types import SimpleNamespace
+
+    from cadx.guide.part_tools import _context_tokens
+
+    st = GuideState(output_dir=str(tmp_path))
+    st.parts = [GuidePart(id="elbow_a", name="Rohrbogen DN22, Anschluss 2x außen")]
+    st.context_names = ["Rohrbogen DN 22", "Anschlussrohr"]
+    sess = SimpleNamespace(state=st, _aliases_store={})
+    assert _context_tokens(sess, "oberes Ende des Rohrbogens DN 22") == []
+    assert _context_tokens(sess, "oberes Anschlussrohr") == ["Anschlussrohr"]
+
+
 def test_lint_dropped_placements_blocks_prep_step(tmp_path) -> None:
     """A place sub-step under a non-assembly step is silently dropped by
     the planner — plan_lint must block it before preassembly."""
