@@ -364,6 +364,10 @@ def test_side_coverage_blocker_for_uncovered_side() -> None:
     fs = plan_lint(sess)
     b = [f for f in fs if f["severity"] == "blocker" and "Anschlussstelle" in f["text"]]
     assert b and b[0]["mission"] == "steps", fs
+    # the repair hint must name the resolved part — a literal '{tpid}'
+    # placeholder slipped through baseline4-r3 and left the model
+    # without the concrete id to place
+    assert "'adapter'" in b[0]["text"] and "{tpid}" not in b[0]["text"], b[0]
 
 
 def test_side_coverage_ok_when_matched() -> None:
