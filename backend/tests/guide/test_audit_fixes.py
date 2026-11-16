@@ -831,6 +831,70 @@ def test_resolve_name_distinctive_single_token() -> None:
     assert _resolve_name(s, "Anschluss am Rohr") is None
 
 
+def test_resolve_name_context_feature_never_token_scores() -> None:
+    """Live bug: 'linkes oberes vormontiertes Anschlussrohr in der
+    Verkleidung' names a DEVICE STUB (a declared context feature), but
+    the resolver let the context token itself fall back to token scoring
+    — 'anschlussrohr'/'oberes' bound it to pipe_l70/pipe_l500, phantom
+    premounts spawned and every downstream task cascade-failed.
+
+    Rules now: a part noun next to the context word still binds the kit
+    part ('Adapter am Anschlussrohr' → adapter); the pure feature form
+    resolves only through an exact feature binding, else demotes to the
+    host the stub belongs to. A '(Schritt N)' pin is provenance and wins
+    over host demotion."""
+    from types import SimpleNamespace
+
+    from cadx.guide.assembly_tools import _resolve_name
+    from cadx.guide.planlint import _resolve_part
+    from cadx.guide.state import GuideStep, GuideSubStep
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        _phys_part("casing", [], bbox=((0, 0, 0), (300, 200, 600))),
+        _phys_part("adapter", [], bbox=((0, 0, 0), (1, 1, 1))),
+        _phys_part("pipe_l70", [], bbox=((0, 0, 0), (1, 1, 1))),
+        _phys_part("pipe_l500", [], bbox=((0, 0, 0), (1, 1, 1))),
+    ]
+    state.parts[0].name = "Wärmepumpe (Gehäuse)"
+    state.parts[1].name = "Adapter DN22, Innengewinde/Muffe"
+    state.parts[2].name = "Rohr DN22, l = 70 mm"
+    state.parts[3].name = "Rohr DN22, l = 500 mm"
+    state.context_names = ["Verkleidung", "Anschlussrohr"]
+    state.steps = [
+        GuideStep(
+            number=2,
+            title="Adapter vormontiert",
+            text="Adapter vormontiert",
+            sub_steps=[GuideSubStep(
+                action="attach", part="adapter", part_pid="adapter",
+            )],
+        )
+    ]
+    s = SimpleNamespace(state=state, _aliases_store={})
+    # the pure feature form: device stub → host, NEVER a kit pipe
+    assert (
+        _resolve_name(s, "linkes oberes vormontiertes Anschlussrohr in der Verkleidung")
+        == "casing"
+    )
+    assert (
+        _resolve_name(s, "rechtes oberes vormontiertes Anschlussrohr in der Verkleidung")
+        == "casing"
+    )
+    # a part noun next to the context word still binds the kit part
+    assert (
+        _resolve_name(s, "vormontierter Adapter am Anschlussrohr") == "adapter"
+    )
+    # an exact feature binding beats host demotion
+    s._aliases_store["anschlussrohr"] = "pipe_l70"
+    assert _resolve_name(s, "oberes Anschlussrohr") == "pipe_l70"
+    del s._aliases_store["anschlussrohr"]
+    # step pin is provenance — it resolves what step 2 placed (the
+    # adapter), not the context feature it sat on
+    assert _resolve_name(s, "oberes Anschlussrohr (Schritt 2)") is None
+    assert _resolve_part(s, "oberes Anschlussrohr (Schritt 2)", 4) == "adapter"
+
+
 def test_resolve_name_side_position_beats_incidental_token() -> None:
     """Live bug from run 214939: the parts mission named the spigot elbow
     'Muffe auf Spitzende' — the ref 'Rohrbogen am rechten unteren

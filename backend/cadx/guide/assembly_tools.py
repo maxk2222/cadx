@@ -284,6 +284,61 @@ def _fuzzy_pid(n: str, cands: list[tuple[str, str]]) -> str | None:
     return best_pid if best_pid is not None and best_ratio >= 0.92 else None
 
 
+_UNRESOLVED = object()  # sentinel: no context word found — keep resolving
+
+
+def _resolve_context_ref(s: GuideToolSession, name: str, n: str) -> object:
+    """Resolve a reference containing a declared context word.
+
+    Two shapes exist and resolve differently: 'Adapter am Anschlussrohr'
+    still names the kit part (the context word is its location), while
+    the pure feature form 'oberes Anschlussrohr' denotes a device stub —
+    resolvable ONLY through a feature's own binding or by demotion to the
+    host. In BOTH shapes qualifier tokens must never guess a kit part:
+    'oberes' aliased uniquely to pipe_l500 and bound the casing stub to a
+    500mm pipe, spawning phantom premounts. Returns _UNRESOLVED when the
+    name carries no context word at all."""
+    from cadx.guide.part_tools import _context_tokens, _sig
+
+    ctx_toks = [c for c in _context_tokens(s, name) if n != _norm2(c)]
+    if not ctx_toks:
+        return _UNRESOLVED
+    residual = n
+    for c in ctx_toks:
+        residual = residual.replace(_norm2(c), " ")
+    residual = " ".join(residual.split())
+    if residual:
+        hits = [
+            (k, pid, k in residual)
+            for k, pid in list(s._aliases_store.items()) + list(_name_index(s).items())
+            if len(k) >= 3
+            and (k in residual or residual in k)
+            and _sig(k)[0] != "other"  # only category-bearing nouns bind
+        ]
+        rid = _pick_resolution(s, name, hits, [])
+        if rid:
+            return rid
+    pids = {
+        p
+        for c in ctx_toks
+        if (p := (s._aliases_store.get(_norm2(c)) or _name_index(s).get(_norm2(c))))
+    }
+    if len(pids) > 1:
+        _record_ambiguous(s, name, pids)
+        return None
+    if pids:
+        return pids.pop()
+    # a '(Schritt N)' pin is provenance — it must resolve what that step
+    # placed, not be masked by host demotion (None lets _resolve_part's
+    # pinned-step path run)
+    from cadx.guide.preassembly import _STEP_REF
+
+    if _STEP_REF.search(name):
+        return None
+    # unbound context feature — the stub belongs to the device itself
+    return _host_part_id(s)
+
+
 def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | None:
     """Resolve a manual label to a part id: alias → exact name/id →
     containment. Manuals attach qualifiers to part names ("Gehäuse, linker
@@ -298,20 +353,9 @@ def _resolve_name(s: GuideToolSession, name: str, context: str = "") -> str | No
     hit = s._aliases_store.get(n) or _name_index(s).get(n)
     if hit:
         return hit
-    from cadx.guide.part_tools import _context_tokens
-
-    ctx_toks = [c for c in _context_tokens(s, name) if n != _norm2(c)]
-    if ctx_toks:
-        # the name denotes a feature of the context device ("vormontiertes
-        # oberes Anschlussrohr") — resolve ONLY through a feature's own
-        # binding (alias onto the host part). Its qualifier tokens must
-        # never guess a kit part: 'oberes' aliased uniquely to pipe_l500
-        # bound the device stub to a 500mm pipe and spawned phantoms.
-        pids = {p for c in ctx_toks if (p := _resolve_name(s, c))}
-        if len(pids) > 1:
-            _record_ambiguous(s, name, pids)
-            return None
-        return pids.pop() if pids else None
+    ctx_hit = _resolve_context_ref(s, name, n)
+    if ctx_hit is not _UNRESOLVED:
+        return ctx_hit
     cands = list(s._aliases_store.items()) + list(_name_index(s).items())
     # typo-robust match for long names — registered part names come from
     # upload filenames and carry the SOURCE'S typos ("soket_to_socket");
