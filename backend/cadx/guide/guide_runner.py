@@ -161,6 +161,95 @@ def _tool_failures(result: Any, limit: int = 6) -> list[str]:
     return fails[-limit:]
 
 
+def _retry_nudge(
+    mission: str,
+    sess: Any,
+    notes: str,
+    last_reason: str,
+    last_failures: str,
+) -> str:
+    """Continuation nudge for a retried mission session: why the previous
+    session ended, what NOT to redo, prior tool errors, and — for the
+    assembly mission — the scoped repair list so the model fixes only
+    what is actually missing/stray instead of re-auditing correct work."""
+    cause = (
+        f"it exhausted its tool-call budget ({last_reason}) — work "
+        "efficiently this time: batch reads, no redundant checks, "
+        "finish the mission promptly"
+        if last_reason in ("budget", "turns")
+        else "it ended without done_mission "
+        f"({last_reason or 'no reason'})"
+    )
+    nudge = (f"{notes}\n\n" if notes else "") + (
+        f"CONTINUATION: the previous session is gone — {cause}. "
+        "The durable state keeps everything already applied — do "
+        "NOT redo completed work. Resume the remaining work now "
+        "and finish with done_mission."
+    )
+    if last_failures:
+        nudge += (
+            "\nThe previous attempt also hit these tool errors — "
+            "do NOT repeat the same calls verbatim:\n" + last_failures
+        )
+    if mission == "assembly":
+        # scoped repair list — an unscoped retry makes the model
+        # re-audit the WHOLE scene and "fix" correct placements,
+        # spawning duplicate instances (adapter_rn22#4 observed).
+        # Name exactly what remains and what is stray.
+        try:
+            from cadx.guide.assembly_tools import (
+                _completeness_issues,
+                joint_geometry_audit,
+            )
+
+            open_items = _completeness_issues(sess)
+            stray = [
+                d["instance"]
+                for d in joint_geometry_audit(sess)["disconnected_instances"]
+            ]
+            scope: list[str] = []
+            if open_items:
+                scope.append(
+                    "MISSING placements still to finish:\n"
+                    + "\n".join(f"  - {m}" for m in open_items)
+                )
+            if stray:
+                scope.append(
+                    f"STRAY instances not connected to the anchor "
+                    f"— unplace_instance or re-mate THESE, never add "
+                    f"extra copies of their part: {stray}"
+                )
+            if scope:
+                nudge += (
+                    "\nScoped repair list — ONLY fix these; every "
+                    "other placed instance is already correct and "
+                    "must stay untouched (no unplace/duplicates):\n"
+                    + "\n".join(scope)
+                )
+        except Exception:
+            log.exception("guide.assembly_scope_failed")
+    return nudge
+
+
+def _build_missing_outputs(state: GuideState) -> list[str]:
+    """Outputs the build mission's contract requires that the durable
+    state can prove — empty list means the mission IS complete even when
+    the session died before done_mission (budget/repeat deaths after a
+    complete build killed runs that the scene gate would have certified).
+    Scene truth decides; the scene gate still re-verifies physically."""
+    missing: list[str] = []
+    if not state.steps:
+        missing.append("no steps planned")
+    if not state.parts:
+        missing.append("no registered parts")
+    if not state.assembly.instances:
+        missing.append("no synced instances")
+    unrendered = [s.number for s in state.steps if not s.media_image]
+    if unrendered:
+        missing.append(f"steps without render: {unrendered[:8]}")
+    return missing
+
+
 def _calls_budget(mission: str, state: GuideState) -> int:
     """Tool-call budget per mission. Assembly scales with the number of
     sub-steps — each placement needs ~5 calls (ports/preview/place/render/
@@ -697,62 +786,9 @@ async def _run_mission(
             assembly_snapshot = state.assembly.model_copy(deep=True)
         nudge = notes
         if attempt:
-            cause = (
-                f"it exhausted its tool-call budget ({last_reason}) — work "
-                "efficiently this time: batch reads, no redundant checks, "
-                "finish the mission promptly"
-                if last_reason in ("budget", "turns")
-                else "it ended without done_mission "
-                f"({last_reason or 'no reason'})"
+            nudge = _retry_nudge(
+                mission, sess, notes, last_reason, last_failures
             )
-            nudge = (f"{notes}\n\n" if notes else "") + (
-                f"CONTINUATION: the previous session is gone — {cause}. "
-                "The durable state keeps everything already applied — do "
-                "NOT redo completed work. Resume the remaining work now "
-                "and finish with done_mission."
-            )
-            if last_failures:
-                nudge += (
-                    "\nThe previous attempt also hit these tool errors — "
-                    "do NOT repeat the same calls verbatim:\n" + last_failures
-                )
-            if mission == "assembly":
-                # scoped repair list — an unscoped retry makes the model
-                # re-audit the WHOLE scene and "fix" correct placements,
-                # spawning duplicate instances (adapter_rn22#4 observed).
-                # Name exactly what remains and what is stray.
-                try:
-                    from cadx.guide.assembly_tools import (
-                        _completeness_issues,
-                        joint_geometry_audit,
-                    )
-
-                    open_items = _completeness_issues(sess)
-                    stray = [
-                        d["instance"]
-                        for d in joint_geometry_audit(sess)["disconnected_instances"]
-                    ]
-                    scope: list[str] = []
-                    if open_items:
-                        scope.append(
-                            "MISSING placements still to finish:\n"
-                            + "\n".join(f"  - {m}" for m in open_items)
-                        )
-                    if stray:
-                        scope.append(
-                            f"STRAY instances not connected to the anchor "
-                            f"— unplace_instance or re-mate THESE, never add "
-                            f"extra copies of their part: {stray}"
-                        )
-                    if scope:
-                        nudge += (
-                            "\nScoped repair list — ONLY fix these; every "
-                            "other placed instance is already correct and "
-                            "must stay untouched (no unplace/duplicates):\n"
-                            + "\n".join(scope)
-                        )
-                except Exception:
-                    log.exception("guide.assembly_scope_failed")
         calls_budget = _calls_budget(mission, state)
         try:
             result = await run_session(
@@ -783,6 +819,21 @@ async def _run_mission(
         if early is not None:
             return early
         if mission in state.missions_done:
+            return None
+        if mission == "build" and not _build_missing_outputs(state):
+            # the durable scene satisfies the mission contract — the
+            # session died on budget/repeat AFTER finishing, and
+            # done_mission is a formality the model forgot. Complete from
+            # scene truth; the scene gate + review still verify quality.
+            log.warning(
+                "guide.build_autocompleted",
+                reason=result.end_reason,
+                parts=len(state.parts),
+                instances=len(state.assembly.instances),
+                steps_rendered=sum(1 for s in state.steps if s.media_image),
+            )
+            state.mark_done(mission)
+            state.save(state_dir)
             return None
         fails = _tool_failures(result)
         last_reason = result.end_reason or ""

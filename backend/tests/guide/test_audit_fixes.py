@@ -143,6 +143,26 @@ def test_review_verdict_cad_maps_build_to_assembly(tmp_path: Path) -> None:
     assert "assembly" not in state.missions_done
 
 
+def test_build_missing_outputs_scene_truth(tmp_path: Path) -> None:
+    """Blender build sessions died on budget/repeat AFTER the scene was
+    complete — done_mission never fired and the run aborted before the
+    scene gate could certify the work (attempt 16: 9 parts, 17 instances,
+    321 renders -> mission_failed). Durable outputs decide completion."""
+    from cadx.guide.guide_runner import _build_missing_outputs
+    from cadx.guide.state import AssemblyInstance, GuideStep
+
+    state = GuideState(output_dir=str(tmp_path), guide_mode="blender")
+    assert _build_missing_outputs(state), "empty state is not complete"
+    state.steps = [GuideStep(number=1), GuideStep(number=2)]
+    state.parts = [GuidePart(id="p1", name="Pipe")]
+    state.assembly.instances = [AssemblyInstance(instance_id="p1#1", part_id="p1")]
+    missing = _build_missing_outputs(state)
+    assert any("render" in m for m in missing)
+    state.steps[0].media_image = "/tmp/a.png"
+    state.steps[1].media_image = "/tmp/b.png"
+    assert _build_missing_outputs(state) == []
+
+
 def test_review_report_consistency_gates(tmp_path: Path) -> None:
     """A sub-target score without blockers (or ≥8 with them, or without
     visual evidence) is rejected — score 6.0 + only warnings used to
@@ -401,8 +421,9 @@ def test_mission_retries_once_on_bare_final():
 
     src = inspect.getsource(guide_runner._run_mission)
     assert 'total_attempts = 3 if mission == "build" else 2' in src
-    assert "CONTINUATION" in src
     assert "mission_retry" in src
+    nudge_src = inspect.getsource(guide_runner._retry_nudge)
+    assert "CONTINUATION" in nudge_src
 
 
 def test_optional_mission_failure_does_not_fail_job(monkeypatch) -> None:
