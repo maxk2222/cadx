@@ -243,13 +243,38 @@ async def blender_register_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
             "error": f"part_id '{pid}' is already registered ({existing.name}) "
             "— alias_part name variants instead of re-registering",
         }
+    part, missing, err = await _export_register(s, pid, name, quantity, names)
+    if err is not None:
+        return err
+    return {
+        "ok": True,
+        "part_id": pid,
+        "mesh_path": part.mesh_path,
+        "bbox": [part.bbox_min, part.bbox_max],
+        "missing_objects": missing or None,
+        "note": "tag every placed instance object with "
+        "obj['cadx_part']='{pid}' (plus cadx_step/cadx_premount) so "
+        "blender_sync_scene can bind them".replace("{pid}", pid),
+    }
+
+
+async def _export_register(
+    s: GuideToolSession, pid: str, name: str, quantity: int | None, names: list[str]
+) -> tuple[GuidePart | None, list[str], dict[str, Any] | None]:
+    """Export Blender objects -> normalized GLB -> appended GuidePart.
+
+    Returns (part, missing_object_names, error_dict) — exactly one of
+    part / error is set. Shared by the explicit register tool and the
+    sync auto-registration so both bake frames, wait for the synced file
+    and run the scale guard identically.
+    """
     try:
         client = blender_client.get_client()
         info_out = client.execute_code(_OBJ_INFO_TMPL % json.dumps(names))
         info = _cadx_payload(info_out)
         found = info.get("found") or {}
         if not found:
-            return {
+            return None, [], {
                 "ok": False,
                 "error": f"none of {names} exists in the Blender scene "
                 "(bpy.data.objects has no such object) — check the exact "
@@ -262,10 +287,10 @@ async def blender_register_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
             object_names=list(found),
         )
     except BlenderError as exc:
-        return _err(exc)
+        return None, [], _err(exc)
     expected = res.get("bytes") if isinstance(res, dict) else None
     if not _wait_for_file(glb_path, expected_bytes=expected):
-        return {
+        return None, missing, {
             "ok": False,
             "error": "export_scene returned success but the GLB never "
             "reached the shared data dir — check CADX_DATA_HOST_ROOT",
@@ -285,7 +310,10 @@ async def blender_register_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
         m.apply_transform(_np.linalg.inv(_np.asarray(_to_gltf_frame(first_matrix))))
         m.export(str(glb_path))
     except Exception as exc:
-        return {"ok": False, "error": f"exported GLB failed to load: {exc!r}"[:400]}
+        return None, missing, {
+            "ok": False,
+            "error": f"exported GLB failed to load: {exc!r}"[:400],
+        }
 
     # scale guard — the exported mesh's extents must agree with the
     # scene-side world extents within 15%; a m/mm mixup blows past that
@@ -295,7 +323,7 @@ async def blender_register_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
         glb_dims = [float(v) for v in (m.bounds[1] - m.bounds[0])]
         for sd, gd in zip(scene_dims, glb_dims, strict=True):
             if sd > 1e-6 and not (sd / 1.15 <= gd <= sd * 1.15):
-                return {
+                return None, missing, {
                     "ok": False,
                     "error": f"scale guard: Blender extents {scene_dims} vs "
                     f"exported GLB extents {glb_dims} disagree — verify the "
@@ -323,16 +351,7 @@ async def blender_register_part(s: GuideToolSession, a: dict[str, Any]) -> dict[
         part.status = "error"
         part.error = str(exc)[:300]
     s.state.parts.append(part)
-    return {
-        "ok": True,
-        "part_id": pid,
-        "mesh_path": mesh_path,
-        "bbox": [part.bbox_min, part.bbox_max],
-        "missing_objects": missing or None,
-        "note": "tag every placed instance object with "
-        "obj['cadx_part']='{pid}' (plus cadx_step/cadx_premount) so "
-        "blender_sync_scene can bind them".replace("{pid}", pid),
-    }
+    return part, missing, None
 
 
 async def _read_scene_objects(s: GuideToolSession) -> dict[str, dict]:
@@ -393,20 +412,62 @@ async def blender_sync_scene(s: GuideToolSession, a: dict[str, Any]) -> dict[str
 
     Idempotent: the whole instance list is rebuilt from scene truth each
     call — stale entries the agent deleted in Blender disappear here.
+    Tagged cadx_part slugs that are not registered yet get auto-registered
+    (the tag is the binding contract — registration follows from it, not
+    from a separately remembered tool call): objects sharing one
+    ``cadx_inst`` export together as that part's master geometry.
     """
     try:
         objects = await _read_scene_objects(s)
     except BlenderError as exc:
         return _err(exc)
+
+    from cadx.guide.part_tools import _is_context
+
+    auto: list[str] = []
+    auto_errors: list[str] = []
+    part_ids = {p.id for p in s.state.parts}
+    tagged: dict[str, dict[str, list[str]]] = {}
+    for obj_name, rec in objects.items():
+        pid = _slug(str(rec.get("part") or ""))
+        if pid:
+            inst_key = str(rec.get("inst") or obj_name)
+            tagged.setdefault(pid, {}).setdefault(inst_key, []).append(obj_name)
+    for pid in sorted(tagged):
+        if pid in part_ids:
+            continue
+        groups = tagged[pid]
+        if _is_context(s, pid):
+            auto_errors.append(
+                f"'{pid}' is declared context but {sum(len(g) for g in groups.values())} "
+                "object(s) are tagged cadx_part with it — retag with a real "
+                "part_id or undeclare the context name"
+            )
+            continue
+        # first instance group (sorted) supplies the master geometry —
+        # multi-object instances (shared cadx_inst) export together
+        first_key = sorted(groups)[0]
+        qty = len(groups)
+        _part_out, _missing, err = await _export_register(
+            s, pid, pid.replace("_", " "), qty, sorted(groups[first_key])
+        )
+        if err is not None:
+            auto_errors.append(f"auto-register '{pid}' failed: {err.get('error')}")
+            continue
+        auto.append(pid)
+        part_ids.add(pid)
+
     instances, step_instances, counts, errors = _build_instances(s, objects)
     s.state.assembly.instances = instances
     s.state.assembly.step_instances = step_instances
     s.state.assembly.status = "complete" if instances else "empty"
+    errors = auto_errors + errors
     if errors:
         return {
             "ok": False,
             "error": "; ".join(errors[:8]),
             "synced": len(instances),
+            "auto_registered": auto or None,
             "note": "these bindings failed — the scene tag must name a "
             "registered part_id and carry a finite matrix_world",
         }
@@ -415,6 +476,7 @@ async def blender_sync_scene(s: GuideToolSession, a: dict[str, Any]) -> dict[str
         "instances": len(instances),
         "per_part": counts,
         "per_step": {k: len(v) for k, v in sorted(step_instances.items())},
+        "auto_registered": auto or None,
     }
 
 
@@ -546,8 +608,12 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "blender_sync_scene",
         "Read back every object tagged cadx_part and rebuild the guide's "
         "instance list from scene truth (instance_id, transform, step, "
-        "premount). Call after tagging/placing and before done_mission — "
-        "the manifest gate re-reads the same data.",
+        "premount). Tagged part ids that are not registered yet are "
+        "auto-registered here (objects sharing a cadx_inst export as one "
+        "part; quantity = distinct instance count) — use "
+        "blender_register_part explicitly only for custom names/quantities "
+        "or a specific master. Call after tagging/placing and before "
+        "done_mission — the manifest gate re-reads the same data.",
         {},
         [],
     ),

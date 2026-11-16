@@ -379,3 +379,52 @@ def test_wait_for_file_stability(tmp_path):
     assert not blender_tools._wait_for_file(target, timeout_s=0.5)
     target.write_bytes(b"pngdata")
     assert blender_tools._wait_for_file(target, timeout_s=2.0)
+
+
+def test_sync_auto_registers_tagged_parts(tmp_path, monkeypatch):
+    """Tag = binding contract: an unregistered cadx_part tag auto-exports
+    as a part at sync — objects sharing cadx_inst group as the master."""
+    sess = _sess(tmp_path, parts=[_part("casing")])
+    ident = [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)]
+    objects = {
+        "CasingObj": {"part": "casing", "inst": "", "step": 0,
+                      "premount": True, "matrix": ident},
+        "ElbowM": {"part": "elbow", "inst": "elbow#1", "step": 3,
+                   "premount": False, "matrix": ident},
+        "ElbowFlange": {"part": "elbow", "inst": "elbow#1", "step": 3,
+                        "premount": False, "matrix": ident},
+        "CtxThing": {"part": "dichtring", "inst": "", "step": 0,
+                     "premount": True, "matrix": ident},
+    }
+    sess.state.context_names = ["Dichtring"]
+
+    async def _aw(_s):
+        return objects
+
+    monkeypatch.setattr(blender_tools, "_read_scene_objects", _aw)
+    registered = {}
+
+    async def _fake_export(s, pid, name, qty, names):
+        registered[pid] = (name, qty, names)
+        p = _part(pid)
+        p.name = name
+        p.quantity = qty
+        s.state.parts.append(p)
+        return p, [], None
+
+    monkeypatch.setattr(blender_tools, "_export_register", _fake_export)
+
+    import asyncio
+
+    res = asyncio.run(blender_tools.blender_sync_scene(sess, {}))
+    # casing already registered -> untouched; elbow auto-registered with
+    # quantity=1 (one cadx_inst group of two objects); dichtring is
+    # declared context -> collision error, not a registration
+    assert registered.keys() == {"elbow"}
+    _name, qty, names = registered["elbow"]
+    assert qty == 1 and sorted(names) == ["ElbowFlange", "ElbowM"]
+    assert res["ok"] is False  # the context collision is reported honestly
+    assert "dichtring" in res["error"]
+    assert res["auto_registered"] == ["elbow"]
+    insts = {i.instance_id: i for i in sess.state.assembly.instances}
+    assert "casing#1" in insts and "elbow#1" in insts
