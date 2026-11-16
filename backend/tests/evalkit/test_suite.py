@@ -46,10 +46,12 @@ def test_shipped_suite_loads_and_validates():
         "kiara_guide_bare",
         "kiara_guide_text_endstate",
         "kiara_guide_textonly",
+        "kiara_guide_blender",
         "kiara_guide_missing_part",
     ]
     assert [c.difficulty for c in cases] == [
-        1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 5
+        1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 5,
+        5,
     ]
     for c in cases:
         assert c.project.startswith("eval:")
@@ -143,6 +145,7 @@ def test_suite_files_present():
         "block_sidewall_tap.json",
         "helical_pinion_shaft.json",
         "kiara_guide_bare.json",
+        "kiara_guide_blender.json",
         "kiara_guide_missing_part.json",
         "kiara_guide_no_pipes.json",
         "kiara_guide_text_endstate.json",
