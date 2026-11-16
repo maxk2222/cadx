@@ -499,9 +499,19 @@ async def assign_media(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]
                 step.source_pages = sorted([*step.source_pages, page_no])
             return {"ok": True, "step": step.number, "media_image": step.media_image}
     avail = [f.get("index") for f in p.figures if f.get("image_path")]
+    if not avail:
+        return {
+            "ok": False,
+            "error": f"page {page_no} has no figures with extractable "
+            "images — leave this step's media unset (renders/exports "
+            "supply step media later); do NOT retry other indices here",
+            "available_figure_indices": [],
+        }
     return {
         "ok": False,
-        "error": f"figure {idx} not found on page {page_no}",
+        "error": f"figure {idx} not found on page {page_no} — valid "
+        f"figure indices on this page are {avail} (list_figures shows "
+        "each crop); pick one of those or skip media for this step",
         "available_figure_indices": avail,
     }
 
