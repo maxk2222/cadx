@@ -578,10 +578,38 @@ class GuideToolSession(ToolSession):
     async def _tool_ask_user(self, a: dict[str, Any]) -> dict[str, Any]:
         if self._park_fn is None:
             return {"ok": False, "error": "asking the user is not available here"}
+        qtext = str(a.get("question", "")).strip() or "Question from guide builder"
+        # a parked job resumes into a FRESH mission session — an ask that
+        # changes nothing loops ask->park->resume->ask until the repeat
+        # detector kills it. Two durable guards: dedupe on identical
+        # questions, and a per-mission park cap so paraphrased re-asks
+        # (observed: 10 asks about one unresolvable part name) hit an
+        # honest guardrail instead of burning sessions.
+        mission = getattr(self, "mission", "")
+        qnorm = f"{mission}|{' '.join(qtext.lower().split())[:120]}"
+        asked = getattr(getattr(self, "state", None), "asked_questions", None)
+        mission_asks = (
+            sum(1 for q in asked if q.startswith(f"{mission}|"))
+            if asked is not None
+            else 0
+        )
+        if asked is not None and (qnorm in asked or mission_asks >= 3):
+            return {
+                "ok": False,
+                "error": "questions like this were already asked and came "
+                "back without a deciding answer — re-asking cannot "
+                "resolve it. Decide autonomously: document the assumption "
+                "via add_master_note, mark_context_part for host "
+                "features, or rename_required_name/update_step for plan "
+                "names that cannot resolve",
+            }
+        if asked is not None:
+            asked.append(qnorm)
+            self.state.save(self.state_dir)
         # OpenQuestion contract (llm/schemas.py): the frontend renders
         # q.question — "text"/"context" keys would show as empty bullets
         question = {
-            "question": str(a.get("question", "")).strip() or "Question from guide builder",
+            "question": qtext,
             "why_it_matters": str(a.get("context", "")).strip(),
             "blocking": True,
         }

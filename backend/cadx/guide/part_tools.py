@@ -104,6 +104,24 @@ SCHEMAS: dict[str, dict[str, Any]] = {
          "reason": _s("why it is not a kit part")},
         ["name"],
     ),
+    "rename_required_name": _fn(
+        "rename_required_name",
+        "Rename a required manual name everywhere the plan uses it "
+        "(detected_part_names + every step's required_parts + sub_step "
+        "part fields). The escape hatch for names that CANNOT be aliased "
+        "— e.g. a colloquial end-type name whose category words read as a "
+        "different kind. new_name must already resolve to a registered "
+        "part — this rewrites the plan's vocabulary, it does not bind "
+        "names to parts.",
+        {
+            "name": _s("unresolvable required name as written in the plan"),
+            "new_name": _s(
+                "qualified name of the intended registered part "
+                "(e.g. 'Rohrbogen DN22, 2x außen')"
+            ),
+        },
+        ["name", "new_name"],
+    ),
 }
 
 
@@ -525,9 +543,18 @@ async def mark_context_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str,
 
 def _resolve_required(s: GuideToolSession, name: str) -> str | None:
     """Single resolution chain for a required manual name → part id:
-    explicit alias → part name → part id → substring containment both ways.
+    exact alias → part name → part id → containment both ways over names
+    AND aliases → token-subset, only when it lands on ONE distinct part.
+
     match_required_parts and the done-guard MUST agree on what "matched"
-    means — divergent rules trap the agent in an alias/done reject loop."""
+    means — divergent rules trap the agent in an alias/done reject loop.
+    The subset pass resolves names the manual rewrites mid-document
+    ('Adapter DN22, Innengewinde/Muffe' ⊆ the accepted alias 'adapter
+    dn22 auf dn15 innengewinde muffe') where the old name-only substring
+    pass never looked at aliases at all. A generic name covering several
+    parts ('Rohrbogen DN 22' over two elbows) stays missing — binding it
+    to one sibling would be a silent guess; the plan's qualified names
+    resolve on their own."""
     norm = _norm(name)
     aliases = s._aliases_store
     pid = (
@@ -535,11 +562,42 @@ def _resolve_required(s: GuideToolSession, name: str) -> str | None:
         or {_norm(p.name): p.id for p in s.state.parts}.get(norm)
         or {_norm(p.id): p.id for p in s.state.parts}.get(norm)
     )
-    if pid is None and norm:
-        for rp in s.state.parts:
-            if norm in _norm(rp.name) or _norm(rp.name) in norm:
-                return rp.id
-    return pid
+    if pid is not None or not norm:
+        return pid
+    sq = _squash(name)
+    hits: set[str] = set()
+    for k, apid in aliases.items():
+        ksq = _squash(k)
+        if len(ksq) >= 3 and len(sq) >= 3 and (ksq in sq or sq in ksq):
+            hits.add(apid)
+    for rp in s.state.parts:
+        rn = _squash(rp.name)
+        if len(rn) >= 3 and len(sq) >= 3 and (rn in sq or sq in rn):
+            hits.add(rp.id)
+    if len(hits) == 1:
+        return hits.pop()
+    if len(hits) > 1:
+        return None
+    need = {t for t in _tokset_req(norm) if len(t) >= 2 or t.isdigit()}
+    if not need:
+        return None
+    covers: set[str] = set()
+    for cand, apid in [(k, v) for k, v in aliases.items()] + [
+        (_norm(p.name), p.id) for p in s.state.parts
+    ]:
+        ctoks = _tokset_req(cand)
+        if need <= ctoks or ctoks <= need:
+            covers.add(apid)
+    return covers.pop() if len(covers) == 1 else None
+
+
+def _tokset_req(normed: str) -> set[str]:
+    """Word+numeric tokens of a normalized name — 'adapter dn22' →
+    {adapter, dn22}; digit groups stay attached so 'dn22' ≠ 'dn 22'
+    token-wise, matching how the alias store normalized its keys."""
+    import re
+
+    return set(re.findall(r"[a-zäöüß]+\d*|\d+", normed))
 
 
 async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
@@ -581,15 +639,17 @@ async def match_required_parts(s: GuideToolSession, a: dict[str, Any]) -> dict[s
                 f"generic {cat} name over {len(same_cat)} candidates "
                 f"({', '.join(same_cat[:4])}) — a generic alias is refused: "
                 "if it denotes premounted/host geometry, mark_context_part; "
-                "if it is a real kit part, alias a QUALIFIED variant "
-                "(size/end-type) or pick via plan note"
+                "if it names a kit part the manual describes only "
+                "generically, rename_required_name it to the qualified "
+                "variant or update_step the required_parts entry"
             )
         elif cat == "other":
             hints[name] = (
                 "no category recognized — if it denotes host/device "
-                "geometry or a tool, mark_context_part; else "
-                "generate_missing_part (when allowed) or refine the "
-                "manual name in the steps"
+                "geometry or a tool, mark_context_part; if it is a kit "
+                "part under a colloquial name, rename_required_name to "
+                "the qualified part name; else generate_missing_part "
+                "(when allowed)"
             )
     return {
         "ok": True,
@@ -917,13 +977,60 @@ def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
         return {
             "ok": False,
             "error": f"unmatched required parts: {', '.join(missing[:6])} — "
-            "register/alias/generate them, or mark_context_part if they "
-            "are host/tools/consumables",
+            "register/alias/generate them, mark_context_part if they "
+            "are host/tools/consumables, update_step to fix a step's "
+            "required_parts entry, or rename_required_name when the "
+            "manual's own name is unresolvable (rename it to the "
+            "qualified kit name everywhere the plan uses it)",
         }
     not_analyzed = [p.id for p in s.state.parts if p.status == "error"]
     if not_analyzed:
         return {"ok": False, "error": f"parts failed analysis: {', '.join(not_analyzed)}"}
     return None
+
+
+async def rename_required_name(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    """Rename a required manual name EVERYWHERE the plan uses it — the
+    parts mission's escape hatch when the manual's own name cannot be
+    resolved or aliased (e.g. a colloquial 'Muffe auf Muffe' whose
+    category vocabulary the alias guard reads as a different kind). The
+    rename is durable evidence — the qualified name then resolves through
+    the normal chain; no binding bypass, no silent guess."""
+    old = str(a.get("name", "")).strip()
+    new = str(a.get("new_name", "")).strip()
+    if not old or not new:
+        return {"ok": False, "error": "name and new_name required"}
+    old_n, new_n = _norm(old), _norm(new)
+    if old_n == new_n:
+        return {"ok": False, "error": "name unchanged"}
+    if _resolve_required(s, new) is None:
+        return {
+            "ok": False,
+            "error": f"'{new}' does not resolve to a registered part — "
+            "rename to the qualified name of an existing kit part "
+            "(see match_required_parts suggestions)",
+        }
+    touched = {"detected_part_names": 0, "required_parts": 0, "sub_steps": 0}
+    doc = s.state.document
+    if doc is not None:
+        doc.detected_part_names = [
+            new if _norm(n) == old_n else n for n in doc.detected_part_names
+        ]
+        touched["detected_part_names"] = sum(
+            1 for n in doc.detected_part_names if _norm(n) == new_n
+        )
+    for st in s.state.steps:
+        if any(_norm(n) == old_n for n in st.required_parts):
+            st.required_parts = [new if _norm(n) == old_n else n for n in st.required_parts]
+            touched["required_parts"] += 1
+        for ss in st.sub_steps:
+            if _norm(ss.part or "") == old_n:
+                ss.part = new
+                touched["sub_steps"] += 1
+    if not any(touched.values()):
+        return {"ok": False, "error": f"'{old}' is not used anywhere in the plan"}
+    s.state.master_notes.append(f"renamed required name '{old}' -> '{new}'")
+    return {"ok": True, "renamed": f"{old} -> {new}", "touched": touched}
 
 
 from cadx.guide.tools import DONE_GUARDS  # noqa: E402
@@ -936,4 +1043,5 @@ HANDLERS = {
     "alias_part": alias_part,
     "generate_missing_part": generate_missing_part,
     "mark_context_part": mark_context_part,
+    "rename_required_name": rename_required_name,
 }

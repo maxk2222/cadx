@@ -332,6 +332,21 @@ def _mission_prompt(
         # and burns the call budget before finishing.
         from cadx.guide.assembly_tools import _completeness_issues
 
+        # The plan itself is durable state — echo it once instead of
+        # letting the model re-read every step via get_step (observed:
+        # 27 get_step + 26 get_part_features calls before the first
+        # placement — a whole session spent on reads).
+        if state.steps and not state.assembly.instances:
+            digest = "; ".join(
+                f"{st.number}:{st.title} [{', '.join(st.required_parts)}]"
+                + (
+                    " {" + "; ".join(f"{ss.part}→{ss.target}" for ss in st.sub_steps[:4]) + "}"
+                    if st.sub_steps
+                    else ""
+                )
+                for st in state.steps[:16]
+            )
+            ctx_lines.append(f"Step plan (durable — do NOT re-read via get_step): {digest}")
         plan_fail = (state.assembly.planner or {}).get("failed") or []
         if plan_fail:
             ctx_lines.append(

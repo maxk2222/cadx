@@ -114,6 +114,10 @@ MISSION_TOOLS: dict[str, list[str]] = {
         "alias_part",
         "generate_missing_part",
         "mark_context_part",
+        "rename_required_name",
+        # a step's required_parts entry can carry a name the alias guards
+        # refuse — fixing it where it lives is the parts mission's job
+        "update_step",
         "ask_user",
         *SHARED_STATE_TOOLS,
         *SHARED_PLAN_TOOLS,

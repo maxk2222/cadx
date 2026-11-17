@@ -192,6 +192,11 @@ class GuideState(BaseModel):
     # unity_guide.json already carries the picked audience
     audience: str = ""
     user_notes: list[str] = Field(default_factory=list)
+    # normalized questions already sent to the user — ask_user refuses to
+    # re-park on a duplicate: an answered-once question that stayed
+    # unresolved must be settled autonomously (documented assumption),
+    # not re-asked until the session dies on repeat
+    asked_questions: list[str] = Field(default_factory=list)
     # agent-authored masternotes (tips/assumptions/extra info for the guide
     # user) — emitted as a project "note" asset at job end
     master_notes: list[str] = Field(default_factory=list)

@@ -190,6 +190,154 @@ def test_match_required_suggests_renamed_fittings() -> None:
     assert set(res2["suggested_part_ids"]) == {"elbow-ss", "elbow-ff"}
 
 
+def test_resolve_required_uses_canonical_chain() -> None:
+    """_resolve_required must share the pipeline's resolution semantics —
+    a required name that is a token-subset of an accepted alias resolves
+    (observed deadlock: alias 'Adapter DN22 auf DN15, Innengewinde/Muffe'
+    was accepted, but the strict stub still reported the required
+    'Adapter DN22, Innengewinde/Muffe' as missing until the mission died
+    re-asking the user). Generic names over several parts stay honestly
+    missing."""
+    import asyncio
+
+    from cadx.guide import part_tools
+    from cadx.guide.state import DocumentIndex, GuidePart
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.document = DocumentIndex(
+        detected_part_names=["Adapter DN22, Innengewinde/Muffe", "Rohrbogen DN 22"]
+    )
+    state.parts.extend(
+        [
+            GuidePart(
+                id="adapter_dn22_dn15",
+                name="Adapter DN22 auf DN15",
+                mesh_path="/x/adapter.glb",
+            ),
+            GuidePart(id="elbow-ss", name="Rohrbogen DN22, 1x außen 1x innen"),
+            GuidePart(id="elbow-ff", name="Rohrbogen DN22, 2x außen"),
+        ]
+    )
+    sess = GuideToolSession(
+        ctx,
+        mission="parts",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    sess._aliases_store = {
+        "adapter dn22 auf dn15 innengewinde muffe": "adapter_dn22_dn15"
+    }
+    assert part_tools._resolve_required(sess, "Adapter DN22, Innengewinde/Muffe") == (
+        "adapter_dn22_dn15"
+    )
+    # generic family name over two elbows must NOT silently bind one
+    assert part_tools._resolve_required(sess, "Rohrbogen DN 22") is None
+    res = asyncio.run(part_tools.match_required_parts(sess, {}))
+    assert "Adapter DN22, Innengewinde/Muffe" not in res["missing"]
+    assert "Rohrbogen DN 22" in res["missing"]
+
+
+def test_rename_required_name_rewrites_plan() -> None:
+    """The parts mission's escape hatch: an unresolvable colloquial name is
+    rewritten to the qualified kit name in detected_part_names,
+    required_parts and sub_step part fields — durable, no binding bypass."""
+    import asyncio
+
+    from cadx.guide import part_tools
+    from cadx.guide.state import DocumentIndex, GuidePart, GuideStep, GuideSubStep
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    state.document = DocumentIndex(detected_part_names=["Muffe auf Muffe"])
+    state.parts.append(
+        GuidePart(id="elbow_ss", name="Rohrbogen DN22, 2x außen", mesh_path="/x/e.glb")
+    )
+    state.steps.append(
+        GuideStep(
+            number=3,
+            text="t",
+            display_text="d",
+            required_parts=["Muffe auf Muffe"],
+            sub_steps=[
+                GuideSubStep(action="place", part="Muffe auf Muffe", target="Rohr DN22")
+            ],
+        )
+    )
+    sess = GuideToolSession(
+        ctx,
+        mission="parts",
+        state=state,
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    # an unresolvable target refuses — no binding bypass
+    bad = asyncio.run(
+        part_tools.rename_required_name(
+            sess, {"name": "Muffe auf Muffe", "new_name": "Flansch DN40"}
+        )
+    )
+    assert bad["ok"] is False
+    res = asyncio.run(
+        part_tools.rename_required_name(
+            sess, {"name": "Muffe auf Muffe", "new_name": "Rohrbogen DN22, 2x außen"}
+        )
+    )
+    assert res["ok"] is True
+    assert state.document.detected_part_names == ["Rohrbogen DN22, 2x außen"]
+    assert state.steps[0].required_parts == ["Rohrbogen DN22, 2x außen"]
+    assert state.steps[0].sub_steps[0].part == "Rohrbogen DN22, 2x außen"
+    assert any("Muffe auf Muffe" in n for n in state.master_notes)
+
+
+def test_ask_user_dedupes_and_caps_per_mission() -> None:
+    """A parked ask that returns unanswered must not be repeatable —
+    identical re-asks and the per-mission cap both refuse with guidance
+    instead of parking again (observed: 10 paraphrased asks about one
+    unresolvable part name burned whole sessions)."""
+    import asyncio
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    sess = GuideToolSession(
+        ctx,
+        mission="parts",
+        state=GuideState(),
+        state_dir="/tmp/x",
+        project_id=None,  # type: ignore[arg-type]
+        guide_assets=[],
+        executor=None,
+    )
+    parked = []
+
+    async def park(qs):
+        parked.append(qs)
+
+    sess._park_fn = park
+    q = {"question": "welche Schraube?", "context": "x"}
+    r1 = asyncio.run(sess._tool_ask_user(q))
+    assert r1["ok"] and sess.parked
+    sess.parked = False
+    # identical re-ask refuses
+    r2 = asyncio.run(sess._tool_ask_user(q))
+    assert r2["ok"] is False and not sess.parked
+    # two more different asks park (cap is 3 per mission)
+    asyncio.run(sess._tool_ask_user({"question": "andere frage 1"}))
+    sess.parked = False
+    asyncio.run(sess._tool_ask_user({"question": "andere frage 2"}))
+    sess.parked = False
+    r5 = asyncio.run(sess._tool_ask_user({"question": "vierte frage"}))
+    assert r5["ok"] is False and not sess.parked
+    assert len(parked) == 3  # only three real parks happened
+
+
 def test_same_part_placed_twice_creates_instances() -> None:
     """Left/right sides and repeated fittings: one registered part must be
     placeable multiple times — each placement is its own instance."""
