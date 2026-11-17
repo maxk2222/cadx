@@ -453,6 +453,11 @@ def build_unity_guide(state) -> dict[str, Any]:
                 "missing_generated": p.source == "generated",
             }
             for p in state.parts
+            # blender-mode: orphan registrations (no instance, no step
+            # requires them — the scene gate records the verdict) must
+            # not ship as phantom parts
+            if state.guide_mode != "blender"
+            or p.id not in set(state.blender_manifest.get("orphan_parts", []))
         ],
         "steps": steps_out,
         # durable joint graph — the authoritative mate evidence the planner

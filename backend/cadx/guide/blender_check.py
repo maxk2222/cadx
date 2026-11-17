@@ -279,6 +279,19 @@ def _burial_verdict(
     return None
 
 
+def _required_part_ids(s: Any) -> set[str]:
+    """Part ids the manual/steps actually install, resolved through the
+    canonical alias→name→id→substring chain — the gate may only call a
+    registered part missing when a step needs it."""
+    from cadx.guide.part_tools import _required_names, _resolve_required
+
+    return {
+        pid
+        for name in _required_names(s)
+        if (pid := _resolve_required(s, name))
+    }
+
+
 async def run_scene_gate(s: Any) -> tuple[list[str], dict[str, Any]]:
     """Return (blockers, manifest). The manifest is written into
     state.blender_manifest by the caller."""
@@ -331,13 +344,28 @@ async def run_scene_gate(s: Any) -> tuple[list[str], dict[str, Any]]:
         )
 
     placed_pids = {i.part_id for i in instances}
-    blockers += [
-        f"registered part '{part.id}' ({part.name}) has no tagged "
-        "instance in the scene — place and tag at least one, or "
-        "drop the registration"
-        for part in s.state.parts
-        if part.id not in placed_pids
-    ]
+    required_pids = _required_part_ids(s)
+    orphan_ids: list[str] = []
+    for part in s.state.parts:
+        if part.id in placed_pids:
+            continue
+        if part.id in required_pids:
+            blockers.append(
+                f"required part '{part.id}' ({part.name}) has no tagged "
+                "instance in the scene — model, place and tag it"
+            )
+        else:
+            # unrequired + uninstantiated = registration clutter, not
+            # missing content — the emit excludes it (observed: the gate
+            # blocked on a stray 'adapter' while every real part was
+            # placed, and "drop the registration" named no existing tool)
+            orphan_ids.append(part.id)
+            manifest["warnings"].append(
+                f"registered part '{part.id}' ({part.name}) has no tagged "
+                "instance and no step requires it — orphan registration, "
+                "excluded from the emit"
+            )
+    manifest["orphan_parts"] = orphan_ids
     blockers += _transform_blockers(instances)
     manifest["warnings"] += _duplicate_warnings(instances)
     blockers += _overlap_scan(instances, {p.id: p for p in s.state.parts}, manifest)

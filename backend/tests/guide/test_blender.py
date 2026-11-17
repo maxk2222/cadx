@@ -248,8 +248,14 @@ def test_overlap_fraction_and_world_aabb():
 async def test_scene_gate_blockers(tmp_path, monkeypatch):
     """Gate blocks: empty scene, unplaced registered part, degenerate
     transform, buried overlap — all as honest blockers."""
+    from cadx.guide.state import GuideStep
+
     part = _boxed_part("casing")
-    sess = _sess(tmp_path, parts=[part, _part("loose")])
+    sess = _sess(tmp_path, parts=[part, _part("loose"), _part("stray")])
+    sess._aliases_store = {}
+    # 'loose' is required by a step -> missing instance blocks;
+    # 'stray' is required by nothing -> orphan warning, emit-excluded
+    sess.state.steps = [GuideStep(number=1, required_parts=["loose"])]
 
     class FakeClient:
         def execute_code(self, code, **kw):
@@ -260,8 +266,12 @@ async def test_scene_gate_blockers(tmp_path, monkeypatch):
     monkeypatch.setattr(blender_client, "get_client", lambda: FakeClient())
     blockers, manifest = await blender_check.run_scene_gate(sess)
     assert manifest["reachable"] is True
-    # 'loose' registered but never placed
+    # 'loose' is step-required but never placed
     assert any("loose" in b and "no tagged instance" in b for b in blockers)
+    # 'stray' is an orphan registration — warning, not a blocker
+    assert not any("stray" in b for b in blockers)
+    assert manifest["orphan_parts"] == ["stray"]
+    assert any("stray" in w for w in manifest["warnings"])
     assert "Obj" in manifest["objects"]
 
 
