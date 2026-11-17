@@ -817,10 +817,14 @@ def _pin_ref_conflict(
       ``{"kind": "provides", "provided": [...], "ref_pool": [...]}``
       ``{"kind": "side", "ref_axes": {...}, "kind_sides": [{...}]}``
     """
-    from cadx.guide.preassembly import _dir_axes, _kind_pool
+    from cadx.guide.preassembly import _clean_side_text, _dir_axes, _kind_pool
 
     ref_pool = _kind_pool(sess, tgt)
-    ref_axes = dict(_dir_axes(tgt))
+    # feature-qualified side words are not instance sides — 'freie obere
+    # Seite des linken Rohrs' pins the {l,b} pipe by its top END; raw
+    # _dir_axes counted 'obere' as instance position and contradicted
+    # the correct pin
+    ref_axes = dict(_dir_axes(_clean_side_text(tgt)))
     provided: set[str] = set()
     kind_sides: list[dict[int, float]] = []
     for pss in pinned.sub_steps or []:
@@ -832,7 +836,7 @@ def _pin_ref_conflict(
             not ref_pool or pid in ref_pool
         ):
             kind_sides.append(
-                dict(_dir_axes(f"{pss.target or ''} {pss.part or ''}"))
+                dict(_dir_axes(_clean_side_text(f"{pss.target or ''} {pss.part or ''}")))
             )
     for nm in pinned.required_parts or []:
         pid = _resolve_part(sess, nm, pinned.number)

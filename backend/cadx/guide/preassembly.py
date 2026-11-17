@@ -438,43 +438,37 @@ def _side_words(text: str) -> set[str]:
     return {side for w, side in _SIDE_WORDS.items() for tok in toks if tok.startswith(w)}
 
 
-def _task_side_signature(t: dict[str, Any]) -> set[str]:
-    """Side words that describe a task's TARGET location: the bare target
-    name plus only the first text clause (the one naming it) — later
-    clauses describe OTHER parts ("freie Seite auf das obere Rohr")."""
-    first_clause = (t.get("text") or "").split(",")[0]
-    for cut in (" dann ", " anschließ", " und "):
-        first_clause = first_clause.split(cut)[0]
-    # orientation phrases ("Öffnung nach oben") are not LOCATION
-    # qualifiers — strip them or they poison the signature
-    first_clause = re.sub(
+def _clean_side_text(text: str) -> str:
+    """Strip side words that qualify a FEATURE, not an instance location.
+
+    "obere freie Öffnung des linken unteren Rohrbogens" locates the elbow
+    left+lower — "obere" describes its port and must stay out
+    (intervening adjectives like "freie" don't rescue it). Orientation
+    phrases ("Öffnung nach oben") and mount phrases whose possessive tail
+    already locates the part are likewise not instance sides. Part-
+    INTERNAL features only (end/tip/opening of the referenced piece):
+    mount points (anschluss|stutzen|verbindung|bohrung) are NOT in the
+    feature list — "am linken unteren Anschluss" locates the connector
+    on the host, where the side words ARE the instance discriminator."""
+    t = re.sub(
         r"nach\s+(oben|unten|links|rechts|vorne|hinten|oben zeigend)\w*",
         " ",
-        first_clause.lower(),
+        (text or "").lower(),
     )
-    # port qualifiers modify a FEATURE, not the instance location:
-    # "obere freie Öffnung des linken unteren Rohrbogens" locates the
-    # elbow left+lower — "obere" describes its port and must stay out
-    # (intervening adjectives like "freie" don't rescue it). Stems
-    # (ober\w+/unter\w+/link\w+/recht\w+) cover every German declension —
-    # "(unteres Ende)" is neuter and misses any enumerated list.
-    # part-INTERNAL features only (end/tip/opening of the referenced
-    # piece): their side word describes the feature, not the instance.
-    # Mount points (anschluss|stutzen|verbindung|bohrung) are NOT in the
-    # feature list — "am linken unteren Anschluss" locates the connector
-    # on the host, where the side words ARE the instance discriminator.
+    # Stems (ober\w+/unter\w+/link\w+/recht\w+) cover every German
+    # declension — "(unteres Ende)" is neuter and misses any enumerated
+    # list. The feature can head a compound ("Anschlussöffnung") — match
+    # it as a word-internal stem, not only as a standalone token.
     _feat = (
         r"öffnung|muffe|lippe|kante|ende|seite|spitze|fläche|"
         r"opening|socket|mouth|lip|edge|end|side|tip|face"
     )
-    # the feature can head a compound ("Anschlussöffnung") — match it as
-    # a word-internal stem, not only as a standalone token
     _feat_tok = rf"\w*(?:{_feat})\w*"
     _side_stem = r"ober\w+|unter\w+|link\w+|recht\w+|upper|lower|top|bottom|left|right"
-    first_clause = re.sub(
+    t = re.sub(
         rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+{_feat_tok}",
         " ",
-        first_clause,
+        t,
     )
     # ...unless the mount point BELONGS to an already-located part:
     # "obere Anschlussstelle des linken unteren Rohrbogens" locates the
@@ -488,20 +482,18 @@ def _task_side_signature(t: dict[str, Any]) -> set[str]:
         rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+\w*(?:{_mount})\w*"
         rf"(?=\s+{_poss}\b[^,;.]*?\b(?:{_side_stem})\b)"
     )
-    first_clause = _mount_sub.sub(" ", first_clause)
-    # the TARGET carries the same traps — "(Spitzende, zeigt nach oben)"
-    # describes the part's opening, not another instance's side
-    target = re.sub(
-        r"nach\s+(oben|unten|links|rechts|vorne|hinten|oben zeigend)\w*",
-        " ",
-        (t.get("target") or "").lower(),
-    )
-    target = re.sub(
-        rf"\b(?:{_side_stem})(?:\s+\w+){{0,2}}\s+{_feat_tok}",
-        " ",
-        target,
-    )
-    target = _mount_sub.sub(" ", target)
+    return _mount_sub.sub(" ", t)
+
+
+def _task_side_signature(t: dict[str, Any]) -> set[str]:
+    """Side words that describe a task's TARGET location: the bare target
+    name plus only the first text clause (the one naming it) — later
+    clauses describe OTHER parts ("freie Seite auf das obere Rohr")."""
+    first_clause = (t.get("text") or "").split(",")[0]
+    for cut in (" dann ", " anschließ", " und "):
+        first_clause = first_clause.split(cut)[0]
+    first_clause = _clean_side_text(first_clause)
+    target = _clean_side_text(t.get("target") or "")
     return _side_words(f"{target} {first_clause}")
 
 
