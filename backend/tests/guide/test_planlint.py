@@ -921,3 +921,55 @@ def test_genitive_instance_ref_warns_not_blocks() -> None:
     hits = [f for f in fs if "matches no registered part" in f["text"]
             and "Rohrs" in f["text"]]
     assert not hits, fs
+
+
+def test_modifier_token_no_instance_ref_false_positive() -> None:
+    """R4R4: 'Anschlussrohr in der Verkleidung' prefix-matched 'anschluss'
+    — a MODIFIER token inside the elbow's name ('…Anschluss 1x außen…') —
+    and passed as an instance-style warning, so the unplaceable target
+    never surfaced and preassembly cascade-failed every task. Head-noun
+    matching restores the blocker routed to parts for mark_context_part."""
+    elbow = GuidePart(
+        id="elbow_1x_out_1x_in",
+        name="Rohrbogen DN22, Anschluss 1x außen 1x innen",
+        bbox_min=[0, 0, 0],
+        bbox_max=[1, 1, 1],
+    )
+    host = GuidePart(
+        id="host_heat_pump", name="Wärmepumpe",
+        bbox_min=[0, 0, 0], bbox_max=[1, 1, 1],
+    )
+    sess = _sess(
+        [host, elbow, _part("adapter_dn22")],
+        [
+            _step(1, [{"action": "fasten", "part": "adapter_dn22",
+                       "target": "linkes oberes vormontiertes Anschlussrohr in der Verkleidung"}]),
+        ],
+    )
+    sess._aliases_store = {"warmepumpe": "host_heat_pump", "gehause": "host_heat_pump"}
+    fs = plan_lint(sess)
+    hits = [f for f in fs if "Anschlussrohr" in f["text"]]
+    assert hits, fs
+    assert hits[0]["severity"] == "blocker" and hits[0]["mission"] == "parts", hits
+
+
+def test_instance_ref_head_noun_still_matches() -> None:
+    """Head-noun matching keeps the legit instance refs: genitive
+    'Rohrbogens' prefixes head 'rohrbogen'; colloquial 'Bogen' suffixes
+    it; 'Adapter' hits head 'adapter' — all warnings, never blockers."""
+    elbow = GuidePart(
+        id="elbow_1x_out_1x_in",
+        name="Rohrbogen DN22, Anschluss 1x außen 1x innen",
+        bbox_min=[0, 0, 0], bbox_max=[1, 1, 1],
+    )
+    sess = _sess(
+        [elbow, _part("adapter_dn22")],
+        [
+            _step(1, [{"action": "place", "part": "adapter_dn22",
+                       "target": "linker Anschluss"}]),
+            _step(2, [{"action": "place", "part": "elbow_1x_out_1x_in",
+                       "target": "unterer Bogen"}]),
+        ],
+    )
+    fs = plan_lint(sess)
+    assert not [f for f in fs if "Bogen" in f["text"] and "matches no registered part" in f["text"]], fs

@@ -48,6 +48,9 @@ _REPEAT_REJECT_TOOLS = {
     "solve_free_preview",
 }
 _REPEAT_REJECT_CAP = 3
+# attachment-preview dead-pair cap: all-rejected candidates on the same
+# target_port across ANY moving ports — see _dead_pair_counts below
+_DEAD_PAIR_CAP = 3
 # error-class loop breaker: the same tool failing the SAME WAY N times in
 # one mission is a stuck model, not bad luck — 'create_step exists' and
 # 'update_step not found' loops burned whole mission budgets because the
@@ -276,6 +279,12 @@ class GuideToolSession(ToolSession):
         self._premount_quota: dict[str, int] = {}
         self._bad_image_calls = 0
         self._reject_counts: dict[str, int] = {}
+        # dead-pair breaker: attachment previews return ok=true even when
+        # EVERY candidate is pre-rejected — an args-keyed reject counter
+        # never sees the dead end and a stuck model re-probes the same
+        # target_port with different moving ports (73x in one run). Key
+        # on (target instance, target_port): the port itself is the sink.
+        self._dead_pair_counts: dict[tuple[str, str], int] = {}
         # (tool, error-class) -> repeat count for the loop breaker
         self._err_class_counts: dict[tuple[str, str], int] = {}
         # (tool, entity-key) -> successful write count for the write-streak
@@ -330,6 +339,12 @@ class GuideToolSession(ToolSession):
                     "with a documented plan note (list_parts/list_steps show "
                     "the live state). Retrying verbatim cannot succeed.",
                 }
+        # dead-pair breaker: every candidate on this target_port was already
+        # pre-rejected _DEAD_PAIR_CAP times — the port is the sink, varying
+        # the moving port cannot revive it
+        dead_gate = self._dead_pair_gate(name, args)
+        if dead_gate is not None:
+            return dead_gate
         # entity-keyed write-streak breaker: successful rewrites of the
         # same entity count up — warns inside the result, then blocks
         # with a streak-exempt guardrail, then re-escalates to an honest
@@ -356,6 +371,7 @@ class GuideToolSession(ToolSession):
             self._bad_image_calls += 1
         if sig is not None and isinstance(res, dict) and not res.get("ok"):
             self._reject_counts[sig] = self._reject_counts.get(sig, 0) + 1
+        self._dead_pair_count(name, args, res)
         if wkey and isinstance(res, dict) and res.get("ok"):
             self._write_counts[wkey] = wn + 1
             if wn + 1 >= _WRITE_WARN_AT:
@@ -375,6 +391,40 @@ class GuideToolSession(ToolSession):
                     "call budget is finite"
                 )
         return self._err_class_gate(name, res)
+
+    def _dead_pair_gate(self, name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+        """Attachment previews return ok=true even when every candidate is
+        pre-rejected, so the identical-arg reject counter never sees the
+        dead end and a stuck model re-probes the same target_port with
+        different moving ports (73x in one run). The port is the sink —
+        key on (target instance, target_port)."""
+        if name != "solve_attachment_preview":
+            return None
+        key = (str(args.get("target_part_id", "")), str(args.get("target_port", "")))
+        if self._dead_pair_counts.get(key, 0) < _DEAD_PAIR_CAP:
+            return None
+        return {
+            "ok": False,
+            "_streak_exempt": True,
+            "error": f"target port '{key[1]}' on '{key[0]}' rejected every "
+            f"candidate {_DEAD_PAIR_CAP}x across different moving ports — "
+            "the port pair cannot mate. Pick a different target_port from "
+            "alternative_pairs / find_matching_ports (other spigots/sockets "
+            "on the same part score equally), or place via "
+            "solve_env_preview only if the manual shows no port mate",
+        }
+
+    def _dead_pair_count(self, name: str, args: dict[str, Any], res: Any) -> None:
+        """Count all-rejected attachment previews on (target instance,
+        target_port) for _dead_pair_gate."""
+        if name != "solve_attachment_preview":
+            return
+        if not isinstance(res, dict) or not res.get("ok"):
+            return
+        if any(c.get("geometry_ok") for c in res.get("candidates") or [{}]):
+            return
+        key = (str(args.get("target_part_id", "")), str(args.get("target_port", "")))
+        self._dead_pair_counts[key] = self._dead_pair_counts.get(key, 0) + 1
 
     def _err_class_gate(self, name: str, res: Any) -> Any:
         """Error-class loop breaker: the same tool failing the SAME WAY N

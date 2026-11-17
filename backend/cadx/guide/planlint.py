@@ -168,16 +168,27 @@ def _is_instance_ref(sess: GuideToolSession, name: str) -> bool:
     toks = _tokset(name)
     if not (toks & _INSTANCE_QUALIFIERS):
         return False
-    part_toks: set[str] = set()
+    # only HEAD nouns identify a part kind — every name/alias/id leads
+    # with it ('Rohrbogen DN22, Anschluss…' → 'rohrbogen'). Matching all
+    # name tokens lets modifier words impersonate the kind: 'Anschlussrohr
+    # in der Verkleidung' prefix-matched 'anschluss' from an elbow name
+    # and passed as an instance ref, while it is a HOST feature the kit
+    # never ships — the plan stayed silently unplaceable
+    head_toks: set[str] = set()
     for k in _name_index(sess):
-        part_toks |= _tokset(k)
+        words = k.split()
+        if words:
+            head_toks.add(words[0])
     # german declension compounds the noun ('des Rohrbogens', 'linkes
-    # vertikales Rohrs') — exact token equality misses them, so compare
-    # by prefix just like _ctx_phrase_in does for context names
+    # vertikales Rohrs') — exact token equality misses them; a query
+    # token extends the head noun by prefix ('rohrbogens'→'rohrbogen')
+    # or abbreviates it by suffix ('Bogen'→'rohrbogen'). The reverse
+    # ('anschlussrohr' ends in 'rohr') names a DIFFERENT kind — never
+    # an instance of the kit pipe
     return any(
-        t == p or (len(p) >= 4 and t.startswith(p)) or (len(t) >= 4 and p.startswith(t))
+        t == p or (len(p) >= 4 and t.startswith(p)) or (len(t) >= 4 and p.endswith(t))
         for t in toks
-        for p in part_toks
+        for p in head_toks
     )
 
 
