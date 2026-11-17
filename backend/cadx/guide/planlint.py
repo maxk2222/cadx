@@ -171,7 +171,28 @@ def _is_instance_ref(sess: GuideToolSession, name: str) -> bool:
     part_toks: set[str] = set()
     for k in _name_index(sess):
         part_toks |= _tokset(k)
-    return bool(toks & part_toks)
+    # german declension compounds the noun ('des Rohrbogens', 'linkes
+    # vertikales Rohrs') — exact token equality misses them, so compare
+    # by prefix just like _ctx_phrase_in does for context names
+    return any(
+        t == p or (len(p) >= 4 and t.startswith(p)) or (len(t) >= 4 and p.startswith(t))
+        for t in toks
+        for p in part_toks
+    )
+
+
+_SIDE_AXES = (frozenset("lr"), frozenset("ud"), frozenset("fb"))
+
+
+def _side_consistent(ref: frozenset[str], sig: frozenset[str]) -> bool:
+    """No axis may contradict: the ref's 'oben' on a feature is fine when
+    the plan only discriminates left/right — but 'unterer Adapter' must
+    never bind the instance the plan places 'oben'."""
+    for ax in _SIDE_AXES:
+        ra, sa = ref & ax, sig & ax
+        if ra and sa and ra != sa:
+            return False
+    return True
 
 
 def _lint_required_context(sess: GuideToolSession, st: Any) -> list[dict[str, Any]]:
@@ -210,8 +231,10 @@ def _lint_required_resolvable(sess: GuideToolSession, st: Any) -> list[dict[str,
         if not name or _is_context(sess, name) or _resolve_name(sess, name):
             continue
         remedy = (
-            "alias_part it onto a registered part or update_step to drop "
-            "it from required_parts"
+            "alias_part it onto a registered part, rename_required_name "
+            "it to the qualified kit name, mark_context_part it when it "
+            "denotes host geometry, or update_step to drop it from "
+            "required_parts"
         )
         if not getattr(sess.state, "allow_part_generation", True):
             remedy += " (generation is disabled — the kit part must come "
@@ -303,8 +326,11 @@ def _lint_target(sess: GuideToolSession, st: Any, i: int, name: str) -> list[dic
             "text": f"step {st.number} sub {i}: target '{name}' "
             "matches no registered part"
             + _suggest(sess, name)
-            + " — alias_part the name onto the host part "
-            "or register a missed asset",
+            + " — if it denotes a device-side feature "
+            "(an Anschluss/Öffnung ON the host), mark_context_part it "
+            "(context names mate to the host part); if it is a kit part "
+            "under another manual name, alias_part or "
+            "rename_required_name; else register a missed asset",
         }
     ]
 
@@ -721,10 +747,13 @@ def _lint_side_coverage(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
         if not ref:
             continue
         sigs = [s for s in planned.get(tpid, []) if s]
-        # any planned signature must cover the ref's full side words —
-        # a single-signature part is no exemption: 'linker Adapter'
-        # still cannot bind the instance the plan places 'rechter'
-        if not sigs or any(ref <= s for s in sigs):
+        # consistency on shared axes, not subset: a target 'freie obere
+        # Öffnung des Rohrbogens links oben' carries a finer side set
+        # {l,u} than the plan's coarser {l} — 'oben' qualifies the
+        # feature's end, not the instance's slot, and the {l} instance
+        # IS the intended mate. A real contradiction still blocks:
+        # 'unterer Adapter' cannot bind the instance placed {u}.
+        if not sigs or any(_side_consistent(ref, s) for s in sigs):
             continue
         if _PREMOUNT_MARK.search(f"{t['target']} {t['text']}"):
             continue  # preassembly spawns the premounted copy

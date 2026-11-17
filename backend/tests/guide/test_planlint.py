@@ -858,3 +858,66 @@ def test_premount_kit_kind_still_needs_marker() -> None:
     sess.state.document = DocumentIndex(detected_premount_qty={"adapter": 1})
     hits = [f for f in plan_lint(sess) if "premounted target" in f["text"]]
     assert hits, "adapter is kit-placed — the unmarked 'adapter' target cannot count"
+
+
+def test_side_ref_finer_than_plan_sig_no_blocker() -> None:
+    """'freie obere Öffnung des Rohrbogens links oben' resolves to the
+    {l}-placed elbow even though the plan's signature is coarser —
+    consistency on shared axes, not subset: the ref's extra 'u' word
+    qualifies the feature end, it does not contradict the {l} slot.
+    (R3R4: 2 reopen cycles died here while the {l} instance was the
+    correct mate all along.)"""
+    elbow = GuidePart(
+        id="elbow_double_socket",
+        name="Rohrbogen DN22, 2x außen",
+        bbox_min=[0, 0, 0],
+        bbox_max=[1, 1, 1],
+    )
+    sess = _sess(
+        [elbow, _part("pipe")],
+        [
+            _step(1, [{"action": "place", "part": "elbow_double_socket",
+                       "target": "linker Anschluss am Gehäuse"}]),
+            _step(2, [{"action": "place", "part": "elbow_double_socket",
+                       "target": "rechter Anschluss am Gehäuse"}]),
+            _step(3, [{"action": "place", "part": "pipe",
+                       "target": "freie obere Öffnung des Rohrbogens links oben"}]),
+        ],
+    )
+    fs = plan_lint(sess)
+    assert not [f for f in fs if "locates a" in f["text"]], fs
+
+
+def test_side_ref_contradiction_still_blocks() -> None:
+    """The consistency rule must keep real wrong-side targets a blocker:
+    'unterer Adapter' can never bind the instance the plan places 'oben'."""
+    sess = _sess(
+        [_part("adapter"), _part("pipe")],
+        [
+            _step(1, [{"action": "place", "part": "adapter",
+                       "target": "oberer Anschluss am Gehäuse"}]),
+            _step(2, [{"action": "place", "part": "pipe",
+                       "target": "unterer Adapter am Gehäuse"}]),
+        ],
+    )
+    fs = plan_lint(sess)
+    assert [f for f in fs if "locates a" in f["text"]], fs
+
+
+def test_genitive_instance_ref_warns_not_blocks() -> None:
+    """'des linken vertikalen Rohrs aus Schritt 7' — the genitive 'Rohrs'
+    still names a placed instance by position; a warning, never a
+    'matches no registered part' blocker (R3R2 parts re-death)."""
+    sess = _sess(
+        [_part("rohr"), _part("adapter")],
+        [
+            _step(1, [{"action": "place", "part": "rohr",
+                       "target": "linker Anschluss"}]),
+            _step(2, [{"action": "place", "part": "adapter",
+                       "target": "freie obere Seite des linken vertikalen Rohrs aus Schritt 1"}]),
+        ],
+    )
+    fs = plan_lint(sess)
+    hits = [f for f in fs if "matches no registered part" in f["text"]
+            and "Rohrs" in f["text"]]
+    assert not hits, fs
