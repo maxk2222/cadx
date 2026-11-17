@@ -685,6 +685,7 @@ async def run_session(  # noqa: C901
     sig_history: list[str] = []
     edits_since_check = 0
     nudged = False
+    repeat_nudged = False
     churn_exceeded = False
     verify_loop = False
     # verify failed on INFRASTRUCTURE (executor/schema skew), not on the code
@@ -947,6 +948,22 @@ async def run_session(  # noqa: C901
             and sig_history[-k:] == sig_history[-2 * k : -k]
             for k in (2, 3, 4)
         )
+        # warn-before-kill on repeat: one identical re-emission is a stall
+        # symptom, not proof — tell the model ONCE that the call can only
+        # return the same data; ignoring the warning confirms the loop
+        if repeat_streak == 1 and not repeat_nudged:
+            repeat_nudged = True
+            msgs.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "STOP — that turn repeated the previous one "
+                        "byte-for-byte and produced nothing new. Take a "
+                        "DIFFERENT action now: apply the change you were "
+                        "diagnosing, or move on to the next step."
+                    ),
+                }
+            )
         # churn detector: weak models burn turns on read/edit pairs without
         # ever validating — nudge once, then end the session
         names = {tc.name for tc in tool_calls}

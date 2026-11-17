@@ -191,6 +191,16 @@ def _retry_nudge(
             "\nThe previous attempt also hit these tool errors — "
             "do NOT repeat the same calls verbatim:\n" + last_failures
         )
+    if mission == "build":
+        # re-browsing is the biggest budget sink observed in blender
+        # build retries — the session re-read every manual page before
+        # touching the scene it already built
+        nudge += (
+            "\nYou already read the manual pages and figures — do NOT "
+            "re-fetch them. Re-read ONLY list_parts/list_steps plus ONE "
+            "scene dump, then continue modeling/tagging/syncing from "
+            "where the tagged objects stand."
+        )
     if mission == "assembly":
         # scoped repair list — an unscoped retry makes the model
         # re-audit the WHOLE scene and "fix" correct placements,
@@ -244,7 +254,18 @@ def _build_missing_outputs(state: GuideState) -> list[str]:
         missing.append("no registered parts")
     if not state.assembly.instances:
         missing.append("no synced instances")
-    unrendered = [s.number for s in state.steps if not s.media_image]
+    if state.guide_mode == "blender":
+        # the render contract is the step_*_blender.png artifact —
+        # media_image also gets figure crops via assign_media, which
+        # would fake completion on a step that was never rendered
+        media = Path(state.output_dir) / "media"
+        unrendered = [
+            s.number
+            for s in state.steps
+            if not (media / f"step_{s.number:02d}_blender.png").exists()
+        ]
+    else:
+        unrendered = [s.number for s in state.steps if not s.media_image]
     if unrendered:
         missing.append(f"steps without render: {unrendered[:8]}")
     return missing

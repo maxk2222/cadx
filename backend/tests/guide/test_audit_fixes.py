@@ -177,8 +177,14 @@ def test_build_missing_outputs_scene_truth(tmp_path: Path) -> None:
     state.assembly.instances = [AssemblyInstance(instance_id="p1#1", part_id="p1")]
     missing = _build_missing_outputs(state)
     assert any("render" in m for m in missing)
-    state.steps[0].media_image = "/tmp/a.png"
-    state.steps[1].media_image = "/tmp/b.png"
+    # a figure crop assigned via assign_media is NOT a render — the
+    # contract is the step_*_blender.png artifact on disk
+    state.steps[0].media_image = "/tmp/figure_crop.png"
+    assert _build_missing_outputs(state), "figure media must not count"
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "step_01_blender.png").write_bytes(b"x")
+    (media / "step_02_blender.png").write_bytes(b"x")
     assert _build_missing_outputs(state) == []
 
 

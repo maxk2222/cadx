@@ -66,8 +66,10 @@ def _to_gltf_frame(matrix_blender) -> list[list[float]]:
 _CHECKPOINT_TOOLS = {"blender_sync_scene", "blender_register_part", "blender_save"}
 # sessions die on repeat/loop detectors far earlier than the mission
 # budget — the forced sync must fire inside a SHORT session's life too
-_CHECKPOINT_WARN = 30
-_CHECKPOINT_ESCALATE = 60
+# session lifetimes observed at ~19-33 calls — the forced sync must land
+# inside a typical session or tagged work dies in Blender's memory
+_CHECKPOINT_WARN = 15
+_CHECKPOINT_ESCALATE = 30
 
 
 def _calls_since_checkpoint(s: GuideToolSession) -> int:
