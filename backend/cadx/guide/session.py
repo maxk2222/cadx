@@ -291,6 +291,12 @@ class GuideToolSession(ToolSession):
         # breaker; successful page-image reads for the triage hint
         self._write_counts: dict[tuple[str, str], int] = {}
         self._page_image_calls = 0
+        # PDF images already attached this session: the transport dedupes
+        # by bytes so a refetch returns literally nothing — a model that
+        # re-polls pages 2,3,4,5 -> 2,3,4,5 instead of writing steps must
+        # get an honest refusal, not an empty ok (observed: steps mission
+        # burned its whole budget in a get_page_image cycle)
+        self._delivered_images: set[tuple[Any, ...]] = set()
         self.parked = False
         self.parked_questions: list[dict[str, Any]] = []
         # image budget for _images results (page images, assembly renders)
@@ -384,11 +390,17 @@ class GuideToolSession(ToolSession):
         if name == "get_page_image" and isinstance(res, dict) and res.get("ok"):
             self._page_image_calls += 1
             if self._page_image_calls >= _PAGE_IMAGE_HINT_AT:
+                # name a tool that actually exists in THIS mission —
+                # classify_pages is doc-only, the hint misfired when a
+                # steps-mission looped page fetches
+                next_tool = {"doc": "classify_pages", "steps": "create_steps"}.get(
+                    self.mission, "the mission's write tools"
+                )
                 res["hint"] = (
                     f"{self._page_image_calls} page images fetched — "
-                    "classify_pages triages which pages actually carry "
-                    "steps/figures before more image reads; the mission "
-                    "call budget is finite"
+                    f"proceed with {next_tool} on the pages already in "
+                    "context (re-fetching a delivered page is refused); "
+                    "the mission call budget is finite"
                 )
         return self._err_class_gate(name, res)
 
@@ -680,7 +692,29 @@ class GuideToolSession(ToolSession):
         p = self._page(int(a.get("page", 0)))
         if p is None or not p.image_path:
             return {"ok": False, "error": "page not found or not rendered"}
-        return self._images_result([p.image_path], page=p.page)
+        key = ("page", p.page)
+        if key in self._delivered_images:
+            return self._redeliver_refusal(f"page {p.page} image")
+        res = self._images_result([p.image_path], page=p.page)
+        if "_images" in res:
+            self._delivered_images.add(key)
+        return res
+
+    @staticmethod
+    def _redeliver_refusal(what: str) -> dict[str, Any]:
+        """Refusing a refetch is honest, not restrictive: the transport
+        dedupes images by bytes so the call can only ever return the
+        identical image again — a guaranteed no-op."""
+        return {
+            "ok": False,
+            "_streak_exempt": True,
+            "error": (
+                f"{what} was already attached in this mission — a re-fetch "
+                "returns byte-identical content and only burns the call "
+                "budget. Work from the images already in context; "
+                "get_page_text/list_figures answer what the image did not"
+            ),
+        }
 
     def _tool_get_page_text(self, a: dict[str, Any]) -> dict[str, Any]:
         p = self._page(int(a.get("page", 0)))
@@ -728,7 +762,13 @@ class GuideToolSession(ToolSession):
         idx = int(a.get("index", 0))
         for f in p.figures:
             if int(f.get("index", 0)) == idx and f.get("image_path"):
-                return self._images_result([str(f["image_path"])], page=p.page, index=idx)
+                key = ("fig", p.page, idx)
+                if key in self._delivered_images:
+                    return self._redeliver_refusal(f"figure {idx} on page {p.page}")
+                res = self._images_result([str(f["image_path"])], page=p.page, index=idx)
+                if "_images" in res:
+                    self._delivered_images.add(key)
+                return res
         return {
             "ok": False,
             "_streak_exempt": True,

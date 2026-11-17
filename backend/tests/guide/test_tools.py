@@ -1690,3 +1690,66 @@ def test_declared_mates_audits_orient_substep_leg() -> None:
     dm = _declared_mates(sess)
     miss = [m for m in dm["unfulfilled_mates"] if m["instance"] == "elbow_oo#1"]
     assert miss and miss[0]["missing"] == ["pipe_l70"], dm
+
+
+def test_page_image_refetch_is_refused(tmp_path) -> None:
+    """A refetched page can only ever return byte-identical content (the
+    transport dedupes by hash) — refuse it instead of letting a stuck
+    model burn the mission budget in a get_page_image cycle."""
+    from unittest.mock import MagicMock
+
+    from cadx.guide.state import DocumentIndex, GuideState, PageSummary
+
+    img = tmp_path / "p1.png"
+    img.write_bytes(b"\x89PNG fake")
+    state = GuideState()
+    state.document = DocumentIndex(
+        page_count=2,
+        pages=[
+            PageSummary(page=1, image_path=str(img)),
+            PageSummary(page=2, image_path=str(img)),
+        ],
+    )
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=8)
+    sess = GuideToolSession(
+        ctx, mission="steps", state=state, state_dir=str(tmp_path),
+        project_id=None, guide_assets=[], executor=None,
+    )
+    first = sess._tool_get_page_image({"page": 1})
+    assert first["ok"] is True and first.get("_images") == [str(img)]
+    again = sess._tool_get_page_image({"page": 1})
+    assert again["ok"] is False and again["_streak_exempt"] is True
+    assert "already attached" in again["error"]
+    # a different page still fetches normally
+    other = sess._tool_get_page_image({"page": 2})
+    assert other["ok"] is True
+
+
+def test_figure_image_refetch_is_refused(tmp_path) -> None:
+    from unittest.mock import MagicMock
+
+    from cadx.guide.state import DocumentIndex, GuideState, PageSummary
+
+    img = tmp_path / "fig.png"
+    img.write_bytes(b"\x89PNG fig")
+    state = GuideState()
+    state.document = DocumentIndex(
+        page_count=1,
+        pages=[
+            PageSummary(
+                page=1, image_path="",
+                figures=[{"index": 1, "image_path": str(img)}],
+            )
+        ],
+    )
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=8)
+    sess = GuideToolSession(
+        ctx, mission="steps", state=state, state_dir=str(tmp_path),
+        project_id=None, guide_assets=[], executor=None,
+    )
+    first = sess._tool_get_figure_image({"page": 1, "index": 1})
+    assert first["ok"] is True and first.get("_images") == [str(img)]
+    again = sess._tool_get_figure_image({"page": 1, "index": 1})
+    assert again["ok"] is False and again["_streak_exempt"] is True
