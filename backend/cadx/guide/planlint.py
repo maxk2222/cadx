@@ -272,13 +272,18 @@ def _lint_target(sess: GuideToolSession, st: Any, i: int, name: str) -> list[dic
 
     # alias wins over a context mark — the last explicit agent action is
     # the intended resolution; a stale context mark repaired via
-    # alias_part must not keep blocking placement targets
+    # alias_part must not keep blocking placement targets. Resolution
+    # uses _resolve_part (the canonicalizer's binder): '(aus Schritt N)'
+    # pins and step context legitimately resolve what the bare cascade
+    # misses — the lint must not demand repairs for names the binder
+    # already binds
+    resolved = _resolve_part(sess, name, st.number)
     ctx_tok = _context_token(sess, name)
-    if (_is_context(sess, name) or ctx_tok) and not _resolve_name(sess, name):
+    if (_is_context(sess, name) or ctx_tok) and not resolved:
         feat = ctx_tok or name
         # marking context AGAIN is a no-op — the name is already marked;
         # the only repair that lets the mate resolve is aliasing the
-        # feature onto the registered host part
+        # feature onto the registered part it actually denotes
         retarget = (
             ""
             if ctx_tok
@@ -290,13 +295,13 @@ def _lint_target(sess: GuideToolSession, st: Any, i: int, name: str) -> list[dic
                 "severity": "blocker",
                 "text": f"step {st.number} sub {i}: target '{name}' "
                 f"names context feature '{feat}' but a placement mates "
-                "to it — the name denotes a FEATURE of an existing part "
-                "(nozzle/port on the host): alias_part "
-                f"'{feat}' onto that registered part (e.g. the "
-                f"enclosure/base){retarget}",
+                "to it — alias_part "
+                f"'{feat}' onto the part it actually denotes (a host "
+                "feature → the enclosure/base; a mis-marked kit "
+                f"instance → the placed kit part){retarget}",
             }
         ]
-    if _resolve_name(sess, name):
+    if resolved:
         return []
     amb = getattr(sess, "_ambiguous", {}).get(name)
     if amb:

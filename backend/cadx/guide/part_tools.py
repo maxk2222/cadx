@@ -518,6 +518,17 @@ async def mark_context_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str,
     name = str(a.get("name", "")).strip()
     if not name:
         return {"ok": False, "error": "name required"}
+    from cadx.guide.preassembly import _STEP_REF
+
+    if _STEP_REF.search(name):
+        return {
+            "ok": False,
+            "error": f"'{name}' carries a step pin — it names a PLACED "
+            "instance produced by that step, not a device-side feature. "
+            "Context marks only fit static host features (ports, nozzles, "
+            "covers the kit never installs). The lint blocker this name "
+            "came from is already handled — no context declaration needed.",
+        }
     collide = _context_kit_collisions(s, name)
     if collide:
         return {
