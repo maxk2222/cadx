@@ -111,10 +111,18 @@ planlint itself is skipped in blender mode: its checks guard the CAD
 sub_step/target/pin grammar for port resolution, which the blender
 pipeline never consumes (scene gate + review stay the authorities).
 instances, bboxes and the manifest come from measured scene facts, never
-from LLM claims. Buried non-premounted instances block — the blocker
-carries a least-escape `obj.location` delta (Blender axes) so the repair
-session acts instead of re-measuring; joint interpenetration stays a
-warning in `state.blender_manifest`.
+from LLM claims. Only near-total solid enclosure (≥85% of the smaller
+part's volume) blocks — a part invisible in its own step render — with a
+least-escape `obj.location` delta (Blender axes) so the repair session
+acts instead of re-measuring. Deep-but-visible overlap (≥30%) lands in
+`state.blender_manifest` as review evidence: coarse insertion joints
+legitimately interpenetrate (a solid-modeled pipe has no hollow, a
+socketed adapter overlaps ~70%), so joint-vs-error is a visual judgment,
+not a geometric verdict. Blender mode derives its joint graph from
+physical contact (`solver.touch_pairs`, world-AABB adjacency): inserted
+parts are partners exempt from `buried_instances`, and
+`disconnected_instances` catches floating clusters the port-solver
+graph would have caught in cad mode — same primitives in the emit audit.
 
 Session-death safety nets for the free-form mission: `blender_exec`
 counts calls since the last durable checkpoint and nudges (then forces)

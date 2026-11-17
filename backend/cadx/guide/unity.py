@@ -22,6 +22,7 @@ from cadx.guide.solver import (
     disconnected_instances,
     evaluate_mate,
     sibling_pairs,
+    touch_pairs,
     world_bbox,
 )
 
@@ -135,6 +136,12 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[
             _ikey(j.get("moving_instance") or j.get("moving_part")),
             _ikey(j.get("fixed_instance") or j.get("fixed_part")),
         ))
+    if state.guide_mode == "blender":
+        # no declared joints exist in a free-scene build — physical
+        # contact IS the joint graph; without it correct insertions emit
+        # as buried and reachable parts as disconnected
+        have = {frozenset(p) for p in joint_pairs}
+        joint_pairs += [p for p in touch_pairs(bboxes) if frozenset(p) not in have]
     buried_rows = buried_instances(bboxes, joint_pairs)
     # premounted hardware roots its own subtree — it mounts on the
     # machine body, not the casing host

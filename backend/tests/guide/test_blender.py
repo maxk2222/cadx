@@ -470,7 +470,7 @@ def test_overlap_solid_check_frees_socketed_pipe(tmp_path):
     )
     assert blockers == []
     solid = manifest["overlaps"][0].get("solid_fraction")
-    assert solid is not None and solid < blender_check._SOLID_BURY_FRACTION
+    assert solid is not None and solid < blender_check._SOLID_BURY_WARN_FRACTION
 
 
 def test_overlap_solid_check_flags_true_burial(tmp_path):
@@ -493,6 +493,49 @@ def test_overlap_solid_check_flags_true_burial(tmp_path):
     )
     assert len(blockers) == 1 and "small#1" in blockers[0]
     assert manifest["overlaps"][0]["solid_fraction"] == 1.0
+
+
+def test_overlap_insertion_joint_warns_not_blocks(tmp_path):
+    """An adapter socketed into a solid-modeled pipe interpenetrates
+    ~67% of its volume — a correct insertion joint in rough-primitive
+    modeling (the pipe has no hollow). Blocking it killed a real eval:
+    the repair sessions applied the escape delta, saw the joint break,
+    and reverted — twice, then 'unrepairable'. Deep overlap is review
+    evidence, not a gate blocker; only near-invisibility blocks."""
+    import trimesh
+
+    pipe = trimesh.creation.cylinder(radius=6, height=60)
+    pipe_path = tmp_path / "pipe.glb"
+    pipe.export(pipe_path)
+    adapter = trimesh.creation.cylinder(radius=5, height=30)
+    adapter_path = tmp_path / "adapter.glb"
+    adapter.export(adapter_path)
+
+    p_pipe = _part("pipe")
+    p_pipe.mesh_path = str(pipe_path)
+    p_pipe.bbox_min = [float(v) for v in pipe.bounds[0]]
+    p_pipe.bbox_max = [float(v) for v in pipe.bounds[1]]
+    p_adapter = _part("adapter")
+    p_adapter.mesh_path = str(adapter_path)
+    p_adapter.bbox_min = [float(v) for v in adapter.bounds[0]]
+    p_adapter.bbox_max = [float(v) for v in adapter.bounds[1]]
+
+    inst_p = _inst("pipe#1", "pipe", step=1)
+    inst_a = _inst("adapter#1", "adapter", step=2)
+    inst_a.transform[2][3] = 25.0  # 20mm socketed into the pipe's top end
+
+    manifest = {"overlaps": [], "warnings": []}
+    blockers = blender_check._overlap_scan(
+        [inst_p, inst_a], {"pipe": p_pipe, "adapter": p_adapter}, manifest
+    )
+    assert blockers == [], blockers
+    solid = manifest["overlaps"][0].get("solid_fraction")
+    assert (
+        blender_check._SOLID_BURY_WARN_FRACTION
+        <= solid
+        < blender_check._SOLID_BURY_BLOCK_FRACTION
+    ), solid
+    assert any("adapter#1" in w for w in manifest["warnings"])
 
 
 def test_checkpoint_nudge_counts_and_resets(tmp_path):
@@ -540,3 +583,63 @@ def test_forced_checkpoint_syncs_and_resets(tmp_path, monkeypatch):
     assert len(sess.state.assembly.instances) == 1
     res2 = asyncio.run(blender_tools.blender_exec(sess, {"code": "print('y')"}))
     assert "auto_checkpoint" not in res2
+
+
+def test_touch_pairs_adjacency():
+    """Face-contact pairs (zero overlap volume) still count as joints —
+    the eps bridges them; a far instance is not a partner."""
+    import numpy as np
+
+    from cadx.guide import solver
+
+    boxes = {
+        "a#1": (np.array([0.0, 0, 0]), np.array([10.0, 10, 10])),
+        "b#1": (np.array([10.5, 0, 0]), np.array([20.0, 10, 10])),
+        "c#1": (np.array([100.0, 0, 0]), np.array([110.0, 10, 10])),
+    }
+    pairs = solver.touch_pairs(boxes, eps_mm=1.0)
+    assert pairs == [("a#1", "b#1")]
+
+
+def test_audit_blender_touch_graph_exempts_joints(tmp_path):
+    """Without a declared joint graph the audit flagged every inserted
+    part as buried and could never see disconnected clusters. Blender
+    mode derives partners from physical contact: the socketed adapter is
+    exempt, the floating part 400mm away is unreachable debris."""
+
+    from cadx.guide import assembly_tools
+
+    sess = _sess(tmp_path)
+    sess.state.guide_mode = "blender"
+    sess.state.parts = [
+        _boxed_part("pipe", 100.0),
+        _boxed_part("adapter", 20.0),
+        _boxed_part("floaty", 20.0),
+    ]
+    sess.state.assembly.instances = [
+        _inst("pipe#1", "pipe", x=0.0),
+        _inst("adapter#1", "adapter", x=10.0),   # AABB inside pipe's box
+        _inst("floaty#1", "floaty", x=400.0),    # touches nothing
+    ]
+    audit = assembly_tools.joint_geometry_audit(sess)
+    assert audit["buried_instances"] == [], audit["buried_instances"]
+    lost = {d["instance"] for d in audit["disconnected_instances"]}
+    assert "floaty#1" in lost and "adapter#1" not in lost
+
+
+def test_joint_pairs_cad_mode_keeps_declared_only(tmp_path):
+    """The touch graph must not leak into cad mode — declared joints are
+    the contract there; touching instances stay unpartnered."""
+    import numpy as np
+
+    from cadx.guide import assembly_tools
+
+    boxes = {
+        "a#1": (np.array([0.0, 0, 0]), np.array([10.0, 10, 10])),
+        "b#1": (np.array([10.5, 0, 0]), np.array([20.0, 10, 10])),
+    }
+    sess = _sess(tmp_path)
+    assert sess.state.guide_mode == "cad"
+    assert assembly_tools._joint_pairs(sess, lambda x: x, boxes) == []
+    sess.state.guide_mode = "blender"
+    assert assembly_tools._joint_pairs(sess, lambda x: x, boxes) == [("a#1", "b#1")]

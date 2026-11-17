@@ -31,8 +31,15 @@ _BURY_FRACTION = 0.5
 # DN22 pipe socketed into an elbow can score >90% AABB overlap while
 # interpenetrating almost none of the elbow's wall material. "Buried"
 # means this share of the smaller part's VOLUME inside the other's
-# solid — measured, not inferred.
-_SOLID_BURY_FRACTION = 0.30
+# solid — measured, not inferred. But only near-total enclosure is a
+# hard blocker: rough-primitive joints legitimately interpenetrate
+# deeply (a solid-modeled pipe has no hollow, so a correctly socketed
+# adapter scores ~70% — the gate's escape delta would unbuild the
+# joint). Between the warn floor and the block line the overlap lands
+# in the manifest for the visual review to judge — a part ~fully inside
+# another solid is invisible in its step render, THAT is unambiguous.
+_SOLID_BURY_WARN_FRACTION = 0.30
+_SOLID_BURY_BLOCK_FRACTION = 0.85
 _BURY_SAMPLES = 400
 
 
@@ -204,43 +211,72 @@ def _overlap_scan(instances: list, parts: dict, manifest: dict) -> list[str]:
             entry = {"a": ids[i], "b": ids[j], "fraction": round(frac, 3)}
             manifest["overlaps"].append(entry)
             if frac >= _BURY_FRACTION:
-                va = float(np.prod(np.maximum(aabbs[ids[i]][1] - aabbs[ids[i]][0], 0.0)))
-                vb = float(np.prod(np.maximum(aabbs[ids[j]][1] - aabbs[ids[j]][0], 0.0)))
-                buried = ia if va <= vb else ib
-                other = ib if buried is ia else ia
-                if buried.premounted:
-                    continue
-                solid = None
-                try:
-                    for inst in (buried, other):
-                        if inst.instance_id not in meshes:
-                            part = parts[inst.part_id]
-                            m = _load_part_mesh(part).copy()
-                            m.apply_transform(np.asarray(inst.transform, dtype=float))
-                            meshes[inst.instance_id] = m
-                    solid = _solid_buried_fraction(
-                        meshes[buried.instance_id], meshes[other.instance_id]
-                    )
-                except Exception:
-                    solid = None
-                entry["solid_fraction"] = round(solid, 3) if solid is not None else None
-                if solid is not None and solid >= _SOLID_BURY_FRACTION:
-                    blockers.append(
-                        f"{buried.instance_id}: {solid * 100:.0f}% of its "
-                        f"volume sits inside {other.instance_id}'s solid "
-                        f"(bbox overlap {frac * 100:.0f}%) — reposition the "
-                        "buried object in Blender"
-                        + _unbury_hint(aabbs[buried.instance_id], aabbs[other.instance_id])
-                        + "."
-                    )
-                elif solid is None:
-                    manifest["warnings"].append(
-                        f"{buried.instance_id} vs {other.instance_id}: "
-                        f"{frac * 100:.0f}% bbox overlap but the solid-level "
-                        "check could not measure — verify the placement "
-                        "visually in the render."
-                    )
+                blocker = _burial_verdict(
+                    ia, ib, frac, aabbs, meshes, parts, entry, manifest
+                )
+                if blocker:
+                    blockers.append(blocker)
     return blockers
+
+
+def _burial_verdict(
+    ia: Any,
+    ib: Any,
+    frac: float,
+    aabbs: dict[str, tuple],
+    meshes: dict[str, Any],
+    parts: dict,
+    entry: dict,
+    manifest: dict,
+) -> str | None:
+    """Measure solid interpenetration of a deep-overlap suspect pair and
+    grade it: near-total enclosure blocks (invisible in the render),
+    deep-but-visible overlap lands in the manifest as review evidence."""
+    va = float(np.prod(np.maximum(aabbs[ia.instance_id][1] - aabbs[ia.instance_id][0], 0.0)))
+    vb = float(np.prod(np.maximum(aabbs[ib.instance_id][1] - aabbs[ib.instance_id][0], 0.0)))
+    buried = ia if va <= vb else ib
+    other = ib if buried is ia else ia
+    if buried.premounted:
+        return None
+    solid = None
+    try:
+        for inst in (buried, other):
+            if inst.instance_id not in meshes:
+                part = parts[inst.part_id]
+                m = _load_part_mesh(part).copy()
+                m.apply_transform(np.asarray(inst.transform, dtype=float))
+                meshes[inst.instance_id] = m
+        solid = _solid_buried_fraction(
+            meshes[buried.instance_id], meshes[other.instance_id]
+        )
+    except Exception:
+        solid = None
+    entry["solid_fraction"] = round(solid, 3) if solid is not None else None
+    if solid is not None and solid >= _SOLID_BURY_BLOCK_FRACTION:
+        return (
+            f"{buried.instance_id}: {solid * 100:.0f}% of its "
+            f"volume sits inside {other.instance_id}'s solid "
+            f"(bbox overlap {frac * 100:.0f}%) — it is invisible "
+            "in its step render; reposition it in Blender"
+            + _unbury_hint(aabbs[buried.instance_id], aabbs[other.instance_id])
+            + "."
+        )
+    if solid is None:
+        manifest["warnings"].append(
+            f"{buried.instance_id} vs {other.instance_id}: "
+            f"{frac * 100:.0f}% bbox overlap but the solid-level "
+            "check could not measure — verify the placement "
+            "visually in the render."
+        )
+    elif solid >= _SOLID_BURY_WARN_FRACTION:
+        manifest["warnings"].append(
+            f"{buried.instance_id} vs {other.instance_id}: "
+            f"{solid * 100:.0f}% of its solid sits inside the "
+            "other — deep overlap can be a coarse insertion "
+            "joint or a placement error; the step render "
+            "shows which."
+        )
+    return None
 
 
 async def run_scene_gate(s: Any) -> tuple[list[str], dict[str, Any]]:
@@ -318,7 +354,7 @@ async def run_scene_gate(s: Any) -> tuple[list[str], dict[str, Any]]:
         if o["fraction"] < _BURY_FRACTION
         or (
             o.get("solid_fraction") is not None
-            and o["solid_fraction"] < _SOLID_BURY_FRACTION
+            and o["solid_fraction"] < _SOLID_BURY_WARN_FRACTION
         )
     )
     manifest["blockers"] = blockers

@@ -1933,17 +1933,36 @@ async def check_collisions(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
         finally:
             sc.add(key, part.mesh_path, inst.transform)
         return {"ok": True, "instance_id": key, **rep}
-    return {"ok": True, **sc.all_pairs_collision_report()}
+    rep = sc.all_pairs_collision_report()
+    if s.state.guide_mode == "blender":
+        rep["mode_note"] = (
+            "coarse Blender joints interpenetrate by design — contacts ARE "
+            "the joints (an adapter socketed into a solid-modeled pipe has "
+            "no hollow to mate into). Judge step-render visibility and "
+            "layout, never hit counts."
+        )
+    return {"ok": True, **rep}
 
 
-def _joint_pairs(s: GuideToolSession, _ikey: Any) -> list[tuple[str, str]]:
+def _joint_pairs(
+    s: GuideToolSession,
+    _ikey: Any,
+    bboxes: dict[str, tuple[np.ndarray, np.ndarray]] | None = None,
+) -> list[tuple[str, str]]:
     """Joint graph as (instance, instance) pairs, resolved through _ikey so
-    legacy part-keyed joints land on their first instance."""
+    legacy part-keyed joints land on their first instance.
+
+    Blender mode declares no joints — the scene IS the assembly, so
+    physical contact defines the graph: without it every inserted part
+    reads as buried and every instance as disconnected."""
     pairs: list[tuple[str, str]] = []
     for j in s.state.assembly.joints:
         a = _ikey(j.get("moving_instance") or j.get("moving_part"))
         b = _ikey(j.get("fixed_instance") or j.get("fixed_part"))
         pairs.append((a, b))
+    if s.state.guide_mode == "blender" and bboxes:
+        have = {frozenset(p) for p in pairs}
+        pairs += [p for p in solver.touch_pairs(bboxes) if frozenset(p) not in have]
     return pairs
 
 
@@ -1952,7 +1971,7 @@ def _buried_instances_audit(
     bboxes: dict[str, tuple[np.ndarray, np.ndarray]],
     _ikey: Any,
 ) -> list[dict[str, Any]]:
-    return solver.buried_instances(bboxes, _joint_pairs(s, _ikey))
+    return solver.buried_instances(bboxes, _joint_pairs(s, _ikey, bboxes))
 
 
 def _connectivity_audit(
@@ -1969,7 +1988,7 @@ def _connectivity_audit(
     # body, not on the casing, so its subtree is legitimately host-anchored
     roots = {iid for iid, i in insts.items() if i.premounted}
     return solver.disconnected_instances(
-        bboxes, _joint_pairs(s, _ikey), sorted(insts), extra_roots=roots
+        bboxes, _joint_pairs(s, _ikey, bboxes), sorted(insts), extra_roots=roots
     )
 
 

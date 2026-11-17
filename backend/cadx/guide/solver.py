@@ -816,6 +816,25 @@ def buried_instances(
     return buried
 
 
+def touch_pairs(
+    boxes: dict[str, tuple[np.ndarray, np.ndarray]],
+    eps_mm: float = 1.0,
+) -> list[tuple[str, str]]:
+    """Instance pairs whose world AABBs touch or overlap — the adjacency
+    graph a free-scene build declares without a port solver: physical
+    contacts ARE the joints. ``eps_mm`` bridges face-contact pairs whose
+    AABBs meet at zero overlap volume."""
+    ids = sorted(boxes)
+    pairs: list[tuple[str, str]] = []
+    for i in range(len(ids)):
+        mna, mxa = boxes[ids[i]]
+        for j in range(i + 1, len(ids)):
+            mnb, mxb = boxes[ids[j]]
+            if bool(np.all(mxa + eps_mm >= mnb) and np.all(mxb + eps_mm >= mna)):
+                pairs.append((ids[i], ids[j]))
+    return pairs
+
+
 def disconnected_instances(
     boxes: dict[str, tuple[np.ndarray, np.ndarray]],
     joint_pairs: list[tuple[str, str]],
