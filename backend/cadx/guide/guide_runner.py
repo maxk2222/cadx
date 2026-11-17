@@ -302,6 +302,7 @@ def _mission_prompt(
     parts = [{"role": "system", "content": sys_p}]
     ctx_lines = [
         f"Guide language: {state.language}",
+        f"Guide mode: {state.guide_mode}",
         f"User notes ({len(state.user_notes)}): {'; '.join(state.user_notes[:6]) or 'none'}",
     ]
     if mission == "assembly" and sess is not None:
@@ -709,6 +710,10 @@ async def _plan_gate(
                     "build mission: " + " | ".join(fatal),
                 )
             return notes
+        # plan lint guards the CAD port-resolution grammar (sub_steps/
+        # targets/pins) the blender pipeline never consumes — scene gate
+        # + review are the physical authorities in this mode
+        return None
     notes, fatal = _plan_lint_reopen(
         lint_sess, state, state_dir, allow_reopen=lint_cycles < 2
     )

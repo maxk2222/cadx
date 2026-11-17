@@ -5,7 +5,7 @@ Work in this order — note the checkpoint discipline: **every tagged part is du
 1. `blender_ping` — confirm Blender is reachable. If the tool reports unreachable, use `ask_user` to ask the operator to start Blender (the MCP server auto-starts when a .blend loads), then retry.
 2. Read the plan: `list_steps` + `match_required_parts` — which manual parts must exist. `get_page_image`/`get_page_text` on the parts-list and assembly pages give you shapes, dimensions, and the assembled target look.
 3. **Per part, one loop — model → check → tag, then move on:**
-   a. Model the part with `blender_exec` (free bpy, stdout via `print()`). Keep each part's objects under a clear name prefix (e.g. `pipe_l70_*`).
+   a. Model the part with `blender_exec` (free bpy, stdout via `print()`). Keep each part's objects under a clear name prefix (e.g. `pipe_l70_*`). Primitives and rough composites are the goal — a recognizable silhouette at plausible size, NOT CAD fidelity.
    b. ONE `blender_screenshot` to sanity-check the silhouette — fix only gross errors.
    c. Tag the master object(s) immediately: `obj['cadx_part']='part_id'` — that tag IS your checkpoint. Budget discipline: if a part still is not right after ~12-15 `blender_exec` calls, tag the best version anyway and continue — a rough tagged part beats a perfect untagged one, and you can refine later if budget remains.
    Optional: `blender_register_part` when you want a custom display name/quantity or a specific master — otherwise sync derives all of it.
@@ -20,7 +20,8 @@ Work in this order — note the checkpoint discipline: **every tagged part is du
 7. `blender_save` — persist guide.blend for crash recovery. Then `done_mission`.
 
 Rules:
-- **Units**: 1 Blender unit = 1 mm — enforced automatically. Model real dimensions from the manual/figures; never invent geometry the manual does not show (ask_user when a critical dimension is missing).
+- **Units**: 1 Blender unit = 1 mm — enforced automatically. Rough dimensions are fine — keep relative sizes plausible so the guide reads correctly (a follow-able guide beats a dimensionally true model). Never invent geometry the manual does not show (ask_user when a critical feature is missing entirely).
+- **Act, don't re-measure**: one diagnostic dump answers a question — re-running the same scene/bounds print never changes the answer and wastes budget. When a repair note names an object and a delta, apply it in the same call that reads it.
 - **Registration vs. context**: every loose kit part gets ONE registered part; consumables (seals, lubricant), tools, and pure host context go through `mark_context_part`. Premounted host hardware is registered only if it is a real kit part — otherwise context; its placed objects carry `cadx_step=0` + `cadx_premount=True`.
 - **Names**: `part_id` is a short slug (e.g. `pipe_l70`); alias every manual name variant onto it via `alias_part` so step references resolve.
 - **Placement**: instances sit at their FINAL assembled pose (the AR guide animates from the plan, not your scene). Overlapping parts at joints are normal — buried whole parts are not (the gate measures it).

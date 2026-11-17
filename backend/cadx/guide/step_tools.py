@@ -554,7 +554,9 @@ async def finalize_steps(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
         if step.action_type == "assembly":
             if not step.required_parts:
                 errors.append(f"step {i}: assembly step without required_parts")
-            if not step.sub_steps:
+            # blender mode: the scene builder tags instances from
+            # required_parts — no sub_step grammar is consumed downstream
+            if not step.sub_steps and s.state.guide_mode != "blender":
                 errors.append(f"step {i}: assembly step without sub_steps")
         step.parts_delta = list(step.required_parts)
     if errors:
@@ -573,7 +575,11 @@ def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
             res_errors.append(f"step {st.number}: {err}")
         if not st.source_pages:
             res_errors.append(f"step {st.number}: source_pages missing")
-        if st.action_type == "assembly" and not st.sub_steps:
+        if (
+            st.action_type == "assembly"
+            and not st.sub_steps
+            and s.state.guide_mode != "blender"
+        ):
             res_errors.append(f"step {st.number}: assembly step without sub_steps")
     if res_errors:
         return {

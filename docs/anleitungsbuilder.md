@@ -71,7 +71,7 @@ missions in order, each a bounded `run_session` with a mission-scoped
 | Mission | Tools | Output |
 |---|---|---|
 | `doc` | prepare_pdf, page text/images/figures, classify, part names | `state.document` |
-| `steps` | create/update/reorder steps + sub_steps + media | ordered `state.steps` (dual text) |
+| `steps` | create/update/reorder steps + sub_steps + media | ordered `state.steps` (dual text; `sub_steps` required in cad mode only — blender instances come from `cadx_step` tags) |
 | `parts` | register_uploaded_part, match/alias, generate_missing_part | `state.parts` w/ ports+bbox |
 | `assembly` | find_matching_ports, solve_*_preview, place_instance (candidate_id only), collision/render/validate | `state.assembly` |
 | `review` | validators + `write_review_report` | `state.review` |
@@ -107,6 +107,9 @@ contract is scene tags: every placed object carries
 `obj['cadx_premount']=True`. `blender_sync_scene` and the scene gate
 (`blender_check.run_scene_gate`, fires at `review` instead of the cad
 lint's `assembly` gate) read `matrix_world` back deterministically —
+planlint itself is skipped in blender mode: its checks guard the CAD
+sub_step/target/pin grammar for port resolution, which the blender
+pipeline never consumes (scene gate + review stay the authorities).
 instances, bboxes and the manifest come from measured scene facts, never
 from LLM claims. Buried non-premounted instances block — the blocker
 carries a least-escape `obj.location` delta (Blender axes) so the repair

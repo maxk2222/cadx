@@ -1714,3 +1714,83 @@ def test_reorder_reports_missing_and_duplicated(tmp_path) -> None:
     assert r["ok"] is False
     assert r["missing"] == [3] and r["duplicated"] == [1]
     assert r["current"] == [1, 2, 3]
+
+
+def test_finalize_steps_blender_skips_substep_grammar(tmp_path: Path) -> None:
+    """Blender mode never consumes sub_steps (blender_tools/blender_check/
+    unity read only cadx_step tags — sub_steps drive CAD port resolution
+    only). Requiring them made the step mission emit a formal grammar
+    small models cannot produce reliably: attempt 18 died on 7 lint
+    blockers that were all grammar violations, zero geometry defects."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from cadx.guide import step_tools
+    from cadx.guide.state import GuideStep
+
+    for mode, expect_ok in (("blender", True), ("cad", False)):
+        state = GuideState(output_dir=str(tmp_path), guide_mode=mode)
+        state.steps = [
+            GuideStep(
+                number=1,
+                text="Place the pipe onto the adapter.",
+                display_text="Rohr aufstecken",
+                required_parts=["pipe"],
+                source_pages=[3],
+            )
+        ]
+        sess = SimpleNamespace(state=state)
+        r = asyncio.run(step_tools.finalize_steps(sess, {}))
+        assert r["ok"] is expect_ok, (mode, r)
+
+
+def test_plan_gate_blender_skips_planlint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """planlint guards the CAD sub_step grammar — in blender mode it
+    reopened steps/build on pure-grammar blockers (unresolvable targets,
+    pin contradictions) that no consumer ever reads. The scene gate +
+    review are the physical authorities; a clean scene must pass."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from cadx.guide import blender_check, planlint
+    from cadx.guide.guide_runner import _plan_gate
+    from cadx.guide.session import GuideToolSession
+
+    async def fake_scene_gate(s):
+        return [], {"objects": 3}
+
+    def boom(sess):
+        raise AssertionError("plan_lint must not run in blender mode")
+
+    monkeypatch.setattr(blender_check, "run_scene_gate", fake_scene_gate)
+    monkeypatch.setattr(planlint, "plan_lint", boom)
+    state = GuideState(output_dir=str(tmp_path), guide_mode="blender")
+    state.missions_done = ["doc", "steps", "build"]
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    sess = GuideToolSession(
+        ctx,
+        mission="review",
+        state=state,
+        state_dir=str(tmp_path),
+        project_id=None,
+        guide_assets=[],
+        executor=None,
+    )
+    out = asyncio.run(
+        _plan_gate("review", sess, state, tmp_path, lint_cycles=0)
+    )
+    assert out is None, out
+    assert state.blender_manifest == {"objects": 3}
+
+
+def test_mission_prompt_carries_guide_mode(tmp_path: Path) -> None:
+    """The steps prompt's MODE RULE keys off the 'Guide mode:' context
+    line — it must be injected for every mission."""
+    from cadx.guide.guide_runner import _mission_prompt
+
+    state = GuideState(output_dir=str(tmp_path), guide_mode="blender")
+    msgs = _mission_prompt("steps", state)
+    assert any("Guide mode: blender" in m.get("content", "") for m in msgs), msgs
