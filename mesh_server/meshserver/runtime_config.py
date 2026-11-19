@@ -75,6 +75,7 @@ def config_view(cfg: ServerConfig) -> dict:
         "llm_queue_max": "MESH_LLM_QUEUE_MAX",
         "llm_stream_queue_wait_s": "MESH_LLM_STREAM_QUEUE_WAIT_S",
         "llm_keepalive_s": "MESH_LLM_KEEPALIVE_S",
+        "llm_reasoning_parse": "MESH_LLM_REASONING_PARSE",
         "llm_prio_internal": "MESH_LLM_PRIO_INTERNAL",
         "llm_prio_external": "MESH_LLM_PRIO_EXTERNAL",
         "llm_upstream_timeout_s": "MESH_LLM_UPSTREAM_TIMEOUT_S",

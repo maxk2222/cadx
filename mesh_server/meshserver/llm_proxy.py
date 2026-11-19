@@ -636,6 +636,198 @@ def _error_chunk(message: str) -> bytes:
     return f'data: {json.dumps({"error": {"message": message}})}\n\ndata: [DONE]\n\n'.encode()
 
 
+# ── reasoning wire format ────────────────────────────────────────────────
+# Thinking models (Qwen3.8-thinking, DeepSeek-R1, gpt-oss…) emit their
+# chain-of-thought inside <think>…</think> tags. Adapters differ: llama.cpp
+# can split it server-side (--reasoning-format), mlx_lm/mlx_vlm always
+# stream the raw tags inside `content`. The OpenAI/DeepSeek wire format
+# carries reasoning in a SEPARATE field — `delta.reasoning_content` /
+# `message.reasoning_content` — so the proxy normalizes every lane: tags
+# in content are split out into reasoning_content, chunks that already
+# carry reasoning_content pass through untouched.
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def split_reasoning_text(text: str) -> tuple[str | None, str]:
+    """Non-stream variant: parse every <think>…</think> block out of a
+    completion string → (reasoning, visible_content). An unterminated
+    block counts as reasoning to the end."""
+    reasoning_parts: list[str] = []
+    visible_parts: list[str] = []
+    rest = text
+    while True:
+        i = rest.find(_THINK_OPEN)
+        if i < 0:
+            visible_parts.append(rest)
+            break
+        visible_parts.append(rest[:i])
+        rest = rest[i + len(_THINK_OPEN):]
+        j = rest.find(_THINK_CLOSE)
+        if j < 0:
+            reasoning_parts.append(rest)
+            rest = ""
+            break
+        reasoning_parts.append(rest[:j])
+        rest = rest[j + len(_THINK_CLOSE):]
+    reasoning = "".join(reasoning_parts).strip()
+    return (reasoning or None), "".join(visible_parts).strip()
+
+
+def transform_reasoning_json(obj: Any) -> bool:
+    """Split think blocks out of `choices[i].message.content` into
+    `message.reasoning_content` — the non-stream wire format llama.cpp /
+    vLLM emit. Returns True when a choice was rewritten."""
+    changed = False
+    for choice in (obj or {}).get("choices") or []:
+        msg = (choice or {}).get("message")
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or _THINK_OPEN not in content:
+            continue
+        reasoning, visible = split_reasoning_text(content)
+        if reasoning is None:
+            continue
+        msg["reasoning_content"] = reasoning
+        msg["content"] = visible
+        changed = True
+    return changed
+
+
+class _SseEvents:
+    """Raw upstream bytes → complete SSE events (split on blank lines)."""
+
+    def __init__(self) -> None:
+        self._buf = b""
+
+    def feed(self, chunk: bytes) -> list[bytes]:
+        """Complete events, WITHOUT the \\n\\n terminator."""
+        self._buf += chunk
+        out: list[bytes] = []
+        while (i := self._buf.find(b"\n\n")) >= 0:
+            out.append(self._buf[:i])
+            self._buf = self._buf[i + 2:]
+        return out
+
+    def flush(self) -> bytes:
+        tail, self._buf = self._buf, b""
+        return tail
+
+
+class _ReasoningStream:
+    """Stateful SSE transformer — moves think-tag regions out of
+    `delta.content` into `delta.reasoning_content` across arbitrary
+    chunk boundaries (a tag may be split mid-token by the upstream)."""
+
+    def __init__(self) -> None:
+        self.in_think = False
+        self._tail = ""  # held-back partial tag prefix
+        self._last_id = "chatcmpl-mesh"
+        self._last_model = "mesh"
+
+    @staticmethod
+    def _partial_suffix(s: str, tag: str) -> int:
+        """Longest proper prefix of `tag` that ends `s` — that many
+        chars must be held back (they could complete the tag in the
+        next chunk)."""
+        for n in range(min(len(tag) - 1, len(s)), 0, -1):
+            if s.endswith(tag[:n]):
+                return n
+        return 0
+
+    def _split(self, text: str) -> tuple[str, str]:
+        s = self._tail + text
+        self._tail = ""
+        reasoning: list[str] = []
+        visible: list[str] = []
+        buf = s
+        while buf:
+            tag = _THINK_CLOSE if self.in_think else _THINK_OPEN
+            target = reasoning if self.in_think else visible
+            idx = buf.find(tag)
+            if idx >= 0:
+                target.append(buf[:idx])
+                buf = buf[idx + len(tag):]
+                self.in_think = not self.in_think
+                continue
+            # no full tag — hold back a trailing partial prefix
+            hold = self._partial_suffix(buf, tag)
+            take = len(buf) - hold
+            target.append(buf[:take])
+            self._tail = buf[take:]
+            buf = ""
+        return "".join(reasoning), "".join(visible)
+
+    def finish(self) -> bytes | None:
+        """Flush a partial-tag tail left dangling at stream end — it goes
+        to whichever channel was active."""
+        if not self._tail:
+            return None
+        tail, self._tail = self._tail, ""
+        delta = {"reasoning_content": tail} if self.in_think else {"content": tail}
+        chunk = {
+            "id": self._last_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self._last_model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+        }
+        return f"data: {json.dumps(chunk)}\n\n".encode()
+
+    def feed_event(self, event: bytes) -> list[bytes]:
+        """One complete SSE event → one or more output events (bytes,
+        each \\n\\n-terminated). [DONE] events get the tail flushed
+        BEFORE the terminator."""
+        if event.strip() == b"data: [DONE]":
+            out = []
+            flushed = self.finish()
+            if flushed is not None:
+                out.append(flushed)
+            out.append(event + b"\n\n")
+            return out
+        lines = event.split(b"\n")
+        out_lines: list[bytes] = []
+        for ln in lines:
+            if not ln.startswith(b"data:"):
+                out_lines.append(ln)
+                continue
+            payload = ln[5:].strip()
+            try:
+                obj = json.loads(payload)
+            except Exception:
+                out_lines.append(ln)  # not JSON — pass through verbatim
+                continue
+            if isinstance(obj, dict):
+                self._transform(obj)
+            # compact separators keep an untouched chunk byte-identical
+            # to what the upstream emitted (minimal wire delta)
+            out_lines.append(
+                b"data: " + json.dumps(obj, separators=(",", ":")).encode()
+            )
+        return [b"\n".join(out_lines) + b"\n\n"]
+
+    def _transform(self, obj: dict) -> None:
+        self._last_id = obj.get("id", self._last_id)
+        self._last_model = obj.get("model", self._last_model)
+        for choice in obj.get("choices") or []:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            content = delta.get("content")
+            if not isinstance(content, str) or not content:
+                continue
+            reasoning, visible = self._split(content)
+            delta.pop("content", None)
+            if reasoning:
+                prev = delta.get("reasoning_content")
+                delta["reasoning_content"] = (prev or "") + reasoning
+            if visible:
+                delta["content"] = visible
+
+
 async def _chat_stream(
     registry: Any,
     cfg: Any,
@@ -733,6 +925,14 @@ async def _chat_stream(
                 return
             idle_v = effective("llm_stream_idle_s") if effective else None
             idle_s = float(idle_v) if idle_v else None
+            # reasoning normalization: when the upstream streams raw
+            # <think> tags inside content (mlx always, gguf without
+            # --reasoning-format), split them into reasoning_content so
+            # every client sees the OpenAI wire format — llama.cpp's own
+            # server-side split passes through untouched (no tags left)
+            rp = effective("llm_reasoning_parse") if effective else None
+            reasoner = _ReasoningStream() if (rp is None or rp) else None
+            sse = _SseEvents()
             aiter = upstream.aiter_raw()
             while True:
                 try:
@@ -747,7 +947,21 @@ async def _chat_stream(
                         f"upstream idle for {idle_s:.0f}s — aborted"
                     )
                     return
-                yield chunk
+                if reasoner is None:
+                    yield chunk
+                    continue
+                for ev in sse.feed(chunk):
+                    for out in reasoner.feed_event(ev):
+                        yield out
+            if reasoner is not None:
+                # upstream closed without [DONE] — flush a held-back
+                # partial-tag tail, then any unterminated buffer bytes
+                flushed = reasoner.finish()
+                if flushed is not None:
+                    yield flushed
+                tail = sse.flush()
+                if tail:
+                    yield tail
         except httpx.HTTPError as e:
             yield _error_chunk(f"llm upstream unreachable: {e}")
             return
@@ -876,8 +1090,20 @@ async def _proxy_json(url: str, payload: dict, model: str, cfg: Any = None) -> R
     except httpx.HTTPError as e:
         log.warning("llm.proxy.upstream_error", model=model, error=str(e))
         return _err(502, f"llm upstream unreachable: {e}")
+    content = r.content
+    # reasoning normalization (non-stream): raw <think> blocks inside
+    # message.content get split into message.reasoning_content so LAN
+    # clients see the same wire format stream:true already delivers
+    rp = effective("llm_reasoning_parse") if effective else None
+    if (rp is None or rp) and b"<think>" in content:
+        try:
+            obj = json.loads(content)
+        except Exception:
+            obj = None
+        if obj is not None and transform_reasoning_json(obj):
+            content = json.dumps(obj, separators=(",", ":")).encode()
     return Response(
-        content=r.content,
+        content=content,
         status_code=r.status_code,
         media_type=r.headers.get("content-type", "application/json"),
     )

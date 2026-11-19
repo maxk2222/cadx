@@ -332,6 +332,17 @@ natively. Errors found **after** the commit arrive as
 pre-commit failures stay real HTTP statuses. `stream:false` remains a
 bounded wait + JSON `503` — a JSON body can't carry incremental status.
 
+**Reasoning normalization** — thinking models (Qwen3.8-thinking,
+DeepSeek-R1, gpt-oss) emit `<think>…</think>` regions. Adapters differ:
+llama.cpp can split server-side (`--reasoning-format`), mlx_lm/mlx_vlm
+always stream raw tags inside `content`. The proxy normalizes every lane
+(`llm_reasoning_parse`, default on): think regions in `delta.content`
+become `delta.reasoning_content` — across arbitrary chunk boundaries,
+including mid-tag splits — and `message.reasoning_content` on the
+non-stream path. Chunks that already carry `reasoning_content` (or have
+no tags) pass through; untouched chunks stay byte-identical. Clients get
+the same OpenAI/DeepSeek wire format on every adapter.
+
 Responses:
 
 - `200` — upstream JSON or SSE relayed verbatim (streams include
@@ -357,7 +368,7 @@ again); unknown keys are `422`. Mutable keys today:
 `llm_max_concurrent`, `llm_queue_wait_s`, `llm_queue_max`,
 `llm_queue_fair_s`, `llm_stream_queue_wait_s`, `llm_keepalive_s`,
 `llm_prio_internal`, `llm_prio_external`, `llm_upstream_timeout_s`,
-`llm_stream_idle_s`, `llm_failed_ttl_s`,
+`llm_stream_idle_s`, `llm_failed_ttl_s`, `llm_reasoning_parse`,
 `llm_parallel`, `llm_pin`,
 `llm_ctx`, `llm_kv_bits`, `llm_prefill_step`, `llm_draft`,
 `llm_max_num_seqs`, `llm_prompt_cache_mb`, `llm_gpu_layers`,

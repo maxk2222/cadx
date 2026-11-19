@@ -28,12 +28,29 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
             self._reply(500, data, "application/json")
             return
         if body.get("stream"):
-            data = (
-                b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
-                b"data: [DONE]\n\n"
-            )
+            if body.get("think"):
+                # a thinking-model upstream that NEVER splits reasoning
+                # server-side — tags arrive raw, one mid-tag split across
+                # chunk boundaries on purpose
+                data = (
+                    b'data: {"id":"c1","model":"m","choices":[{"index":0,'
+                    b'"delta":{"content":"<thi"}}]}\n\n'
+                    b'data: {"id":"c1","model":"m","choices":[{"index":0,'
+                    b'"delta":{"content":"nk>secret plan</think>answer"}}]}\n\n'
+                    b'data: {"id":"c1","model":"m","choices":[{"index":0,'
+                    b'"delta":{"finish_reason":"stop"}}]}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+            else:
+                data = (
+                    b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+                    b"data: [DONE]\n\n"
+                )
             self._reply(200, data, "text/event-stream")
             return
+        msg_content = "ok"
+        if body.get("think"):
+            msg_content = "<think>secret plan</think>answer"
         data = json.dumps(
             {
                 "id": "chatcmpl-1",
@@ -42,7 +59,7 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
                 "choices": [
                     {
                         "index": 0,
-                        "message": {"role": "assistant", "content": "ok"},
+                        "message": {"role": "assistant", "content": msg_content},
                         "finish_reason": "stop",
                     }
                 ],
@@ -325,3 +342,103 @@ async def test_llm_models_ctx_overlay_wins(upstream):
     async with _client(_app(reg)) as c:
         r = await c.get("/v1/llm-models")
     assert r.json()["data"][1]["context_len"] is None
+
+
+# ── reasoning wire format (think-tag → reasoning_content) ────────────────
+
+
+async def test_stream_think_tags_become_reasoning_content(upstream):
+    """Raw <think>…</think> in streamed content — even mid-tag-split —
+    must arrive as delta.reasoning_content (OpenAI wire format), never
+    as visible content text."""
+    reg = _Reg(_Adapter(upstream))
+    async with _client(_app(reg)) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "my-llm", "stream": True, "think": True, "messages": []},
+        )
+    assert r.status_code == 200
+    events = [e for e in r.text.split("\n\n") if e.startswith("data: {")]
+    deltas = [
+        json.loads(e[5:])["choices"][0]["delta"]
+        for e in events
+        if '"delta"' in e
+    ]
+    reasoning = "".join(d.get("reasoning_content", "") for d in deltas)
+    content = "".join(d.get("content", "") for d in deltas)
+    assert reasoning == "secret plan"
+    assert content == "answer"
+    assert "<think>" not in r.text and "</think>" not in r.text
+    assert "data: [DONE]" in r.text
+
+
+async def test_stream_passthrough_without_think_tags(upstream):
+    """Chunks with no think tags survive byte-identical."""
+    reg = _Reg(_Adapter(upstream))
+    async with _client(_app(reg)) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "my-llm", "stream": True, "messages": []},
+        )
+    assert '"content":"hi"' in r.text
+
+
+async def test_nonstream_think_tags_become_reasoning_content(upstream):
+    reg = _Reg(_Adapter(upstream))
+    async with _client(_app(reg)) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "my-llm", "think": True, "messages": []},
+        )
+    assert r.status_code == 200
+    msg = r.json()["choices"][0]["message"]
+    assert msg["reasoning_content"] == "secret plan"
+    assert msg["content"] == "answer"
+
+
+async def test_reasoning_parse_off_is_verbatim(upstream):
+    """llm_reasoning_parse=0 → byte-verbatim relay, tags and all."""
+    reg = _Reg(_Adapter(upstream))
+    app = _app(reg)
+    app.state.cfg.llm_reasoning_parse = False
+    async with _client(app) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "my-llm", "stream": True, "think": True, "messages": []},
+        )
+    assert "<thi" in r.text  # raw tag stream passed through untouched
+
+
+def test_split_reasoning_text_blocks():
+    from meshserver.llm_proxy import split_reasoning_text
+
+    assert split_reasoning_text("<think>a</think>out") == ("a", "out")
+    assert split_reasoning_text("<think>a</think>x<think>b</think>y") == ("ab", "xy")
+    assert split_reasoning_text("no tags") == (None, "no tags")
+    assert split_reasoning_text("<think>unterminated") == ("unterminated", "")
+
+
+def test_reasoning_stream_partial_tag_across_chunks():
+    """A tag split across arbitrary byte boundaries still parses — the
+    held-back partial prefix joins the next chunk."""
+    from meshserver.llm_proxy import _ReasoningStream
+
+    rs = _ReasoningStream()
+    # feed the tag as <t | hin | k> via single-content chunk events
+    outs = []
+    for frag in ("<t", "hin", "k>r</think>v"):
+        ev = f'data: {{"choices":[{{"delta":{{"content":"{frag}"}}}}]}}'.encode()
+        outs += rs.feed_event(ev)
+    text = b"".join(outs).decode()
+    reasoning = "".join(
+        json.loads(l[5:])["choices"][0]["delta"].get("reasoning_content", "")
+        for l in text.split("\n\n")
+        if l.startswith("data: {")
+    )
+    content = "".join(
+        json.loads(l[5:])["choices"][0]["delta"].get("content", "")
+        for l in text.split("\n\n")
+        if l.startswith("data: {")
+    )
+    assert reasoning == "r"
+    assert content == "v"

@@ -47,6 +47,7 @@ RUNTIME_MUTABLE: dict[str, tuple[type, str]] = {
     "llm_prio_external": (int, "immediate"),
     "llm_upstream_timeout_s": (float, "immediate"),
     "llm_stream_idle_s": (float, "immediate"),
+    "llm_reasoning_parse": (bool, "immediate"),
     "llm_failed_ttl_s": (int, "immediate"),
     "llm_parallel": (int, "next_model_load"),
     "llm_pin": (bool, "immediate"),
@@ -274,6 +275,14 @@ class ServerConfig:
     # that holds a slot forever gets aborted after this silence (0 = off)
     llm_stream_idle_s: float = field(
         default_factory=lambda: float(os.environ.get("MESH_LLM_STREAM_IDLE_S", "0"))
+    )
+    # normalize thinking-model output to the OpenAI wire format — raw
+    # <think>…</think> regions inside content get split into
+    # reasoning_content on both the streaming and the non-stream path
+    # (mlx_lm/mlx_vlm always stream raw tags; llama.cpp depends on its
+    # --reasoning-format build). Off = byte-verbatim relay.
+    llm_reasoning_parse: bool = field(
+        default_factory=lambda: _env_bool("MESH_LLM_REASONING_PARSE", True)
     )
     # badlist window for a failed adapter — escalates ×min(count,4) per
     # repeat failure so one-off transients heal but stall/OOM breakers
