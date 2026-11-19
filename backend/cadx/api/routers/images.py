@@ -87,31 +87,31 @@ async def generate_images(
     default_model = settings.image_edit_model if edit else settings.image_model
     model = body.model if body.model and body.model != "auto" else default_model
     tmp_dir = tempfile.mkdtemp(prefix="cadx-imggen-")
-    req = ImageGenRequest(
-        prompt=body.prompt,
-        negative=body.negative,
-        model=model,
-        seed=body.seed,
-        count=min(body.count, settings.image_max_count),
-        width=min(body.width, settings.image_max_side),
-        height=min(body.height, settings.image_max_side),
-        steps=body.steps if body.steps is not None else settings.image_steps,
-        guidance=body.guidance if body.guidance is not None else settings.image_guidance,
-        init_image=init_image,
-        strength=body.strength
-        if body.strength is not None
-        else (settings.image_default_strength if edit else None),
-        out_dir=Path(tmp_dir),
-    )
     try:
-        result = await client.generate(req, on_progress=None)
-    except ImageGenError as e:
-        raise HTTPException(502, str(e)) from e
-    except Exception as e:
-        log.warning("image_gen.failed", error=str(e))
-        raise HTTPException(502, f"image generation failed: {e}") from e
+        req = ImageGenRequest(
+            prompt=body.prompt,
+            negative=body.negative,
+            model=model,
+            seed=body.seed,
+            count=min(body.count, settings.image_max_count),
+            width=min(body.width, settings.image_max_side),
+            height=min(body.height, settings.image_max_side),
+            steps=body.steps if body.steps is not None else settings.image_steps,
+            guidance=body.guidance if body.guidance is not None else settings.image_guidance,
+            init_image=init_image,
+            strength=body.strength
+            if body.strength is not None
+            else (settings.image_default_strength if edit else None),
+            out_dir=Path(tmp_dir),
+        )
+        try:
+            result = await client.generate(req, on_progress=None)
+        except ImageGenError as e:
+            raise HTTPException(502, str(e)) from e
+        except Exception as e:
+            log.warning("image_gen.failed", error=str(e))
+            raise HTTPException(502, f"image generation failed: {e}") from e
 
-    try:
         # copy bytes into the asset dir BEFORE the temp dir is removed
         assets = persist_generated_images(
             db,
@@ -146,6 +146,8 @@ async def generate_images(
         )
         await db.commit()
     finally:
+        # covers request build + generate + persist — a generation failure
+        # previously skipped the rmtree and leaked the temp dir
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
     log.info(

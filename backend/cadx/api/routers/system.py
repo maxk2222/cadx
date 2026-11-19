@@ -143,8 +143,20 @@ async def stack_status() -> dict[str, Any]:
         raise
 
 
+# canonical watchdog-supervised services — mirrors _HEALABLE in
+# scripts/update_server.py plus the natively-supervised mesh-server.
+# Anything else is rejected here, never forwarded into the daemon URL.
+_RESTARTABLE_SERVICES = frozenset({"api", "worker", "cad-executor", "frontend", "mesh-server"})
+
+
 @router.post("/stack/restart/{service}")
 async def stack_restart(service: str):
     """Manual heal — restarts a supervised service through the watchdog
     (mesh-server respawn or `docker compose restart`)."""
+    if service not in _RESTARTABLE_SERVICES:
+        raise HTTPException(
+            400,
+            f"unknown or unhealable service {service!r} "
+            f"(allowed: {sorted(_RESTARTABLE_SERVICES)})",
+        )
     return await _call("POST", f"/v1/stack/restart/{service}", timeout_s=200.0)

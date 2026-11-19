@@ -94,11 +94,22 @@ def _active_job_dict(j: Job | None) -> dict | None:
     }
 
 
-async def _summary(v: Version, db: AsyncSession, active_job: Job | None = None) -> VersionSummary:
-    thumb = await db.execute(
-        select(Artifact).where(Artifact.version_id == v.id, Artifact.kind == "thumbnail")
-    )
-    t = thumb.scalars().first()
+_THUMB_UNSET: Any = object()  # sentinel — None means "looked up, none found"
+
+
+async def _summary(
+    v: Version,
+    db: AsyncSession,
+    active_job: Job | None = None,
+    thumbnail: Any = _THUMB_UNSET,
+) -> VersionSummary:
+    if thumbnail is _THUMB_UNSET:
+        thumb = await db.execute(
+            select(Artifact).where(Artifact.version_id == v.id, Artifact.kind == "thumbnail")
+        )
+        t = thumb.scalars().first()
+    else:
+        t = thumbnail
     return VersionSummary(
         id=v.id,
         project_id=v.project_id,
@@ -497,7 +508,21 @@ async def version_tree(
         )
         for j in jr.scalars().all():
             active.setdefault(j.version_id, j)  # newest non-terminal job wins
-    return [await _summary(v, db, active.get(v.id)) for v in versions]
+        # thumbnails in ONE query — per-version lookups were an N+1 on every
+        # tree load; first row per version wins, matching _summary's .first()
+        tr = await db.execute(
+            select(Artifact).where(
+                col(Artifact.version_id).in_(vids), Artifact.kind == "thumbnail"
+            )
+        )
+        thumbs: dict[uuid.UUID, Artifact] = {}
+        for a in tr.scalars().all():
+            thumbs.setdefault(a.version_id, a)
+    else:
+        thumbs = {}
+    return [
+        await _summary(v, db, active.get(v.id), thumbs.get(v.id)) for v in versions
+    ]
 
 
 @router.get("/versions/{version_id}", response_model=VersionDetail)

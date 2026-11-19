@@ -46,6 +46,21 @@ def _cap_for(kind: AssetKind) -> int:
     return _KIND_MAX_BYTES.get(kind, MAX_ASSET_BYTES)
 
 
+async def _read_capped(f: UploadFile, cap: int) -> bytes:
+    """Bounded upload body.
+
+    The declared per-part Content-Length (when the client sends one) is a
+    cheap early reject; the read itself is capped at ``cap + 1`` bytes so a
+    missing/lying header still can't buffer an unbounded body."""
+    declared = f.headers.get("content-length") if f.headers is not None else None
+    if declared is not None and declared.isdigit() and int(declared) > cap:
+        raise HTTPException(413, f"{f.filename}: exceeds {cap // 2**20}MB")
+    data = await f.read(cap + 1)
+    if len(data) > cap:
+        raise HTTPException(413, f"{f.filename}: exceeds {cap // 2**20}MB")
+    return data
+
+
 def _out(a: Asset) -> AssetOut:
     return AssetOut(
         id=a.id,
@@ -82,13 +97,10 @@ async def upload_assets(
         raise HTTPException(404, "project not found")
     out: list[Asset] = []
     for f in files:
-        data = await f.read()
         kind = _kind_for(f.filename or "", None)
         if kind is None:
             raise HTTPException(415, f"{f.filename}: unsupported type")
-        cap = _cap_for(kind)
-        if len(data) > cap:
-            raise HTTPException(413, f"{f.filename}: exceeds {cap // 2**20}MB")
+        data = await _read_capped(f, _cap_for(kind))
         if kind == AssetKind.pdf and not data.startswith(b"%PDF"):
             raise HTTPException(422, f"{f.filename}: not a PDF file")
         filename = f.filename or "file"
@@ -209,9 +221,7 @@ async def create_derivative(
         raise HTTPException(404, "asset not found")
     if src.kind not in IMAGE_ASSET_KINDS:
         raise HTTPException(400, "not an image asset")
-    png = await file.read()
-    if len(png) > MAX_ASSET_BYTES:
-        raise HTTPException(413, f"exceeds {MAX_ASSET_BYTES // 2**20}MB")
+    png = await _read_capped(file, MAX_ASSET_BYTES)
     asset = _store_derivative(src, png, "edit")
     if asset is None:
         raise HTTPException(415, "expected a PNG image")

@@ -144,3 +144,34 @@ def test_cold_fallback_when_zygote_broken(workdir, monkeypatch):
     monkeypatch.setattr(sb._Zygote, "spawn", boom)
     out = run_user_code(read("simple_box.py"), workdir, warm=True)
     assert out.ok, (out.error, out.traceback)  # cold subprocess took over
+
+
+def test_warm_path_skipped_for_foreign_zygote(workdir, monkeypatch):
+    """A forked worker inherits _ZYGOTE with the PARENT's pipe fds — the
+    owner-pid guard must route it to the cold subprocess instead of
+    writing into the parent's protocol."""
+    import os
+
+    import cadx.cad.sandbox as sb
+
+    calls = []
+    monkeypatch.setattr(sb._ZYGOTE, "run", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(sb._ZYGOTE, "owner_pid", os.getpid() + 1_000_000)
+    out = run_user_code(read("simple_box.py"), workdir, warm=True)
+    assert out.ok, (out.error, out.traceback)  # cold subprocess took over
+    assert not calls
+
+
+def test_zygote_kill_never_kills_foreign_owner(monkeypatch):
+    """kill() in a forked child must drop the handle, not SIGKILL the
+    parent's zygote."""
+    import os
+
+    import cadx.cad.sandbox as sb
+
+    killed = []
+    monkeypatch.setattr(sb._ZYGOTE, "proc", type("P", (), {"kill": lambda self: killed.append(1)})())
+    monkeypatch.setattr(sb._ZYGOTE, "owner_pid", os.getpid() + 1_000_000)
+    sb._ZYGOTE.kill()
+    assert not killed
+    assert sb._ZYGOTE.proc is None

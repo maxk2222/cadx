@@ -22,7 +22,10 @@ from pathlib import Path
 
 from cadx.cad import resources
 from cadx.cad.allowlist import apply_params_override, check_code, validate_overrides
+from cadx.logging import get_logger
 from cadx.runtime_config import RuntimeSettings
+
+log = get_logger(__name__)
 
 RUNNER = Path(__file__).parent / "runner_entry.py"
 ZYGOTE = Path(__file__).parent / "zygote.py"
@@ -84,10 +87,12 @@ class _Zygote:
 
     def __init__(self) -> None:
         self.proc: subprocess.Popen | None = None
+        self.owner_pid: int | None = None
         self.buf = b""
 
     def spawn(self) -> None:
         self.kill()
+        self.owner_pid = os.getpid()
         env = {
             "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
             "PYTHONHASHSEED": "0",
@@ -109,10 +114,12 @@ class _Zygote:
             raise RuntimeError(f"zygote warmup failed: {line[:200]}")
 
     def kill(self) -> None:
-        if self.proc is not None:
+        # a forked child inherits this object — killing here would SIGKILL
+        # the PARENT's zygote (the pid is only ours in the owner process)
+        if self.proc is not None and self.owner_pid == os.getpid():
             with contextlib.suppress(Exception):
                 self.proc.kill()
-            self.proc = None
+        self.proc = None
         self.buf = b""
 
     def _read_line(self, timeout_s: float) -> str:
@@ -193,6 +200,21 @@ class _Zygote:
 
 _ZYGOTE = _Zygote()
 _ZYGOTE_LOCK = threading.Lock()
+_ZYGOTE_FORK_WARNED: set[int] = set()
+
+
+def _warm_path_usable() -> bool:
+    """The module-global zygote survives os.fork() — a forked worker holds
+    the PARENT's pipe fds; running it would desync the parent's protocol.
+    Only the owning process may drive it; anything else takes the cold path."""
+    owner = _ZYGOTE.owner_pid
+    pid = os.getpid()
+    if owner is None or owner == pid:
+        return True
+    if pid not in _ZYGOTE_FORK_WARNED:
+        _ZYGOTE_FORK_WARNED.add(pid)
+        log.warning("sandbox.warm_skipped_foreign_zygote", owner_pid=owner, pid=pid)
+    return False
 
 
 def run_user_code(
@@ -263,7 +285,8 @@ def run_user_code(
     if warm:
         try:
             with _ZYGOTE_LOCK:
-                return _ZYGOTE.run(workdir, timeout_s, mem_mb, cpu_s)
+                if _warm_path_usable():
+                    return _ZYGOTE.run(workdir, timeout_s, mem_mb, cpu_s)
         except Exception:
             _ZYGOTE.kill()  # a half-broken zygote must not poison later runs
 

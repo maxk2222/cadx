@@ -31,6 +31,21 @@ _UPLOAD_EXT = {".step": "step", ".stp": "step", ".stl": "stl"}
 MAX_LIBRARY_BYTES = 50 * 1024 * 1024
 
 
+async def _read_capped(f: UploadFile, cap: int) -> bytes:
+    """Bounded upload body.
+
+    The declared per-part Content-Length (when the client sends one) is a
+    cheap early reject; the read itself is capped at ``cap + 1`` bytes so a
+    missing/lying header still can't buffer an unbounded body."""
+    declared = f.headers.get("content-length") if f.headers is not None else None
+    if declared is not None and declared.isdigit() and int(declared) > cap:
+        raise HTTPException(413, f"{f.filename}: exceeds {cap // 2**20}MB")
+    data = await f.read(cap + 1)
+    if len(data) > cap:
+        raise HTTPException(413, f"{f.filename}: exceeds {cap // 2**20}MB")
+    return data
+
+
 def _out(p: LibraryPart) -> LibraryPartOut:
     return LibraryPartOut(
         id=p.id,
@@ -54,9 +69,7 @@ async def upload_library_parts(
 ):
     out: list[LibraryPart] = []
     for f in files:
-        data = await f.read()
-        if len(data) > MAX_LIBRARY_BYTES:
-            raise HTTPException(413, f"{f.filename}: exceeds {MAX_LIBRARY_BYTES // 2**20}MB")
+        data = await _read_capped(f, MAX_LIBRARY_BYTES)
         ext = (
             "." + (f.filename or "").rsplit(".", 1)[-1].lower() if "." in (f.filename or "") else ""
         )

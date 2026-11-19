@@ -568,6 +568,21 @@ def _solve_case_child(i: int) -> tuple[int, FemSolution]:
     return i, sol
 
 
+def _terminate_pool_children(pool: Any) -> None:
+    """Hard-stop pool workers still solving after the wait deadline —
+    ``shutdown(wait=False)`` leaves them burning CPU until the executor
+    process itself exits."""
+    procs = list((getattr(pool, "_processes", None) or {}).values())
+    for p in procs:
+        with contextlib.suppress(Exception):
+            p.terminate()
+    for p in procs:
+        with contextlib.suppress(Exception):
+            p.join(timeout=5.0)
+            if p.is_alive():
+                p.kill()
+
+
 def _solve_cases(  # noqa: C901
     domain: VoxelDomain,
     mat: MaterialProps,
@@ -790,6 +805,7 @@ def _solve_cases(  # noqa: C901
             # pool wait and let the serial fallback below re-solve whatever the
             # pool never returned.
             pool = ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("fork"))
+            pending: set[Any] = set()
             try:
                 futures = {pool.submit(_solve_case_child, i): i for i in preps}
                 deadline = time.monotonic() + _POOL_WAIT_S
@@ -807,6 +823,8 @@ def _solve_cases(  # noqa: C901
                         i, case_sol = fut.result()
                         solved[i] = case_sol
             finally:
+                if pending:
+                    _terminate_pool_children(pool)
                 pool.shutdown(wait=False, cancel_futures=True)
         except Exception as e:
             log.warning("fem.solve_pool_failed", error=str(e)[:200])
@@ -972,3 +990,8 @@ def fem_feedback_lines(
         if not math.isfinite(c.max_disp_mm) or c.max_disp_mm <= 0:
             continue
     return lines
+
+
+# declared cross-agent contract: accepts `lightweight_requested` (P9) — the
+# orchestrator reads this flag instead of probing the signature
+fem_feedback_lines.ACCEPTS_LIGHTWEIGHT_REQUESTED = True
