@@ -24,6 +24,19 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return v.lower() in ("1", "true", "yes", "on")
 
 
+def _env_int(name: str, default: int) -> int:
+    """int env var where EMPTY means unset — the run/mesh-server.env
+    supervision contract writes declared-but-empty vars (VAR=) for
+    optionals, and int('') would crash boot."""
+    v = os.environ.get(name, "").strip()
+    return int(v) if v else default
+
+
+def _env_float(name: str, default: float) -> float:
+    v = os.environ.get(name, "").strip()
+    return float(v) if v else default
+
+
 def _env_keys() -> tuple[str, ...]:
     raw = os.environ.get("MESH_API_KEYS", "")
     keys = [k.strip() for k in raw.split(",") if k.strip()]
@@ -77,7 +90,7 @@ RUNTIME_MUTABLE: dict[str, tuple[type, str]] = {
 @dataclass
 class ServerConfig:
     host: str = field(default_factory=lambda: os.environ.get("MESH_HOST", "127.0.0.1"))
-    port: int = field(default_factory=lambda: int(os.environ.get("MESH_PORT", "8765")))
+    port: int = field(default_factory=lambda: _env_int("MESH_PORT", 8765))
     # device override: auto | cuda | rocm | mps | mlx | cpu
     device: str = field(default_factory=lambda: os.environ.get("MESH_DEVICE", "auto"))
     model_dir: Path = field(
@@ -94,20 +107,20 @@ class ServerConfig:
         )
     )
     job_ttl_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_JOB_TTL_S", "3600"))
+        default_factory=lambda: _env_int("MESH_JOB_TTL_S", 3600)
     )
     # a running job whose (progress, message) pair hasn't changed for this
     # long is marked failed — MPS/MLX stalls freeze at 0% CPU forever and
     # would otherwise hold the single-flight queue indefinitely
     job_stall_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_JOB_STALL_S", "600"))
+        default_factory=lambda: _env_int("MESH_JOB_STALL_S", 600)
     )
     # a client-aborted job whose child had already been idle this long is
     # recorded as *stalled* (adapter badlisted) rather than cancelled — the
     # abort is then the symptom of a frozen generation, not a user choice.
     # Kept below job_stall_s because the client watchdog fires first.
     job_cancel_idle_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_JOB_CANCEL_IDLE_S", "60"))
+        default_factory=lambda: _env_int("MESH_JOB_CANCEL_IDLE_S", 60)
     )
     # run each generation in its own subprocess (python -m meshserver.gen_worker)
     # so stall/cancel/RSS-cap can SIGKILL it and the OS reclaims all model
@@ -118,17 +131,17 @@ class ServerConfig:
     # hard RSS cap for the generation subprocess (MB, 0 = off) — a runaway
     # model is killed before it can swap the host into a watchdog panic
     job_max_rss_mb: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_JOB_MAX_RSS_MB", "24576"))
+        default_factory=lambda: _env_int("MESH_JOB_MAX_RSS_MB", 24576)
     )
     # refuse new jobs when the host reports less free RAM (MB, 0 = off)
     job_min_free_mb: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_JOB_MIN_FREE_MB", "0"))
+        default_factory=lambda: _env_int("MESH_JOB_MIN_FREE_MB", 0)
     )
     max_queue: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_MAX_QUEUE", "8"))
+        default_factory=lambda: _env_int("MESH_MAX_QUEUE", 8)
     )
     unload_idle_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_UNLOAD_IDLE_S", "0"))
+        default_factory=lambda: _env_int("MESH_UNLOAD_IDLE_S", 0)
     )
     fake: bool = field(default_factory=lambda: _env_bool("MESH_FAKE"))
     # enable adapters even when no GPU device was detected (e.g. slow CPU run)
@@ -144,7 +157,7 @@ class ServerConfig:
         default_factory=lambda: os.environ.get("MESH_IMAGE_MODEL", "auto")
     )
     flux_mlx_quant: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_FLUX_MLX_QUANT", "4"))
+        default_factory=lambda: _env_int("MESH_FLUX_MLX_QUANT", 4)
     )  # bit depth for the mflux weight file (4|8|16)
     # bake the LightX2V Lightning distillation LoRA into qwen-image-edit —
     # 8-step edits instead of ~28, ~4x faster synth views (Apache-2.0,
@@ -158,17 +171,17 @@ class ServerConfig:
         default_factory=lambda: os.environ.get("MESH_CUDA_OFFLOAD", "auto")
     )
     cuda_offload_vram_gb: float = field(
-        default_factory=lambda: float(os.environ.get("MESH_CUDA_OFFLOAD_VRAM_GB", "24"))
+        default_factory=lambda: _env_float("MESH_CUDA_OFFLOAD_VRAM_GB", 24)
     )
     # optional MLX unified-memory cap (0 = unlimited)
     mlx_mem_limit_gb: float = field(
-        default_factory=lambda: float(os.environ.get("MESH_MLX_MEM_LIMIT_GB", "0"))
+        default_factory=lambda: _env_float("MESH_MLX_MEM_LIMIT_GB", 0)
     )
 
     # --- memory ledger / scheduling (Phase: multi-model residency) ---
     # host RAM kept free below this reserved amount when admitting models (MB)
     mem_headroom_mb: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_MEM_HEADROOM_MB", "4096"))
+        default_factory=lambda: _env_int("MESH_MEM_HEADROOM_MB", 4096)
     )
     # keep a warm per-model generation worker alive between jobs (saves the
     # model reload each subprocess job pays today)
@@ -176,18 +189,18 @@ class ServerConfig:
         default_factory=lambda: _env_bool("MESH_WARM_WORKERS", True)
     )
     warm_idle_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_WARM_IDLE_S", "300"))
+        default_factory=lambda: _env_int("MESH_WARM_IDLE_S", 300)
     )
     warm_max: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_WARM_MAX", "2"))
+        default_factory=lambda: _env_int("MESH_WARM_MAX", 2)
     )
     # queue policy: a queued job older than this wins over model affinity
     queue_fair_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_QUEUE_FAIR_S", "120"))
+        default_factory=lambda: _env_int("MESH_QUEUE_FAIR_S", 120)
     )
     # queued job waiting on memory admission fails after this (s, 0 = never)
     queue_mem_wait_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_QUEUE_MEM_WAIT_S", "300"))
+        default_factory=lambda: _env_int("MESH_QUEUE_MEM_WAIT_S", 300)
     )
 
     # --- LLM adapter family (kind="llm") ---
@@ -195,10 +208,10 @@ class ServerConfig:
     # scheduler reclaim its memory when a mesh/image job needs it
     llm_pin: bool = field(default_factory=lambda: _env_bool("MESH_LLM_PIN"))
     llm_load_timeout_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_LOAD_TIMEOUT_S", "300"))
+        default_factory=lambda: _env_int("MESH_LLM_LOAD_TIMEOUT_S", 300)
     )
     llm_ctx: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_CTX", "16384"))
+        default_factory=lambda: _env_int("MESH_LLM_CTX", 16384)
     )
     # llama-server binary override (empty = python -m llama_cpp.server)
     llama_server_bin: str = field(
@@ -227,54 +240,50 @@ class ServerConfig:
     # --- llm request scheduling (all runtime-mutable via /v1/config) ---
     # proxy-side semaphore bounding concurrent upstream calls (0 = unbounded)
     llm_max_concurrent: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_MAX_CONCURRENT", "4"))
+        default_factory=lambda: _env_int("MESH_LLM_MAX_CONCURRENT", 4)
     )
     # bounded wait for a queue slot / memory admission before a 503
     llm_queue_wait_s: float = field(
-        default_factory=lambda: float(os.environ.get("MESH_LLM_QUEUE_WAIT_S", "30"))
+        default_factory=lambda: _env_float("MESH_LLM_QUEUE_WAIT_S", 30)
     )
     # scheduling fairness window for the llm request queue: one affinity
     # match OR one priority step earns a +fair_s score bonus; anything
     # waited longer than the window wins regardless (starvation-free)
     llm_queue_fair_s: float = field(
-        default_factory=lambda: float(os.environ.get("MESH_LLM_QUEUE_FAIR_S", "60"))
+        default_factory=lambda: _env_float("MESH_LLM_QUEUE_FAIR_S", 60)
     )
     # max requests held in the llm queue — beyond this an immediate 503
     # instead of unbounded pending work
     llm_queue_max: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_QUEUE_MAX", "32"))
+        default_factory=lambda: _env_int("MESH_LLM_QUEUE_MAX", 32)
     )
     # bounded wait for streaming requests — longer than llm_queue_wait_s
     # because the client sees live queue/load progress the whole time
     llm_stream_queue_wait_s: float = field(
-        default_factory=lambda: float(
-            os.environ.get("MESH_LLM_STREAM_QUEUE_WAIT_S", "600")
-        )
+        default_factory=lambda: _env_float("MESH_LLM_STREAM_QUEUE_WAIT_S", 600)
     )
     # SSE comment keepalive cadence while a stream request is queued/loading
     llm_keepalive_s: float = field(
-        default_factory=lambda: float(os.environ.get("MESH_LLM_KEEPALIVE_S", "5"))
+        default_factory=lambda: _env_float("MESH_LLM_KEEPALIVE_S", 5)
     )
     # scheduling priority per caller class — internal = CADX backend /
     # loopback tooling, external = authenticated LAN clients. One step =
     # +llm_queue_fair_s score (external default jumps ~10 windows ahead)
     llm_prio_internal: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_PRIO_INTERNAL", "0"))
+        default_factory=lambda: _env_int("MESH_LLM_PRIO_INTERNAL", 0)
     )
     llm_prio_external: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_PRIO_EXTERNAL", "10"))
+        default_factory=lambda: _env_int("MESH_LLM_PRIO_EXTERNAL", 10)
     )
     # total bound for a non-stream upstream call (0 = unbounded — the
     # historical default since generation latency is genuinely unbounded)
     llm_upstream_timeout_s: float = field(
-        default_factory=lambda: float(
-            os.environ.get("MESH_LLM_UPSTREAM_TIMEOUT_S", "0")
-        )
+        default_factory=lambda: _env_float("MESH_LLM_UPSTREAM_TIMEOUT_S", 0)
     )
     # bound on the gap BETWEEN upstream stream chunks — a wedged server
     # that holds a slot forever gets aborted after this silence (0 = off)
     llm_stream_idle_s: float = field(
-        default_factory=lambda: float(os.environ.get("MESH_LLM_STREAM_IDLE_S", "0"))
+        default_factory=lambda: _env_float("MESH_LLM_STREAM_IDLE_S", 0)
     )
     # normalize thinking-model output to the OpenAI wire format — raw
     # <think>…</think> regions inside content get split into
@@ -288,27 +297,27 @@ class ServerConfig:
     # repeat failure so one-off transients heal but stall/OOM breakers
     # stay parked long enough not to flap
     llm_failed_ttl_s: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_FAILED_TTL_S", "300"))
+        default_factory=lambda: _env_int("MESH_LLM_FAILED_TTL_S", 300)
     )
     # llama.cpp --parallel slots (applies at next model load; KV cache
     # scales with slots × ctx, so the ledger estimate gains headroom)
     llm_parallel: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_PARALLEL", "1"))
+        default_factory=lambda: _env_int("MESH_LLM_PARALLEL", 1)
     )
     # sync-wait bound for OpenAI-style /v1/images/* wrappers
     openai_image_wait_s: float = field(
-        default_factory=lambda: float(os.environ.get("MESH_OPENAI_IMAGE_WAIT_S", "600"))
+        default_factory=lambda: _env_float("MESH_OPENAI_IMAGE_WAIT_S", 600)
     )
 
     # --- managed-server argv tuning (mlx_lm / mlx_vlm / llama.cpp) ----------
     # KV-cache quantization bits (0 = server default/unquantized). Shrinks
     # resident KV memory ~4x at 8 bits → larger ctx/concurrency fits RAM.
     llm_kv_bits: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_KV_BITS", "0"))
+        default_factory=lambda: _env_int("MESH_LLM_KV_BITS", 0)
     )
     # prefill step size in tokens (0 = server default 2048)
     llm_prefill_step: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_PREFILL_STEP", "0"))
+        default_factory=lambda: _env_int("MESH_LLM_PREFILL_STEP", 0)
     )
     # speculative decoding drafter: "" = off, "auto" = same repo (kind
     # auto-detected — Qwen3.5/3.6/3.8 bundle MTP weights), or
@@ -319,13 +328,13 @@ class ServerConfig:
     # mlx_vlm continuous-batch bound (0 = unbounded) — backpressure instead
     # of unbounded peak memory when several requests queue upstream-side
     llm_max_num_seqs: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_MAX_NUM_SEQS", "0"))
+        default_factory=lambda: _env_int("MESH_LLM_MAX_NUM_SEQS", 0)
     )
     # prompt KV-cache budget in MB (0 = off) — repeated long prefixes
     # (system+spec) served from cache instead of re-prefilled per call;
     # mlx_lm → --prompt-cache-*, llama.cpp → --cache-ram + --cache-idle-slots
     llm_prompt_cache_mb: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_PROMPT_CACHE_MB", "0"))
+        default_factory=lambda: _env_int("MESH_LLM_PROMPT_CACHE_MB", 0)
     )
 
     # --- llama.cpp binary suite (llama-server; RTX-class CUDA hosts) --------
@@ -333,7 +342,7 @@ class ServerConfig:
     # count so an image/mesh model can share VRAM. ALSO fixes the
     # llama_cpp.server fallback, whose default 0 would run on CPU.
     llm_gpu_layers: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_GPU_LAYERS", "-1"))
+        default_factory=lambda: _env_int("MESH_LLM_GPU_LAYERS", -1)
     )
     # unified KV pool (-kvu): -c becomes one shared pool across all parallel
     # slots (vLLM-style) instead of a static ctx-per-slot split. Requires a
@@ -344,7 +353,7 @@ class ServerConfig:
     # per-sequence cap inside the unified pool (0 = pool limit only) →
     # --kv-unified-per-slot
     llm_kv_per_slot: int = field(
-        default_factory=lambda: int(os.environ.get("MESH_LLM_KV_PER_SLOT", "0"))
+        default_factory=lambda: _env_int("MESH_LLM_KV_PER_SLOT", 0)
     )
     # KV cache quant type "" = f16 default; e.g. "q8_0"/"q4_0" halves/quarters
     # KV VRAM → --cache-type-k/--cache-type-v
