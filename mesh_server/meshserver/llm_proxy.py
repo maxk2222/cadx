@@ -629,11 +629,18 @@ def _reasoning_chunk(model_id: str, text: str) -> bytes:
             {"index": 0, "delta": {"reasoning_content": text}, "finish_reason": None}
         ],
     }
-    return f"data: {json.dumps(chunk)}\n\n".encode()
+    return f"data: {_dumps(chunk)}\n\n".encode()
 
 
 def _error_chunk(message: str) -> bytes:
-    return f'data: {json.dumps({"error": {"message": message}})}\n\ndata: [DONE]\n\n'.encode()
+    return f'data: {_dumps({"error": {"message": message}})}\n\ndata: [DONE]\n\n'.encode()
+
+
+def _dumps(obj: Any) -> str:
+    """JSON wire format for relayed chunks — compact separators keep an
+    untouched upstream chunk byte-identical; ensure_ascii=False keeps
+    UTF-8 verbatim instead of inflating it into \\uXXXX escapes."""
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False)
 
 
 # ── reasoning wire format ────────────────────────────────────────────────
@@ -702,8 +709,11 @@ class _SseEvents:
         self._buf = b""
 
     def feed(self, chunk: bytes) -> list[bytes]:
-        """Complete events, WITHOUT the \\n\\n terminator."""
-        self._buf += chunk
+        """Complete events, WITHOUT the \\n\\n terminator. CRLF line
+        endings (legal SSE) normalize to LF on ingest — a \\r\\n\\r\\n
+        boundary would otherwise never match and the buffer would grow
+        while the client sees nothing."""
+        self._buf += chunk.replace(b"\r\n", b"\n")
         out: list[bytes] = []
         while (i := self._buf.find(b"\n\n")) >= 0:
             out.append(self._buf[:i])
@@ -773,13 +783,13 @@ class _ReasoningStream:
             "model": self._last_model,
             "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
         }
-        return f"data: {json.dumps(chunk)}\n\n".encode()
+        return f"data: {_dumps(chunk)}\n\n".encode()
 
     def feed_event(self, event: bytes) -> list[bytes]:
         """One complete SSE event → one or more output events (bytes,
         each \\n\\n-terminated). [DONE] events get the tail flushed
         BEFORE the terminator."""
-        if event.strip() == b"data: [DONE]":
+        if event.strip().removeprefix(b"data:").strip() == b"[DONE]":
             out = []
             flushed = self.finish()
             if flushed is not None:
@@ -802,9 +812,7 @@ class _ReasoningStream:
                 self._transform(obj)
             # compact separators keep an untouched chunk byte-identical
             # to what the upstream emitted (minimal wire delta)
-            out_lines.append(
-                b"data: " + json.dumps(obj, separators=(",", ":")).encode()
-            )
+            out_lines.append(b"data: " + _dumps(obj).encode())
         return [b"\n".join(out_lines) + b"\n\n"]
 
     def _transform(self, obj: dict) -> None:
@@ -1101,7 +1109,7 @@ async def _proxy_json(url: str, payload: dict, model: str, cfg: Any = None) -> R
         except Exception:
             obj = None
         if obj is not None and transform_reasoning_json(obj):
-            content = json.dumps(obj, separators=(",", ":")).encode()
+            content = _dumps(obj).encode()
     return Response(
         content=content,
         status_code=r.status_code,
