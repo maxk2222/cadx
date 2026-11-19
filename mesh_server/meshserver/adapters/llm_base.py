@@ -138,6 +138,10 @@ class LlmAdapter(ABC):
     est_mem_mb: int | None = None  # estimated resident footprint
     context_len: int = 16384
     custom: bool = False  # user-registered via /v1/models/register
+    # bytes of KV cache per token per sequence (0 = unknown; hybrid models
+    # count only their full-attention layers — used for kv-budget logging)
+    kv_bytes_per_token: int = 0
+    supports_audio: bool = False  # accepts input_audio/audio_url parts
 
     # -- class-level probes ------------------------------------------------ #
 
@@ -169,6 +173,44 @@ class LlmAdapter(ABC):
     def create(cls, cfg: Any) -> "LlmAdapter":
         return cls(cfg)  # type: ignore[call-arg]
 
+    @classmethod
+    def admission_mem_mb(cls, cfg: Any) -> float:
+        """Residency estimate for admission: declared weights PLUS the KV
+        pool the managed server allocates at serve time.
+
+        `est_mem_mb` alone undercounts — the KV pool scales with the
+        effective ctx (cfg.llm_ctx or the catalog context_len) times
+        `kv_bytes_per_token`, quantized by `llm_kv_cache_type` (llama.cpp)
+        or `llm_kv_bits` (mlx). Parallel slots share/split that same pool,
+        so total stays ≈ ctx either way.
+        """
+        base = float(cls.est_mem_mb or 0)
+        kv_bpt = int(getattr(cls, "kv_bytes_per_token", 0) or 0)
+        if not kv_bpt:
+            return base
+        eff = getattr(cfg, "effective", None)
+
+        def _get(name: str, d: Any = None) -> Any:
+            if callable(eff):
+                try:
+                    return eff(name)
+                except Exception:
+                    return d
+            return getattr(cfg, name, d)
+
+        ctx = int(_get("llm_ctx", 0) or cls.context_len or 0)
+        ctype = str(_get("llm_kv_cache_type", "") or "").lower()
+        bits = int(_get("llm_kv_bits", 0) or 0)
+        if ctype.startswith("q4") or ctype.startswith("iq4") or ctype == "mxfp4":
+            q = 0.25
+        elif ctype == "q8_0":
+            q = 0.5
+        elif bits:
+            q = bits / 16.0
+        else:
+            q = 1.0
+        return base + ctx * kv_bpt * q / 1e6
+
     # -- instance lifecycle ------------------------------------------------ #
 
     def __init__(self, cfg: Any) -> None:
@@ -186,6 +228,12 @@ class LlmAdapter(ABC):
     def server_argv(self, port: int) -> list[str]:
         """Command line that starts the OpenAI-compatible server on `port`."""
         raise NotImplementedError
+
+    def server_env(self) -> dict[str, str]:
+        """Extra env vars for the managed subprocess (merged over os.environ
+        in load()). Default: none — adapters override for backend-specific
+        env knobs (e.g. mlx_vlm's APC_ENABLED)."""
+        return {}
 
     def ready_paths(self) -> tuple[str, ...]:
         """Endpoints polled until one responds (any status < 500 = up)."""
@@ -208,6 +256,7 @@ class LlmAdapter(ABC):
                 argv,
                 stdout=self._log_fp,
                 stderr=subprocess.STDOUT,
+                env={**os.environ, **self.server_env()},
                 start_new_session=True,  # own process group → killpg on unload
             )
         except Exception:

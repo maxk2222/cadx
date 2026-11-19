@@ -258,7 +258,11 @@
     "exec_pool_workers": "プロセスプールワーカー",
     "exec_pool_workers_h": "0 = 自動。1 で FEM ケースプール / パイプラインファンアウトを無効",
     "audit_parallel_runs": "監査並列実行",
-    "audit_parallel_runs_h": "0 = 自動 — 並列 ±ε 設計監査摂動"
+    "audit_parallel_runs_h": "0 = 自動 — 並列 ±ε 設計監査摂動",
+    "prio_internal": "",
+    "prio_internal_h": "CADXバックエンドとローカルツールからのリクエスト（0 = ）",
+    "prio_external": "",
+    "prio_external_h": "LANクライアントからのリクエスト（きいほど）"
   },
   "mdl_title": "ローカルモデル",
   "mdl_kind_llm": "LLM",
@@ -339,5 +343,7 @@
   "upd_phase_done": "完了",
   "upd_phase_state_done": "完了",
   "upd_phase_state_failed": "失敗",
-  "upd_phase_state_idle": "アイドル"
+  "upd_phase_state_idle": "アイドル",
+  "sidecar_queue_title": "サイドカーキュー",
+  "sidecar_queue_hint": "サイドカーへのリクエストのグローバル（ = CADXバックエンド/ツール、 = LANクライアント）。がきいほどにされます。1 = フェアネスウィンドウ1つで、はいつきます。"
 }

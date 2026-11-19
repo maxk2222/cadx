@@ -195,6 +195,96 @@ const fmtCtx = (n: number | null | undefined): string => {
   return String(n);
 };
 
+/** Sidecar queue scheduling — global internal/external request priority,
+ * proxied through the backend to the sidecar's PUT /v1/config (the GUI
+ * never holds the mesh bearer key). */
+function SidecarQueueCard() {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const cfg = useQuery({
+    queryKey: ["meshConfig"],
+    queryFn: api.meshConfig,
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  const [prioInt, setPrioInt] = useState("");
+  const [prioExt, setPrioExt] = useState("");
+  const [seeded, setSeeded] = useState(false);
+  const save = useMutation({
+    mutationFn: api.updateMeshConfig,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["meshConfig"] }),
+  });
+  const vals = cfg.data?.config ?? {};
+  useEffect(() => {
+    if (seeded || !cfg.data?.config) return;
+    setPrioInt(String(vals.llm_prio_internal?.value ?? 0));
+    setPrioExt(String(vals.llm_prio_external?.value ?? 10));
+    setSeeded(true);
+  }, [cfg.data, seeded, vals]);
+  const int0 = Number(prioInt) || 0;
+  const ext0 = Number(prioExt) || 0;
+  const dirty =
+    int0 !== (vals.llm_prio_internal?.value ?? 0) ||
+    ext0 !== (vals.llm_prio_external?.value ?? 10);
+  return (
+    <Card className="p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <SectionTitle>{t("sidecar_queue_title")}</SectionTitle>
+        {cfg.data?.error ? (
+          <Chip tone="amber" title={cfg.data.error}>offline</Chip>
+        ) : null}
+      </div>
+      <div className="mb-3 text-xs text-muted">{t("sidecar_queue_hint")}</div>
+      {cfg.isLoading ? (
+        <Spinner />
+      ) : (
+        <>
+          <div className={FIELD_GRID}>
+            <Field label={t("f.prio_internal")} hint={t("f.prio_internal_h")}>
+              <input
+                type="number"
+                className={inputCls}
+                min={0}
+                value={prioInt}
+                onChange={(e) => setPrioInt(e.target.value)}
+              />
+            </Field>
+            <Field label={t("f.prio_external")} hint={t("f.prio_external_h")}>
+              <input
+                type="number"
+                className={inputCls}
+                min={0}
+                value={prioExt}
+                onChange={(e) => setPrioExt(e.target.value)}
+              />
+            </Field>
+          </div>
+          <div className="mt-3 flex items-center gap-3">
+            <Btn
+              disabled={!dirty || save.isPending}
+              busy={save.isPending}
+              onClick={() =>
+                save.mutate({
+                  llm_prio_internal: int0,
+                  llm_prio_external: ext0,
+                })
+              }
+            >
+              {t("save_btn")}
+            </Btn>
+            {save.isError ? (
+              <span className="text-xs text-red-400">{errMsg(save.error)}</span>
+            ) : null}
+            {save.isSuccess && !dirty ? (
+              <span className="text-xs text-muted">{t("saved_done")}</span>
+            ) : null}
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 export default function SettingsPage() {
   const { t } = useTranslation("settings");
   useTitle(t("title"));
@@ -1189,6 +1279,8 @@ export default function SettingsPage() {
           </>
         )}
       </Card>
+
+      {meshBackend === "sidecar" && <SidecarQueueCard />}
 
       <Card className="p-4">
         <div className="mb-3 flex items-center justify-between">

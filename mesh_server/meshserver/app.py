@@ -10,6 +10,7 @@ accidentally."""
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
@@ -22,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from meshserver import runtime_config as rcfg
-from meshserver.auth import BearerAuthMiddleware
+from meshserver.auth import BearerAuthMiddleware, request_priority
 from meshserver.config import ServerConfig, _is_loopback, get_config
 from meshserver.downloads import DownloadManager, downloadable
 from meshserver.jobs import ImageJob, JobManager, MeshJob
@@ -68,10 +69,34 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
     downloads = DownloadManager(cfg, is_loaded=_is_loaded)
     registry.downloads = downloads
 
+    def _job_priority(request: Request) -> int:
+        """Internal/external class → configured job priority (same knobs as
+        the llm lane — one scheduling policy across the server)."""
+        return request_priority(
+            request,
+            cfg,
+            internal_key="llm_prio_internal",
+            external_key="llm_prio_external",
+        )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         cfg.job_dir.mkdir(parents=True, exist_ok=True)
         manager.start()
+
+        async def _idle_sweep() -> None:
+            # the post-job unload check never fires on a pure-llm server —
+            # sweep periodically so unload_idle_s applies regardless of
+            # which lane is active (in-flight llm models stay protected)
+            while True:
+                await asyncio.sleep(30)
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(
+                        registry.maybe_unload_idle,
+                        manager.llm_models_in_use(),
+                    )
+
+        sweep_task = asyncio.create_task(_idle_sweep())
         log.info(
             "meshserver.start",
             device=registry.device,
@@ -79,6 +104,9 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
             llm_models=len(getattr(registry, "_llm_classes", [])),
         )
         yield
+        sweep_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweep_task
         await manager.stop()
         registry.unload_all()
 
@@ -106,7 +134,10 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
         call — managed weight downloads, adapter loads, gen_worker children
         (they inherit os.environ at spawn) — can reach gated repos."""
         token = request.headers.get("x-hf-token", "").strip()
-        if token:
+        # only touch the process env when the token actually changes —
+        # writing it per-request lets one LAN caller's header poison
+        # another request's downloads mid-flight
+        if token and os.environ.get("HF_TOKEN") != token:
             os.environ["HF_TOKEN"] = token
         return await call_next(request)
 
@@ -136,6 +167,7 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
 
     @app.post("/v1/jobs", response_model=JobCreated)
     async def create_job(
+        request: Request,
         params_file: UploadFile = File(alias="json"),
         images: list[UploadFile] = File(...),
     ) -> JobCreated:
@@ -150,7 +182,9 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
             p = job_dir / f"{name}.{i}"
             p.write_bytes(await img.read())
             paths.append(p)
-        job = await manager.submit(params, paths)
+        job = await manager.submit(
+            params, paths, priority=_job_priority(request)
+        )
         if job is None:
             raise HTTPException(429, "job queue full")
         return JobCreated(job_id=job.id)
@@ -193,14 +227,15 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
     # -- text-to-image jobs ------------------------------------------------ #
 
     @app.post("/v1/image-jobs", response_model=JobCreated)
-    async def create_image_job(params: ImageGenParams) -> JobCreated:
-        job = await manager.submit_image(params)
+    async def create_image_job(request: Request, params: ImageGenParams) -> JobCreated:
+        job = await manager.submit_image(params, priority=_job_priority(request))
         if job is None:
             raise HTTPException(429, "job queue full")
         return JobCreated(job_id=job.id)
 
     @app.post("/v1/image-edit-jobs", response_model=JobCreated)
     async def create_image_edit_job(
+        request: Request,
         params_file: UploadFile = File(alias="json"),
         image: UploadFile = File(...),
     ) -> JobCreated:
@@ -213,7 +248,9 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
         safe_name = Path(image.filename or "init.png").name or "init.png"
         init_path = job_dir / f"edit_{uuid.uuid4().hex[:8]}_{safe_name}"
         init_path.write_bytes(await image.read())
-        job = await manager.submit_image(params, init_image_path=init_path)
+        job = await manager.submit_image(
+            params, init_image_path=init_path, priority=_job_priority(request)
+        )
         if job is None:
             raise HTTPException(429, "job queue full")
         return JobCreated(job_id=job.id)
@@ -255,6 +292,7 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
             cfg,
             json_loads(await _bounded_body(request, _CHAT_BODY_LIMIT)),
             manager=manager,
+            request=request,
         )
 
     @app.post("/v1/embeddings")
@@ -264,6 +302,7 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
             cfg,
             json_loads(await _bounded_body(request, _CHAT_BODY_LIMIT)),
             manager=manager,
+            request=request,
         )
 
     @app.post("/v1/images/generations")
@@ -273,6 +312,7 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
             cfg,
             json_loads(await request.body()),
             base_url=str(request.base_url).rstrip("/"),
+            priority=_job_priority(request),
         )
 
     @app.post("/v1/images/edits")
@@ -301,6 +341,7 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
             image_bytes=image_bytes,
             has_mask=mask is not None,
             base_url=str(request.base_url).rstrip("/"),
+            priority=_job_priority(request),
         )
 
     # -- runtime config (scheduling knobs, auth-protected) ----------------- #
@@ -380,12 +421,19 @@ _CHAT_BODY_LIMIT = 64 * 1024 * 1024
 
 
 async def _bounded_body(request: Request, limit: int) -> bytes:
-    """Content-Length pre-check before buffering — a LAN-exposed endpoint
-    must not read unbounded request bodies into memory."""
+    """Bounded body read — Content-Length pre-check PLUS a streamed read
+    cap, so chunked/missing-length requests can't sidestep the limit."""
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > limit:
         raise HTTPException(413, f"request body exceeds {limit // (1024 * 1024)} MB")
-    return await request.body()
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(413, f"request body exceeds {limit // (1024 * 1024)} MB")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def json_loads(data: bytes) -> dict:

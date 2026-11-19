@@ -264,7 +264,11 @@
     "exec_pool_workers": "Workery puli procesów",
     "exec_pool_workers_h": "0 = auto; 1 wyłącza pulę przypadków MES / fan-out potoku",
     "audit_parallel_runs": "Równoległe przebiegi audytu",
-    "audit_parallel_runs_h": "0 = auto — równoległe perturbacje ±ε audytu projektu"
+    "audit_parallel_runs_h": "0 = auto — równoległe perturbacje ±ε audytu projektu",
+    "prio_internal": "Priorytet wewnętrzny",
+    "prio_internal_h": "Żądania z backendu CADX i narzędzi lokalnych (0 = najniższy)",
+    "prio_external": "Priorytet zewnętrzny",
+    "prio_external_h": "Żądania od zewnętrznych klientów LAN (wyższy = preferowany)"
   },
   "mdl_title": "Modele lokalne",
   "mdl_kind_llm": "LLM",
@@ -345,5 +349,7 @@
   "upd_phase_done": "zakończone",
   "upd_phase_state_done": "gotowe",
   "upd_phase_state_failed": "nieudane",
-  "upd_phase_state_idle": "bezczynne"
+  "upd_phase_state_idle": "bezczynne",
+  "sidecar_queue_title": "Kolejka sidecar",
+  "sidecar_queue_hint": "Globalny priorytet żądań do sidecara (wewnętrzne = backend CADX/narzędzia, zewnętrzne = klienci LAN). Wyższe wartości obsługiwane są najpierw; jeden krok to jedno okno fairness — długo czekające nadrabiają."
 }

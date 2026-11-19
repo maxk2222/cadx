@@ -13,6 +13,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import sys
@@ -104,6 +105,9 @@ class MeshJob:
         self.steps = params.steps
         self.guidance = params.guidance
         self.resolution = params.resolution
+        # scheduling priority — server-classified at submit (internal CADX
+        # jobs vs external LAN callers); 0 is neutral
+        self.priority = 0
         # monotonic timestamp of the last *observable* progress change —
         # the stall watchdog reads this via JobManager.get()
         self.last_progress_at = time.monotonic()
@@ -156,6 +160,7 @@ class ImageJob:
         self.seed = params.seed
         self.steps = params.steps
         self.guidance = params.guidance
+        self.priority = 0
         self.last_progress_at = time.monotonic()
         self.last_active_at = self.last_progress_at
 
@@ -201,11 +206,9 @@ def _is_oom(exc: BaseException) -> bool:
             "outofmemory",  # hipErrorOutOfMemory — ROCm reports without spaces
             "cublas",
             "cudnn",
-            "metal",
             "allocation failed",
-            "mps",
         )
-    )
+    ) or bool(re.search(r"\bmetal\b|\bmps\b", msg))
 
 
 class _WarmWorker:
@@ -278,11 +281,14 @@ class JobManager:
         free = self.registry.ledger.free_mb()
         return free is None or free >= limit
 
-    async def submit(self, params: GenParams, image_paths: list[Path]) -> MeshJob | None:
+    async def submit(
+        self, params: GenParams, image_paths: list[Path], *, priority: int = 0
+    ) -> MeshJob | None:
         self._gc()
         if self._queued() >= self.cfg.max_queue or not self._free_mem_ok():
             return None
         job = MeshJob(str(uuid.uuid4()), params, image_paths)
+        job.priority = priority
         # explicit models resolve at submit — 'auto' waits for pick time
         # (the preference ladder may shift while the job sits in the queue)
         if params.model not in ("", "auto"):
@@ -293,12 +299,17 @@ class JobManager:
         return job
 
     async def submit_image(
-        self, params: ImageGenParams, init_image_path: Path | None = None
+        self,
+        params: ImageGenParams,
+        init_image_path: Path | None = None,
+        *,
+        priority: int = 0,
     ) -> ImageJob | None:
         self._gc()
         if self._queued() >= self.cfg.max_queue or not self._free_mem_ok():
             return None
         job = ImageJob(str(uuid.uuid4()), params, init_image_path)
+        job.priority = priority
         if params.model not in ("", "auto"):
             job.resolved_model = self._resolve_model(job) or ""
         self.jobs[job.id] = job
@@ -335,7 +346,9 @@ class JobManager:
             # a transient stall must not poison the model for later jobs.
             if job.model and job.model != "auto" and not self.cfg.jobs_subprocess:
                 self.registry.mark_failed(job.model, job.error)
-            self.registry.unload_all()
+            # spare in-flight llm models — a job stall must not kill a live
+            # chat stream's server out from under the client
+            self.registry.unload_all(protected=self.llm_models_in_use())
             log.warning("job.stalled", job=job_id, model=job.model, peak_rss_mb=_peak_rss_mb())
         return job
 
@@ -396,6 +409,13 @@ class JobManager:
         )
         for cls in classes:
             if cls.id == adapter_id:
+                # llm adapters fold their KV pool into the admission
+                # estimate (admission_mem_mb) — ctx × kv_bytes_per_token
+                # at the configured quant, else weights-only est_mem_mb
+                adm = getattr(cls, "admission_mem_mb", None)
+                if callable(adm):
+                    with contextlib.suppress(Exception):
+                        return int(adm(self.cfg))
                 return getattr(cls, "est_mem_mb", None)
         return None
 
@@ -489,8 +509,11 @@ class JobManager:
                 job.resolved_model == self._last_model
                 or (warm is not None and warm.idle)
             )
+            # one priority step = one fairness window of head start; the
+            # growing `waited` term keeps it starvation-free
+            bonus = self.cfg.queue_fair_s * (int(affinity) + job.priority)
             # -created keeps the order FIFO when scores tie
-            return (waited + (self.cfg.queue_fair_s if affinity else 0), -job.created)
+            return (waited + bonus, -job.created)
 
         pick = max(fittable, key=_score)
         with contextlib.suppress(ValueError):
@@ -520,6 +543,7 @@ class JobManager:
                 waited_s=round(now - job.created, 1),
                 est_mem_mb=round(est) if est else None,
                 message=job.message,
+                priority=job.priority,
             )
 
         for jid in list(self._queue):
@@ -536,6 +560,20 @@ class JobManager:
             llm={
                 "in_flight": sum(self.llm_in_flight.values()),
                 "waiting": self.llm_waiting,
+                # score-ranked waiting requests (position/model/priority)
+                "entries": (
+                    q.snapshot(self.cfg, self.registry)
+                    if (q := getattr(self.cfg, "_llm_queue", None)) is not None
+                    else []
+                ),
+                # effective parallelism = min(this semaphore, server slots)
+                # — llm_parallel applies at the next model load
+                "max_concurrent": int(
+                    self.cfg.effective("llm_max_concurrent") or 0
+                )
+                or None,
+                "server_slots": int(self.cfg.effective("llm_parallel") or 0)
+                or None,
                 "loading": [
                     {"model": m.split("#", 1)[0], "waited_s": round(now - t0, 1)}
                     for m, t0 in self.llm_loading.items()
@@ -572,9 +610,10 @@ class JobManager:
                 job.status = "failed"
                 job.finished = time.monotonic()
                 if _is_oom(e):
-                    # memory exhausted — unload everything, purge caches and
-                    # badlist the adapter so 'auto' picks a fallback next time
-                    self.registry.unload_all()
+                    # memory exhausted — unload everything but protected
+                    # llm streams, purge caches and badlist the adapter so
+                    # 'auto' picks a fallback next time
+                    self.registry.unload_all(protected=self.llm_models_in_use())
                     failed_id = getattr(job, "model", "")
                     if failed_id and failed_id != "auto":
                         self.registry.mark_failed(failed_id, str(e))
@@ -586,7 +625,7 @@ class JobManager:
                     job.error = str(e)[:500]
             finally:
                 self._last_model = job.resolved_model or job.model or self._last_model
-                self.registry.maybe_unload_idle()
+                self.registry.maybe_unload_idle(protected=self.llm_models_in_use())
                 log.info(
                     "job.finished",
                     job=job_id,
@@ -865,7 +904,9 @@ class JobManager:
             if not dead or warm.state == "busy":
                 continue
             self._warm.pop(model, None)
-            self.registry.ledger.release(f"warm:{model}")
+            self.registry.ledger.note_release(
+                self.registry.ledger.release(f"warm:{model}")
+            )
             if warm.stderr_file is not None:
                 with contextlib.suppress(Exception):
                     warm.stderr_file.close()
@@ -875,7 +916,9 @@ class JobManager:
         group and drop the bookkeeping without awaiting (memory pressure
         wants the slot freed now; the reader task reaps the dead child)."""
         self._warm.pop(warm.model, None)
-        self.registry.ledger.release(f"warm:{warm.model}")
+        self.registry.ledger.note_release(
+            self.registry.ledger.release(f"warm:{warm.model}")
+        )
         warm.state = "dead"
         proc = warm.proc
         if proc is not None and proc.returncode is None:
@@ -906,7 +949,9 @@ class JobManager:
         """Stop a warm worker: close stdin (the child exits on EOF), killpg
         as a fallback, release the ledger reservation."""
         self._warm.pop(warm.model, None)
-        self.registry.ledger.release(f"warm:{warm.model}")
+        self.registry.ledger.note_release(
+            self.registry.ledger.release(f"warm:{warm.model}")
+        )
         warm.state = "dead"
         proc = warm.proc
         if proc is not None:
@@ -926,6 +971,15 @@ class JobManager:
         if warm.stderr_file is not None:
             with contextlib.suppress(Exception):
                 warm.stderr_file.close()
+
+    def _failed_err(self, adapter_id: str) -> str | None:
+        """Active badlist error for the child request — goes through the
+        registry's TTL'd accessor when available."""
+        failed = getattr(self.registry, "failed", None)
+        if callable(failed):
+            return failed(adapter_id)
+        rec = getattr(self.registry, "_failed", {}).get(adapter_id)
+        return str(rec.get("error") if isinstance(rec, dict) else rec) if rec else None
 
     def _record_peak(self, job: MeshJob | ImageJob, peak_rss_mb: float) -> None:
         """Feed the ledger's learned per-model footprint from the child's
@@ -947,8 +1001,13 @@ class JobManager:
             "cfg": {k: getattr(self.cfg, k) for k in _CHILD_CFG_KEYS}
             | {"model_dir": str(self.cfg.model_dir)},
             # parent's badlist carries over — adapters that stalled/OOM'd in a
-            # previous child must not be retried by this one
-            "badlist": dict(getattr(self.registry, "_failed", {})),
+            # previous child must not be retried by this one; only ACTIVE
+            # entries (expired ones already healed — see Registry.failed)
+            "badlist": {
+                aid: err
+                for aid in getattr(self.registry, "_failed", {})
+                if (err := self._failed_err(aid)) is not None
+            },
         }
 
     async def _watch_gen_proc(

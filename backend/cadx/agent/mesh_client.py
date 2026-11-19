@@ -193,8 +193,10 @@ class HttpMeshClient(MeshPort):
     def _headers(self) -> dict[str, str]:
         """Per-request credentials for the sidecar — X-HF-Token lets managed
         downloads/model loads reach gated HF repos; Authorization is the
-        bearer key a LAN-exposed server (MESH_LAN=1) enforces."""
-        headers: dict[str, str] = {}
+        bearer key a LAN-exposed server (MESH_LAN=1) enforces;
+        X-Mesh-Internal marks CADX-originated traffic so the sidecar's
+        queue classifies it under its internal priority."""
+        headers: dict[str, str] = {"X-Mesh-Internal": "1"}
         if self.hf_token:
             headers["X-HF-Token"] = self.hf_token
         if self.api_key:

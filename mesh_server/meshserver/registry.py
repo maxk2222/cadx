@@ -6,6 +6,7 @@ import contextlib
 import platform
 import threading
 import time
+from typing import Any
 
 from meshserver.adapters.base import MeshAdapter, hard_unload
 from meshserver.adapters.fake import FakeAdapter
@@ -73,8 +74,18 @@ class Registry:
         self._lock = threading.Lock()
         self._instances: dict[str, object] = {}
         self._last_used: dict[str, float] = {}
-        self._failed: dict[str, str] = {}  # adapter id -> last load/OOM error
+        # adapter id -> {ts, error, count} — the badlist is active for
+        # llm_failed_ttl_s * min(count,4); last_error stays visible forever
+        self._failed: dict[str, dict[str, Any]] = {}
         self._probe_errors: dict[str, str] = {}  # adapter id -> availability-check error
+        # per-model load locks — get() serializes loads of the SAME model
+        # (single-flight) while different models may load concurrently
+        # (memory admission arbitrates); _lock still guards the instance map
+        self._model_locks: dict[str, threading.Lock] = {}
+        self._model_locks_guard = threading.Lock()
+        # ids already warned about once (stale client model names) — a
+        # per-request warning would spam the log on every fuzzy call
+        self._warned_unknown: set[str] = set()
         self._classes: list[type] = self._adapter_classes() + self._image_adapter_classes()
         # llm adapter family — kept separate so select()/select_image() never
         # see kind="llm" classes; refresh_llm_classes() re-reads the catalog +
@@ -205,6 +216,7 @@ class Registry:
                     downloaded = bool(cls.downloaded(self.cfg))
                 if downloaded:
                     size_gb = self._weights_size_gb(cls)
+            rec = self._failed.get(cls.id)
             out.append(
                 ModelInfo(
                     id=cls.id,
@@ -217,7 +229,10 @@ class Registry:
                     license_note=cls.license_note,
                     loaded=bool(inst and inst.loaded),
                     available=avail,
-                    last_error=self._failed.get(cls.id) or self._probe_errors.get(cls.id),
+                    last_error=(
+                        (rec.get("error") if isinstance(rec, dict) else rec)
+                        or self._probe_errors.get(cls.id)
+                    ),
                     default_size=getattr(cls, "default_size", None),
                     supports_edit=getattr(cls, "supports_edit", False),
                     requires_image=getattr(cls, "requires_image", False),
@@ -234,6 +249,7 @@ class Registry:
                     size_gb=size_gb,
                     est_mem_mb=round(est) if est else None,
                     supports_vision=getattr(cls, "supports_vision", False),
+                    supports_audio=getattr(cls, "supports_audio", False),
                     supports_tools=getattr(cls, "supports_tools", False),
                     # effective context the server will run at — cfg.llm_ctx
                     # overrides the adapter's catalog value (llama.cpp
@@ -262,13 +278,13 @@ class Registry:
             cls.id: cls for cls in self.available() if getattr(cls, "kind", "mesh") == "mesh"
         }
         if requested and requested != "auto":
-            if requested in self._failed:
+            if self.failed(requested):
                 # explicit request for an adapter that already stalled/OOM'd
                 # in this process — retrying it just burns a full stall
                 # window; surface the recorded failure instead
                 return None
             return all_mesh.get(requested)  # explicit but unavailable -> None (error to client)
-        avail = {k: v for k, v in all_mesh.items() if k not in self._failed}
+        avail = {k: v for k, v in all_mesh.items() if self.failed(k) is None}
         # auto
         device = self.device
         pref: list[str]
@@ -342,7 +358,7 @@ class Registry:
             if need_edit and cls is not None and not getattr(cls, "supports_edit", False):
                 return None
             return cls
-        avail = {k: v for k, v in all_img.items() if k not in self._failed}
+        avail = {k: v for k, v in all_img.items() if self.failed(k) is None}
         device = self.device
         if self.cfg.fake:
             # fixture runs must never touch a real model, even when installed
@@ -393,6 +409,7 @@ class Registry:
         *,
         need_vision: bool = False,
         need_tools: bool = False,
+        need_audio: bool = False,
     ) -> type | None:
         """Pick an llm adapter class. 'auto' returns the first available and
         downloaded class matching the capability filters; explicit ids
@@ -413,16 +430,20 @@ class Registry:
         }
 
         def _capable(cls: type) -> bool:
-            return (not need_vision or getattr(cls, "supports_vision", False)) and (
-                not need_tools or getattr(cls, "supports_tools", True)
+            return (
+                (not need_vision or getattr(cls, "supports_vision", False))
+                and (not need_tools or getattr(cls, "supports_tools", True))
+                and (not need_audio or getattr(cls, "supports_audio", False))
             )
 
         if requested and requested != "auto":
             if cls := all_llm.get(requested):
                 return cls if _capable(cls) else None
-            log.warning("registry.unknown_llm_model", requested=requested)
+            if requested not in self._warned_unknown:
+                self._warned_unknown.add(requested)
+                log.warning("registry.unknown_llm_model", requested=requested)
         for cls in all_llm.values():
-            if cls.id in self._failed or not _capable(cls):
+            if self.failed(cls.id) is not None or not _capable(cls):
                 continue
             with contextlib.suppress(Exception):
                 if not cls.downloaded(self.cfg):
@@ -430,6 +451,26 @@ class Registry:
             if self._probe(cls):
                 return cls
         return None
+
+    def _model_lock(self, adapter_id: str) -> threading.Lock:
+        """Per-adapter load lock — single-flights concurrent get() calls for
+        the same model while different models may load in parallel."""
+        with self._model_locks_guard:
+            lock = self._model_locks.get(adapter_id)
+            if lock is None:
+                lock = self._model_locks[adapter_id] = threading.Lock()
+            return lock
+
+    def _admission_need(self, cls: type) -> float:
+        """Admission estimate: adapters may declare admission_mem_mb(cfg)
+        (llm adds the KV pool to its weights); everything else is the
+        learned-vs-declared ledger estimate."""
+        declared = getattr(cls, "est_mem_mb", None)
+        adm = getattr(cls, "admission_mem_mb", None)
+        if callable(adm):
+            with contextlib.suppress(Exception):
+                declared = int(adm(self.cfg))
+        return self.ledger.est_mb(cls.id, declared)
 
     def get(
         self,
@@ -447,51 +488,108 @@ class Registry:
         ``InsufficientMemoryError`` — the honest answer for bounded callers
         that would rather defer than OOM. Multiple models may stay resident
         as long as they fit — the old single-model invariant is replaced by
-        memory admission."""
-        with self._lock:
-            inst = self._instances.get(cls.id)
-            if inst is None:
-                inst = cls.create(self.cfg)
-                self._instances[cls.id] = inst
+        memory admission.
+
+        Loads are serialized per model only (``_model_lock``): concurrent
+        requests for DIFFERENT models load in parallel — memory admission
+        arbitrates. The ledger reservation is taken BEFORE the load
+        (speculative) so two concurrent loads can't both pass fits() on the
+        same free-memory snapshot."""
+        model_lock = self._model_lock(cls.id)
+        with model_lock:
+            with self._lock:
+                inst = self._instances.get(cls.id)
+                if inst is None:
+                    inst = cls.create(self.cfg)
+                    self._instances[cls.id] = inst
             if not inst.loaded:
                 # llm servers pin when configured — a generation job must not
                 # evict a pinned chat backend mid-conversation (runtime-mutable
                 # via /v1/config → effective())
                 if getattr(cls, "kind", "") == "llm" and self.cfg.effective("llm_pin"):
                     self._pinned.add(cls.id)
-                need = self.ledger.est_mb(cls.id, getattr(cls, "est_mem_mb", None))
+                need = self._admission_need(cls)
                 exclude = {cls.id} | (protected or set())
-                # best-effort eviction: if nothing is evictable the load runs
-                # anyway (strict=False) and the OOM handler sorts out the
-                # wreckage; strict callers get a deferrable failure instead
-                while not self.ledger.fits(need):
-                    if self._evict_lru_locked(exclude=exclude) is None:
-                        if strict:
-                            raise InsufficientMemoryError(
-                                f"cannot fit '{cls.id}' (~{need:.0f} MB) "
-                                "without evicting a protected/pinned model"
-                            )
-                        break
+                # speculative reservation BEFORE the load — a concurrent load
+                # of another model sees this memory as spoken for instead of
+                # both callers passing fits() on the same free-mem snapshot
+                self.ledger.reserve(
+                    cls.id,
+                    need,
+                    pinned=cls.id in self._pinned,
+                    kind="model",
+                    spec=True,
+                )
                 try:
+                    # best-effort eviction: if nothing is evictable the load
+                    # runs anyway (strict=False) and the OOM handler sorts out
+                    # the wreckage; strict callers get a deferrable failure.
+                    # exclude our own spec entry — the eviction loop judges
+                    # OTHER models' holds against `need`, not need twice.
+                    while not self.ledger.fits(need, exclude_spec={cls.id}):
+                        with self._lock:
+                            victim = self._evict_lru_locked(exclude=exclude)
+                        if victim is None:
+                            if strict:
+                                raise InsufficientMemoryError(
+                                    f"cannot fit '{cls.id}' (~{need:.0f} MB) "
+                                    "without evicting a protected/pinned model"
+                                )
+                            break
                     inst.load()
+                    # the weights are real RSS now — stop subtracting the
+                    # estimate from free_mb (psutil reports it from here)
+                    self.ledger.mark_resident(cls.id)
                 except Exception as e:
                     # remember the failure so 'auto' skips this adapter next
-                    # time; purge whatever half-loaded state remains
-                    self._failed[cls.id] = str(e)[:300]
+                    # time; purge whatever half-loaded state + reservation
+                    self.mark_failed(cls.id, str(e))
+                    self.ledger.release(cls.id)
                     with contextlib.suppress(Exception):
                         inst.unload()
                     hard_unload()
                     raise
-                self.ledger.reserve(
-                    cls.id, need, pinned=cls.id in self._pinned, kind="model"
-                )
-            self._last_used[cls.id] = time.monotonic()
+                # a successful load clears the badlist — whatever transient
+                # fault was recorded healed
+                self._failed.pop(cls.id, None)
+            with self._lock:
+                self._last_used[cls.id] = time.monotonic()
             self.ledger.touch(cls.id)
             return inst
 
     def mark_failed(self, adapter_id: str, error: str) -> None:
-        """Record an inference-time failure (e.g. OOM inside generate())."""
-        self._failed[adapter_id] = error[:300]
+        """Record a load/inference-time failure — each repeat mark escalates
+        the badlist window (count) so a genuine stall/OOM breaker stays
+        parked while a one-off transient heals within llm_failed_ttl_s."""
+        prev = self._failed.get(adapter_id)
+        count = int(prev.get("count", 0)) + 1 if isinstance(prev, dict) else 1
+        self._failed[adapter_id] = {
+            "ts": time.monotonic(),
+            "error": error[:300],
+            "count": count,
+        }
+
+    def failed(self, adapter_id: str) -> str | None:
+        """The ACTIVE badlist error, or None when expired (window =
+        llm_failed_ttl_s * min(count,4)). `models()` keeps last_error
+        visible either way — evidence outlives the active badlist."""
+        rec = self._failed.get(adapter_id)
+        if rec is None:
+            return None
+        if not isinstance(rec, dict):
+            return str(rec)  # legacy str shape poked directly (tests/stubs)
+        effective = getattr(self.cfg, "effective", None)
+        ttl_s = (
+            effective("llm_failed_ttl_s")
+            if callable(effective)
+            else getattr(self.cfg, "llm_failed_ttl_s", None)
+        )
+        ttl = float(ttl_s if ttl_s is not None else 300) * min(
+            max(int(rec.get("count", 1)), 1), 4
+        )
+        if time.monotonic() - float(rec.get("ts", 0.0)) >= ttl:
+            return None
+        return str(rec.get("error") or "") or None
 
     def pin(self, adapter_id: str, on: bool) -> None:
         """Pin/unpin a resident model — pinned ids are never evicted for
@@ -505,10 +603,15 @@ class Registry:
 
     def _unload_instance(self, adapter_id: str, inst: object) -> None:
         """Unload one adapter instance and drop its ledger reservation —
-        every unload path funnels here so the ledger stays consistent."""
+        every unload path funnels here so the ledger stays consistent.
+        A still-speculative entry never had real RSS — releasing it only
+        lifts the free_mb subtraction, it must not also join pending_free."""
+        spec = self.ledger.is_speculative(adapter_id)
         with contextlib.suppress(Exception):
             inst.unload()
-        self.ledger.release(adapter_id)
+        freed = self.ledger.release(adapter_id)
+        if not spec:
+            self.ledger.note_release(freed)
 
     def _evict_lru_locked(self, exclude: set[str]) -> str | None:
         """Unload the least-recently-used non-pinned loaded instance not in
@@ -534,18 +637,26 @@ class Registry:
         with self._lock:
             return self._evict_lru_locked(set(exclude or ()))
 
-    def unload_all(self) -> None:
-        """Unload every resident model + purge device caches (OOM recovery)."""
+    def unload_all(self, protected: set[str] | None = None) -> None:
+        """Unload every resident model + purge device caches (OOM recovery).
+        ``protected`` ids (the manager's in-flight llm models) are spared —
+        killing a live stream mid-generation corrupts the client contract
+        this whole design protects."""
+        keep = protected or set()
         with self._lock:
             for aid, inst in self._instances.items():
-                if inst.loaded:
+                if inst.loaded and aid not in keep:
                     self._unload_instance(aid, inst)
         hard_unload()
 
-    def maybe_unload_idle(self) -> None:
+    def maybe_unload_idle(self, protected: set[str] | None = None) -> None:
+        """Unload residents idle beyond unload_idle_s — except ``protected``
+        ids: an llm model mid-stream only touches _last_used at load time,
+        so without the guard a long generation gets its server killed."""
         idle_s = self.cfg.effective("unload_idle_s")
         if idle_s <= 0:
             return
+        keep = protected or set()
         now = time.monotonic()
         unloaded = False
         with self._lock:
@@ -553,6 +664,7 @@ class Registry:
                 if (
                     inst.loaded
                     and aid not in self._pinned
+                    and aid not in keep
                     and now - self._last_used.get(aid, 0.0) > idle_s
                 ):
                     self._unload_instance(aid, inst)

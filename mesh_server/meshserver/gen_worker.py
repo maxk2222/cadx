@@ -75,10 +75,9 @@ def _run_mesh(req: dict, cfg: ServerConfig, registry: Registry, work: Path) -> d
     while cls is None or cls.id in attempted:
         cls = registry.select(model, n)
         if cls is None or cls.id in attempted:
-            if model in registry._failed:
+            if prev := registry.failed(model):
                 raise RuntimeError(
-                    f"adapter '{model}' failed earlier in this process: "
-                    f"{registry._failed[model]}"
+                    f"adapter '{model}' failed earlier in this process: {prev}"
                 )
             why = registry._probe_errors.get(model)
             raise RuntimeError(

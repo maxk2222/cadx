@@ -148,14 +148,24 @@ class MlxLmAdapter(LlmAdapter):
 
     @classmethod
     def downloaded(cls, cfg: Any) -> bool:  # noqa: ARG003
-        """Repo present in the HF cache — probe config.json only, no network."""
+        """Repo present in the HF cache — config AND real weight files.
+
+        A cancelled/interrupted snapshot_download leaves config.json cached
+        while the safetensors are still missing — probing config alone would
+        report a phantom 'downloaded' model whose load then stalls or dies
+        deep inside mlx_lm."""
         if not cls.hf_repo:
             return False
         try:
             from huggingface_hub import try_to_load_from_cache
 
-            p = try_to_load_from_cache(cls.hf_repo, "config.json")
-            return isinstance(p, str)
+            if not isinstance(try_to_load_from_cache(cls.hf_repo, "config.json"), str):
+                return False
+            snapshots = hf_repo_cache_dir(cls.hf_repo) / "snapshots"
+            return any(
+                any(snapshots.rglob(ext))
+                for ext in ("*.safetensors", "*.npz", "*.gguf")
+            )
         except Exception:
             return False
 
@@ -206,6 +216,10 @@ class MlxLmAdapter(LlmAdapter):
         kv_bits = int(cfg.effective("llm_kv_bits") or 0)
         if kv_bits:
             argv += ["--kv-bits", str(kv_bits)]
+            # vlm-only flag — mlx_lm's CLI has --kv-bits but no quant scheme
+            scheme = str(cfg.effective("llm_kv_scheme") or "").strip()
+            if scheme and self.required_module == "mlx_vlm":
+                argv += ["--kv-quant-scheme", scheme]
         prefill = int(cfg.effective("llm_prefill_step") or 0)
         if prefill:
             argv += ["--prefill-step-size", str(prefill)]
@@ -235,6 +249,15 @@ class MlxLmAdapter(LlmAdapter):
                 ]
         return argv
 
+    def server_env(self) -> dict[str, str]:
+        """mlx_vlm's automatic prefix cache (shared prompt-prefix KV blocks,
+        incl. disk store) — env-driven, not an argv flag."""
+        cfg = self.cfg
+        eff = getattr(cfg, "effective", None)
+        if bool(eff("llm_apc") if eff else getattr(cfg, "llm_apc", False)):
+            return {"APC_ENABLED": "1"}
+        return {}
+
 
 def make_mlx_adapter(
     repo: str,
@@ -246,6 +269,7 @@ def make_mlx_adapter(
     ctx: int = 16384,
     est_mb: int | None = None,
     custom: bool = False,
+    audio: bool = False,
 ) -> type[LlmAdapter]:
     """Factory: an adapter class serving `repo` via mlx_lm/mlx_vlm server.
 
@@ -262,6 +286,7 @@ def make_mlx_adapter(
             "name": name or repo,
             "hf_repo": repo,
             "supports_vision": bool(vision),
+            "supports_audio": bool(audio),
             "supports_tools": bool(tools),
             "context_len": int(ctx),
             "est_mem_mb": est_mb,

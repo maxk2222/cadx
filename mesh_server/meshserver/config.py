@@ -39,6 +39,15 @@ def _env_keys() -> tuple[str, ...]:
 RUNTIME_MUTABLE: dict[str, tuple[type, str]] = {
     "llm_max_concurrent": (int, "immediate"),
     "llm_queue_wait_s": (float, "immediate"),
+    "llm_queue_fair_s": (float, "immediate"),
+    "llm_queue_max": (int, "immediate"),
+    "llm_stream_queue_wait_s": (float, "immediate"),
+    "llm_keepalive_s": (float, "immediate"),
+    "llm_prio_internal": (int, "immediate"),
+    "llm_prio_external": (int, "immediate"),
+    "llm_upstream_timeout_s": (float, "immediate"),
+    "llm_stream_idle_s": (float, "immediate"),
+    "llm_failed_ttl_s": (int, "immediate"),
     "llm_parallel": (int, "next_model_load"),
     "llm_pin": (bool, "immediate"),
     "openai_image_wait_s": (float, "immediate"),
@@ -53,6 +62,14 @@ RUNTIME_MUTABLE: dict[str, tuple[type, str]] = {
     "llm_draft": (str, "next_model_load"),
     "llm_max_num_seqs": (int, "next_model_load"),
     "llm_prompt_cache_mb": (int, "next_model_load"),
+    # llama.cpp binary suite (feature-probed against llama-server --help)
+    "llm_gpu_layers": (int, "next_model_load"),
+    "llm_kv_unified": (bool, "next_model_load"),
+    "llm_kv_per_slot": (int, "next_model_load"),
+    "llm_kv_cache_type": (str, "next_model_load"),
+    "llm_flash_attn": (bool, "next_model_load"),
+    "llm_apc": (bool, "next_model_load"),
+    "llm_kv_scheme": (str, "next_model_load"),
 }
 
 
@@ -211,9 +228,58 @@ class ServerConfig:
     llm_max_concurrent: int = field(
         default_factory=lambda: int(os.environ.get("MESH_LLM_MAX_CONCURRENT", "4"))
     )
-    # bounded wait for a semaphore slot / memory admission before a 503
+    # bounded wait for a queue slot / memory admission before a 503
     llm_queue_wait_s: float = field(
         default_factory=lambda: float(os.environ.get("MESH_LLM_QUEUE_WAIT_S", "30"))
+    )
+    # scheduling fairness window for the llm request queue: one affinity
+    # match OR one priority step earns a +fair_s score bonus; anything
+    # waited longer than the window wins regardless (starvation-free)
+    llm_queue_fair_s: float = field(
+        default_factory=lambda: float(os.environ.get("MESH_LLM_QUEUE_FAIR_S", "60"))
+    )
+    # max requests held in the llm queue — beyond this an immediate 503
+    # instead of unbounded pending work
+    llm_queue_max: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_QUEUE_MAX", "32"))
+    )
+    # bounded wait for streaming requests — longer than llm_queue_wait_s
+    # because the client sees live queue/load progress the whole time
+    llm_stream_queue_wait_s: float = field(
+        default_factory=lambda: float(
+            os.environ.get("MESH_LLM_STREAM_QUEUE_WAIT_S", "600")
+        )
+    )
+    # SSE comment keepalive cadence while a stream request is queued/loading
+    llm_keepalive_s: float = field(
+        default_factory=lambda: float(os.environ.get("MESH_LLM_KEEPALIVE_S", "5"))
+    )
+    # scheduling priority per caller class — internal = CADX backend /
+    # loopback tooling, external = authenticated LAN clients. One step =
+    # +llm_queue_fair_s score (external default jumps ~10 windows ahead)
+    llm_prio_internal: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_PRIO_INTERNAL", "0"))
+    )
+    llm_prio_external: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_PRIO_EXTERNAL", "10"))
+    )
+    # total bound for a non-stream upstream call (0 = unbounded — the
+    # historical default since generation latency is genuinely unbounded)
+    llm_upstream_timeout_s: float = field(
+        default_factory=lambda: float(
+            os.environ.get("MESH_LLM_UPSTREAM_TIMEOUT_S", "0")
+        )
+    )
+    # bound on the gap BETWEEN upstream stream chunks — a wedged server
+    # that holds a slot forever gets aborted after this silence (0 = off)
+    llm_stream_idle_s: float = field(
+        default_factory=lambda: float(os.environ.get("MESH_LLM_STREAM_IDLE_S", "0"))
+    )
+    # badlist window for a failed adapter — escalates ×min(count,4) per
+    # repeat failure so one-off transients heal but stall/OOM breakers
+    # stay parked long enough not to flap
+    llm_failed_ttl_s: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_FAILED_TTL_S", "300"))
     )
     # llama.cpp --parallel slots (applies at next model load; KV cache
     # scales with slots × ctx, so the ledger estimate gains headroom)
@@ -246,10 +312,47 @@ class ServerConfig:
     llm_max_num_seqs: int = field(
         default_factory=lambda: int(os.environ.get("MESH_LLM_MAX_NUM_SEQS", "0"))
     )
-    # mlx_lm prompt KV-cache budget in MB (0 = off) — repeated long prefixes
-    # (system+spec) served from cache instead of re-prefilled per call
+    # prompt KV-cache budget in MB (0 = off) — repeated long prefixes
+    # (system+spec) served from cache instead of re-prefilled per call;
+    # mlx_lm → --prompt-cache-*, llama.cpp → --cache-ram + --cache-idle-slots
     llm_prompt_cache_mb: int = field(
         default_factory=lambda: int(os.environ.get("MESH_LLM_PROMPT_CACHE_MB", "0"))
+    )
+
+    # --- llama.cpp binary suite (llama-server; RTX-class CUDA hosts) --------
+    # GPU layer offload: -1 = all (default); a positive value caps the layer
+    # count so an image/mesh model can share VRAM. ALSO fixes the
+    # llama_cpp.server fallback, whose default 0 would run on CPU.
+    llm_gpu_layers: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_GPU_LAYERS", "-1"))
+    )
+    # unified KV pool (-kvu): -c becomes one shared pool across all parallel
+    # slots (vLLM-style) instead of a static ctx-per-slot split. Requires a
+    # llama-server binary >= Nov-2025; feature-probe skips it on older builds.
+    llm_kv_unified: bool = field(
+        default_factory=lambda: _env_bool("MESH_LLM_KV_UNIFIED", True)
+    )
+    # per-sequence cap inside the unified pool (0 = pool limit only) →
+    # --kv-unified-per-slot
+    llm_kv_per_slot: int = field(
+        default_factory=lambda: int(os.environ.get("MESH_LLM_KV_PER_SLOT", "0"))
+    )
+    # KV cache quant type "" = f16 default; e.g. "q8_0"/"q4_0" halves/quarters
+    # KV VRAM → --cache-type-k/--cache-type-v
+    llm_kv_cache_type: str = field(
+        default_factory=lambda: os.environ.get("MESH_LLM_KV_CACHE_TYPE", "")
+    )
+    # flash attention (-fa) — faster + less VRAM on long ctx; CUDA sm_120 ok
+    llm_flash_attn: bool = field(
+        default_factory=lambda: _env_bool("MESH_LLM_FLASH_ATTN", True)
+    )
+    # mlx_vlm automatic prefix cache (APC_ENABLED) — block-level shared prefix
+    # reuse incl. disk store; the vLLM prefix-cache equivalent on Apple Silicon
+    llm_apc: bool = field(default_factory=lambda: _env_bool("MESH_LLM_APC"))
+    # mlx_vlm KV quantization backend "" = default; "uniform"|"turboquant" →
+    # --kv-quant-scheme (only emitted together with llm_kv_bits)
+    llm_kv_scheme: str = field(
+        default_factory=lambda: os.environ.get("MESH_LLM_KV_SCHEME", "")
     )
 
     def __post_init__(self) -> None:

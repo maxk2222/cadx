@@ -106,6 +106,7 @@ class ModelInfo(BaseModel):
     size_gb: float | None = None  # on-disk weights size (GB) once known
     est_mem_mb: int | None = None  # estimated resident footprint (measured beats declared)
     supports_vision: bool = False  # llm adapters: accepts image_url parts
+    supports_audio: bool = False  # llm adapters: accepts input_audio parts
     supports_tools: bool = False  # llm adapters: accepts OpenAI tool calls
     context_len: int | None = None  # llm adapters: effective context window, tokens
     pinned: bool = False  # never evicted by memory pressure (llm)
@@ -123,6 +124,7 @@ class QueueEntry(BaseModel):
     waited_s: float = 0.0
     est_mem_mb: int | None = None
     message: str = ""
+    priority: int = 0  # classified caller priority (internal/external knobs)
 
 
 class QueueInfo(BaseModel):
@@ -152,6 +154,7 @@ class RegisterModelRequest(BaseModel):
     backend: str = ""  # llm: "mlx-lm"|"llama.cpp" — empty = auto by device
     name: str = ""
     vision: bool = False
+    audio: bool = False  # model has an audio encoder (Qwen-Omni/Ultravox etc.)
     tools: bool = True
     est_mem_mb: int | None = None
     ctx: int | None = None  # context window to serve this model at (None = default)

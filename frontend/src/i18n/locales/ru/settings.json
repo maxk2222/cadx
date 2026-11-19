@@ -264,7 +264,11 @@
     "exec_pool_workers": "Воркеров пула процессов",
     "exec_pool_workers_h": "0 = авто; 1 отключает пул случаев МКЭ / fan-out конвейера",
     "audit_parallel_runs": "Параллельные прогоны аудита",
-    "audit_parallel_runs_h": "0 = авто — параллельные ±ε возмущения аудита дизайна"
+    "audit_parallel_runs_h": "0 = авто — параллельные ±ε возмущения аудита дизайна",
+    "prio_internal": " ",
+    "prio_internal_h": "   CADX    (0 = )",
+    "prio_external": " ",
+    "prio_external_h": "   LAN- ( = )"
   },
   "mdl_title": "Локальные модели",
   "mdl_kind_llm": "LLM",
@@ -345,5 +349,7 @@
   "upd_phase_done": "завершено",
   "upd_phase_state_done": "готово",
   "upd_phase_state_failed": "ошибка",
-  "upd_phase_state_idle": "простой"
+  "upd_phase_state_idle": "простой",
+  "sidecar_queue_title": " sidecar",
+  "sidecar_queue_hint": "    sidecar ( =  CADX/,  = LAN-).    ;   =    —   ."
 }

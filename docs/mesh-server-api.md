@@ -258,38 +258,89 @@ returns `400` instead of silently dropping the image; mlx_lm strips
 image parts server-side), `tools` requires `supports_tools`. `"auto"`
 (or an empty/unknown id — e.g. an external provider's model name leaking
 through) picks the first available **and downloaded** adapter matching
-the capabilities. Check `/v1/models` first.
+the capabilities. **`"omni"`** is the discovery alias — like `"auto"` but
+forcing the full capability set (vision + tools), so a client that just
+wants "the best local model" needs no catalog knowledge. An explicit id
+whose weights aren't on disk returns `404` (fetch via
+`POST /v1/models/{id}/download` first) instead of stalling inside an
+implicit download. Check `/v1/models` first.
 
-Request admission is **bounded** — runtime-mutable knobs
-(`PUT /v1/config`, env `MESH_LLM_*`):
+Request admission is a **priority/model-aware queue** (`_LlmQueue`,
+replacing the old flat semaphore). Dispatch order is scored:
 
-- `llm_max_concurrent` (default 4, 0 = unbounded) — proxy semaphore over
-  the whole upstream call (load + generation + stream).
-- `llm_queue_wait_s` (default 30) — bound on the semaphore wait AND the
-  memory-admission wait before an honest `503`.
-- `llm_parallel` (default 1) — llama.cpp `--parallel N` slot count, baked
-  into the server argv at the **next model load** (KV cache scales with
-  slots × ctx).
+```
+score = waited_s + llm_queue_fair_s * (affinity + priority)
+```
+
+- `affinity` = 1 when the entry's model is already loaded or currently
+  loading — same-model requests batch and ride the single-flight load
+  instead of thrashing weights.
+- `priority` is classified **server-side per caller**, never self-declared
+  (see "Caller priority" below).
+- `waited_s` grows unbounded, so a step of priority or affinity buys at
+  most one `llm_queue_fair_s` (default 60) window — nothing starves.
+
+Runtime-mutable knobs (`PUT /v1/config`, env `MESH_LLM_*`):
+
+- `llm_max_concurrent` (default 4, 0 = unbounded) — granted in-flight
+  slots (load + generation + stream).
+- `llm_queue_max` (default 32) — queue depth cap; overflow → `503`.
+- `llm_queue_wait_s` (default 30) — wait bound for `stream:false` AND the
+  memory-admission wait → honest `503 {retry_after_s}`.
+- `llm_stream_queue_wait_s` (default 600) — longer bound for streaming
+  requests (their clients see live progress the whole time).
+- `llm_keepalive_s` (default 5) — SSE keepalive cadence while queued.
+- `llm_queue_fair_s` (default 60) — one fairness window of head start per
+  affinity/priority step.
+- `llm_parallel` (default 1) — llama.cpp `--parallel N` slots, baked into
+  argv at the **next model load** (KV cache scales with slots × ctx).
 - `llm_pin` — keep resident llm models out of idle eviction.
+- `llm_upstream_timeout_s` / `llm_stream_idle_s` — upstream watchdogs:
+  bounds a wedged managed server on JSON posts (504) and silent gaps in
+  a relayed stream (SSE error chunk + [DONE]).
 
 Non-resident loads pass `JobManager.admit_resolved` — the same
-ledger/LRU-eviction memory gate the job queue uses — and the load itself
-runs `registry.get(strict=True, protected=<in-flight llm ids>)`: an llm
-model with a live request is never an eviction candidate (job-side loads
-pass the same `protected` set), and a model that still can't fit raises
+ledger/LRU-eviction memory gate the job queue uses (KV-pool-aware via
+`admission_mem_mb`) — and the load itself runs
+`registry.get(strict=True, protected=<in-flight llm ids>)`: an llm model
+with a live request is never an eviction candidate, including from
+`unload_all`/idle sweeps, and a model that still can't fit raises
 `InsufficientMemoryError` → `503 {loading: true, retry_after_s: 5,
 Retry-After: 5}` instead of falling into the "load anyway" OOM path the
 batch lane keeps. `/v1/queue` shows the interactive lane
-(`llm.in_flight/waiting/loading`) next to batch jobs.
+(`llm.in_flight/waiting/loading`) plus score-ranked `llm.entries[]`
+(position/model/priority/waited_s).
+
+**Caller priority** — one global policy for the llm queue and the job
+lane (`GenParams.priority`). Classification (`auth.request_priority`):
+
+- *internal* — `X-Mesh-Internal: 1` (stamped by the CADX backend) or any
+  loopback peer → `llm_prio_internal` (default 0).
+- *external* — authenticated LAN clients → `llm_prio_external`
+  (default 10).
+- `X-Mesh-Priority: <int>` is honored **only from loopback** — the header
+  is for operator tooling; a LAN client forging `X-Mesh-Internal` can at
+  most select the (lower) internal class, never escalate.
+
+**Streaming** — `stream:true` commits `200 text/event-stream`
+immediately (`X-Accel-Buffering: no`). While queued/loading the client
+receives `: keepalive` comments every `llm_keepalive_s` plus
+`reasoning_content` deltas ("queued #2", "loading model 'x'…") — the
+field thinking models already use, so OpenAI clients render progress
+natively. Errors found **after** the commit arrive as
+`data: {"error": …}` + `[DONE]` (OpenAI mid-stream convention);
+pre-commit failures stay real HTTP statuses. `stream:false` remains a
+bounded wait + JSON `503` — a JSON body can't carry incremental status.
 
 Responses:
 
-- `200` — upstream JSON or `text/event-stream` relayed verbatim.
+- `200` — upstream JSON or SSE relayed verbatim (streams include
+  keepalive/reasoning during prepare).
 - `400` — capability mismatch (vision/tools vs. explicit model).
-- `404` — `{"error": {"message": …}}` when no llm adapter can serve the
-  request (empty catalog or nothing downloaded/capable).
-- `503` — admission/slot timeout (`loading: true`, `retry_after_s`),
-  load failure/timeout; `502` when the spawned server is unreachable.
+- `404` — unknown model, or an explicit id without downloaded weights.
+- `503` — queue full (`queue_max`), slot/admission timeout
+  (`loading: true`, `retry_after_s`), load failure/timeout.
+- `502`/`504` — upstream unreachable / watchdog timeout.
 
 ## Runtime config
 
@@ -303,7 +354,15 @@ partial patch `{key: value}`, validates type + range, persists the
 overlay atomically to `model_dir/server_config.json`, and returns the
 full new view. `null` removes a key from the overlay (env/default wins
 again); unknown keys are `422`. Mutable keys today:
-`llm_max_concurrent`, `llm_queue_wait_s`, `llm_parallel`, `llm_pin`,
+`llm_max_concurrent`, `llm_queue_wait_s`, `llm_queue_max`,
+`llm_queue_fair_s`, `llm_stream_queue_wait_s`, `llm_keepalive_s`,
+`llm_prio_internal`, `llm_prio_external`, `llm_upstream_timeout_s`,
+`llm_stream_idle_s`, `llm_failed_ttl_s`,
+`llm_parallel`, `llm_pin`,
+`llm_ctx`, `llm_kv_bits`, `llm_prefill_step`, `llm_draft`,
+`llm_max_num_seqs`, `llm_prompt_cache_mb`, `llm_gpu_layers`,
+`llm_kv_unified`, `llm_kv_per_slot`, `llm_kv_cache_type`,
+`llm_flash_attn`, `llm_apc`, `llm_kv_scheme`,
 `openai_image_wait_s`, `unload_idle_s`, `job_min_free_mb`,
 `mem_headroom_mb`.
 
@@ -359,6 +418,82 @@ architectures. On other hosts the script installs the `llm` extra
 `llama-server` binary or `LLAMA_SERVER_BIN` also works. GGUF vision needs
 a llama.cpp build that supports the `qwen3_5` architecture family plus
 `--mmproj` (added automatically for `gguf_mmproj` entries).
+
+#### llama.cpp flag suite (CUDA/ROCm hosts)
+
+On CUDA workstations prefer a real `llama-server` binary over the
+`llama_cpp.server` Python fallback — only the binary does parallel
+sequence slots and the unified KV pool. `mesh_server/scripts/
+install_llm_cuda.sh` installs a current CUDA build (release binary or
+`git clone && cmake` fallback; RTX 5090 / sm_120 needs CUDA ≥ 12.8 —
+the repo's `Dockerfile.cuda` already ships that toolchain). Resolution
+order stays `LLAMA_SERVER_BIN` → `PATH` → python fallback.
+
+`server_argv` now probes `llama-server --help` once per binary (cached)
+and only emits flags the build advertises — an unknown flag would crash
+the spawn, so nothing below is passed blindly:
+
+| knob | flag | effect |
+|---|---|---|
+| `llm_gpu_layers` (default -1) | `-ngl` / `--n-gpu-layers` | full GPU offload; a positive cap leaves VRAM for image/mesh models. **Also fixes the python fallback** whose `n_gpu_layers=0` default would run on CPU |
+| `llm_kv_unified` (default on) | `--kv-unified` | `-c` becomes ONE KV pool shared dynamically by all parallel slots (vLLM-style) instead of ctx/parallel per slot — the concurrency lever |
+| `llm_kv_per_slot` | `--kv-unified-per-slot` | optional per-sequence cap inside the shared pool (0 = pool limit only) |
+| `llm_kv_cache_type` | `--cache-type-k/-v` | KV quant e.g. `q8_0` (≈½ KV VRAM) or `q4_0` |
+| `llm_flash_attn` (default on) | `-fa` / `--flash-attn` | fused attention — less VRAM, faster long ctx |
+| `llm_prompt_cache_mb` | `--cache-ram` (+`--cache-idle-slots`) | RAM prompt cache — repeat system prompts skip re-prefill |
+| `llm_parallel` | `--parallel N` | sequence slots; **with `--kv-unified` the pool is shared, without it each slot gets ctx/N** — that combination is why the probe exists |
+
+`--ctx-size` stays the pool size, `--jinja` the chat template, `--mmproj`
+the vision projector. Adapters may carry `kv_bytes_per_token` (Qwen3.8
+hybrid: only 16 of 64 layers are full-attention → ~256 KiB/token/seq);
+the argv builder logs a `kv_budget` estimate at load.
+
+The `llama_cpp.server` fallback gets `--n_gpu_layers`, `--cache_type_k/v`
+and `--flash_attn` but stays **serial** (no slots, no KVU) — install the
+binary for concurrent LAN traffic; the spawn log warns when knobs can't
+apply on the resolved flavor.
+
+#### RTX 5090 LAN preset
+
+Recommended `/v1/config` values for a 32 GB Blackwell workstation serving
+Qwen3.8-27B + concurrent image jobs on the LAN:
+
+```json
+{
+  "llm_parallel": 8,          // shared-pool slots
+  "llm_ctx": 32768,           // ONE unified KV pool (~8 GiB fp16)
+  "llm_kv_unified": true,
+  "llm_kv_cache_type": "q8_0",// halves the KV pool to ~4 GiB
+  "llm_kv_per_slot": 8192,    // one client cannot hog the pool
+  "llm_flash_attn": true,
+  "llm_max_concurrent": 8,    // proxy admission matches slot count
+  "llm_prompt_cache_mb": 4096,
+  "llm_gpu_layers": -1        // cap e.g. 40 if Flux/TRELLIS must share VRAM
+}
+```
+
+Q4_K_M weights ≈ 17 GB + ~4 GiB KV pool + overhead ≈ 22–24 GB — leaves
+headroom for an image model; LLM and image jobs still compete for VRAM,
+so either cap `llm_gpu_layers` or let the memory ledger evict/queue.
+
+LAN exposure: `scripts/start.sh --lan` (or `MESH_LAN=1` + `MESH_API_KEYS`
+in `.env`) binds `0.0.0.0:8765`; **any non-loopback bind without an API
+key refuses to start** — the Bearer middleware covers every endpoint but
+`/v1/health` + `OPTIONS`. Keep the port firewalled to the LAN segment,
+rotate keys when sharing the box, and point CADX at it via
+`base_url=http://<host>:8765/v1`.
+
+#### Media-part gating
+
+Chat content parts map to capabilities: `image_url`/`input_image` and
+`video_url`/`input_video`/`video` all need `supports_vision` (mtmd
+decodes video through the same mmproj), `input_audio`/`audio_url`/
+`audio` need `supports_audio`. Auto/unknown-model requests pick only
+capable adapters; a request that asks for a capability no loaded model
+has gets an explicit `model_not_found`/`capability` error instead of a
+silent modality drop. **Qwen3.8 does image+video, not audio** — audio
+parts need a separate audio-encoder model (Qwen-Omni/Ultravox family,
+registered via `/v1/models/register` with `supports_audio`).
 
 `HF_TOKEN` in the environment — or the token stored via WebUI settings,
 which the backend forwards per request — makes downloads of gated repos
@@ -416,6 +551,7 @@ immediately, survives restarts):
   "backend": "mlx-lm",              // "mlx-lm"|"llama.cpp"|"" — "" = auto by device
   "name": "friendly name",
   "vision": false,
+  "audio": false,
   "tools": true,
   "est_mem_mb": null                // admission estimate until measured
 }
@@ -526,6 +662,14 @@ In addition to the existing `MESH_*` knobs (see
 | `MESH_LLM_MAX_CONCURRENT` | `4` | proxy semaphore over concurrent llm requests (0 = unbounded) |
 | `MESH_LLM_QUEUE_WAIT_S` | `30` | bound on llm slot + memory-admission waits before `503` |
 | `MESH_LLM_PARALLEL` | `1` | llama.cpp `--parallel N` — applies at next model load |
+| `MESH_LLM_GPU_LAYERS` | `-1` | `-ngl` — -1 = full offload, positive cap leaves VRAM for image models |
+| `MESH_LLM_KV_UNIFIED` | `1` | `--kv-unified` shared KV pool (probed; skipped on old binaries) |
+| `MESH_LLM_KV_PER_SLOT` | `0` | `--kv-unified-per-slot` per-seq cap inside the pool (0 = pool limit) |
+| `MESH_LLM_KV_CACHE_TYPE` | `""` | `--cache-type-k/-v` e.g. `q8_0` ("" = f16 default) |
+| `MESH_LLM_FLASH_ATTN` | `1` | `-fa`/`--flash-attn` when the binary advertises it |
+| `MESH_LLM_PROMPT_CACHE_MB` | `0` | `--cache-ram` host prompt cache (llama.cpp; skipped with mmproj) |
+| `MESH_LLM_APC` | `0` | mlx_vlm `APC_ENABLED=1` block-level prefix cache |
+| `MESH_LLM_KV_SCHEME` | `""` | mlx_vlm-only `--kv-quant-scheme` (`uniform`\|`turboquant`, needs `llm_kv_bits`) |
 | `MESH_OPENAI_IMAGE_WAIT_S` | `600` | sync-wait bound for `/v1/images/*` wrappers |
 
 ## Semantics

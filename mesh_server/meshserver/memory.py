@@ -39,6 +39,10 @@ class MemoryLedger:
         self._stats: dict[str, float] = {}  # adapter id -> measured peak RSS (MB)
         self._residents: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        # mb freed in the last few seconds that psutil can't see yet — an
+        # admission loop that evicts then immediately re-checks fits() would
+        # over-evict without this (the OS needs a beat to report the release)
+        self._pending_free: list[tuple[float, float]] = []
         self._load_stats()
 
     # -- measured footprints --------------------------------------------- #
@@ -89,37 +93,95 @@ class MemoryLedger:
     # -- admission --------------------------------------------------------- #
 
     def free_mb(self) -> float | None:
-        """Host RAM available right now (MB); None when psutil can't tell."""
+        """Host RAM available right now (MB); None when psutil can't tell.
+
+        Subtracts speculative reservations (loads in flight whose RSS
+        psutil can't see yet) and re-adds recently-released memory
+        (note_release) the OS hasn't reported back yet — together they
+        bound both over-admission (two concurrent loads passing fits()
+        on the same stale snapshot) and over-eviction in admit loops."""
         try:
             import psutil
 
-            return psutil.virtual_memory().available / 1e6
+            free = psutil.virtual_memory().available / 1e6
         except Exception:
             return None
+        with self._lock:
+            cutoff = time.monotonic() - 4.0
+            self._pending_free = [(t, m) for t, m in self._pending_free if t > cutoff]
+            pending = sum(m for _, m in self._pending_free)
+            spec = sum(
+                e["mb"] for e in self._residents.values() if e.get("spec")
+            )
+        return free - spec + pending
 
-    def fits(self, need_mb: float) -> bool:
+    def note_release(self, mb: float) -> None:
+        """Mark `mb` as just-freed-but-not-yet-visible to psutil (4s window)."""
+        if mb <= 0:
+            return
+        with self._lock:
+            self._pending_free.append((time.monotonic(), mb))
+
+    def fits(self, need_mb: float, *, exclude_spec: set[str] | None = None) -> bool:
         """Admission check: keep mem_headroom_mb free after the newcomer.
-        Unknown free memory -> admit (the RSS watchdog bounds the damage)."""
+        Unknown free memory -> admit (the RSS watchdog bounds the damage).
+        ``exclude_spec`` ids skip the caller's own speculative reservation —
+        without it a loader would count its declared need twice."""
         free = self.free_mb()
         if free is None:
             return True
+        if exclude_spec:
+            with self._lock:
+                free += sum(
+                    e["mb"]
+                    for e in self._residents.values()
+                    if e.get("spec") and e["id"] in exclude_spec
+                )
         return free - need_mb >= self.cfg.effective("mem_headroom_mb")
 
     # -- resident set ------------------------------------------------------- #
 
-    def reserve(self, entry_id: str, mb: float, *, pinned: bool, kind: str) -> None:
+    def reserve(
+        self,
+        entry_id: str,
+        mb: float,
+        *,
+        pinned: bool,
+        kind: str,
+        spec: bool = False,
+    ) -> None:
+        """Track a residency reservation. ``spec`` marks memory that isn't
+        real yet — a model between fits() and load() — so a concurrent
+        admission can't pass on the same stale free-mem snapshot (the
+        TOCTOU the old global-lock regime hid by serializing all loads)."""
         with self._lock:
             self._residents[entry_id] = {
                 "id": entry_id,
                 "mb": round(mb, 1),
                 "kind": kind,
                 "pinned": pinned,
+                "spec": spec,
                 "last_used": time.monotonic(),
             }
 
-    def release(self, entry_id: str) -> None:
+    def mark_resident(self, entry_id: str) -> None:
+        """A speculative reservation just became real RSS (load finished) —
+        psutil sees it now, so it leaves the free_mb() subtraction."""
         with self._lock:
-            self._residents.pop(entry_id, None)
+            entry = self._residents.get(entry_id)
+            if entry is not None:
+                entry["spec"] = False
+
+    def is_speculative(self, entry_id: str) -> bool:
+        with self._lock:
+            entry = self._residents.get(entry_id)
+            return bool(entry and entry.get("spec"))
+
+    def release(self, entry_id: str) -> float:
+        """Drop a reservation; returns its mb so callers can note_release()."""
+        with self._lock:
+            entry = self._residents.pop(entry_id, None)
+        return float(entry["mb"]) if entry is not None else 0.0
 
     def has(self, entry_id: str) -> bool:
         with self._lock:

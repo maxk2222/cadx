@@ -179,12 +179,22 @@ def test_make_gguf_adapter_class_attrs():
     assert cls.supports_vision is True  # implied by mmproj
 
 
-def test_mlx_downloaded_probe(monkeypatch):
+def test_mlx_downloaded_probe(monkeypatch, tmp_path):
+    """downloaded() requires config AND weight files — a cancelled
+    snapshot_download leaves config.json cached without safetensors."""
+    import meshserver.adapters.llm_mlx as mlx_mod
+
+    snap = tmp_path / "snapshots" / "abc123"
+    snap.mkdir(parents=True)
     cls = make_mlx_adapter("org/ok", id="x")
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",
         lambda repo, fn, **kw: "/cache/x" if repo == "org/ok" else None,
     )
+    monkeypatch.setattr(mlx_mod, "hf_repo_cache_dir", lambda repo: tmp_path)
+    # config present but weights missing → not downloaded
+    assert cls.downloaded(ServerConfig()) is False
+    (snap / "model.safetensors").write_bytes(b"w")
     assert cls.downloaded(ServerConfig()) is True
     cls2 = make_mlx_adapter("org/missing", id="y")
     assert cls2.downloaded(ServerConfig()) is False

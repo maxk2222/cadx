@@ -54,6 +54,24 @@ export type VersionStatus =
 
 export type GenMode = "auto" | "cad" | "mesh" | "hybrid" | "topopt";
 
+/** Start-wizard goal: parametric 3D part vs. interactive assembly guide. */
+export type WizardGoal = "part" | "guide";
+
+/** Spawn-time guide text variant — "" ships the original step text. */
+export type GuideAudience = "" | "beginner" | "intermediate" | "pro";
+
+/** Guide-run options collected in the wizard review step. */
+export interface GuideOpts {
+  /** generate missing CAD parts through the normal pipeline (default on) */
+  allowGeneration: boolean;
+  /** feed page/render images to the LLM (default on; off = degraded mode) */
+  attachImages: boolean;
+  /** output language BCP-47 — "" = auto-detect from the manual */
+  language: string;
+  /** text-variant rewrite applied at job end — "" = ship original */
+  audience: GuideAudience;
+}
+
 export type ProcessType = "fdm" | "sla" | "cnc3" | "cnc2d";
 
 /** Per-run overrides from the options panel (merged over project settings). */
@@ -1139,6 +1157,16 @@ export interface MeshHealth {
   models: MeshModelInfo[];
 }
 
+/** GET/PUT /settings/mesh-config — the sidecar's runtime-mutable scheduling
+ * knobs, proxied by the backend (the GUI never holds the bearer key). */
+export interface MeshConfigView {
+  config: Record<
+    string,
+    { value: number | string | boolean; applies: string; source: string }
+  >;
+  error?: string | null;
+}
+
 export interface CatalogEntry {
   kind: "normed" | "parametric";
   category: string;
@@ -1522,11 +1550,30 @@ export interface GuideVariantStep {
 }
 
 export interface GuideAnnotation {
-  kind: string; // "arrow"
+  kind: string; // "arrow" | "text"
   step: number;
-  part_id: string;
-  approach_axis: number[];
+  /** arrow: instance id (or part id) the arrow anchors to */
+  part_id?: string;
+  /** arrow: unit direction the arrow points along */
+  approach_axis?: number[];
   label?: string;
+  /** text field: world position [x,y,z] */
+  position?: number[];
+  text?: string;
+  color?: string;
+  size?: number;
+}
+
+export interface GuideAnnotationPatch {
+  step?: number;
+  part_id?: string;
+  approach_axis?: number[];
+  direction?: string;
+  label?: string;
+  position?: number[];
+  text?: string;
+  color?: string;
+  size?: number;
 }
 
 export interface GuideDetail {

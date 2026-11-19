@@ -258,7 +258,11 @@
     "exec_pool_workers": "进程池工作数",
     "exec_pool_workers_h": "0 = 自动；1 禁用 FEM 工况池 / 流水线扇出",
     "audit_parallel_runs": "审计并行运行",
-    "audit_parallel_runs_h": "0 = 自动 — 并行 ±ε 设计审计扰动"
+    "audit_parallel_runs_h": "0 = 自动 — 并行 ±ε 设计审计扰动",
+    "prio_internal": "",
+    "prio_internal_h": " CADX （0 = ）",
+    "prio_external": "",
+    "prio_external_h": " LAN （）"
   },
   "mdl_title": "本地模型",
   "mdl_kind_llm": "LLM",
@@ -339,5 +343,7 @@
   "upd_phase_done": "已完成",
   "upd_phase_state_done": "完成",
   "upd_phase_state_failed": "失败",
-  "upd_phase_state_idle": "空闲"
+  "upd_phase_state_idle": "空闲",
+  "sidecar_queue_title": "Sidecar ",
+  "sidecar_queue_hint": "Sidecar （ = CADX /， = LAN ）。； —— 。"
 }

@@ -181,13 +181,19 @@ async def test_upstream_error_status_propagates(upstream):
 
 
 async def test_upstream_stream_error_status_propagates(upstream):
+    """Upstream errors in a stream arrive as an SSE error chunk inside the
+    committed 200 response — post-commit failures can't be HTTP statuses
+    (OpenAI mid-stream error convention)."""
     reg = _Reg(_Adapter(upstream))
     async with _client(_app(reg)) as c:
         r = await c.post(
             "/v1/chat/completions",
             json={"model": "my-llm", "explode": True, "stream": True, "messages": []},
         )
-    assert r.status_code == 500
+    assert r.status_code == 200
+    assert "text/event-stream" in r.headers["content-type"]
+    assert '"error"' in r.text and "exploded" in r.text
+    assert "data: [DONE]" in r.text
 
 
 async def test_load_failed_503(upstream):
@@ -232,11 +238,13 @@ async def test_load_failed_503_foreign_load_marks_loading(upstream):
     assert resp.body and b'"loading":true' in resp.body.replace(b" ", b"")
 
 
-async def test_admission_timeout_503(upstream):
+async def test_admission_timeout_503(upstream, tmp_path):
     """admit_resolved never grants → bounded wait → 503 + retry hint."""
     mgr = _Manager()
     mgr.admit_resolved = lambda _id: False  # type: ignore[method-assign]
-    cfg = ServerConfig(llm_queue_wait_s=0.2, llm_load_timeout_s=5)
+    # tmp model_dir keeps a real server_config.json overlay from
+    # overriding the short test timeout with the operator's values
+    cfg = ServerConfig(llm_queue_wait_s=0.2, llm_load_timeout_s=5, model_dir=tmp_path)
     resp = await chat_completions(
         _Reg(_Adapter(upstream)),
         cfg,
@@ -260,9 +268,12 @@ async def test_llm_models_listing(upstream):
         r = await c.get("/v1/llm-models")
     assert r.status_code == 200
     data = r.json()["data"]
-    assert data[0]["id"] == "my-llm"
-    assert data[0]["object"] == "model"
-    assert data[0]["supports_vision"] is True
+    # "omni" is the auto-pick discovery alias row, listed first
+    assert data[0]["id"] == "omni"
+    assert data[0]["alias"] is True
+    assert data[1]["id"] == "my-llm"
+    assert data[1]["object"] == "model"
+    assert data[1]["supports_vision"] is True
 
 
 def test_upstream_stub_direct(upstream):
@@ -294,7 +305,7 @@ async def test_llm_models_split_registry_attrs(upstream):
         r = await c.get("/v1/llm-models")
     assert r.status_code == 200
     data = r.json()["data"]
-    assert [m["id"] for m in data] == ["my-llm"]
+    assert [m["id"] for m in data] == ["omni", "my-llm"]
 
 
 async def test_llm_models_ctx_overlay_wins(upstream):
@@ -308,9 +319,9 @@ async def test_llm_models_ctx_overlay_wins(upstream):
     async with _client(_app(reg)) as c:
         r = await c.get("/v1/llm-models")
     assert r.status_code == 200
-    assert r.json()["data"][0]["context_len"] == 262144
+    assert r.json()["data"][1]["context_len"] == 262144  # [0] is the omni alias
 
     reg.cfg = None  # no cfg → falls back to the class catalog value
     async with _client(_app(reg)) as c:
         r = await c.get("/v1/llm-models")
-    assert r.json()["data"][0]["context_len"] is None
+    assert r.json()["data"][1]["context_len"] is None

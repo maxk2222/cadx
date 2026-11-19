@@ -106,8 +106,10 @@ class HttpImageClient(ImagePort):
 
     def _headers(self) -> dict[str, str]:
         """Per-request credentials for the sidecar — X-HF-Token for gated HF
-        repos; Authorization bearer for a LAN-exposed server (MESH_LAN=1)."""
-        headers: dict[str, str] = {}
+        repos; Authorization bearer for a LAN-exposed server (MESH_LAN=1);
+        X-Mesh-Internal marks CADX-originated traffic so the sidecar's
+        queue classifies it under its internal priority."""
+        headers: dict[str, str] = {"X-Mesh-Internal": "1"}
         if self.hf_token:
             headers["X-HF-Token"] = self.hf_token
         if self.api_key:

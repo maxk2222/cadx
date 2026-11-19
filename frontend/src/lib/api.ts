@@ -12,6 +12,8 @@ import type {
   EditableFeature,
   FemPreviewResult,
   GenMode,
+  GuideAnnotation,
+  GuideAnnotationPatch,
   GuideDetail,
   GuideInstancePatch,
   GuideRewriteResult,
@@ -25,6 +27,7 @@ import type {
   LoadCase,
   LlmModelsResult,
   MeshDownloadStatus,
+  MeshConfigView,
   MeshHealth,
   MeshModelInfo,
   MeshOp,
@@ -174,6 +177,22 @@ export const api = {
       `/projects/${pid}/generate`,
       json({ prompt, asset_ids, library_part_ids: library_part_ids ?? [], part_id: part_id ?? null, mode, options })
     ),
+  startGuide: (
+    pid: string,
+    body: {
+      pdf_asset_id: string;
+      cad_asset_ids?: string[];
+      prompt?: string;
+      allow_generation?: boolean;
+      attach_images?: boolean;
+      language?: string;
+      audience?: string;
+    }
+  ) =>
+    req<{ version_id: string; job_id: string }>(
+      `/projects/${pid}/guide`,
+      json(body)
+    ),
   listParts: (pid: string) => req<Part[]>(`/projects/${pid}/parts`),
   createPart: (pid: string, name: string) =>
     req<Part>(`/projects/${pid}/parts`, json({ name })),
@@ -224,6 +243,8 @@ export const api = {
     ),
   getVersion: (id: string) => req<VersionDetail>(`/versions/${id}`),
   getGuide: (vid: string) => req<GuideDetail>(`/versions/${vid}/guide`),
+  guideNote: (vid: string, note: string) =>
+    req<{ ok: boolean }>(`/versions/${vid}/guide/notes`, json({ note })),
   patchGuideStep: (vid: string, n: number, body: GuideStepPatch) =>
     req<GuideStepDetail>(`/versions/${vid}/guide/steps/${n}`, patch(body)),
   rewriteGuide: (vid: string, audience: string, language: string) =>
@@ -260,6 +281,43 @@ export const api = {
     req<{ ok: boolean }>(
       `/versions/${vid}/guide/instances/${encodeURIComponent(iid)}`,
       { method: "DELETE" }
+    ),
+  addGuideAnnotation: (
+    vid: string,
+    body: Partial<GuideAnnotation> & { direction?: string }
+  ) =>
+    req<{ ok: boolean; index: number }>(
+      `/versions/${vid}/guide/annotations`,
+      json(body)
+    ),
+  patchGuideAnnotation: (vid: string, idx: number, body: GuideAnnotationPatch) =>
+    req<{ ok: boolean; index: number; annotation: GuideAnnotation }>(
+      `/versions/${vid}/guide/annotations/${idx}`,
+      patch(body)
+    ),
+  deleteGuideAnnotation: (vid: string, idx: number) =>
+    req<{ ok: boolean; annotations: number }>(
+      `/versions/${vid}/guide/annotations/${idx}`,
+      { method: "DELETE" }
+    ),
+  uploadGuideMedia: async (
+    vid: string,
+    blob: Blob,
+    filename: string
+  ): Promise<{ ok: boolean; name: string }> => {
+    const fd = new FormData();
+    fd.append("file", blob, filename);
+    const r = await fetch(`${BASE}/versions/${vid}/guide/media`, {
+      method: "POST",
+      body: fd,
+    });
+    if (!r.ok) throw new Error(await errText(r));
+    return r.json();
+  },
+  guideMediaFromAsset: (vid: string, asset_id: string) =>
+    req<{ ok: boolean; name: string }>(
+      `/versions/${vid}/guide/media/from-asset`,
+      json({ asset_id })
     ),
   updateVersion: (id: string, body: { name?: string; accepted?: boolean }) =>
     req<VersionDetail>(`/versions/${id}`, patch(body)),
@@ -326,6 +384,13 @@ export const api = {
     req<{ ok: boolean }>(`/library/${id}`, { method: "DELETE" }),
 
   meshHealth: () => req<MeshHealth>("/mesh/health"),
+  meshConfig: () => req<MeshConfigView>("/settings/mesh-config"),
+  updateMeshConfig: (body: Record<string, number | string | boolean | null>) =>
+    req<MeshConfigView>("/settings/mesh-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   meshModels: () => req<MeshModelInfo[]>("/mesh/models"),
   meshQueue: () => req<MeshQueue>("/mesh/queue"),
   meshModelDownload: (id: string) =>

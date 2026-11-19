@@ -262,7 +262,11 @@
     "exec_pool_workers": "Workers do pool de processos",
     "exec_pool_workers_h": "0 = auto; 1 desativa pool de casos FEM / fan-out do pipeline",
     "audit_parallel_runs": "Execuções paralelas de auditoria",
-    "audit_parallel_runs_h": "0 = auto — perturbações ±ε de auditoria de design em paralelo"
+    "audit_parallel_runs_h": "0 = auto — perturbações ±ε de auditoria de design em paralelo",
+    "prio_internal": "Prioridade interna",
+    "prio_internal_h": "Pedidos do backend CADX e ferramentas locais (0 = mínima)",
+    "prio_external": "Prioridade externa",
+    "prio_external_h": "Pedidos de clientes LAN externos (maior = preferencial)"
   },
   "mdl_title": "Modelos locais",
   "mdl_kind_llm": "LLM",
@@ -343,5 +347,7 @@
   "upd_phase_done": "concluído",
   "upd_phase_state_done": "concluído",
   "upd_phase_state_failed": "falhou",
-  "upd_phase_state_idle": "ocioso"
+  "upd_phase_state_idle": "ocioso",
+  "sidecar_queue_title": "Fila do sidecar",
+  "sidecar_queue_hint": "Prioridade global dos pedidos ao sidecar (internos = backend CADX/ferramentas, externos = clientes LAN). Valores maiores são atendidos primeiro; um passo equivale a uma janela de equidade."
 }

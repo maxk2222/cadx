@@ -161,7 +161,7 @@ def _image_response(job: ImageJob, *, response_format: str, base_url: str) -> JS
 
 
 async def images_generations(
-    manager: Any, cfg: Any, body: dict, *, base_url: str
+    manager: Any, cfg: Any, body: dict, *, base_url: str, priority: int = 0
 ) -> Response:
     """POST /v1/images/generations — OpenAI images API → ImageJob → b64/url."""
     if not isinstance(body, dict):
@@ -170,7 +170,7 @@ async def images_generations(
     if isinstance(resolved, JSONResponse):
         return resolved
     params, _cls = resolved
-    job = await manager.submit_image(params)
+    job = await manager.submit_image(params, priority=priority)
     if job is None:
         return JSONResponse(
             {
@@ -198,6 +198,7 @@ async def images_edits(
     image_bytes: bytes,
     has_mask: bool,
     base_url: str,
+    priority: int = 0,
 ) -> Response:
     """POST /v1/images/edits — multipart init image → edit-ladder job."""
     if not isinstance(body, dict):
@@ -213,7 +214,7 @@ async def images_edits(
     safe_name = Path(image_name or "init.png").name or "init.png"
     init_path = staging / f"edit_{uuid.uuid4().hex[:8]}_{safe_name}"
     init_path.write_bytes(image_bytes)
-    job = await manager.submit_image(params, init_image_path=init_path)
+    job = await manager.submit_image(params, init_image_path=init_path, priority=priority)
     if job is None:
         return JSONResponse(
             {

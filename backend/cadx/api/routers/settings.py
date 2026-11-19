@@ -171,3 +171,59 @@ async def llm_models(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
         return {"backend": backend, "models": models, "error": None}
     except Exception as e:
         return {"backend": backend, "models": [], "error": str(e)}
+
+
+def _mesh_config_target(settings: RuntimeSettings) -> tuple[str, dict[str, str]] | None:
+    """Sidecar /v1/config url + auth headers — the queue scheduling knobs
+    (internal/external priorities, fairness, keepalive) live ON the
+    sidecar; the backend only proxies them so the GUI never sees the
+    mesh_api_key."""
+    base = settings.mesh_base_url.strip().rstrip("/")
+    if not base:
+        return None
+    headers = {"X-Mesh-Internal": "1"}
+    key = settings.mesh_api_key.get_secret_value()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return f"{base}/v1/config", headers
+
+
+@router.get("/mesh-config")
+async def mesh_config(db: AsyncSession = Depends(get_session)) -> dict[str, Any]:
+    """Read the sidecar's runtime-mutable scheduling config (proxied — the
+    GUI must not hold the mesh bearer key)."""
+    target = _mesh_config_target(await load_runtime_settings(db))
+    if target is None:
+        return {"config": {}, "error": "local sidecar not configured"}
+    url, headers = target
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(url, headers=headers)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:
+        return {"config": {}, "error": str(e)}
+
+
+@router.put("/mesh-config")
+async def mesh_config_update(
+    body: dict[str, Any], db: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """PATCH sidecar runtime config — body is the raw {key: value} patch the
+    sidecar validates itself (unknown keys → 422 passthrough)."""
+    target = _mesh_config_target(await load_runtime_settings(db))
+    if target is None:
+        return {"config": {}, "error": "local sidecar not configured"}
+    url, headers = target
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.put(url, json=body, headers=headers)
+        if r.status_code >= 400:
+            try:
+                detail = r.json().get("detail") or r.text
+            except Exception:
+                detail = r.text
+            return {"config": {}, "error": str(detail)}
+        return r.json()
+    except Exception as e:
+        return {"config": {}, "error": str(e)}
