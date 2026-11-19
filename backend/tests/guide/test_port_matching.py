@@ -233,6 +233,51 @@ def test_engagement_seats_plug_inside_socket() -> None:
     assert mp_world[2] < 30.0 - 10.0
 
 
+def test_brep_tube_end_plugs_bounded_socket() -> None:
+    """The generated-STEP regression: an executor-extracted tube end
+    (annular end port: female, inner=bore, outer=OD, depth=through)
+    must plug into the elbow's bounded seat — and the bounded seat is
+    the receiver, never the through-bore passage."""
+    tube_end = PortInfo(
+        name="end_0",
+        kind="cylinder",
+        pos=[0, 0, 0],
+        axis=[0, 0, -1],
+        radius=10.0,
+        inner_radius=10.0,
+        outer_radius=11.0,
+        depth=THROUGH,
+        gender="female",
+    )
+    sock = _socket(lip=9.9, inner=9.885, seat=12.0, outer=10.984)
+    s, p = solver._receiver(tube_end, sock)
+    assert s is sock and p is tube_end
+    tube = _part("tube", [tube_end])
+    elbow = _part("elbow", [sock])
+    cands = solver.find_matching_ports(tube, elbow)
+    assert cands and cands[0]["score"] > 0.0
+    assert solver.find_matching_ports(elbow, tube)  # symmetric direction
+
+
+def test_male_shell_length_is_not_a_socket() -> None:
+    """A BRep male port's depth is its own surface extent — a 70mm tube
+    shell must NOT pose as a 70mm-deep socket and steal the receiver
+    role from the real fitting seat."""
+    shell = PortInfo(
+        name="cyl_0",
+        kind="cylinder",
+        pos=[0, 0, 70],
+        axis=[0, 0, 1],
+        radius=11.0,
+        depth=70.0,
+        gender="male",
+    )
+    assert solver._socket_depth(shell) == 0.0
+    sock = _socket()
+    s, p = solver._receiver(shell, sock)
+    assert s is sock and p is shell
+
+
 def test_legacy_unmeasured_ports_keep_soft_rules() -> None:
     """BRep/executor ports without bore measurement fall back to the
     radius-ratio model (planner tolerance via include_mismatch)."""

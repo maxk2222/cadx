@@ -763,6 +763,23 @@ def _cache_candidates(s: GuideToolSession, cands: list[dict[str, Any]]) -> list[
     return out
 
 
+def _consumed_ports(s: GuideToolSession, inst: Any) -> set[str]:
+    """Port names already joined on this instance — as the fixed side OR
+    as the moving side of a joint. A consumed port is a dead end: every
+    candidate/suggestion path must exclude it or the fix-up output sends
+    the agent back into the exact sink it just escaped."""
+    return {
+        str(j.get("fixed_port"))
+        for j in s.state.assembly.joints
+        if j.get("fixed_instance") == inst.instance_id
+        or (not j.get("fixed_instance") and j.get("fixed_part") == inst.part_id)
+    } | {
+        str(j.get("moving_port"))
+        for j in s.state.assembly.joints
+        if j.get("moving_instance") == inst.instance_id
+    }
+
+
 async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     moving = _part_ref(s, a.get("part_id", ""))
     fixed_inst, err = _resolve_inst(s, str(a.get("target_part_id", "")))
@@ -771,16 +788,7 @@ async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[st
     fixed = s.state.part_by_id(fixed_inst.part_id)
     if fixed is None:
         return {"ok": False, "error": _part_err(s)}
-    used = {
-        str(j.get("fixed_port"))
-        for j in s.state.assembly.joints
-        if j.get("fixed_instance") == fixed_inst.instance_id
-        or (not j.get("fixed_instance") and j.get("fixed_part") == fixed_inst.part_id)
-    } | {
-        str(j.get("moving_port"))
-        for j in s.state.assembly.joints
-        if j.get("moving_instance") == fixed_inst.instance_id
-    }
+    used = _consumed_ports(s, fixed_inst)
     cands = solver.find_matching_ports(moving, fixed, used_fixed_ports=used, include_mismatch=True)
     if not cands:
         return {
@@ -821,7 +829,7 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
         return {"ok": False, "error": _part_err(s)}
     cands = _attachment_candidates(s, a, moving, fixed, fixed_inst)
     if not cands:
-        return _no_cand_err(moving, fixed)
+        return _no_cand_err(s, moving, fixed, fixed_inst)
     # collision-check each candidate against the placed set; also expose the
     # burial fraction so the LLM can prefer a candidate whose body stays
     # OUTSIDE foreign parts instead of discovering the sink only at commit
@@ -865,7 +873,7 @@ async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> di
             + " — prefer high out_dir_match (free port faces the follower)"
         )
     if not any(c["geometry_ok"] for c in cands):
-        _add_alternative_pairs(out, s, moving, fixed, a)
+        _add_alternative_pairs(out, s, moving, fixed, fixed_inst, a)
     return out
 
 
@@ -1076,15 +1084,20 @@ def _sibling_dir_hint(s: GuideToolSession, pid: str) -> tuple[Any, str]:
     return None, ""
 
 
-def _no_cand_err(moving: Any, fixed: Any) -> dict[str, Any]:
+def _no_cand_err(s: GuideToolSession, moving: Any, fixed: Any, fixed_inst: Any) -> dict[str, Any]:
     # self-healing error: name the valid ports AND the compatible pairs so
     # the next call succeeds instead of guessing port names blindly
+    used = _consumed_ports(s, fixed_inst)
     err_out: dict[str, Any] = {
         "ok": False,
         "error": "no candidates for those port names",
         "moving_ports": [p.name for p in moving.ports],
         "fixed_ports": [p.name for p in fixed.ports],
     }
+    if used:
+        # durable evidence: a consumed port looks identical to a bad name
+        # in the bare port list — the agent re-probed exactly this sink
+        err_out["fixed_ports_in_use"] = sorted(used)
     empty = []
     if not moving.ports:
         empty.append(moving.id)
@@ -1096,7 +1109,11 @@ def _no_cand_err(moving: Any, fixed: Any) -> dict[str, Any]:
         )
         err_out["next_action"] = f"get_part_features({empty[0]!r})"
         return err_out
-    auto = solver.find_matching_ports(moving, fixed, include_mismatch=True)
+    # suggestions must exclude consumed ports — recommending a used port
+    # sends the agent straight back into the dead end it just escaped
+    auto = solver.find_matching_ports(
+        moving, fixed, used_fixed_ports=used, include_mismatch=True
+    )
     if auto:
         err_out["compatible_pairs"] = auto[:6]
         err_out["hint"] = "retry with moving_port/target_port from compatible_pairs"
@@ -1145,14 +1162,21 @@ def _add_alternative_pairs(
     s: GuideToolSession,
     moving: Any,
     fixed: Any,
+    fixed_inst: Any,
     a: dict[str, Any],
 ) -> None:
     """All candidates for the probed pair are pre-rejected — name the pairs
     that still have a chance so the next call succeeds instead of
-    re-probing this sink."""
-    auto = solver.find_matching_ports(moving, fixed, include_mismatch=True)
+    re-probing this sink. Consumed fixed ports are excluded: suggesting a
+    port that is already joined just redirects into another dead end."""
+    used = _consumed_ports(s, fixed_inst)
+    auto = solver.find_matching_ports(
+        moving, fixed, used_fixed_ports=used, include_mismatch=True
+    )
     probed = (str(a.get("moving_port", "")), str(a.get("target_port", "")))
     alt = [p for p in auto if (p.get("moving_port"), p.get("fixed_port")) != probed]
+    if used:
+        out["fixed_ports_in_use"] = sorted(used)
     if alt:
         out["alternative_pairs"] = alt[:6]
         out["hint"] = (

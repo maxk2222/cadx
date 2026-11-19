@@ -1753,3 +1753,84 @@ def test_figure_image_refetch_is_refused(tmp_path) -> None:
     assert first["ok"] is True and first.get("_images") == [str(img)]
     again = sess._tool_get_figure_image({"page": 1, "index": 1})
     assert again["ok"] is False and again["_streak_exempt"] is True
+
+
+def test_error_suggestions_exclude_consumed_ports() -> None:
+    """Regression: _no_cand_err / _add_alternative_pairs must not suggest a
+    port a joint already consumed — otherwise the fix-up path redirects the
+    agent into the exact dead end it just escaped (observed: a consumed
+    cyl_0 re-suggested 3x on tube_dn22_70#1 until the dead-pair gate fired).
+    """
+    from cadx.guide.assembly_tools import (
+        _add_alternative_pairs,
+        _consumed_ports,
+        _no_cand_err,
+    )
+    from cadx.guide.state import AssemblyInstance, GuidePart, PortInfo
+
+    ctx = MagicMock()
+    ctx.runtime_settings = MagicMock(guide_image_budget=4)
+    state = GuideState()
+    tube = GuidePart(
+        id="tube",
+        name="Tube",
+        bbox_min=[-12, -12, 0],
+        bbox_max=[12, 12, 70],
+        ports=[
+            PortInfo(
+                name="end_0", kind="cylinder", pos=[0, 0, 0], axis=[0, 0, -1],
+                radius=10.0, inner_radius=10.0, outer_radius=11.0,
+                depth=500.0, gender="female",
+            ),
+            PortInfo(
+                name="end_1", kind="cylinder", pos=[0, 0, 70], axis=[0, 0, 1],
+                radius=10.0, inner_radius=10.0, outer_radius=11.0,
+                depth=500.0, gender="female",
+            ),
+        ],
+    )
+    elbow = GuidePart(
+        id="elbow",
+        name="Elbow",
+        bbox_min=[-20, -20, -20],
+        bbox_max=[20, 20, 20],
+        ports=[
+            PortInfo(
+                name="rim_2", kind="cylinder", pos=[0, 0, 0], axis=[0, 0, 1],
+                radius=9.9, inner_radius=9.885, outer_radius=10.984,
+                depth=12.0, gender="female",
+            ),
+        ],
+    )
+    state.parts.extend([tube, elbow])
+    inst = AssemblyInstance(instance_id="tube#1", part_id="tube", placed_in_step=3)
+    state.assembly.instances.append(inst)
+    # end_0 is already joined — only end_1 remains a legal suggestion
+    state.assembly.joints.append(
+        {
+            "moving_instance": "adapter#1",
+            "moving_part": "adapter",
+            "moving_port": "rim_0",
+            "fixed_instance": "tube#1",
+            "fixed_part": "tube",
+            "fixed_port": "end_0",
+        }
+    )
+    sess = GuideToolSession(
+        ctx, mission="assembly", state=state, state_dir="/tmp/x",
+        project_id=None, guide_assets=[], executor=None,
+    )
+    assert _consumed_ports(sess, inst) == {"end_0"}
+
+    err = _no_cand_err(sess, elbow, tube, inst)
+    assert err["ok"] is False
+    assert err["fixed_ports_in_use"] == ["end_0"]
+    assert err["compatible_pairs"]
+    assert all(c["fixed_port"] != "end_0" for c in err["compatible_pairs"])
+
+    out: dict = {}
+    _add_alternative_pairs(
+        out, sess, elbow, tube, inst, {"moving_port": "rim_2", "target_port": "end_0"}
+    )
+    assert out["fixed_ports_in_use"] == ["end_0"]
+    assert all(c["fixed_port"] != "end_0" for c in out["alternative_pairs"])

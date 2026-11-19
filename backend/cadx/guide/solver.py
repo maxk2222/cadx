@@ -300,12 +300,22 @@ def _socket_depth(p: PortInfo) -> float:
     IS a receiver even when the depth probe only caught the mouth lip — a
     union nut's seat reads a few tenths deep yet its bore still swallows
     the stub's tube end. A solid face (inner_r=0) receives nothing."""
+    if p.gender == "male" and p.inner_radius <= 0.0:
+        # a male surface's recorded length is its own extent, never a
+        # receiving seat — BRep cyl ports otherwise pose as deep sockets
+        return 0.0
     d = p.depth
     if 4.0 <= d < 400.0:
         return d
     if p.inner_radius > 0.0 and (d >= 400.0 or p.gender == "female"):
         return min(2.0 * p.inner_radius, 30.0)
     return 0.0
+
+
+def _is_through_bore(p: PortInfo) -> bool:
+    """A bore whose seat probe ran out (rim probe 500+, executor through
+    marker) — it never grips like a bounded socket seat does."""
+    return p.inner_radius > 0.0 and p.depth >= 400.0
 
 
 def _inner_r(p: PortInfo) -> float:
@@ -340,8 +350,11 @@ def _receiver(a: PortInfo, b: PortInfo) -> tuple[PortInfo | None, PortInfo | Non
         cands.append((a, b))
     if sb:
         cands.append((b, a))
-    # two sockets: prefer the wider bore receiving the smaller feature
-    cands.sort(key=lambda sp: -_inner_r(sp[0]))
+    # two sockets: a bounded seat receives before a through-bore (a real
+    # fitting socket grips; a through-hole is just a tube the plug slides
+    # into — picking it as receiver inverts the joint direction), then
+    # the wider bore receiving the smaller feature
+    cands.sort(key=lambda sp: (_is_through_bore(sp[0]), -_inner_r(sp[0])))
     for sock, plug in cands:
         if _can_plug(plug):
             return sock, plug

@@ -46,6 +46,7 @@ def _face_ports(shape) -> list[dict[str, Any]]:
     faces = list(shape.faces())
     total_area = sum(float(f.area) for f in faces) or 1.0
     ports: list[dict[str, Any]] = []
+    cyl_recs: list[dict[str, Any]] = []
 
     for idx, face in enumerate(faces):
         try:
@@ -100,6 +101,39 @@ def _face_ports(shape) -> list[dict[str, Any]]:
                 radial = c_arr - pos
                 rn = float(np.linalg.norm(radial))
                 outward = float(np.dot(n, radial / rn)) > 0.0 if rn > 1e-9 else True
+                # per-corner axial span + canonical axis line for the
+                # annular-end pass below (coaxial faces share axis+origin)
+                corners = np.array(
+                    [
+                        [x, y, z]
+                        for x in (fbb.min.X, fbb.max.X)
+                        for y in (fbb.min.Y, fbb.max.Y)
+                        for z in (fbb.min.Z, fbb.max.Z)
+                    ]
+                )
+                ax_c = axis.copy()
+                for i in range(3):
+                    if abs(float(ax_c[i])) > 1e-9:
+                        if ax_c[i] < 0:
+                            ax_c = -ax_c
+                        break
+                # spans must be measured in the CANONICAL frame — faces on
+                # the same axis line can carry opposite OCC directions, so
+                # corners @ axis would give mirrored extents per face and
+                # the end-covering check below would see no shared ends
+                svals = corners @ ax_c
+                o_c = origin - ax_c * float(np.dot(origin, ax_c))
+                cyl_recs.append(
+                    {
+                        "port_name": f"cyl_{idx}",
+                        "axis_c": ax_c,
+                        "origin_c": o_c,
+                        "radius": float(cyl.Radius()),
+                        "s_min": float(svals.min()),
+                        "s_max": float(svals.max()),
+                        "outward": outward,
+                    }
+                )
                 # pos = the port's OPEN side (mouth/rim plane) for every
                 # gender — the same convention rim-port extraction uses,
                 # so solver frames never mix mouth-vs-seat semantics.
@@ -137,7 +171,160 @@ def _face_ports(shape) -> list[dict[str, Any]]:
         except Exception as exc:  # single bad face must not kill extraction
             log.debug("guide.extract_ports.face_skipped", idx=idx, err=str(exc))
     ports.sort(key=lambda p: -p["area"])
-    return ports[:_MAX_PORTS]
+    end_ports, consumed = _annular_end_ports(cyl_recs, _inside)
+    # fused ends REPLACE the single-face ports they were built from — a
+    # tube's shell+bore ARE its end_0/end_1, and keeping both aliases
+    # lets a consumed end look free again under the other name. Non-
+    # outermost male faces (nested spigots) keep their own port.
+    ports = [p for p in ports if p["name"] not in consumed]
+    # fused ends rank first — they carry the full envelope picture the
+    # socket model needs; single-face ports stay as fallback detail
+    return (end_ports + ports)[:_MAX_PORTS]
+
+
+def _annular_end_ports(
+    cyl_recs: list[dict[str, Any]], inside: Any
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """One port per OPEN annular end of a coaxial cylinder-face group.
+
+    Rim-extraction convention: an open annular end (tube mouth, hollow
+    boss mouth) is ONE port carrying BOTH envelopes — inner_radius =
+    bore, outer_radius = wall OD — so the end can plug into a socket.
+    Single-face ports can't express that: a bore face has no outer
+    envelope, leaving generated hollow cylinders with an end that is
+    unpluggable or portless. A bore spanning the group's full extent is
+    a through-hole and reports depth=500 (the rim probe's convention).
+    ``cyl_recs`` carry canonical axis frames (``axis_c`` sign-normalized,
+    ``origin_c`` the axis-line point nearest the origin, ``s_min``/
+    ``s_max`` the face's axial span along ``axis_c``).
+    """
+    import numpy as np
+
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for rec in cyl_recs:
+        gkey = (
+            tuple(round(v, 2) for v in rec["origin_c"]),
+            tuple(round(v, 3) for v in rec["axis_c"]),
+        )
+        groups.setdefault(gkey, []).append(rec)
+    end_ports: list[dict[str, Any]] = []
+    consumed: set[str] = set()
+    for recs in groups.values():
+        if len({round(r["radius"], 3) for r in recs}) < 2:
+            continue  # one radius along this axis — no annulus
+        s_lo = min(r["s_min"] for r in recs)
+        s_hi = max(r["s_max"] for r in recs)
+        d = recs[0]["axis_c"]
+        o = recs[0]["origin_c"]
+        ref = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(ref, d))) > 0.9:
+            ref = np.array([0.0, 1.0, 0.0])
+        rad = ref - d * float(np.dot(ref, d))
+        rad /= max(float(np.linalg.norm(rad)), 1e-9)
+        # candidate mouths: every axial boundary of a BORE face — an open
+        # annular edge lives where a void boundary terminates into air.
+        # This covers group extrema (tube ends) AND interior planes (a
+        # counterbore mouth where the recess ends but a nested spigot or
+        # the wall continues). A bore's own span direction tells which
+        # way the void continues: past its boundary, away from the span.
+        planes: list[tuple[float, Any]] = []
+        for b in (r for r in recs if not r["outward"]):
+            planes.append((b["s_min"], -d))
+            planes.append((b["s_max"], d))
+        planes.sort(key=lambda t: t[0])
+        # merge coincident planes — two bores can share a boundary s with
+        # OPPOSITE open directions (one's seat is the other's mouth); try
+        # every recorded direction per position, first escape wins
+        spots: list[tuple[float, list[Any]]] = []
+        for s_end, out_dir in planes:
+            if spots and abs(s_end - spots[-1][0]) <= 0.5:
+                if not any(np.array_equal(out_dir, od) for od in spots[-1][1]):
+                    spots[-1][1].append(out_dir)
+            else:
+                spots.append((s_end, [out_dir]))
+        for s_end, out_dirs in spots:
+            port, used_names = _eval_end_spot(
+                recs, s_end, out_dirs, o, d, rad, s_lo, s_hi, inside,
+                idx=len(end_ports),
+            )
+            if port is None:
+                continue
+            consumed.update(used_names)
+            end_ports.append(port)
+    return end_ports, consumed
+
+
+def _eval_end_spot(
+    recs: list[dict[str, Any]],
+    s_end: float,
+    out_dirs: list[Any],
+    o: Any,
+    d: Any,
+    rad: Any,
+    s_lo: float,
+    s_hi: float,
+    inside: Any,
+    *,
+    idx: int,
+) -> tuple[dict[str, Any] | None, set[str]]:
+    """Evaluate one candidate mouth plane: the covering faces' radii give
+    the rim annulus (inner = void opening, outer = nearest wall), a
+    mid-ring probe just past the plane must leave the solid (seat
+    bottoms and buried interfaces are not mouths). Returns the port dict
+    plus the names of the single-face ports it absorbed."""
+    import numpy as np
+
+    covering = [r for r in recs if r["s_min"] - 0.5 <= s_end <= r["s_max"] + 0.5]
+    radii = sorted({round(r["radius"], 3) for r in covering})
+    if len(radii) < 2:
+        return None, set()
+    bore_rs = [round(r["radius"], 3) for r in covering if not r["outward"]]
+    if not bore_rs:
+        return None, set()
+    # rim semantics: the annulus is the MATERIAL ring — inner = the void
+    # opening at this plane, outer = the nearest wall surface beyond it.
+    # A nested spigot inside the pocket is a separate port, never the
+    # rim's inner edge.
+    r_in = max(bore_rs)
+    outer = [rr for rr in radii if rr > r_in]
+    if not outer:
+        return None, set()  # bore is the outermost surface — no wall rim
+    r_out = outer[0]
+    out_dir = None
+    for od in out_dirs:
+        probe = o + d * s_end + od * 1.0 + rad * (0.5 * (r_in + r_out))
+        try:
+            if not inside(probe):
+                out_dir = od
+                break
+        except Exception:
+            continue
+    if out_dir is None:
+        return None, set()
+    # the end port absorbs every covering bore and the outermost wall —
+    # a male face that is NOT the outermost ring (a spigot nested inside
+    # a counterbore) keeps its distinct port
+    used_names = {
+        r["port_name"]
+        for r in covering
+        if not r["outward"] or round(r["radius"], 3) == r_out
+    }
+    bores = [r for r in recs if not r["outward"]]
+    smallest = min(bores, key=lambda r: r["radius"])
+    through = smallest["s_min"] <= s_lo + 0.5 and smallest["s_max"] >= s_hi - 0.5
+    port = {
+        "name": f"end_{idx}",
+        "kind": "cylinder",
+        "pos": [round(float(v), 4) for v in (o + d * s_end)],
+        "axis": [round(float(v), 4) for v in out_dir],
+        "radius": round(r_in, 4),
+        "depth": 500.0 if through else round(float(smallest["s_max"] - smallest["s_min"]), 4),
+        "gender": "female",
+        "inner_radius": round(r_in, 4),
+        "outer_radius": round(r_out, 4),
+        "area": round(float(np.pi * (r_out**2 - r_in**2)), 2),
+    }
+    return port, used_names
 
 
 async def extract_ports(ctx: dict, payload: dict[str, Any]) -> dict[str, Any]:
