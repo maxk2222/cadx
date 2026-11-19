@@ -209,14 +209,20 @@ async def _chat_turn_alive(redis: Any, chat_id: Any) -> bool:
                 break
         from cadx.api.deps import AGENT_QUEUE
 
-        prefix = f"chat:{chat_id}:"
-        members = await redis.zrange(AGENT_QUEUE, 0, -1)
-        return any(
-            (m.decode() if isinstance(m, bytes) else m).startswith(prefix) for m in members
-        )
+        # zscan filters server-side: zrange(0,-1) transferred+scanned the whole
+        # queue (hundreds of jobs) once per orphaned chat per sweep
+        cursor = 0
+        while True:
+            cursor, found = await redis.zscan(
+                AGENT_QUEUE, cursor, match=f"chat:{chat_id}:*", count=200
+            )
+            if found:
+                return True
+            if not cursor:
+                break
+        return False
     except Exception:
         return True
-    return False
 
 
 async def _sweep_chats(db: Any, age_s: Any, redis: Any) -> None:

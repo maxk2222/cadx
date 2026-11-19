@@ -71,6 +71,7 @@ async def test_emit_dedups_identical_messages(monkeypatch):
         await emit("meshgen", 1, "preprocessing images (0%)")
     await emit("meshgen", 1, "running hunyuan3d-2mv (9%)")
     await emit("meshgen", 1, "running hunyuan3d-2mv (9%)")
+    await emit.flush()  # same-step emits are DB-throttled — flush the tail
 
     async with async_session() as db:
         j = await db.get(Job, job.id)
@@ -86,6 +87,7 @@ async def test_emit_same_message_different_iteration_passes():
     emit = make_emit(job.id)
     await emit("meshgen", 1, "generating")
     await emit("meshgen", 2, "generating")
+    await emit.flush()  # same-step emits are DB-throttled — flush the tail
     async with async_session() as db:
         j = await db.get(Job, job.id)
         assert len((j.log or "").splitlines()) == 2
@@ -587,7 +589,11 @@ async def test_fit_mesh_accepts_low_fill_open_frame(monkeypatch):
             "analysis": {"bbox_size": [120.0, 40.0, 30.0], "volume": 10679.0},
         }
 
-    monkeypatch.setattr(orch, "_process_mesh", fake_process)
+    # _fit_mesh_to_stated resolves _process_mesh inside mesh_pipeline —
+    # patching the package re-export would not reach the call site
+    import cadx.agent.orchestrator.mesh_pipeline as mp
+
+    monkeypatch.setattr(mp, "_process_mesh", fake_process)
     ctx = type("C", (), {"mesh_info": {}, "emit": staticmethod(lambda *a, **k: None)})()
 
     async def _emit(*a, **k):
@@ -626,7 +632,9 @@ async def test_fit_mesh_rejects_volume_collapse(monkeypatch):
             "analysis": {"bbox_size": [120.0, 40.0, 30.0], "volume": 3000.0},
         }
 
-    monkeypatch.setattr(orch, "_process_mesh", fake_process)
+    import cadx.agent.orchestrator.mesh_pipeline as mp
+
+    monkeypatch.setattr(mp, "_process_mesh", fake_process)
     ctx = type("C", (), {"mesh_info": {}})()
 
     async def _emit(*a, **k):

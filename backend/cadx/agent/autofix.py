@@ -16,10 +16,22 @@ from typing import Any
 
 from cadx.llm.schemas import PartSpec
 
-_AXIS_KEYS: list[tuple[int, str, list[str]]] = [
-    (0, "length/X", [r"length", r"len", r"^x$|_x$|^x_", r"long"]),
-    (1, "width/Y", [r"width", r"wid", r"depth", r"dep", r"^y$|_y$|^y_"]),
-    (2, "height/Z", [r"height", r"thick", r"^z$|_z$|^z_", r"tall"]),
+_AXIS_KEYS: list[tuple[int, str, list[re.Pattern[str]]]] = [
+    (
+        0,
+        "length/X",
+        [re.compile(p) for p in (r"length", r"len", r"^x$|_x$|^x_", r"long")],
+    ),
+    (
+        1,
+        "width/Y",
+        [re.compile(p) for p in (r"width", r"wid", r"depth", r"dep", r"^y$|_y$|^y_")],
+    ),
+    (
+        2,
+        "height/Z",
+        [re.compile(p) for p in (r"height", r"thick", r"^z$|_z$|^z_", r"tall")],
+    ),
 ]
 
 _MAX_FIXES_PER_RUN = 3
@@ -33,7 +45,7 @@ def _axis_params(params: dict[str, Any], axis_idx: int) -> list[tuple[str, float
         if not isinstance(v, int | float) or isinstance(v, bool):
             continue
         kl = k.lower()
-        if any(re.search(p, kl) for p in pats):
+        if any(p.search(kl) for p in pats):
             out.append((k, float(v)))
     return out
 

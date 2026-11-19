@@ -678,6 +678,8 @@ BUILD_MACHINE_TOOLS = [
 ]
 
 _BLOCK_RE = re.compile(r"^## block:\s*(\S+)", re.M)
+_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
+_NAME_SANITIZE_RE = re.compile(r"[^\w-]+")
 _MAX_CHECKPOINTS = 8
 
 # --------------------------------------------------------------------------- #
@@ -2301,7 +2303,7 @@ class ToolSession:
         for i, ln in enumerate(self.buffer.splitlines(), 1):
             if i > line:
                 break
-            m = re.match(r"## block:\s*(\S+)", ln)
+            m = _BLOCK_RE.match(ln)
             if m:
                 name = m.group(1)
         return name
@@ -2309,7 +2311,7 @@ class ToolSession:
     def _tool_add_block(self, a: dict[str, Any]) -> dict[str, Any]:
         if self.kind != "build":
             return {"ok": False, "error": "add_block is only available in build sessions"}
-        name = re.sub(r"[^\w-]+", "_", str(a.get("name", "")).split("\n", 1)[0].strip())
+        name = _NAME_SANITIZE_RE.sub("_", str(a.get("name", "")).split("\n", 1)[0].strip())
         if not name:
             return {"ok": False, "error": "name is required"}
         blocks = self._block_names()
@@ -2417,7 +2419,7 @@ class ToolSession:
         if not isinstance(dims, dict):
             return {"ok": False, "error": "dims must be an object of mm values"}
         on = str(a.get("on") or "result").strip() or "result"
-        if not re.match(r"^[A-Za-z_]\w*$", on):
+        if not _IDENT_RE.match(on):
             return {"ok": False, "error": "on must be a variable name"}
         face = a.get("face")
         at = a.get("at")
@@ -2496,7 +2498,7 @@ class ToolSession:
         if axis is not None:
             lines.append(f"    axis={axis!r},")
         for key, value in dims.items():
-            if not re.match(r"^[A-Za-z_]\w*$", str(key)):
+            if not _IDENT_RE.match(str(key)):
                 return None, f"invalid dims key {key!r}"
             if not isinstance(value, int | float | str | bool):
                 return None, f"dims.{key} must be a number or string"
@@ -2727,34 +2729,47 @@ class ToolSession:
             return await db.get(LibraryPart, pid)
 
     async def _tool_search_library(self, a: dict[str, Any]) -> dict[str, Any]:
-        from sqlmodel import select
+        from sqlalchemy import or_
+        from sqlmodel import col, select
 
         from cadx.db.models import LibraryPart
         from cadx.db.session import session_scope
 
         q = str(a.get("query", "")).strip().lower()
         kind = str(a.get("kind", "")).strip().lower()
-        async with session_scope() as db:
-            rows = (await db.execute(select(LibraryPart))).scalars().all()
-        hits: list[dict[str, Any]] = []
-        for p in rows:
-            if kind and p.kind != kind:
-                continue
-            hay = f"{p.name} {p.caption} {p.filename}".lower()
-            if q and not all(t in hay for t in q.split()):
-                continue
-            hits.append(
-                {
-                    "id": str(p.id),
-                    "name": p.name,
-                    "kind": p.kind,
-                    "filename": p.filename,
-                    "caption": p.caption,
-                    "params": sorted((p.params or {}).keys()) or None,
-                }
+        stmt = select(LibraryPart)
+        if kind:
+            stmt = stmt.where(LibraryPart.kind == kind)
+        for t in q.split():
+            # ilike wildcards would change the old literal-substring match —
+            # escape %/_/\ so a query token keeps byte-for-byte semantics
+            esc = t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pat = f"%{esc}%"
+            # the token may live in any of the display fields — the Python-side
+            # filter matched against "name caption filename" joined
+            stmt = stmt.where(
+                or_(
+                    LibraryPart.name.ilike(pat, escape="\\"),
+                    LibraryPart.caption.ilike(pat, escape="\\"),
+                    LibraryPart.filename.ilike(pat, escape="\\"),
+                )
             )
-            if len(hits) >= 20:
-                break
+        # created_at order = the library list's own ordering; LIMIT replaces
+        # the old full-scan-then-[:20] cut (which read the whole table)
+        stmt = stmt.order_by(col(LibraryPart.created_at)).limit(20)
+        async with session_scope() as db:
+            rows = (await db.execute(stmt)).scalars().all()
+        hits: list[dict[str, Any]] = [
+            {
+                "id": str(p.id),
+                "name": p.name,
+                "kind": p.kind,
+                "filename": p.filename,
+                "caption": p.caption,
+                "params": sorted((p.params or {}).keys()) or None,
+            }
+            for p in rows
+        ]
         out: dict[str, Any] = {"ok": True, "count": len(hits), "results": hits}
         if not hits:
             out["hint"] = "no library parts match — model the geometry yourself"

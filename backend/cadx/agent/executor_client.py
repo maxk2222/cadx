@@ -14,13 +14,10 @@ import arq
 from arq.connections import ArqRedis, create_pool
 from arq.jobs import Job, JobStatus
 
-from cadx.cad.tasks import (
-    run_execute_payload,
-    run_fem_payload,
-    run_mesh_payload,
-    run_optimize_payload,
-    run_parametrize_payload,
-)
+# NOTE: cadx.cad.tasks is deliberately NOT imported at module level — it drags
+# build123d/OCC into every process that touches this file (api, worker, mcp).
+# InProcessExecutor methods import their payloads lazily, matching the
+# lazy-import convention already used by audit_params/refine/organic below.
 from cadx.config import get_settings
 from cadx.logging import get_logger
 from cadx.runtime_config import RuntimeSettings
@@ -70,6 +67,8 @@ class InProcessExecutor:
         return False
 
     async def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from cadx.cad.tasks import run_execute_payload
+
         return await asyncio.to_thread(run_execute_payload, payload)
 
     async def audit_params(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -78,15 +77,23 @@ class InProcessExecutor:
         return await asyncio.to_thread(run_audit_payload, payload)
 
     async def process_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from cadx.cad.tasks import run_mesh_payload
+
         return await asyncio.to_thread(run_mesh_payload, payload)
 
     async def parametrize_mesh(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from cadx.cad.tasks import run_parametrize_payload
+
         return await asyncio.to_thread(run_parametrize_payload, payload)
 
     async def fem_analyze(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from cadx.cad.tasks import run_fem_payload
+
         return await asyncio.to_thread(run_fem_payload, payload)
 
     async def optimize(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from cadx.cad.tasks import run_optimize_payload
+
         return await asyncio.to_thread(run_optimize_payload, payload)
 
     async def topopt_resample(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -323,6 +330,9 @@ class QueueExecutor:
         emit_cb: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self._pool = pool
+        # a caller-supplied pool (the worker's shared ctx["arq_redis"]) is NEVER
+        # ours to close — _owns_pool only flips when _get_pool builds one lazily
+        self._owns_pool = False
         self.runtime_settings = runtime_settings or RuntimeSettings()
         self._emit = emit_cb
 
@@ -331,7 +341,16 @@ class QueueExecutor:
             self._pool = await create_pool(
                 arq.connections.RedisSettings.from_dsn(get_settings().redis_url)
             )
+            self._owns_pool = True
         return self._pool
+
+    async def aclose(self) -> None:
+        """Close the redis pool this executor lazily created (a no-op when the
+        pool was injected — shared pools stay owned by their creator)."""
+        if self._owns_pool and self._pool is not None:
+            pool, self._pool = self._pool, None
+            self._owns_pool = False
+            await pool.aclose()
 
     async def _run_task(
         self, func: str, payload: dict[str, Any], timeout_s: float

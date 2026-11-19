@@ -103,6 +103,21 @@ class HttpImageClient(ImagePort):
         self.hf_token = hf_token
         self.api_key = api_key
         self._io_slot = io_slot
+        # shared connection pool — the 2s status poll used to spin up a fresh
+        # AsyncClient (connect+handshake) for every request of a generation
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Shared httpx pool; timeouts stay per-request (health, submit,
+        poll and download all use different budgets)."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient()
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            client, self._client = self._client, None
+            await client.aclose()
 
     def _headers(self) -> dict[str, str]:
         """Per-request credentials for the sidecar — X-HF-Token for gated HF
@@ -118,23 +133,25 @@ class HttpImageClient(ImagePort):
 
     async def health(self) -> MeshHealth:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.get(f"{self.base_url}/v1/health", headers=self._headers())
-                r.raise_for_status()
-                return MeshHealth(**r.json())
+            r = await self._get_client().get(
+                f"{self.base_url}/v1/health", headers=self._headers(), timeout=5.0
+            )
+            r.raise_for_status()
+            return MeshHealth(**r.json())
         except Exception as e:
             return MeshHealth(ok=False, error=str(e))
 
     async def models(self) -> list[MeshModelInfo]:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(f"{self.base_url}/v1/models", headers=self._headers())
-                r.raise_for_status()
-                return [
-                    MeshModelInfo(**m)
-                    for m in r.json().get("models", [])
-                    if m.get("kind", "mesh") == "image"
-                ]
+            r = await self._get_client().get(
+                f"{self.base_url}/v1/models", headers=self._headers(), timeout=10.0
+            )
+            r.raise_for_status()
+            return [
+                MeshModelInfo(**m)
+                for m in r.json().get("models", [])
+                if m.get("kind", "mesh") == "image"
+            ]
         except Exception:
             return []
 
@@ -158,29 +175,35 @@ class HttpImageClient(ImagePort):
         params = req.model_dump(exclude={"out_dir", "init_image"}, exclude_none=True)
 
         submit_timeout = min(60.0, self.timeout_s)
-        async with httpx.AsyncClient(timeout=submit_timeout) as client:
-            if req.init_image is not None:
-                files: list[tuple[str, tuple[str, bytes, str]]] = [
-                    ("json", ("params.json", _dumps(params), "application/json")),
+        client = self._get_client()
+        if req.init_image is not None:
+            files: list[tuple[str, tuple[str, bytes, str]]] = [
+                ("json", ("params.json", _dumps(params), "application/json")),
+                (
+                    "image",
                     (
-                        "image",
-                        (
-                            req.init_image.name or "init.png",
-                            req.init_image.read_bytes(),
-                            "application/octet-stream",
-                        ),
+                        req.init_image.name or "init.png",
+                        req.init_image.read_bytes(),
+                        "application/octet-stream",
                     ),
-                ]
-                r = await client.post(
-                    f"{self.base_url}/v1/image-edit-jobs", files=files, headers=self._headers()
-                )
-            else:
-                r = await client.post(
-                    f"{self.base_url}/v1/image-jobs", json=params, headers=self._headers()
-                )
-            if r.status_code != 200:
-                raise ImageGenError(f"image-server submit failed: {r.status_code} {r.text[:300]}")
-            server_job = r.json()["job_id"]
+                ),
+            ]
+            r = await client.post(
+                f"{self.base_url}/v1/image-edit-jobs",
+                files=files,
+                headers=self._headers(),
+                timeout=submit_timeout,
+            )
+        else:
+            r = await client.post(
+                f"{self.base_url}/v1/image-jobs",
+                json=params,
+                headers=self._headers(),
+                timeout=submit_timeout,
+            )
+        if r.status_code != 200:
+            raise ImageGenError(f"image-server submit failed: {r.status_code} {r.text[:300]}")
+        server_job = r.json()["job_id"]
 
         deadline = self.timeout_s
         poll = 2.0
@@ -192,11 +215,11 @@ class HttpImageClient(ImagePort):
                 waited += poll
                 if should_abort is not None and await should_abort():
                     raise ImageGenError("job cancelled by user")
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    st = await client.get(
-                        f"{self.base_url}/v1/image-jobs/{server_job}",
-                        headers=self._headers(),
-                    )
+                st = await client.get(
+                    f"{self.base_url}/v1/image-jobs/{server_job}",
+                    headers=self._headers(),
+                    timeout=15.0,
+                )
                 if st.status_code != 200:
                     raise ImageGenError(f"image-server job poll failed: {st.status_code}")
                 status = st.json()
@@ -215,12 +238,12 @@ class HttpImageClient(ImagePort):
             req.out_dir.mkdir(parents=True, exist_ok=True)
             paths: list[Path] = []
             for i in range(n_images):
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    dl = await client.get(
-                        f"{self.base_url}/v1/image-jobs/{server_job}/image",
-                        params={"i": i},
-                        headers=self._headers(),
-                    )
+                dl = await client.get(
+                    f"{self.base_url}/v1/image-jobs/{server_job}/image",
+                    params={"i": i},
+                    headers=self._headers(),
+                    timeout=60.0,
+                )
                 if dl.status_code != 200:
                     raise ImageGenError(f"image download failed: {dl.status_code}")
                 p = req.out_dir / f"image{i}.png"

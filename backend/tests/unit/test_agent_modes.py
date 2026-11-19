@@ -1320,7 +1320,6 @@ async def test_generate_mesh_hopeless_gate_skips_full_generation(monkeypatch):
     """
     import time
 
-    import cadx.agent.orchestrator as orch
     from cadx.agent.orchestrator import _generate_mesh
 
     spec = PartSpec(
@@ -1339,7 +1338,11 @@ async def test_generate_mesh_hopeless_gate_skips_full_generation(monkeypatch):
     # the fake blob legitimately scores above the viability bar in its best
     # orientation — force hopeless scores so the test exercises the gate
     # itself instead of depending on fragile geometry scoring
-    monkeypatch.setattr(orch, "_score_candidate_mesh", lambda *a, **k: 0.1)
+    import cadx.agent.orchestrator.mesh_pipeline as mp
+
+    # _candidate_seed resolves _score_candidate_mesh inside mesh_pipeline —
+    # patching the package re-export would not reach the call site
+    monkeypatch.setattr(mp, "_score_candidate_mesh", lambda *a, **k: 0.1)
     # no measurements → no outline → no heightfield candidate
     rel = await _generate_mesh(ctx, 1, spec, None, t0=time.monotonic())
     assert rel is None

@@ -6,7 +6,6 @@ re-exports every name so import paths stay stable."""
 
 from __future__ import annotations
 
-import inspect
 import itertools
 import json
 import re
@@ -454,8 +453,13 @@ _LOAD_HINT_RE = re.compile(
 _FEM_SMOKE_TIMEOUT_S = (
     900.0  # queue wait + coarse solve bound — smoke feedback must never stall the loop
 )
-_CRITIQUE_PREV_ISSUES = "prev_issues" in inspect.signature(critique_step.run).parameters
-_FEM_LIGHTWEIGHT_KW = "lightweight_requested" in inspect.signature(fem_feedback_lines).parameters
+# declared callee capabilities — an absent attr means the callee never opted
+# in, so the kwarg stays unsent (same contract the signature probe enforced,
+# but without introspecting callables at import time)
+_CRITIQUE_PREV_ISSUES = bool(getattr(critique_step, "ACCEPTS_PREV_ISSUES", False))
+_FEM_LIGHTWEIGHT_KW = bool(
+    getattr(fem_feedback_lines, "ACCEPTS_LIGHTWEIGHT_REQUESTED", False)
+)
 _ISSUE_FEATURE_RE = re.compile(r"hole|bore|slot|boss|rib|gusset|fillet|chamfer|pocket|insert", re.I)
 _ISSUE_NEGATION_RE = re.compile(
     r"\b(?:remove|delete|drop|extra|spurious|phantom|superfluous|"

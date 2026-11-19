@@ -443,6 +443,12 @@ CHAT_ACTION_TOOLS = [
                 "description": "uploaded CAD part assets (STEP/STL/GLB)",
             },
             "prompt": _s("extra context from the user (optional)"),
+            "mode": _s(
+                "pipeline branch: 'cad' (default) uses uploaded CAD parts + "
+                "solver; 'blender' lets a free Blender-MCP agent reconstruct "
+                "everything (needs Blender running); 'auto' picks blender "
+                "when no CAD assets are uploaded and Blender is reachable"
+            ),
             **_WAIT,
         },
         ["pdf_asset_id"],

@@ -135,6 +135,82 @@ def _merge_preview(live: dict[str, Any], prev: Any) -> None:
         }
 
 
+# DB-write throttle for make_emit: progress events can fire dozens of times
+# per second (mesh polls, executor polls) — opening session_scope + appending
+# Job.log + rewriting Job.live per event was the flood. The row is flushed at
+# most once per _EMIT_DB_FLUSH_S, always on a step change, and once more via
+# emit.flush() at job end; SSE publishes still go out per event.
+_EMIT_DB_FLUSH_S = 1.0
+_EMIT_LOG_MAX_LINES = 500
+
+
+def _cap_job_log(text: str) -> str:
+    """Bound Job.log — an unthrottled emit flood previously grew it without
+    limit. Keeps the newest lines with an elision marker."""
+    lines = text.splitlines(keepends=True)
+    if len(lines) <= _EMIT_LOG_MAX_LINES:
+        return text
+    return "… (older log lines elided)\n" + "".join(lines[-_EMIT_LOG_MAX_LINES:])
+
+
+async def _emit_write_db(
+    job_id: uuid.UUID,
+    *,
+    step: str,
+    iteration: int,
+    progress: float | None,
+    live: dict[str, Any],
+    log_text: str,
+) -> float | None:
+    """Single short-transaction write of the throttled emit snapshot. Returns
+    the persisted progress so the SSE stream stays monotonic."""
+    async with session_scope() as s2:
+        j = await s2.get(Job, job_id)
+        if j is None:
+            return None
+        j.step = step
+        j.iteration = iteration
+        # monotonic: iteration-derived progress must never pull the bar
+        # backwards after setup-step bumps (it=0 events) — and a finished
+        # 1.0 bar must never sink below it on a late flush
+        if progress is not None:
+            j.progress = max(j.progress, progress)
+        elif j.progress < 0.95:
+            j.progress = min(0.95, j.progress + 0.05)
+        j.live = dict(live)  # reassign — JSON columns don't track in-place edits
+        j.log = _cap_job_log((j.log or "") + log_text)
+        await s2.commit()
+        return j.progress
+
+
+def _live_merge_fields(live: dict[str, Any], fields: dict[str, Any], iteration: int) -> None:
+    """Roll the optional structured emit fields into the persisted Job.live
+    snapshot (iteration budget, score history, named metrics, completed-run
+    rows, activity feed)."""
+    for k in ("max_iterations", "sub_progress", "sub_label"):
+        if fields.get(k) is not None:
+            live[k] = fields[k]
+    if (score := fields.get("score")) is not None:
+        scores = live.setdefault("scores", [])
+        if not any(s["it"] == iteration for s in scores):
+            scores.append({"it": iteration, "score": score})
+    if (metrics := fields.get("metrics")) is not None:
+        # flat named scalars (worst_sf, probe_sf, …) — latest value wins;
+        # None entries are dropped so a failed probe never erases a value
+        merged = live.setdefault("metrics", {})
+        merged.update({k: v for k, v in metrics.items() if v is not None})
+    if (run := fields.get("run")) is not None:
+        # one row per completed topopt/refine run — same cap as step_history
+        runs = live.setdefault("runs", [])
+        runs.append(run)
+        del runs[:-40]
+    if (act := fields.get("activity")) is not None:
+        # rolling agent-activity feed (tool calls) for the job page
+        feed = live.setdefault("activity", [])
+        feed.append({"ts": datetime.now(UTC).isoformat(), "text": str(act)[:300]})
+        del feed[:-30]
+
+
 def make_emit(
     job_id: uuid.UUID, tokens_fn: Callable[[], dict[str, Any]] | None = None
 ) -> Callable[..., Awaitable[None]]:
@@ -154,15 +230,54 @@ def make_emit(
     live: dict[str, Any] = {"scores": [], "step_history": []}
     cur_step: str | None = None
     step_t0 = time.monotonic()
+    # DB-write throttle state: pending log lines + last event position are
+    # flushed at most every _EMIT_DB_FLUSH_S (a timer task covers the tail —
+    # the last event of a burst must land even when nothing follows it)
+    pending_log: list[str] = []
+    last_pos: tuple[str, int] = ("", 0)
+    progress: float | None = None
+    job_progress: float | None = None
+    last_db_write = 0.0
+    flush_task: asyncio.Task[None] | None = None
+
+    async def _flush_db() -> None:
+        nonlocal last_db_write, job_progress, flush_task
+        if flush_task is not None:
+            flush_task.cancel()
+            flush_task = None
+        last_db_write = time.monotonic()
+        text = "".join(pending_log)
+        pending_log.clear()
+        step, iteration = last_pos
+        persisted = await _emit_write_db(
+            job_id, step=step, iteration=iteration, progress=progress,
+            live=live, log_text=text,
+        )
+        if persisted is not None:
+            job_progress = persisted
+
+    def _schedule_flush() -> None:
+        nonlocal flush_task
+        if flush_task is not None and not flush_task.done():
+            return
+        wait = max(0.0, _EMIT_DB_FLUSH_S - (time.monotonic() - last_db_write))
+
+        async def _later() -> None:
+            await asyncio.sleep(wait)
+            with contextlib.suppress(Exception):
+                await _flush_db()
+
+        flush_task = asyncio.create_task(_later())
 
     async def emit(step: str, iteration: int, message: str, **fields: Any) -> None:
-        nonlocal last, cur_step, step_t0
+        nonlocal last, cur_step, step_t0, progress, last_pos
         sig = (step, iteration, message)
         if sig == last:
             return
         last = sig
         now = time.monotonic()
-        if step != cur_step:
+        step_changed = step != cur_step
+        if step_changed:
             if cur_step is not None:
                 hist = live.setdefault("step_history", [])
                 hist.append({"step": cur_step, "it": iteration, "dt_s": round(now - step_t0, 1)})
@@ -173,28 +288,7 @@ def make_emit(
             live["step_started_ts"] = datetime.now(UTC).isoformat()
             live.pop("sub_progress", None)
             live.pop("sub_label", None)
-        for k in ("max_iterations", "sub_progress", "sub_label"):
-            if fields.get(k) is not None:
-                live[k] = fields[k]
-        if (score := fields.get("score")) is not None:
-            scores = live.setdefault("scores", [])
-            if not any(s["it"] == iteration for s in scores):
-                scores.append({"it": iteration, "score": score})
-        if (metrics := fields.get("metrics")) is not None:
-            # flat named scalars (worst_sf, probe_sf, …) — latest value wins;
-            # None entries are dropped so a failed probe never erases a value
-            merged = live.setdefault("metrics", {})
-            merged.update({k: v for k, v in metrics.items() if v is not None})
-        if (run := fields.get("run")) is not None:
-            # one row per completed topopt/refine run — same cap as step_history
-            runs = live.setdefault("runs", [])
-            runs.append(run)
-            del runs[:-40]
-        if (act := fields.get("activity")) is not None:
-            # rolling agent-activity feed (tool calls) for the job page
-            feed = live.setdefault("activity", [])
-            feed.append({"ts": datetime.now(UTC).isoformat(), "text": str(act)[:300]})
-            del feed[:-30]
+        _live_merge_fields(live, fields, iteration)
         _merge_preview(live, fields.get("preview"))
         if tokens_fn is not None:
             with contextlib.suppress(Exception):
@@ -205,23 +299,14 @@ def make_emit(
             progress = min(0.95, max(0.0, (iteration - 1 + sub) / max_it))
         else:
             progress = None  # no budget known yet — keep the +0.05 bump
-        job_progress: float | None = None
-        async with session_scope() as s2:
-            j = await s2.get(Job, job_id)
-            if j is not None:
-                j.step = step
-                j.iteration = iteration
-                # monotonic: iteration-derived progress must never pull the
-                # bar backwards after setup-step bumps (it=0 events)
-                j.progress = (
-                    max(j.progress, progress)
-                    if progress is not None
-                    else min(0.95, j.progress + 0.05)
-                )
-                j.live = dict(live)  # reassign — JSON columns don't track in-place edits
-                j.log = (j.log or "") + f"[{step}:{iteration}] {message}\n"
-                job_progress = j.progress
-                await s2.commit()
+        pending_log.append(f"[{step}:{iteration}] {message}\n")
+        last_pos = (step, iteration)
+        # step changes always persist immediately (the UI's step boundary is
+        # authoritative); within a step the row flushes once per second
+        if step_changed or now - last_db_write >= _EMIT_DB_FLUSH_S:
+            await _flush_db()
+        else:
+            _schedule_flush()
         await _publish(
             str(job_id),
             {
@@ -236,6 +321,9 @@ def make_emit(
             },
         )
 
+    # terminal flush — job runners call this before persisting the final
+    # status so the last log lines/live fields can't be stranded in memory
+    emit.flush = _flush_db  # type: ignore[attr-defined]
     return emit
 
 
@@ -569,6 +657,7 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             backend=merged.llm_backend,
             caps=await load_caps_session(),
             caps_cb=record_caps_session,
+            should_abort=check_cancel,
         )
         emit = make_emit(job_id, tokens_fn=lambda: dict(getattr(llm, "total_usage", {}) or {}))
         executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime, emit_cb=emit)
@@ -576,77 +665,84 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
         mesh = _make_mesh(job_runtime, backend=merged.mesh_backend)
         image = _make_image(job_runtime, backend=merged.image_backend)
 
-        explicit_max_iterations = merged.max_iterations is not None
-        settings = _fill_settings(merged, job_runtime)
+        try:
+            explicit_max_iterations = merged.max_iterations is not None
+            settings = _fill_settings(merged, job_runtime)
 
-        # assets
-        asset_ids = version.asset_ids or []
-        assets: list[Asset] = []
-        if asset_ids:
-            rows = await db.execute(
-                select(Asset).where(col(Asset.id).in_([_u(a) for a in asset_ids]))
+            # assets
+            asset_ids = version.asset_ids or []
+            assets: list[Asset] = []
+            if asset_ids:
+                rows = await db.execute(
+                    select(Asset).where(col(Asset.id).in_([_u(a) for a in asset_ids]))
+                )
+                assets = list(rows.scalars().all())
+            else:
+                rows = await db.execute(select(Asset).where(Asset.project_id == version.project_id))
+                assets = list(rows.scalars().all())
+
+            # reusable library parts selected for this version: file parts become
+            # reference assets (loadable via load_reference(part_id)), code
+            # templates are surfaced in the codegen context only
+            input_assets = _input_assets(assets)
+            extra_assets, library_templates = await _load_library(db, version)
+            input_assets += extra_assets
+
+            parent = await db.get(Version, version.parent_id) if version.parent_id else None
+            parent_ctx = _parent_ctx(version, parent)
+
+            mode = "edit" if job.type == JobType.edit else "generate"
+            gen_mode = version.gen_mode or settings.gen_mode or runtime_settings.agent_default_gen_mode
+            # hybrid edit keeps the parent's solid unless the user asked for regeneration
+            regenerate_mesh = bool(job.resume_state and job.resume_state.get("regenerate_mesh"))
+            if mode == "edit" and gen_mode in ("auto", "mesh", "hybrid"):
+                effective = gen_mode if gen_mode != "auto" else (parent_ctx.resolved_mode or "cad")
+                if effective == "hybrid" and parent_ctx.resolved_mode == "hybrid":
+                    gen_mode = "hybrid"
+                    if regenerate_mesh:
+                        parent_ctx.mesh_solid = None
+                elif effective == "mesh" and parent_ctx.resolved_mode == "mesh":
+                    gen_mode = "mesh"
+
+            mesh_client: MeshPort | None = mesh
+            mesh_available = await _mesh_available(mesh_client)
+            image_client: ImagePort | None = image
+            image_available = await _image_available(image_client)
+
+            actx = AgentCtx(
+                llm=llm,
+                executor=executor,
+                trace=trace,
+                emit=emit,
+                check_cancel=check_cancel,
+                check_finish=check_finish,
+                job_id=str(job_id),
+                project_id=version.project_id,
+                version_id=version.id,
+                mode=mode,
+                prompt=version.prompt,
+                settings=settings,
+                runtime_settings=job_runtime,
+                assets=input_assets,
+                library_templates=library_templates,
+                parent=parent_ctx,
+                gen_mode=gen_mode,
+                mesh=mesh_client,
+                mesh_available=mesh_available,
+                image=image_client,
+                image_available=image_available,
+                budget_tokens=runtime_settings.agent_max_tokens_per_job,
+                explicit_max_iterations=explicit_max_iterations,
             )
-            assets = list(rows.scalars().all())
-        else:
-            rows = await db.execute(select(Asset).where(Asset.project_id == version.project_id))
-            assets = list(rows.scalars().all())
-
-        # reusable library parts selected for this version: file parts become
-        # reference assets (loadable via load_reference(part_id)), code
-        # templates are surfaced in the codegen context only
-        input_assets = _input_assets(assets)
-        extra_assets, library_templates = await _load_library(db, version)
-        input_assets += extra_assets
-
-        parent = await db.get(Version, version.parent_id) if version.parent_id else None
-        parent_ctx = _parent_ctx(version, parent)
-
-        mode = "edit" if job.type == JobType.edit else "generate"
-        gen_mode = version.gen_mode or settings.gen_mode or runtime_settings.agent_default_gen_mode
-        # hybrid edit keeps the parent's solid unless the user asked for regeneration
-        regenerate_mesh = bool(job.resume_state and job.resume_state.get("regenerate_mesh"))
-        if mode == "edit" and gen_mode in ("auto", "mesh", "hybrid"):
-            effective = gen_mode if gen_mode != "auto" else (parent_ctx.resolved_mode or "cad")
-            if effective == "hybrid" and parent_ctx.resolved_mode == "hybrid":
-                gen_mode = "hybrid"
-                if regenerate_mesh:
-                    parent_ctx.mesh_solid = None
-            elif effective == "mesh" and parent_ctx.resolved_mode == "mesh":
-                gen_mode = "mesh"
-
-        mesh_client: MeshPort | None = mesh
-        mesh_available = await _mesh_available(mesh_client)
-        image_client: ImagePort | None = image
-        image_available = await _image_available(image_client)
-
-        actx = AgentCtx(
-            llm=llm,
-            executor=executor,
-            trace=trace,
-            emit=emit,
-            check_cancel=check_cancel,
-            check_finish=check_finish,
-            job_id=str(job_id),
-            project_id=version.project_id,
-            version_id=version.id,
-            mode=mode,
-            prompt=version.prompt,
-            settings=settings,
-            runtime_settings=job_runtime,
-            assets=input_assets,
-            library_templates=library_templates,
-            parent=parent_ctx,
-            gen_mode=gen_mode,
-            mesh=mesh_client,
-            mesh_available=mesh_available,
-            image=image_client,
-            image_available=image_available,
-            budget_tokens=runtime_settings.agent_max_tokens_per_job,
-            explicit_max_iterations=explicit_max_iterations,
-        )
-        if job.type == JobType.resume and job.resume_state and job.resume_state.get("spec"):
-            actx.spec = PartSpec(**job.resume_state["spec"])
-            _apply_clarification_answers(actx.spec, version.prompt or "")
+            if job.type == JobType.resume and job.resume_state and job.resume_state.get("spec"):
+                actx.spec = PartSpec(**job.resume_state["spec"])
+                _apply_clarification_answers(actx.spec, version.prompt or "")
+        except BaseException:
+            # every client created above must release its pools even when
+            # setup between creation and the run fails (malformed resume
+            # spec, DB hiccup, asset read error)
+            await _aclose_ports(llm, mesh, image, executor)
+            raise
 
         try:
             outcome = await run_generation(actx)
@@ -655,6 +751,11 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             outcome = RunOutcome(
                 status="failed", error=f"agent crashed: {type(e).__name__}: {e!r}"[:500]
             )
+        finally:
+            # release the shared httpx pools the clients lazily built; the
+            # executor's aclose is a no-op on the shared arq pool but frees a
+            # lazily-built one (ctx without arq_redis, e.g. tests)
+            await _aclose_ports(llm, mesh, image, executor)
 
         if actx.library_attached:
             # record library parts the agent selected itself via tools
@@ -671,6 +772,40 @@ async def run_agent_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             db, job, version, outcome, settings, runtime_settings, emit
         )
         return {"ok": outcome.status in ("succeeded", "needs_review"), "status": outcome.status}
+
+
+async def _aclose_ports(*ports: Any) -> None:
+    """Release the shared pools lazily built by the ports — LLM/mesh/image
+    httpx clients and the QueueExecutor's private arq pool (a shared pool is
+    a no-op). Every close is best-effort so one half-torn-down client can't
+    strand the rest."""
+    for port in ports:
+        close = getattr(port, "aclose", None)
+        if close is not None:
+            with contextlib.suppress(Exception):
+                await close()
+
+
+def _resolve_guide_dir(raw: Any, version: Version) -> Path:
+    """Untrusted ``resume_state["guide_dir"]`` → a safe on-disk state dir.
+
+    The persisted value travels through ``waiting_for_input`` jobs and could
+    be stale or tampered — a resolved candidate must stay under the data root
+    or the guide state write (and ``GuideState.load`` read) would land
+    anywhere on the filesystem. Fall back to the canonical per-version dir.
+    """
+    fallback = storage.version_dir(version.project_id, version.id) / "guide"
+    text = str(raw or "")
+    if not text:
+        return fallback
+    try:
+        candidate = Path(text).resolve()
+        if candidate.is_relative_to(storage.data_root().resolve()):
+            return candidate
+        log.warning("guide.dir_outside_data_root", dir=text[:300])
+    except (OSError, RuntimeError, ValueError) as e:
+        log.warning("guide.dir_invalid", dir=text[:300], error=str(e))
+    return fallback
 
 
 async def _emit_masternotes_asset(db: Any, version: Version, guide_dir: Path) -> None:
@@ -760,50 +895,56 @@ async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             backend=merged.llm_backend,
             caps=await load_caps_session(),
             caps_cb=record_caps_session,
+            should_abort=check_cancel,
         )
         emit = make_emit(job_id, tokens_fn=lambda: dict(getattr(llm, "total_usage", {}) or {}))
         executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime, emit_cb=emit)
         trace = DbTrace(job_id)
-        settings = _fill_settings(merged, job_runtime)
+        try:
+            settings = _fill_settings(merged, job_runtime)
 
-        asset_ids = version.asset_ids or []
-        assets: list[Asset] = []
-        if asset_ids:
-            rows = await db.execute(
-                select(Asset).where(col(Asset.id).in_([_u(a) for a in asset_ids]))
+            asset_ids = version.asset_ids or []
+            assets: list[Asset] = []
+            if asset_ids:
+                rows = await db.execute(
+                    select(Asset).where(col(Asset.id).in_([_u(a) for a in asset_ids]))
+                )
+                assets = list(rows.scalars().all())
+            input_assets = _input_assets(assets)
+
+            actx = AgentCtx(
+                llm=llm,
+                executor=executor,
+                trace=trace,
+                emit=emit,
+                check_cancel=check_cancel,
+                job_id=str(job_id),
+                project_id=version.project_id,
+                version_id=version.id,
+                mode="generate",
+                prompt=version.prompt or "",
+                settings=settings,
+                runtime_settings=job_runtime,
+                assets=input_assets,
+                budget_tokens=runtime_settings.agent_max_tokens_per_job,
             )
-            assets = list(rows.scalars().all())
-        input_assets = _input_assets(assets)
 
-        actx = AgentCtx(
-            llm=llm,
-            executor=executor,
-            trace=trace,
-            emit=emit,
-            check_cancel=check_cancel,
-            job_id=str(job_id),
-            project_id=version.project_id,
-            version_id=version.id,
-            mode="generate",
-            prompt=version.prompt or "",
-            settings=settings,
-            runtime_settings=job_runtime,
-            assets=input_assets,
-            budget_tokens=runtime_settings.agent_max_tokens_per_job,
-        )
+            resume_state = dict(job.resume_state or {})
+            guide_dir = _resolve_guide_dir(resume_state.get("guide_dir"), version)
+            guide_dir.mkdir(parents=True, exist_ok=True)
+            if str(resume_state.get("guide_dir") or "") != str(guide_dir):
+                # first run — or a tampered/out-of-root dir replaced by the
+                # canonical one: persist it so the next resume loads the same state
+                job.resume_state = {**resume_state, "guide_dir": str(guide_dir)}
+                await db.commit()
+            resume_state["guide_dir"] = str(guide_dir)  # never hand the raw value downstream
 
-        resume_state = dict(job.resume_state or {})
-        guide_dir = Path(
-            str(resume_state.get("guide_dir") or "")
-            or storage.version_dir(version.project_id, version.id) / "guide"
-        )
-        guide_dir.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
-        if "guide_dir" not in resume_state:
-            # first run: persist the canonical dir so a later resume finds it
-            job.resume_state = {**resume_state, "guide_dir": str(guide_dir)}
-            await db.commit()
-
-        from cadx.guide.guide_runner import run_guide
+            from cadx.guide.guide_runner import run_guide
+        except BaseException:
+            # release lazily-built client pools when setup before the
+            # guide run fails (DB/asset/read errors)
+            await _aclose_ports(llm, executor)
+            raise
 
         try:
             outcome = await run_guide(
@@ -821,6 +962,8 @@ async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             outcome = RunOutcome(
                 status="failed", error=f"guide crashed: {type(e).__name__}: {e!r}"[:500]
             )
+        finally:
+            await _aclose_ports(llm, executor)
 
         # keep the canonical guide dir on the job for the NEXT resume —
         # run_guide's resume_state only travels via waiting_for_input
@@ -1257,93 +1400,103 @@ async def run_meshgen_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[
         merged = _merge_settings((project.settings or {}) if project else {}, version.options or {})
         job_runtime = _job_runtime(runtime_settings, merged)
         mesh_client = _make_mesh(job_runtime, backend=merged.mesh_backend)
-        if not await _mesh_available(mesh_client):
-            return await _fail("mesh server not configured or unreachable")
-        executor = QueueExecutor(ctx.get("arq_redis"), runtime_settings=job_runtime, emit_cb=emit)
-        settings = _fill_settings(merged, job_runtime)
-
-        opts = version.options or {}
-        subject = str(opts.get("subject") or version.prompt or "part")[:200]
-        model = str(opts.get("model") or settings.mesh_model or "auto")
-        seed = int(opts.get("seed") or 0)
+        # bound before the try — the finally would otherwise NameError on the
+        # _mesh_available early return and mask the clean 'not configured' fail
+        executor: QueueExecutor | None = None
         try:
-            post = MeshPostParams(**(opts.get("post") or {}))
-        except Exception as e:
-            return await _fail(f"invalid mesh post params: {e}")
-        if post.ops:
-            post.ops_version = MESH_OPS_VERSION
+            if not await _mesh_available(mesh_client):
+                return await _fail("mesh server not configured or unreachable")
+            executor = QueueExecutor(
+                ctx.get("arq_redis"), runtime_settings=job_runtime, emit_cb=emit
+            )
+            settings = _fill_settings(merged, job_runtime)
 
-        check_cancel = _job_cancelled_fn(job_id)
+            opts = version.options or {}
+            subject = str(opts.get("subject") or version.prompt or "part")[:200]
+            model = str(opts.get("model") or settings.mesh_model or "auto")
+            seed = int(opts.get("seed") or 0)
+            try:
+                post = MeshPostParams(**(opts.get("post") or {}))
+            except Exception as e:
+                return await _fail(f"invalid mesh post params: {e}")
+            if post.ops:
+                post.ops_version = MESH_OPS_VERSION
 
-        async def on_progress(msg: str, p: float) -> None:
-            await emit("meshgen", 1, f"{msg} ({int(p * 100)}%)", sub_progress=p, sub_label=msg)
+            check_cancel = _job_cancelled_fn(job_id)
 
-        it_dir = storage.ensure(storage.iteration_dir(version.project_id, version.id, 1))
-        out_path = it_dir / "mesh_raw.glb"
-        await emit("meshgen", 1, f"generating mesh ({model}, seed {seed})")
-        req = MeshGenRequest(
-            images=[storage.resolve(a.path) for a in images],
-            image_roles=roles,
-            subject=subject,
-            model=model,
-            seed=seed,
-            steps=settings.mesh_steps,
-            guidance=settings.mesh_guidance,
-            resolution=settings.mesh_resolution,
-            out_path=out_path,
-            job_id=str(job_id),
-        )
-        try:
-            gen_result = await mesh_client.generate(req, on_progress, should_abort=check_cancel)
-        except Exception as e:
-            msg = str(e) or "mesh generation failed"
-            return await _fail(msg, cancelled="cancel" in msg.lower())
+            async def on_progress(msg: str, p: float) -> None:
+                await emit("meshgen", 1, f"{msg} ({int(p * 100)}%)", sub_progress=p, sub_label=msg)
 
-        gen = gen_result.model_dump(mode="json")
-        gen.pop("mesh_path", None)
-        mesh_rel = storage.relpath(out_path)
-        gen["mesh_rel"] = mesh_rel
-        gen["images"] = [str(a.id) for a in images]
+            it_dir = storage.ensure(storage.iteration_dir(version.project_id, version.id, 1))
+            out_path = it_dir / "mesh_raw.glb"
+            await emit("meshgen", 1, f"generating mesh ({model}, seed {seed})")
+            req = MeshGenRequest(
+                images=[storage.resolve(a.path) for a in images],
+                image_roles=roles,
+                subject=subject,
+                model=model,
+                seed=seed,
+                steps=settings.mesh_steps,
+                guidance=settings.mesh_guidance,
+                resolution=settings.mesh_resolution,
+                out_path=out_path,
+                job_id=str(job_id),
+            )
+            try:
+                gen_result = await mesh_client.generate(
+                    req, on_progress, should_abort=check_cancel
+                )
+            except Exception as e:
+                msg = str(e) or "mesh generation failed"
+                return await _fail(msg, cancelled="cancel" in msg.lower())
 
-        await emit("meshprocess", 1, "processing mesh")
-        exec_result = await executor.process_mesh(
-            {
-                "job_id": str(job_id),
-                "project_id": str(version.project_id),
-                "version_id": str(version.id),
-                "iteration": 1,
-                "mode": "final",
-                "mesh_rel": mesh_rel,
-                "post": post.model_dump(),
-                "anchors": None,
-                "spec": None,
-                "settings": settings.model_dump(),
-                "runtime_settings": runtime_settings.executor_values(),
-                "full_exports": True,
-                "name": "model",
-            }
-        )
+            gen = gen_result.model_dump(mode="json")
+            gen.pop("mesh_path", None)
+            mesh_rel = storage.relpath(out_path)
+            gen["mesh_rel"] = mesh_rel
+            gen["images"] = [str(a.id) for a in images]
 
-        if not exec_result.get("ok"):
-            was_cancelled = (exec_result.get("error") or "") == "cancelled"
-            return await _fail(
-                exec_error(exec_result, "mesh processing failed"), cancelled=was_cancelled
+            await emit("meshprocess", 1, "processing mesh")
+            exec_result = await executor.process_mesh(
+                {
+                    "job_id": str(job_id),
+                    "project_id": str(version.project_id),
+                    "version_id": str(version.id),
+                    "iteration": 1,
+                    "mode": "final",
+                    "mesh_rel": mesh_rel,
+                    "post": post.model_dump(),
+                    "anchors": None,
+                    "spec": None,
+                    "settings": settings.model_dump(),
+                    "runtime_settings": runtime_settings.executor_values(),
+                    "full_exports": True,
+                    "name": "model",
+                }
             )
 
-        # params carries the effective post stack so a params child can
-        # re-run the processing deterministically — same contract as
-        # agent-mode mesh versions
-        version.params = post.model_dump()
-        version.params_schema = [p.model_dump() for p in mesh_params_schema()]
-        await _finalize_exec_version(
-            db,
-            job,
-            version,
-            exec_result,
-            mode="mesh",
-            mesh_extra={"generation": gen},
-        )
-        return {"ok": True}
+            if not exec_result.get("ok"):
+                was_cancelled = (exec_result.get("error") or "") == "cancelled"
+                return await _fail(
+                    exec_error(exec_result, "mesh processing failed"), cancelled=was_cancelled
+                )
+
+            # params carries the effective post stack so a params child can
+            # re-run the processing deterministically — same contract as
+            # agent-mode mesh versions
+            version.params = post.model_dump()
+            version.params_schema = [p.model_dump() for p in mesh_params_schema()]
+            await _finalize_exec_version(
+                db,
+                job,
+                version,
+                exec_result,
+                mode="mesh",
+                mesh_extra={"generation": gen},
+            )
+            return {"ok": True}
+        finally:
+            await _aclose_ports(mesh_client, executor)
 
 
 async def _run_mesh_params(
@@ -1456,27 +1609,33 @@ async def _try_optimize_session(
 
     sheet = storage.version_dir(parent.project_id, parent.id) / "contact_sheet.png"
     job_runtime = _job_runtime(runtime_settings, settings)
-    actx = AgentCtx(
-        llm=_make_llm(
-            job_runtime,
-            backend=settings.llm_backend,
-            caps=await load_caps_session(),
-            caps_cb=record_caps_session,
-        ),
-        executor=executor,
-        trace=DbTrace(job_id),
-        emit=emit,
-        check_cancel=check_cancel,
-        job_id=str(job_id),
-        project_id=version.project_id,
-        version_id=version.id,
-        mode="generate",
-        prompt=parent.prompt or "",
-        settings=settings,
-        runtime_settings=job_runtime,
-        parent=_parent_ctx(version, parent),
-        anchors=(parent.analysis or {}).get("anchors"),
+    llm = _make_llm(
+        job_runtime,
+        backend=settings.llm_backend,
+        caps=await load_caps_session(),
+        caps_cb=record_caps_session,
+        should_abort=check_cancel,
     )
+    try:
+        actx = AgentCtx(
+            llm=llm,
+            executor=executor,
+            trace=DbTrace(job_id),
+            emit=emit,
+            check_cancel=check_cancel,
+            job_id=str(job_id),
+            project_id=version.project_id,
+            version_id=version.id,
+            mode="generate",
+            prompt=parent.prompt or "",
+            settings=settings,
+            runtime_settings=job_runtime,
+            parent=_parent_ctx(version, parent),
+            anchors=(parent.analysis or {}).get("anchors"),
+        )
+    except BaseException:
+        await _aclose_ports(llm)
+        raise
     try:
         agent = await optimize_step.run(
             actx,
@@ -1496,6 +1655,8 @@ async def _try_optimize_session(
     except Exception as e:
         log.warning("optimize.agent_session_failed", error=str(e)[:300])
         return {}
+    finally:
+        await _aclose_ports(getattr(actx, "llm", None))
     if agent is None:
         return {}
     if agent.chosen_run == -1:
@@ -3113,8 +3274,11 @@ def _make_llm(
     *,
     caps: dict[str, Any] | None = None,
     caps_cb: Any = None,
+    should_abort: Callable[[], Awaitable[bool]] | None = None,
 ) -> LLMClient:
-    return make_llm(runtime, backend=backend, caps=caps, caps_cb=caps_cb)
+    return make_llm(
+        runtime, backend=backend, caps=caps, caps_cb=caps_cb, should_abort=should_abort
+    )
 
 
 def _copy_best_artifacts_ctxless(
@@ -3211,6 +3375,12 @@ def _copy_mesh_artifacts_ctxless(
 async def _persist_outcome(
     db: AsyncSession, job: Job, version: Version, outcome: RunOutcome, emit: Any
 ) -> None:
+    # terminal flush: land any emit lines still held by the DB-write throttle
+    # before the final status/progress is committed
+    flush = getattr(emit, "flush", None)
+    if flush is not None:
+        with contextlib.suppress(Exception):
+            await flush()
     job.finished_at = datetime.now(UTC)
     if outcome.status == "waiting_for_input":
         job.status = JobStatus.waiting_for_input

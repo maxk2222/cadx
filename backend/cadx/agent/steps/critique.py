@@ -27,6 +27,11 @@ from cadx.llm.schemas import Critique, Discrepancy, Feature, PartSpec
 
 STEP = "critique"
 
+# declared cross-agent contract: run() consumes `prev_issues` (P10). The
+# orchestrator reads this flag instead of probing the signature so a caller
+# can never pass an unexpected kwarg through a stale probe result.
+ACCEPTS_PREV_ISSUES: bool = True
+
 
 def _parts(
     ctx: AgentCtx,

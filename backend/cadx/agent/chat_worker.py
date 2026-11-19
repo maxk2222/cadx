@@ -375,8 +375,29 @@ def _make_on_delta(
     return on_delta, buf, tasks
 
 
-async def _run_turns(  # noqa: C901
-    ctx: dict[str, Any], chat_id: uuid.UUID
+async def _aclose_ports(*ports: Any) -> None:
+    """Best-effort close of lazily-built client pools (llm/image httpx). One
+    failed close must never strand the others."""
+    for port in ports:
+        close = getattr(port, "aclose", None)
+        if close is not None:
+            with contextlib.suppress(Exception):
+                await close()
+
+
+async def _run_turns(ctx: dict[str, Any], chat_id: uuid.UUID) -> dict[str, Any]:
+    """Owns the turn's LLM/image clients across EVERY exit — return, raise,
+    cancellation. Inner code drops them into `ports` once created; this
+    finally is the single close site."""
+    ports: dict[str, Any] = {}
+    try:
+        return await _run_turns_inner(ctx, chat_id, ports)
+    finally:
+        await _aclose_ports(*ports.values())
+
+
+async def _run_turns_inner(  # noqa: C901
+    ctx: dict[str, Any], chat_id: uuid.UUID, ports: dict[str, Any]
 ) -> dict[str, Any]:
     async def _load_project_ctx(
         chat: Chat,
@@ -416,14 +437,21 @@ async def _run_turns(  # noqa: C901
     # the tool loop enforces runtime_settings.agent_tool_max_turns — chat
     # gets its own (larger) budget, so the ctx carries an adjusted copy
     turn_runtime = runtime.model_copy(update={"agent_tool_max_turns": runtime.chat_max_turns})
-    llm = _make_llm(runtime, caps=await load_caps_session(), caps_cb=record_caps_session)
-    image = _make_image(runtime)
-    image_ok = await _image_available(image)
 
     async def check_cancel() -> bool:
         async with session_scope() as db:
             c = await db.get(Chat, chat_id)
             return c is None or bool(c.cancel_requested)
+
+    llm = _make_llm(
+        runtime,
+        caps=await load_caps_session(),
+        caps_cb=record_caps_session,
+        should_abort=check_cancel,
+    )
+    image = _make_image(runtime)
+    ports["llm"], ports["image"] = llm, image  # owned by the _run_turns wrapper
+    image_ok = await _image_available(image)
 
     async def has_pending() -> bool:
         return bool(await _pending_count(chat_id))
@@ -699,10 +727,11 @@ def _make_llm(
     *,
     caps: dict[str, Any] | None = None,
     caps_cb: Any = None,
+    should_abort: Any = None,
 ):
     from cadx.llm.client import make_llm
 
-    return make_llm(runtime, caps=caps, caps_cb=caps_cb)
+    return make_llm(runtime, caps=caps, caps_cb=caps_cb, should_abort=should_abort)
 
 
 def _make_image(runtime: RuntimeSettings):

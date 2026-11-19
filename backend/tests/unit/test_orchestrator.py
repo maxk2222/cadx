@@ -807,6 +807,7 @@ def test_gate_generated_images_logs_drop_once(tmp_path, monkeypatch):
     """B24: the gate runs per selection pass (hero list, combined list) —
     a dropped asset must be logged once per job, not once per pass."""
     import cadx.agent.orchestrator as orch
+    import cadx.agent.orchestrator.mesh_pipeline as mp
     from cadx.agent.types import InputAsset
 
     events: list = []
@@ -821,7 +822,9 @@ def test_gate_generated_images_logs_drop_once(tmp_path, monkeypatch):
         def error(self, *a, **kw):
             pass
 
-    monkeypatch.setattr(orch, "log", _Log())
+    # _gate_generated_images lives in the mesh_pipeline submodule — patch its
+    # own logger (the package-level orch.log is a different object)
+    monkeypatch.setattr(mp, "log", _Log())
 
     def _png(w: int, h: int):
         from PIL import Image

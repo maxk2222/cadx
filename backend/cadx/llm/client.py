@@ -16,7 +16,7 @@ import contextlib
 import json
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -271,6 +271,7 @@ class LLMClient:
         caps: dict[str, ModelCaps] | None = None,
         caps_cb: Callable[[str, ModelCaps], Any] | None = None,
         io_slot: asyncio.Semaphore | None = None,
+        should_abort: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         settings = runtime_settings or RuntimeSettings()
         self.runtime_settings = settings
@@ -332,6 +333,39 @@ class LLMClient:
         self._caps_cb = caps_cb
         self.context_len: dict[Role, int | None] = {}
         self._probed_roles: set[Role] = set()
+        # optional job-cancellation probe consulted during retry backoffs —
+        # a 6-step exponential retry can otherwise out-sleep a cancelled job
+        # by a full minute before the next caller-side cancel check runs
+        self._should_abort = should_abort
+        # shared connection pool — a fresh AsyncClient per request (and per
+        # retry) paid a connect+TLS handshake every call; lazily built and
+        # closed via aclose() at the client's end of life
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """The client's shared httpx pool. Timeouts stay per-request (the
+        stream and plain paths use different budgets)."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self.timeout_s)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            client, self._client = self._client, None
+            await client.aclose()
+
+    async def _backoff(self, delay: float) -> None:
+        """Retry sleep that aborts promptly when the owning job was cancelled."""
+        if self._should_abort is None:
+            await asyncio.sleep(delay)
+            return
+        waited = 0.0
+        while waited < delay:
+            if await self._should_abort():
+                raise asyncio.CancelledError("llm request aborted — job cancelled")
+            step = min(0.5, delay - waited)
+            await asyncio.sleep(step)
+            waited += step
 
     def _sampling_for(self, model: str) -> dict[str, Any]:
         """Longest case-insensitive substring match of the model id against
@@ -422,16 +456,19 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         delay = 2.0
         last_err: Exception | None = None
+        client = self._get_client()
         for _ in range(6):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout_s) as client:
-                    resp = await client.post(
-                        f"{self.base_url}/chat/completions", json=payload, headers=headers
-                    )
-                    resp, payload = await self._handle_400(client, resp, payload, headers, role)
+                resp = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout_s,
+                )
+                resp, payload = await self._handle_400(client, resp, payload, headers, role)
                 if _retryable_status(resp.status_code):
                     last_err = LLMError(f"HTTP {resp.status_code}: {resp.text[:300]}")
-                    await asyncio.sleep(delay)
+                    await self._backoff(delay)
                     delay *= 2
                     continue
                 if resp.status_code != 200:
@@ -441,7 +478,7 @@ class LLMClient:
                 return data
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 last_err = LLMError(f"transport: {type(e).__name__}: {e}")
-                await asyncio.sleep(delay)
+                await self._backoff(delay)
                 delay *= 2
         raise last_err or LLMError("request failed")
 
@@ -613,29 +650,26 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         delay = 2.0
         last_err: Exception | None = None
+        client = self._get_client()
         for _ in range(6):
             try:
-                async with (
-                    httpx.AsyncClient(
-                        timeout=httpx.Timeout(
-                            connect=30.0,
-                            read=self.idle_timeout_s,
-                            write=60.0,
-                            pool=60.0,
-                        )
-                    ) as client,
-                    client.stream(
-                        "POST",
-                        f"{self.base_url}/chat/completions",
-                        json=payload,
-                        headers=headers,
-                    ) as resp,
-                ):
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=headers,
+                    timeout=httpx.Timeout(
+                        connect=30.0,
+                        read=self.idle_timeout_s,
+                        write=60.0,
+                        pool=60.0,
+                    ),
+                ) as resp:
                     if resp.status_code == 400:
                         raise _RetryNoStream()
                     if _retryable_status(resp.status_code):
                         last_err = LLMError(f"HTTP {resp.status_code}")
-                        await asyncio.sleep(delay)
+                        await self._backoff(delay)
                         delay *= 2
                         continue
                     if resp.status_code != 200:
@@ -649,7 +683,7 @@ class LLMClient:
                 raise
             except (httpx.TimeoutException, httpx.TransportError) as e:
                 last_err = LLMError(f"transport: {type(e).__name__}: {e}")
-                await asyncio.sleep(delay)
+                await self._backoff(delay)
                 delay *= 2
             except LLMError:
                 raise
@@ -929,6 +963,7 @@ def make_llm(
     backend: str | None = None,
     caps: dict[str, ModelCaps] | None = None,
     caps_cb: Callable[[str, ModelCaps], Any] | None = None,
+    should_abort: Callable[[], Awaitable[bool]] | None = None,
 ) -> LLMClient:
     """Central LLM factory — resolves the configured provider backend.
 
@@ -974,5 +1009,8 @@ def make_llm(
             caps=caps,
             caps_cb=caps_cb,
             io_slot=local_llm_slot(),
+            should_abort=should_abort,
         )
-    return LLMClient(runtime_settings=runtime, caps=caps, caps_cb=caps_cb)
+    return LLMClient(
+        runtime_settings=runtime, caps=caps, caps_cb=caps_cb, should_abort=should_abort
+    )

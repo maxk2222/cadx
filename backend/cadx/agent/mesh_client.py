@@ -189,6 +189,21 @@ class HttpMeshClient(MeshPort):
         self.hf_token = hf_token
         self.api_key = api_key
         self._io_slot = io_slot
+        # shared connection pool — _poll used to spin up a fresh AsyncClient
+        # (connect+handshake) every 2s for the whole generation
+        self._client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Shared httpx pool; timeouts stay per-request (health, submit,
+        poll and download all use different budgets)."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient()
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None:
+            client, self._client = self._client, None
+            await client.aclose()
 
     def _headers(self) -> dict[str, str]:
         """Per-request credentials for the sidecar — X-HF-Token lets managed
@@ -205,19 +220,21 @@ class HttpMeshClient(MeshPort):
 
     async def health(self) -> MeshHealth:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                r = await client.get(f"{self.base_url}/v1/health", headers=self._headers())
-                r.raise_for_status()
-                return MeshHealth(**r.json())
+            r = await self._get_client().get(
+                f"{self.base_url}/v1/health", headers=self._headers(), timeout=5.0
+            )
+            r.raise_for_status()
+            return MeshHealth(**r.json())
         except Exception as e:
             return MeshHealth(ok=False, error=str(e))
 
     async def models(self) -> list[MeshModelInfo]:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(f"{self.base_url}/v1/models", headers=self._headers())
-                r.raise_for_status()
-                return [MeshModelInfo(**m) for m in r.json().get("models", [])]
+            r = await self._get_client().get(
+                f"{self.base_url}/v1/models", headers=self._headers(), timeout=10.0
+            )
+            r.raise_for_status()
+            return [MeshModelInfo(**m) for m in r.json().get("models", [])]
         except Exception:
             return []
 
@@ -300,11 +317,15 @@ class HttpMeshClient(MeshPort):
 
     async def _submit(self, files: list[tuple[str, tuple[str, bytes, str]]]) -> str:
         submit_timeout = min(60.0, self.timeout_s)
-        async with httpx.AsyncClient(timeout=submit_timeout) as client:
-            r = await client.post(f"{self.base_url}/v1/jobs", files=files, headers=self._headers())
-            if r.status_code != 200:
-                raise MeshGenError(f"mesh-server submit failed: {r.status_code} {r.text[:300]}")
-            return str(r.json()["job_id"])
+        r = await self._get_client().post(
+            f"{self.base_url}/v1/jobs",
+            files=files,
+            headers=self._headers(),
+            timeout=submit_timeout,
+        )
+        if r.status_code != 200:
+            raise MeshGenError(f"mesh-server submit failed: {r.status_code} {r.text[:300]}")
+        return str(r.json()["job_id"])
 
     async def _poll(
         self,
@@ -328,10 +349,11 @@ class HttpMeshClient(MeshPort):
             waited += poll
             if should_abort is not None and await should_abort():
                 raise MeshGenError("job cancelled by user")
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                st = await client.get(
-                    f"{self.base_url}/v1/jobs/{server_job}", headers=self._headers()
-                )
+            st = await self._get_client().get(
+                f"{self.base_url}/v1/jobs/{server_job}",
+                headers=self._headers(),
+                timeout=15.0,
+            )
             if st.status_code != 200:
                 raise MeshGenError(f"mesh-server job poll failed: {st.status_code}")
             status = st.json()
@@ -357,12 +379,12 @@ class HttpMeshClient(MeshPort):
         raise MeshGenError(f"mesh generation timed out after {deadline}s")
 
     async def _download(self, server_job: str, out_path: Path, i: int = 0) -> None:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            dl = await client.get(
-                f"{self.base_url}/v1/jobs/{server_job}/mesh",
-                params={"i": i},
-                headers=self._headers(),
-            )
+        dl = await self._get_client().get(
+            f"{self.base_url}/v1/jobs/{server_job}/mesh",
+            params={"i": i},
+            headers=self._headers(),
+            timeout=300.0,
+        )
         if dl.status_code != 200:
             raise MeshGenError(f"mesh download failed: {dl.status_code}")
         out_path.parent.mkdir(parents=True, exist_ok=True)

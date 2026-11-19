@@ -104,6 +104,41 @@ async def next_version_number(db: AsyncSession, part_id: uuid.UUID) -> int:
     return int(c.scalar_one()) + 1
 
 
+async def _spawn(
+    db: AsyncSession,
+    *,
+    version_fields: dict[str, Any],
+    job_type: JobType,
+    func: str,
+    args: dict[str, Any] | None = None,
+    extra_job: dict | None = None,
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
+) -> tuple[Version, Job]:
+    """Internal builder — one new Version row, one Job row, one arq enqueue.
+
+    Every child-spawn helper repeats exactly this tail; centralizing it keeps
+    the flush/commit order and the enqueue-failure marking identical for all
+    of them. `version_fields` are the verbatim Version() kwargs (callers must
+    supply `number` via next_version_number and may pre-generate `id`);
+    `args` are the arq payload fields beyond the always-sent
+    job_id/version_id."""
+    v = Version(**version_fields)
+    db.add(v)
+    await db.flush()
+    job = Job(version_id=v.id, type=job_type, **(extra_job or {}))
+    db.add(job)
+    await db.commit()
+    await _enqueue_or_fail(
+        db,
+        enqueue_fn or _enqueue,
+        func,
+        {"job_id": str(job.id), "version_id": str(v.id), **(args or {})},
+        version=v,
+        job=job,
+    )
+    return v, job
+
+
 async def spawn_version_job(
     db: AsyncSession,
     project: Project,
@@ -142,31 +177,24 @@ async def spawn_version_job(
             prompt_for_name=prompt,
         )
         resolved_part_id = resolved.id
-    v = Version(
-        project_id=project.id,
-        part_id=resolved_part_id,
-        parent_id=parent.id if parent else None,
-        number=await next_version_number(db, resolved_part_id),
-        kind=kind,
-        prompt=prompt,
-        asset_ids=[str(a) for a in (asset_ids or [])],
-        library_part_ids=[str(p) for p in (library_part_ids or [])],
-        **(extra_version or {}),
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=job_type, **(extra_job or {}))
-    db.add(job)
-    await db.commit()
-    await _enqueue_or_fail(
+    return await _spawn(
         db,
-        enqueue_fn or _enqueue,
-        func,
-        {"job_id": str(job.id), "version_id": str(v.id)},
-        version=v,
-        job=job,
+        version_fields={
+            "project_id": project.id,
+            "part_id": resolved_part_id,
+            "parent_id": parent.id if parent else None,
+            "number": await next_version_number(db, resolved_part_id),
+            "kind": kind,
+            "prompt": prompt,
+            "asset_ids": [str(a) for a in (asset_ids or [])],
+            "library_part_ids": [str(p) for p in (library_part_ids or [])],
+            **(extra_version or {}),
+        },
+        job_type=job_type,
+        func=func,
+        extra_job=extra_job,
+        enqueue_fn=enqueue_fn,
     )
-    return v, job
 
 
 def _check_editable(v: Version, what: str) -> None:
@@ -335,32 +363,25 @@ async def spawn_params(
 ) -> tuple[Version, Job]:
     if not parent.code and parent.resolved_mode != "mesh":
         raise SpawnError("version has no code")
-    v = Version(
-        project_id=parent.project_id,
-        part_id=parent.part_id,
-        parent_id=parent.id,
-        number=await next_version_number(db, parent.part_id),
-        kind=VersionKind.params,
-        prompt="params change",
-        params={**(parent.params or {}), **params},
-        params_schema=parent.params_schema,
-        code=parent.code,
-        options=parent.options or {},
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.params)
-    db.add(job)
-    await db.commit()
-    await _enqueue_or_fail(
+    return await _spawn(
         db,
-        enqueue_fn or _enqueue,
-        "run_params_job",
-        {"job_id": str(job.id), "version_id": str(v.id), "params": params},
-        version=v,
-        job=job,
+        version_fields={
+            "project_id": parent.project_id,
+            "part_id": parent.part_id,
+            "parent_id": parent.id,
+            "number": await next_version_number(db, parent.part_id),
+            "kind": VersionKind.params,
+            "prompt": "params change",
+            "params": {**(parent.params or {}), **params},
+            "params_schema": parent.params_schema,
+            "code": parent.code,
+            "options": parent.options or {},
+        },
+        job_type=JobType.params,
+        func="run_params_job",
+        args={"params": params},
+        enqueue_fn=enqueue_fn,
     )
-    return v, job
 
 
 async def spawn_optimize(
@@ -383,50 +404,41 @@ async def spawn_optimize(
             "optimize it again, or topopt_resample to re-extract the stored "
             "density field"
         )
-    v = Version(
-        project_id=parent.project_id,
-        part_id=parent.part_id,
-        parent_id=parent.id,
-        number=await next_version_number(db, parent.part_id),
-        kind=VersionKind.optimize,
-        prompt=f"optimize {parent.prompt}"[:500],
-        gen_mode="topopt",
-        asset_ids=parent.asset_ids or [],
-        options={
-            **(parent.options or {}),
-            "topopt": True,
-            "optimize_request": {
-                "load_cases": load_cases,
-                "optimize": optimize,
-                "material": material,
-            },
-        },
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.optimize)
-    db.add(job)
-    await db.commit()
-    payload = {
-        "job_id": str(job.id),
-        "version_id": str(v.id),
+    args: dict[str, Any] = {
         "load_cases": load_cases,
         "optimize": optimize,
         "material": material,
     }
     if stage_timeout_s is not None:
-        payload["_stage_deadline_at"] = (
+        args["_stage_deadline_at"] = (
             datetime.now(UTC) + timedelta(seconds=stage_timeout_s)
         ).isoformat()
-    await _enqueue_or_fail(
+    return await _spawn(
         db,
-        enqueue_fn or _enqueue,
-        "run_optimize_job",
-        payload,
-        version=v,
-        job=job,
+        version_fields={
+            "project_id": parent.project_id,
+            "part_id": parent.part_id,
+            "parent_id": parent.id,
+            "number": await next_version_number(db, parent.part_id),
+            "kind": VersionKind.optimize,
+            "prompt": f"optimize {parent.prompt}"[:500],
+            "gen_mode": "topopt",
+            "asset_ids": parent.asset_ids or [],
+            "options": {
+                **(parent.options or {}),
+                "topopt": True,
+                "optimize_request": {
+                    "load_cases": load_cases,
+                    "optimize": optimize,
+                    "material": material,
+                },
+            },
+        },
+        job_type=JobType.optimize,
+        func="run_optimize_job",
+        args=args,
+        enqueue_fn=enqueue_fn,
     )
-    return v, job
 
 
 async def spawn_resample(
@@ -449,39 +461,32 @@ async def spawn_resample(
         or ((parent.mesh or {}).get("organic") or {}).get("density_relpath")
     ):
         raise SpawnError("version has no stored density field — run optimize first")
-    v = Version(
-        project_id=parent.project_id,
-        part_id=parent.part_id,
-        parent_id=parent.id,
-        number=await next_version_number(db, parent.part_id),
-        kind=VersionKind.organic if organic_parent else VersionKind.optimize,
-        prompt=f"resample {parent.prompt}"[:500],
-        gen_mode="mesh" if organic_parent else "topopt",
-        asset_ids=parent.asset_ids or [],
-        options={
-            **(parent.options or {}),
-            "topopt": True,
-            "optimize_request": {
-                "optimize": {
-                    "density_threshold": density_threshold,
-                    "min_member_mm": min_member_mm or None,
+    return await _spawn(
+        db,
+        version_fields={
+            "project_id": parent.project_id,
+            "part_id": parent.part_id,
+            "parent_id": parent.id,
+            "number": await next_version_number(db, parent.part_id),
+            "kind": VersionKind.organic if organic_parent else VersionKind.optimize,
+            "prompt": f"resample {parent.prompt}"[:500],
+            "gen_mode": "mesh" if organic_parent else "topopt",
+            "asset_ids": parent.asset_ids or [],
+            "options": {
+                **(parent.options or {}),
+                "topopt": True,
+                "optimize_request": {
+                    "optimize": {
+                        "density_threshold": density_threshold,
+                        "min_member_mm": min_member_mm or None,
+                    },
+                    "material": material,
                 },
-                "material": material,
             },
         },
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.resample)
-    db.add(job)
-    await db.commit()
-    await _enqueue_or_fail(
-        db,
-        enqueue_fn or _enqueue,
-        "run_topopt_resample_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
+        job_type=JobType.resample,
+        func="run_topopt_resample_job",
+        args={
             "load_cases": load_cases,
             "keep_regions": keep_regions,
             "material": material,
@@ -490,10 +495,8 @@ async def spawn_resample(
                 "min_member_mm": min_member_mm or None,
             },
         },
-        version=v,
-        job=job,
+        enqueue_fn=enqueue_fn,
     )
-    return v, job
 
 
 async def spawn_refine(
@@ -513,42 +516,35 @@ async def spawn_refine(
     _check_editable(parent, "refine")
     if parent.kind == VersionKind.refine:
         raise SpawnError("version is already refined — refine a sibling instead")
-    v = Version(
-        project_id=parent.project_id,
-        part_id=parent.part_id,
-        parent_id=parent.id,
-        number=await next_version_number(db, parent.part_id),
-        kind=VersionKind.refine,
-        prompt=f"refine {parent.prompt}"[:500],
-        gen_mode=parent.gen_mode,
-        asset_ids=parent.asset_ids or [],
-        options={
-            **(parent.options or {}),
-            "topopt": (parent.options or {}).get("topopt", False),
-            "refine_request": {
-                "features": features,
-                "load_cases": load_cases,
-                "keep_regions": keep_regions,
-                "material": material,
-                "voxel_mm": voxel_mm,
-                "restore_planes": restore_planes,
-                "helical_threads": helical_threads,
-                "auto_plane_restore": auto_plane_restore,
+    return await _spawn(
+        db,
+        version_fields={
+            "project_id": parent.project_id,
+            "part_id": parent.part_id,
+            "parent_id": parent.id,
+            "number": await next_version_number(db, parent.part_id),
+            "kind": VersionKind.refine,
+            "prompt": f"refine {parent.prompt}"[:500],
+            "gen_mode": parent.gen_mode,
+            "asset_ids": parent.asset_ids or [],
+            "options": {
+                **(parent.options or {}),
+                "topopt": (parent.options or {}).get("topopt", False),
+                "refine_request": {
+                    "features": features,
+                    "load_cases": load_cases,
+                    "keep_regions": keep_regions,
+                    "material": material,
+                    "voxel_mm": voxel_mm,
+                    "restore_planes": restore_planes,
+                    "helical_threads": helical_threads,
+                    "auto_plane_restore": auto_plane_restore,
+                },
             },
         },
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.refine)
-    db.add(job)
-    await db.commit()
-    await _enqueue_or_fail(
-        db,
-        enqueue_fn or _enqueue,
-        "run_refine_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
+        job_type=JobType.refine,
+        func="run_refine_job",
+        args={
             "features": features,
             "load_cases": load_cases,
             "keep_regions": keep_regions,
@@ -558,10 +554,8 @@ async def spawn_refine(
             "helical_threads": helical_threads,
             "auto_plane_restore": auto_plane_restore,
         },
-        version=v,
-        job=job,
+        enqueue_fn=enqueue_fn,
     )
-    return v, job
 
 
 async def spawn_organic(
@@ -572,31 +566,24 @@ async def spawn_organic(
     enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None,
 ) -> tuple[Version, Job]:
     _check_editable(parent, "restyle")
-    v = Version(
-        project_id=parent.project_id,
-        part_id=parent.part_id,
-        parent_id=parent.id,
-        number=await next_version_number(db, parent.part_id),
-        kind=VersionKind.organic,
-        prompt=f"organic {parent.prompt}"[:500],
-        gen_mode="mesh",
-        asset_ids=parent.asset_ids or [],
-        options={**(parent.options or {}), "organic_request": organic},
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.organic)
-    db.add(job)
-    await db.commit()
-    await _enqueue_or_fail(
+    return await _spawn(
         db,
-        enqueue_fn or _enqueue,
-        "run_organic_job",
-        {"job_id": str(job.id), "version_id": str(v.id), "organic": organic},
-        version=v,
-        job=job,
+        version_fields={
+            "project_id": parent.project_id,
+            "part_id": parent.part_id,
+            "parent_id": parent.id,
+            "number": await next_version_number(db, parent.part_id),
+            "kind": VersionKind.organic,
+            "prompt": f"organic {parent.prompt}"[:500],
+            "gen_mode": "mesh",
+            "asset_ids": parent.asset_ids or [],
+            "options": {**(parent.options or {}), "organic_request": organic},
+        },
+        job_type=JobType.organic,
+        func="run_organic_job",
+        args={"organic": organic},
+        enqueue_fn=enqueue_fn,
     )
-    return v, job
 
 
 async def spawn_code(
@@ -866,111 +853,84 @@ async def spawn_restart(  # noqa: C901
     # --- version-kind dispatch (LLM-generated kinds + the rest) ---
 
     if v.kind in (VersionKind.generate, VersionKind.edit):
-        new_v = Version(
-            project_id=v.project_id,
-            part_id=v.part_id,
-            parent_id=v.parent_id,
-            number=await next_version_number(db, v.part_id),
-            kind=v.kind,
-            prompt=v.prompt,
-            asset_ids=v.asset_ids or [],
-            library_part_ids=v.library_part_ids or [],
-            gen_mode=v.gen_mode,
-            options=v.options or {},
-        )
-        db.add(new_v)
-        await db.flush()
-        new_job = Job(
-            version_id=new_v.id,
+        return await _spawn(
+            db,
+            version_fields={
+                "project_id": v.project_id,
+                "part_id": v.part_id,
+                "parent_id": v.parent_id,
+                "number": await next_version_number(db, v.part_id),
+                "kind": v.kind,
+                "prompt": v.prompt,
+                "asset_ids": v.asset_ids or [],
+                "library_part_ids": v.library_part_ids or [],
+                "gen_mode": v.gen_mode,
+                "options": v.options or {},
+            },
             # a resume job must stay `resume` — run_agent_job only restores
             # the stored spec for JobType.resume; re-typing it to
             # generate/edit silently dropped the resume semantics
-            type=(
+            job_type=(
                 JobType.resume
                 if job.type == JobType.resume
                 else JobType.edit
                 if v.kind == VersionKind.edit
                 else JobType.generate
             ),
-            resume_state=job.resume_state,
+            func="run_agent_job",
+            extra_job={"resume_state": job.resume_state},
+            enqueue_fn=enqueue_fn,
         )
-        db.add(new_job)
-        await db.commit()
-        await _enqueue_or_fail(
-            db,
-            enqueue,
-            "run_agent_job",
-            {"job_id": str(new_job.id), "version_id": str(new_v.id)},
-            version=new_v,
-            job=new_job,
-        )
-        return new_v, new_job
 
     if v.kind == VersionKind.params:
         if parent is None:
             raise SpawnError("parent version missing — cannot restart")
-        new_v = Version(
-            project_id=v.project_id,
-            part_id=v.part_id,
-            parent_id=v.parent_id,
-            number=await next_version_number(db, v.part_id),
-            kind=VersionKind.params,
-            prompt="params change",
-            params=v.params or {},
-            params_schema=v.params_schema,
-            code=v.code,
-            options=v.options or {},
-        )
-        db.add(new_v)
-        await db.flush()
-        new_job = Job(version_id=new_v.id, type=JobType.params)
-        db.add(new_job)
-        await db.commit()
-        await _enqueue_or_fail(
+        return await _spawn(
             db,
-            enqueue,
-            "run_params_job",
-            {"job_id": str(new_job.id), "version_id": str(new_v.id), "params": v.params or {}},
-            version=new_v,
-            job=new_job,
+            version_fields={
+                "project_id": v.project_id,
+                "part_id": v.part_id,
+                "parent_id": v.parent_id,
+                "number": await next_version_number(db, v.part_id),
+                "kind": VersionKind.params,
+                "prompt": "params change",
+                "params": v.params or {},
+                "params_schema": v.params_schema,
+                "code": v.code,
+                "options": v.options or {},
+            },
+            job_type=JobType.params,
+            func="run_params_job",
+            args={"params": v.params or {}},
+            enqueue_fn=enqueue_fn,
         )
-        return new_v, new_job
 
     if v.kind == VersionKind.optimize:
         if parent is None:
             raise SpawnError("parent version missing — cannot restart")
         req = opts.get("optimize_request") or {}
-        new_v = Version(
-            project_id=v.project_id,
-            part_id=v.part_id,
-            parent_id=parent.id,
-            number=await next_version_number(db, v.part_id),
-            kind=VersionKind.optimize,
-            prompt=f"optimize {parent.prompt}"[:500],
-            gen_mode="topopt",
-            asset_ids=parent.asset_ids or [],
-            options={**(parent.options or {}), "topopt": True, "optimize_request": req},
-        )
-        db.add(new_v)
-        await db.flush()
-        new_job = Job(version_id=new_v.id, type=JobType.optimize)
-        db.add(new_job)
-        await db.commit()
-        await _enqueue_or_fail(
+        return await _spawn(
             db,
-            enqueue,
-            "run_optimize_job",
-            {
-                "job_id": str(new_job.id),
-                "version_id": str(new_v.id),
+            version_fields={
+                "project_id": v.project_id,
+                "part_id": v.part_id,
+                "parent_id": parent.id,
+                "number": await next_version_number(db, v.part_id),
+                "kind": VersionKind.optimize,
+                "prompt": f"optimize {parent.prompt}"[:500],
+                "gen_mode": "topopt",
+                "asset_ids": parent.asset_ids or [],
+                "options": {**(parent.options or {}), "topopt": True, "optimize_request": req},
+            },
+            job_type=JobType.optimize,
+            func="run_optimize_job",
+            args={
                 "load_cases": req.get("load_cases") or [],
                 "optimize": req.get("optimize") or {},
                 "material": req.get("material") or "",
             },
-            version=new_v,
-            job=new_job,
+            enqueue_fn=enqueue_fn,
         )
-        return new_v, new_job
 
     if v.kind == VersionKind.code:
         if not (v.code or "").strip():
@@ -1044,30 +1004,23 @@ async def spawn_mesh_edit(
     _check_editable(parent, "edit")
     validate_ops(ops)
     mesh_edit_source(parent)
-    v = Version(
-        project_id=parent.project_id,
-        part_id=parent.part_id,
-        parent_id=parent.id,
-        number=await next_version_number(db, parent.part_id),
-        kind=VersionKind.mesh_edit,
-        prompt=(note or f"visual edit of v{parent.number}")[:500],
-        gen_mode=parent.gen_mode,
-        options=parent.options or {},
-    )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.mesh_edit)
-    db.add(job)
-    await db.commit()
-    await _enqueue_or_fail(
+    return await _spawn(
         db,
-        enqueue_fn or _enqueue,
-        "run_mesh_edit_job",
-        {"job_id": str(job.id), "version_id": str(v.id), "ops": ops, "post": post or {}},
-        version=v,
-        job=job,
+        version_fields={
+            "project_id": parent.project_id,
+            "part_id": parent.part_id,
+            "parent_id": parent.id,
+            "number": await next_version_number(db, parent.part_id),
+            "kind": VersionKind.mesh_edit,
+            "prompt": (note or f"visual edit of v{parent.number}")[:500],
+            "gen_mode": parent.gen_mode,
+            "options": parent.options or {},
+        },
+        job_type=JobType.mesh_edit,
+        func="run_mesh_edit_job",
+        args={"ops": ops, "post": post or {}},
+        enqueue_fn=enqueue_fn,
     )
-    return v, job
 
 
 def feature_edit_brep_path(v: Version) -> Path | None:
@@ -1125,50 +1078,37 @@ async def spawn_edit_feature(
             status=422,
         )
     feature_edit_source(parent)
-    v = Version(
-        project_id=parent.project_id,
-        part_id=parent.part_id,
-        parent_id=parent.id,
-        number=await next_version_number(db, parent.part_id),
-        kind=VersionKind.edit,
-        prompt=(f"feature edit: {parameter}={value} on feature {feature_id} (of v{parent.number})")[
-            :500
-        ],
-        gen_mode=parent.gen_mode,
-        asset_ids=parent.asset_ids or [],
-        spec=parent.spec,
-        code=parent.code,
-        params=parent.params,
-        params_schema=parent.params_schema,
-        options={
-            **(parent.options or {}),
-            "edit_feature_request": {
-                "feature_id": feature_id,
-                "parameter": parameter,
-                "value": value,
+    return await _spawn(
+        db,
+        version_fields={
+            "project_id": parent.project_id,
+            "part_id": parent.part_id,
+            "parent_id": parent.id,
+            "number": await next_version_number(db, parent.part_id),
+            "kind": VersionKind.edit,
+            "prompt": (
+                f"feature edit: {parameter}={value} on feature {feature_id} (of v{parent.number})"
+            )[:500],
+            "gen_mode": parent.gen_mode,
+            "asset_ids": parent.asset_ids or [],
+            "spec": parent.spec,
+            "code": parent.code,
+            "params": parent.params,
+            "params_schema": parent.params_schema,
+            "options": {
+                **(parent.options or {}),
+                "edit_feature_request": {
+                    "feature_id": feature_id,
+                    "parameter": parameter,
+                    "value": value,
+                },
             },
         },
+        job_type=JobType.edit,
+        func="run_edit_feature_job",
+        args={"feature_id": feature_id, "parameter": parameter, "value": value},
+        enqueue_fn=enqueue_fn,
     )
-    db.add(v)
-    await db.flush()
-    job = Job(version_id=v.id, type=JobType.edit)
-    db.add(job)
-    await db.commit()
-    await _enqueue_or_fail(
-        db,
-        enqueue_fn or _enqueue,
-        "run_edit_feature_job",
-        {
-            "job_id": str(job.id),
-            "version_id": str(v.id),
-            "feature_id": feature_id,
-            "parameter": parameter,
-            "value": value,
-        },
-        version=v,
-        job=job,
-    )
-    return v, job
 
 
 async def spawn_fem(

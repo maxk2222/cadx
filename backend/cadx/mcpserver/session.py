@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 import uuid
 from typing import Any
 
@@ -78,6 +79,20 @@ class McpToolSession(ProjectToolSession):
         self._mcp_handlers_enabled = True
         self._mcp_tools_loaded = False
         self._warmed = False
+
+    async def aclose(self) -> None:
+        """Release resources the session lazily built — the QueueExecutor's
+        arq pool and the mesh/image sidecar clients' httpx pools. All closes
+        are best-effort: a half-torn-down session must never raise."""
+        for obj in (
+            self.ctx.executor,
+            getattr(self.ctx, "mesh", None),
+            getattr(self.ctx, "image", None),
+        ):
+            close = getattr(obj, "aclose", None)
+            if close is not None:
+                with contextlib.suppress(Exception):
+                    await close()
 
     # -- lazy sidecar wiring -------------------------------------------------- #
 
@@ -148,23 +163,53 @@ class McpToolSession(ProjectToolSession):
 # --------------------------------------------------------------------------- #
 
 # keyed by Streamable-HTTP `Mcp-Session-Id` (STDIO_SESSION_KEY for stdio) —
-# keeps the project binding and spawned-job tracking alive across requests
+# keeps the project binding and spawned-job tracking alive across requests.
+# Bounded: abandoned transport ids would otherwise grow the pool forever;
+# the cap evicts the least-recently-used session (dicts keep insert order).
 SESSIONS: dict[str, McpToolSession] = {}
+_SESSION_TOUCHED: dict[str, float] = {}
+_MAX_SESSIONS = 32
+# idle TTL: an abandoned transport that never fires drop() must not hold its
+# arq pool + sidecar clients forever; eviction loses the session binding, not
+# any queued work (spawned jobs run server-side independent of the session)
+_SESSION_TTL_S = 3600.0
 
 
 async def get_or_create(key: str = STDIO_SESSION_KEY) -> McpToolSession:
     """Return the pooled session for this transport key, creating + warming
     it on first use (sidecar probes + a fresh runtime-settings snapshot)."""
-    session = SESSIONS.get(key)
+    now = time.monotonic()
+    for k in [k for k, ts in _SESSION_TOUCHED.items() if now - ts > _SESSION_TTL_S]:
+        _SESSION_TOUCHED.pop(k, None)
+        stale = SESSIONS.pop(k, None)
+        if stale is not None:
+            await stale.aclose()
+    session = SESSIONS.pop(key, None)
+    _SESSION_TOUCHED.pop(key, None)
     if session is None:
         from cadx.runtime_config import runtime_from_db_or_default
 
         session = McpToolSession(await runtime_from_db_or_default())
         await session.warm()
-        SESSIONS[key] = session
+    SESSIONS[key] = session  # reinsert at the end — LRU touch
+    _SESSION_TOUCHED[key] = now
+    while len(SESSIONS) > _MAX_SESSIONS:
+        oldest = next(iter(SESSIONS))
+        evicted = SESSIONS.pop(oldest)
+        _SESSION_TOUCHED.pop(oldest, None)
+        await evicted.aclose()
     return session
 
 
 def drop(key: str) -> None:
-    """Forget a pooled session — called when its transport connection closes."""
-    SESSIONS.pop(key, None)
+    """Forget a pooled session — called when its transport connection closes.
+
+    Runs as a sync exit-stack callback: it schedules the async close on the
+    running loop. With no loop (interpreter teardown) the pool's fds die with
+    the process anyway — nothing to leak."""
+    session = SESSIONS.pop(key, None)
+    _SESSION_TOUCHED.pop(key, None)
+    if session is None:
+        return
+    with contextlib.suppress(RuntimeError):
+        asyncio.get_running_loop().create_task(session.aclose())

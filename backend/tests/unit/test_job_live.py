@@ -160,6 +160,9 @@ async def test_emit_runs_append_and_cap_40(monkeypatch):
     emit = make_emit(job.id)
     for i in range(45):
         await emit("optimize", i, f"run {i} done", run={"index": i, "type": "topopt"})
+    # same-step emits are DB-throttled — flush the deferred tail like the
+    # terminal persist does before asserting on the stored snapshot
+    await emit.flush()
 
     live = await _live(job.id)
     assert len(live["runs"]) == 40

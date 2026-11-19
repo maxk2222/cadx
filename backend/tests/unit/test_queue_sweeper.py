@@ -57,6 +57,11 @@ class FakeRedis:
     async def zrange(self, name: str, start: int, stop: int) -> list[str]:
         return list(self.zsets.get(name, set()))
 
+    async def zscan(self, name: str, cursor: int, match: str | None = None, count: int = 200):
+        prefix = (match or "*").rstrip("*")
+        members = [m for m in self.zsets.get(name, set()) if str(m).startswith(prefix)]
+        return 0, [(m, 1.0) for m in members]
+
     async def delete(self, *keys: str) -> int:
         self.deleted.extend(keys)
         n = 0
