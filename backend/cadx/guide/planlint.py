@@ -48,33 +48,28 @@ def _resolve_part(sess: GuideToolSession, name: str | None, step_no: int) -> str
     cascade can't bind ('äußere Muffe des linken unteren Rohrbogens' —
     the genitive never token-matches 'Rohrbogen'), the ref's kind pool
     intersected with what step N places gives the deterministic binding.
-    Only a UNIQUE intersection resolves — ambiguity stays a finding."""
+    The pin is also the STRONGER signal when it resolves: a lexical hit
+    outside what the pinned step produced is the coarse kind noun winning
+    a token tie ('vertikales Rohr' → the 70 mm stub while step 9 placed
+    the 500 mm pipe) — provenance overrides it. Only a UNIQUE
+    intersection resolves — ambiguity stays a finding."""
     if not name:
         return None
     st = sess.state.step_by_number(step_no)
     ctx = f"{st.text} {st.title}" if st else ""
     pid = _resolve_name(sess, name, context=ctx)
-    if pid:
-        return pid
-    from cadx.guide.preassembly import _STEP_REF, _kind_pool
+    from cadx.guide.preassembly import _STEP_REF, _kind_pool, _step_produced_pids
 
     m = _STEP_REF.search(name)
     if not m:
-        return None
-    pinned = sess.state.step_by_number(int(m.group(1)))
-    if pinned is None:
-        return None
-    pin_ctx = f"{pinned.text} {pinned.title}"
-    placed = {
-        p
-        for pss in pinned.sub_steps or []
-        if pss.action in _PLACE_ACTIONS
-        for p in [_resolve_name(sess, pss.part or "", context=pin_ctx)]
-        if p
-    }
-    pool = _kind_pool(sess, name)
-    narrow = placed & pool if pool else placed
-    return narrow.pop() if len(narrow) == 1 else None
+        return pid
+    produced = _step_produced_pids(sess, int(m.group(1)))
+    if not produced:
+        return pid
+    pin_set = _kind_pool(sess, name) or produced
+    if pid in pin_set:
+        return pid
+    return next(iter(pin_set)) if len(pin_set) == 1 else None
 
 
 def _suggest(sess: GuideToolSession, name: str) -> str:
@@ -531,6 +526,32 @@ def _lint_phantom_sizes(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
     return findings
 
 
+def _requirement_sites(sess: GuideToolSession) -> dict[str, list[str]]:
+    """pid → the substeps demanding a copy — a bare 'need 3, have 2'
+    blocker sent the steps mission re-deriving the same surplus blind;
+    naming the offending sites makes the repair addressable. Mirrors
+    _step_requirements' required_parts fallback for steps that author
+    no place-substeps."""
+    sites: dict[str, list[str]] = {}
+    for st in sess.state.steps:
+        if st.action_type != "assembly":
+            continue
+        placed_any = False
+        for i, ss in enumerate(st.sub_steps):
+            if ss.action not in _PLACE_ACTIONS:
+                continue
+            pid = ss.part_pid or _resolve_part(sess, ss.part, st.number)
+            if pid:
+                placed_any = True
+                sites.setdefault(pid, []).append(f"step {st.number} sub {i}")
+        if not placed_any:
+            for n in st.required_parts:
+                pid = _resolve_part(sess, n, st.number)
+                if pid:
+                    sites.setdefault(pid, []).append(f"step {st.number} required_parts")
+    return sites
+
+
 def _lint_quantities(sess: GuideToolSession) -> list[dict[str, Any]]:
     """Stückliste 'Menge' bounds the total copies a plan may consume — a
     plan needing 5 of a 2-piece part maps the wrong part onto steps (the
@@ -551,6 +572,7 @@ def _lint_quantities(sess: GuideToolSession) -> list[dict[str, Any]]:
         pid = sess._aliases_store.get(nrm) or _name_index(sess).get(nrm)
         if pid:
             detected[pid] = qty
+    sites = _requirement_sites(sess)
     findings: list[dict[str, Any]] = []
     for p in sess.state.parts:
         bound = p.quantity if p.quantity is not None else detected.get(p.id)
@@ -558,15 +580,96 @@ def _lint_quantities(sess: GuideToolSession) -> list[dict[str, Any]]:
             continue
         need = totals.get(p.id, 0)
         if need > bound:
+            where = sites.get(p.id) or []
             findings.append(
                 {
                     "mission": "steps",
                     "severity": "blocker",
                     "text": f"plan requires {need}x '{p.id}' but the parts "
-                    f"list ships only {bound} — wrong part mapping or "
-                    "phantom occurrences; fix the step sub_steps",
+                    f"list ships only {bound} — requirement sites: "
+                    f"{', '.join(where)}. Two honest repairs: (a) one of "
+                    "these substeps is a phantom occurrence (same mate "
+                    "declared twice) — remove or retag it; or (b) the parts "
+                    "list quantity is wrong — correct register_part "
+                    "quantity. Placing a {need}th copy the kit does not "
+                    "ship is not an option",
                 }
             )
+    return findings
+
+
+def _lint_duplicate_occurrences(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
+    """Two place substeps demanding a new occurrence of the same part on
+    the SAME declared mate (identical resolved target + same pinned step +
+    same second mate) — a copy-pasted substep reads to the counter as one
+    more kit consumption the BOM never ships. Distinct instances of one
+    kind differ in target text, pinned step, or second mate; only an
+    exact-declaration repeat is a duplicate.
+
+    Severity follows the kit bound: duplicates that push demand past the
+    shipped quantity are the phantom-occurrence class (blocker — the kit
+    cannot satisfy them). Identical repeats inside the bound are usually
+    symmetric occurrences the plan wrote lazily ('four feet on the
+    corners') — physical but worth evidence (warning, no halt)."""
+    doc = getattr(sess.state, "document", None)
+    detected: dict[str, int] = {}
+    for nrm, qty in (getattr(doc, "detected_part_qty", None) or {}).items():
+        dpid = sess._aliases_store.get(nrm) or _name_index(sess).get(nrm)
+        if dpid:
+            detected[dpid] = qty
+    bounds = {
+        p.id: p.quantity if p.quantity is not None else detected.get(p.id)
+        for p in sess.state.parts
+    }
+    counts: dict[str, int] = {}
+    seen: dict[tuple[str, str, str, str], tuple[int, int, str]] = {}
+    findings: list[dict[str, Any]] = []
+    for st in steps:
+        if st.action_type != "assembly":
+            continue
+        for i, ss in enumerate(st.sub_steps):
+            if ss.action not in _PLACE_ACTIONS:
+                continue
+            pid = ss.part_pid or _resolve_part(sess, ss.part, st.number)
+            if not pid:
+                continue
+            counts[pid] = counts.get(pid, 0) + 1
+            ttxt = " ".join(str(ss.target or "").lower().split())
+            t2txt = " ".join(str(ss.target2 or "").lower().split())
+            if not ttxt:
+                continue  # free placements repeat legitimately
+            key = (
+                pid,
+                ttxt,
+                str(ss.target_pid or _resolve_part(sess, ss.target, st.number) or ""),
+                t2txt,
+            )
+            if key in seen:
+                st0, i0, target = seen[key]
+                bound = bounds.get(pid)
+                over = bound is not None and counts[pid] > bound
+                findings.append(
+                    {
+                        "mission": "steps",
+                        "severity": "blocker" if over else "warning",
+                        "text": f"step {st.number} sub {i} duplicates step "
+                        f"{st0} sub {i0}: both place '{pid}' on the same "
+                        f"declared mate '{target[:80]}'"
+                        + (
+                            f" — {counts[pid]} identical occurrences "
+                            f"declared, the parts list ships only {bound}. "
+                            "Keep the earlier substep and remove or retag "
+                            "the repeat (check/orient if it is an "
+                            "inspection, not a placement)"
+                            if over
+                            else " — symmetric occurrences may be "
+                            "legitimate, but if this is one physical mate "
+                            "declared twice the plan over-counts"
+                        ),
+                    }
+                )
+            else:
+                seen[key] = (st.number, i, str(ss.target or ""))
     return findings
 
 
@@ -932,6 +1035,76 @@ def _lint_step_refs(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, 
     return findings
 
 
+def _lint_binding_conflicts(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
+    """Binding-vs-pin consistency — the canonicalizer binds a pinned ref
+    to what the pinned step PRODUCED (provenance over the coarse kind
+    noun), so the remaining contradictions are evidence, not silent
+    state: a stored binding outside the pin's produced set is a real
+    defect (blocker — legacy states or bindings written outside the
+    canonicalizer), an undecidable pin-vs-noun clash is a blocker the
+    steps mission must disambiguate, and a resolved override is a
+    warning that the ref text itself is inconsistent."""
+    from cadx.guide.preassembly import _STEP_REF, _step_produced_pids
+
+    findings: list[dict[str, Any]] = []
+    for st in steps:
+        ctx = f"{st.text} {st.title}"
+        for i, ss in enumerate(st.sub_steps or []):
+            for field, name, bound in (
+                ("part", ss.part, ss.part_pid),
+                ("target", ss.target, ss.target_pid),
+                ("target2", ss.target2, ss.target2_pid),
+            ):
+                if not name:
+                    continue
+                m = _STEP_REF.search(name)
+                if not m:
+                    continue
+                produced = _step_produced_pids(sess, int(m.group(1)))
+                if not produced:
+                    continue
+                if bound and bound not in produced:
+                    findings.append(
+                        {
+                            "mission": "steps",
+                            "severity": "blocker",
+                            "text": f"step {st.number} sub {i}: {field} "
+                            f"'{str(name)[:60]}' is bound to '{bound}' but "
+                            f"pins '(Schritt {m.group(1)})' which provides "
+                            f"{sorted(produced)} — fix the reference (plan "
+                            "step number) or the part mapping",
+                        }
+                    )
+                    continue
+                lex = _resolve_name(sess, name, context=ctx)
+                if bound is None and lex and lex not in produced:
+                    findings.append(
+                        {
+                            "mission": "steps",
+                            "severity": "blocker",
+                            "text": f"step {st.number} sub {i}: {field} "
+                            f"'{str(name)[:60]}' resolves to '{lex}' but "
+                            f"pins '(Schritt {m.group(1)})' which provides "
+                            f"{sorted(produced)} — undecidable as written; "
+                            "fix the pin number or the noun",
+                        }
+                    )
+                elif bound and lex and lex not in produced:
+                    findings.append(
+                        {
+                            "mission": "steps",
+                            "severity": "warning",
+                            "text": f"step {st.number} sub {i}: {field} "
+                            f"'{str(name)[:60]}' resolves lexically to "
+                            f"'{lex}' but pins '(Schritt {m.group(1)})' "
+                            f"providing {sorted(produced)} — bound via "
+                            "provenance; the noun should name that part "
+                            "kind",
+                        }
+                    )
+    return findings
+
+
 def _lint_bridge_reach(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
     """A bridge leg (target+target2) can only close TOWARD its partner —
     a fitting turns at most ~90° per joint, it can never reach back past
@@ -1192,6 +1365,8 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings += _lint_premount_refs(sess, steps)
     findings += _lint_side_coverage(sess, steps)
     findings += _lint_step_refs(sess, steps)
+    findings += _lint_binding_conflicts(sess, steps)
+    findings += _lint_duplicate_occurrences(sess, steps)
     findings += _lint_bridge_reach(sess, steps)
     findings += _lint_asset_coverage(sess)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")

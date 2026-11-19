@@ -120,6 +120,17 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         {"step": _i("step number")},
         ["step"],
     ),
+    "resolve_open_mates": _fn(
+        "resolve_open_mates",
+        "Deterministically close open declared mates: a placed instance "
+        "whose step declared a second mate (bridge leg) that never became "
+        "a joint gets BOTH mates re-solved and its joints rewritten — "
+        "committed only when residual/burial gates pass. Use this when a "
+        "step is complete but validate_assembly_geometry reports "
+        "bridge_incomplete; place_instance refuses at that point.",
+        {"step": _i("limit to open legs declared by this step (0 = all)")},
+        [],
+    ),
     "reset_step": _fn(
         "reset_step",
         "Remove ALL placements of one step — use when the step's assembly "
@@ -780,6 +791,26 @@ def _consumed_ports(s: GuideToolSession, inst: Any) -> set[str]:
     }
 
 
+def _consumed_by(s: GuideToolSession, inst: Any) -> dict[str, str]:
+    """Port → the mate holding it — 'consumed' alone cannot distinguish a
+    correct joint from the port theft that starved a declared mate."""
+    out: dict[str, str] = {}
+    for j in s.state.assembly.joints:
+        if j.get("fixed_instance") == inst.instance_id or (
+            not j.get("fixed_instance") and j.get("fixed_part") == inst.part_id
+        ):
+            out.setdefault(
+                str(j.get("fixed_port")),
+                f"step {j.get('step')}: {j.get('moving_instance') or j.get('moving_part')}",
+            )
+        if j.get("moving_instance") == inst.instance_id:
+            out.setdefault(
+                str(j.get("moving_port")),
+                f"step {j.get('step')}: {j.get('fixed_instance') or j.get('fixed_part')}",
+            )
+    return out
+
+
 async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     moving = _part_ref(s, a.get("part_id", ""))
     fixed_inst, err = _resolve_inst(s, str(a.get("target_part_id", "")))
@@ -1096,8 +1127,11 @@ def _no_cand_err(s: GuideToolSession, moving: Any, fixed: Any, fixed_inst: Any) 
     }
     if used:
         # durable evidence: a consumed port looks identical to a bad name
-        # in the bare port list — the agent re-probed exactly this sink
+        # in the bare port list — the agent re-probed exactly this sink.
+        # WHO holds each port decides whether the exhaustion is correct
+        # or the theft that starved a declared mate
         err_out["fixed_ports_in_use"] = sorted(used)
+        err_out["fixed_ports_consumed_by"] = _consumed_by(s, fixed_inst)
     empty = []
     if not moving.ports:
         empty.append(moving.id)
@@ -1493,17 +1527,33 @@ def _quota_error(
             if still_open
             else f" — all {need} required instance(s) already placed"
         )
-        return {
+        out: dict[str, Any] = {
             "ok": False,
             "error": f"step {step_no} already has its {have_here}/{need_here} "
             f"required '{pid}' instance(s){hint}",
         }
+        # the quota refusal loops forever when the real gap is an open
+        # declared mate — name it and the tool that actually closes it
+        if open_legs := _open_bridge_legs(s):
+            out["open_declared_mates"] = open_legs
+            out["next_action"] = (
+                "resolve_open_mates — adding instances cannot close an "
+                "already-placed part's second leg"
+            )
+        return out
     if not premount and need and need_here == 0 and len(existing) >= need:
-        return {
+        out = {
             "ok": False,
             "error": f"all {need} required '{pid}' instance(s) already placed — "
             "use unplace_instance to reposition instead of adding more",
         }
+        if open_legs := _open_bridge_legs(s):
+            out["open_declared_mates"] = open_legs
+            out["next_action"] = (
+                "resolve_open_mates — these open declared mates cannot be "
+                "closed by another place_instance call"
+            )
+        return out
     if not premount and need == 0 and existing:
         # parts the manual never mounts (host/anchor referenced only in
         # check steps) exist exactly once — never let a repair loop add
@@ -1899,6 +1949,125 @@ async def request_repair(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
         "placements and joints kept — re-place "
         f"{parts_needed} in step {step_no} to close it",
     }
+
+
+def _open_bridge_legs(s: GuideToolSession) -> list[dict[str, Any]]:
+    """Read-only enumeration of placed instances whose declared second
+    mate (``target2``) never materialized as a second joint — the
+    audit's bridge_incomplete contract without the materialize side
+    effects, for hint paths that only want to point at the tool."""
+    insts, _jointed, _moved, joint_n = _joint_maps(s)
+    out: list[dict[str, Any]] = []
+    for i in insts.values():
+        iid = i.instance_id or i.part_id
+        st = s.state.step_by_number(i.placed_in_step)
+        if st is None or not (0 <= i.substep_idx < len(st.sub_steps)):
+            continue
+        sub = st.sub_steps[i.substep_idx]
+        if sub.action not in _PLACE_ACTIONS:
+            continue
+        ctx = f"{st.text} {st.title}"
+        if (sub.part_pid or _resolve_name(s, str(sub.part or ""), ctx)) != i.part_id:
+            continue
+        if str(getattr(sub, "target2", "") or "").strip() and joint_n.get(iid, 0) < 2:
+            out.append(
+                {
+                    "instance": iid,
+                    "step": i.placed_in_step,
+                    "target2": str(getattr(sub, "target2", "") or "")[:80],
+                }
+            )
+    return out
+
+
+async def resolve_open_mates(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
+    """Close the open second leg of a placed bridge part — the mate the
+    step declared via ``target2`` that never became a joint.
+
+    place_instance cannot do this (it refuses once a step holds its
+    required count) and a single-pair preview cannot seat two legs at
+    once — this re-solves BOTH declared mates with the same bounded
+    bridge search preassembly runs, commits the pair of joints only
+    when the residual and burial gates pass, and restores the previous
+    joints otherwise. Declared-mate conflicts (target bound to the
+    wrong part) belong to request_repair — the error names that path."""
+    from cadx.guide import preassembly  # local — tools registry imports us
+
+    step_no = int(a.get("step") or 0)
+    mates = _declared_mates(s)
+    open_legs = [
+        o for o in mates["bridge_incomplete"] if not step_no or o["step"] == step_no
+    ]
+    insts = {i.instance_id or i.part_id: i for i in s.state.assembly.instances}
+    tasks: list[dict[str, Any]] = []
+    for o in open_legs:
+        inst = insts.get(o["instance"])
+        st = s.state.step_by_number(inst.placed_in_step) if inst is not None else None
+        if st is None or not (0 <= inst.substep_idx < len(st.sub_steps)):
+            continue
+        sub = st.sub_steps[inst.substep_idx]
+        tasks.append(
+            {
+                "step": inst.placed_in_step,
+                "substep_idx": inst.substep_idx,
+                "part": str(sub.part or ""),
+                "target": str(sub.target or ""),
+                "target2": str(sub.target2 or ""),
+                "part_pid": sub.part_pid or "",
+                "target_pid": sub.target_pid or "",
+                "target2_pid": sub.target2_pid or "",
+                # seeded miss: the retry pops it for evidence fields only
+                "bridge_miss": {"resid": [0.0, 0.0, 0.0], "res": 0.0},
+            }
+        )
+    if not tasks:
+        problems = [
+            *mates["unfulfilled_mates"],
+            *mates["unexpected_mates"],
+            *mates["unverifiable_mates"],
+        ]
+        out: dict[str, Any] = {
+            "ok": False,
+            "error": f"no open bridge legs{(' in step ' + str(step_no)) if step_no else ''}",
+        }
+        if problems:
+            out["declared_mate_problems"] = problems
+            out["next_action"] = (
+                "the declared mates do not match the joints — "
+                "request_repair(step=...) removes the flagged instances; "
+                "an unverifiable name means the plan's target text is wrong"
+            )
+        return out
+    report: dict[str, Any] = {}
+    await preassembly._retry_bridges(s, tasks, report)
+    retries = report.get("bridge_retries") or []
+    resolved = [r for r in retries if not r.get("rejected")]
+    failed = [r for r in retries if r.get("rejected")]
+    s._preview_cache = {}  # transforms moved — stale candidates are lies
+    out = {"ok": not failed, "resolved": resolved, "failed": failed}
+    # tasks the retry skipped silently (non-leaf instance, missing
+    # substep) leave the leg open without a failure record — recount so
+    # 'ok' never claims a closed mate that is still dangling
+    still_open = _open_bridge_legs(s)
+    if still_open:
+        out["still_open"] = still_open
+        out["ok"] = False
+        out.setdefault("failed", []).extend(
+            {"step": o["step"], "rejected": "skipped", "instance": o["instance"]}
+            for o in still_open
+            if not any(
+                r.get("step") == o["step"]
+                for r in failed
+            )
+        )
+    if not out["ok"]:
+        out["error"] = "declared mate(s) still open"
+        out["next_action"] = (
+            "validate_assembly_geometry shows the measured gap — if the "
+            "declared target is wrong or unreachable, request_repair the "
+            "step instead of re-placing more instances"
+        )
+    return out
 
 
 async def render_assembly(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
@@ -2598,6 +2767,7 @@ HANDLERS = {
     "rotate_instance": rotate_instance,
     "unplace_instance": unplace_instance,
     "request_repair": request_repair,
+    "resolve_open_mates": resolve_open_mates,
     "reset_step": reset_step,
     "render_assembly": render_assembly,
     "check_collisions": check_collisions,

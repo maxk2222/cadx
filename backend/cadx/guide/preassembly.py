@@ -54,12 +54,14 @@ log = structlog.get_logger("guide.preassembly")
 def _rp(sess: GuideToolSession, name: str | None, step_no: int) -> str | None:
     """Resolve a manual part name with the parent step's text as context —
     token ties (the two elbow types share rohrbogen/dn/22) break toward
-    the part the step text actually names."""
+    the part the step text actually names. Shares the canonicalizer's
+    binder so a '(Schritt N)' pin outranks the lexical cascade at live
+    resolution time too."""
     if not name:
         return None
-    st = sess.state.step_by_number(step_no)
-    ctx = f"{st.text} {st.title}" if st else ""
-    return _resolve_name(sess, name, context=ctx)
+    from cadx.guide.planlint import _resolve_part
+
+    return _resolve_part(sess, name, step_no)
 
 
 def _tpart(sess: GuideToolSession, t: dict[str, Any]) -> str | None:
@@ -151,19 +153,36 @@ def _bridge_pools(
     a bare 'no candidate'."""
     out: list[list[Any] | None] = []
     for key in ("target", "target2"):
-        ref = task.get(key)
-        pool = _ref_instances(sess, str(ref or ""))
+        ref = str(task.get(key) or "")
+        pool = _ref_instances(sess, ref)
         decl = task.get(f"{key}_pid")
+        pinned = _ref_step(ref) is not None
         if decl:
-            # the canonicalized pid is authoritative — kind pools span
-            # sibling parts ('Rohr' matches l70 AND l500); an unbound leg
-            # let the search mate the bridge onto the wrong pipe family,
-            # which place_instance then correctly rejected as a target
-            # mismatch (bridge leg never materialized)
-            pool = [i for i in (pool or sess.state.assembly.instances) if i.part_id == decl]
+            if pool is None:
+                # the canonicalized pid is authoritative — kind pools span
+                # sibling parts ('Rohr' matches l70 AND l500); an unbound leg
+                # let the search mate the bridge onto the wrong pipe family,
+                # which place_instance then correctly rejected as a target
+                # mismatch (bridge leg never materialized)
+                pool = [i for i in sess.state.assembly.instances if i.part_id == decl]
+            elif pinned:
+                # …but provenance beats a contradicting binding: a decl
+                # that would empty the pinned pool is the wrong pid
+                # ('vertikales Rohr' bound to l70 while '(Schritt 9)'
+                # means the l500 step 9 placed) — keep the pin pool and
+                # flag the clash instead of cross-wiring a leg
+                filtered = [i for i in pool if i.part_id == decl]
+                if filtered:
+                    pool = filtered
+                elif pool:
+                    task.setdefault("pid_conflicts", []).append(
+                        {"key": key, "bound_pid": decl, "ref": ref[:80]}
+                    )
+            else:
+                pool = [i for i in pool if i.part_id == decl]
         if pool == []:
             task["target_miss"] = (
-                f"bridge target '{str(ref or '')[:60]}' names a placed "
+                f"bridge target '{ref[:60]}' names a placed "
                 "instance but nothing placed matches it"
             )
         out.append(pool)
@@ -1355,10 +1374,25 @@ async def _retry_bridges(
         best = _bridge_search(sess, task, pid)
         if best is None or best[1] > _bridge_bound(sess, task, pid, best) or abs(best[7]) < 0.8:
             sess.state.assembly.joints.extend(old_joints)  # keep the honest miss
+            reason = "no_solve" if best is None else "residual"
+            _bi1 = str(best[3][0].instance_id) if best else miss.get("i1")
+            _bi2 = str(best[4][0].instance_id) if best else miss.get("i2")
+            _bp2 = str(best[4][1]["fixed_port"]) if best else miss.get("i2_port")
+            report.setdefault("bridge_retries", []).append(
+                {
+                    "step": task["step"],
+                    "rejected": reason,
+                    "res_mm": round(best[1], 2) if best else round(float(miss.get("res", 0.0)), 2),
+                    "bound_mm": round(_bridge_bound(sess, task, pid, best), 2) if best else None,
+                    "i1": _bi1,
+                    "i2": _bi2,
+                    "i2_port": _bp2,
+                }
+            )
             log.info(
                 "guide.preassembly.bridge_retry_failed",
                 step=task["step"],
-                reason="no_solve" if best is None else "residual",
+                reason=reason,
                 res_mm=round(best[1], 2) if best else None,
                 bound_mm=round(_bridge_bound(sess, task, pid, best), 2) if best else None,
                 ndot2=round(best[7], 2) if best else None,
@@ -1452,6 +1486,10 @@ async def _place_tasks(
     report: dict[str, Any],
 ) -> None:
     """The deterministic placement pass for one anchor rotation."""
+    # leg reservations are per-trial intent — they must not leak across
+    # rotation trials (the next attempt re-declares them from its own
+    # misses) nor into the assembly mission's port accounting
+    sess._reserved_ports = {}
     for ti, task in enumerate(tasks):
         task.pop("bridge_miss", None)  # stale residual of a prior trial
         leg_of = task.get("_leg_of")
@@ -1617,7 +1655,20 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
             ]
             _lift_correct_for_bridges(sess, anchor_pid, lift, report, tasks)
             await _retry_bridges(sess, tasks, report)
-            quality = _attempt_quality(sess, report)
+            quality = (
+                *_attempt_quality(sess, report),
+                # unclosed bridge misses keep their measured residual as
+                # evidence — the open-mate penalty alone ties rotations
+                # whose misses differ 4mm vs 19mm
+                -round(
+                    sum(
+                        float(r.get("res_mm") or 0.0)
+                        for r in report.get("bridge_retries") or []
+                        if r.get("rejected")
+                    ),
+                    1,
+                ),
+            )
         except Exception:
             # a crashed trial must not poison the next rotation's attempt —
             # the rollback below still runs, then worse rotations get tried
@@ -1655,6 +1706,7 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
     asm.joints.extend(tail_j)
     for k, v in tail_si.items():
         asm.step_instances.setdefault(k, []).extend(v)
+    sess._reserved_ports = {}
     sess._scene_cache = None
     sess.state.assembly.planner = {
         "ran": True,
@@ -1668,6 +1720,11 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
             {"step": t["step"], "target": t.get("target"), "miss": t["target_miss"]}
             for t in tasks
             if t.get("target_miss")
+        ],
+        "pid_conflicts": [
+            {"step": t["step"], **c}
+            for t in tasks
+            for c in (t.get("pid_conflicts") or [])
         ],
         "trials": trials,
         "plan_dedup": getattr(sess, "_plan_dedup", None) or [],
@@ -2298,7 +2355,7 @@ def _score_pairs_for_instance(
     return out
 
 
-def _used_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
+def _used_port_names(sess: GuideToolSession, inst: Any, *, owner: str | None = None) -> set[str]:
     """Ports occupied on an instance — expanded over ports on the same
     MOUTH. Extraction emits several rim detections per opening (outer rim,
     bore lip, male+female surfaces) spread along the mouth's axis: a spigot
@@ -2306,7 +2363,11 @@ def _used_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
     mating any lip occupies the whole opening — so the grouping key is the
     axis LINE: ports sharing an axis (either direction) whose positions
     differ only along it are the same mouth. Positions differing across the
-    axis are genuinely separate openings (a pipe's two ends, twin bores)."""
+    axis are genuinely separate openings (a pipe's two ends, twin bores).
+
+    Ports RESERVED by a pending bridge leg count as occupied for every
+    task except the owner that declared the mate — a greedy later attach
+    must not steal the mouth a missed bridge still intends to close."""
     used = {
         str(j.get("fixed_port"))
         for j in sess.state.assembly.joints
@@ -2316,6 +2377,12 @@ def _used_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
         str(j.get("moving_port"))
         for j in sess.state.assembly.joints
         if j.get("moving_instance") == inst.instance_id
+    } | {
+        p
+        for p, o in getattr(sess, "_reserved_ports", {}).get(
+            str(inst.instance_id), {}
+        ).items()
+        if o != owner
     }
     fp = sess.state.part_by_id(inst.part_id)
     if fp is None:
@@ -2393,6 +2460,7 @@ def _bridge_search(
         return float(sum(sg * math.tanh(float(wp[ax]) / 40.0) for ax, sg in axes_b))
 
     best: tuple[float, float, Any, tuple, tuple, np.ndarray, bool, float] | None = None
+    owner = _task_owner(task)
     for i1 in p1_pool:
         fixed1 = sess.state.part_by_id(i1.part_id)
         if fixed1 is None:
@@ -2405,10 +2473,12 @@ def _bridge_search(
             if fixed2 is None:
                 continue
             p1s = solver.find_matching_ports(
-                moving, fixed1, used_fixed_ports=_used(sess, i1), include_mismatch=True
+                moving, fixed1, used_fixed_ports=_used(sess, i1, owner=owner),
+                include_mismatch=True,
             )[:4]
             p2s = solver.find_matching_ports(
-                moving, fixed2, used_fixed_ports=_used(sess, i2), include_mismatch=True
+                moving, fixed2, used_fixed_ports=_used(sess, i2, owner=owner),
+                include_mismatch=True,
             )[:4]
             for p1 in p1s:
                 for p2 in p2s:
@@ -2490,9 +2560,17 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
             "resid": [float(v) for v in resid_v],
             "i1": str(i1.instance_id),
             "i2": str(i2.instance_id),
+            "i2_port": p2["fixed_port"],
             "res": float(res),
             "ndot": float(ndot2),
         }
+        # declare intent: the second leg's mouth stays spoken for — a
+        # later task's greedy attach must not consume the port this
+        # bridge still means to close on retry
+        reserved = getattr(sess, "_reserved_ports", None)
+        if reserved is None:
+            reserved = sess._reserved_ports = {}
+        reserved.setdefault(str(i2.instance_id), {})[str(p2["fixed_port"])] = _task_owner(task)
         log.info(
             "guide.preassembly.bridge_miss",
             step=task["step"],
@@ -2567,8 +2645,15 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
     return iid
 
 
-def _used(sess: GuideToolSession, inst: Any) -> set[str]:
-    return _used_port_names(sess, inst)
+def _used(sess: GuideToolSession, inst: Any, *, owner: str | None = None) -> set[str]:
+    return _used_port_names(sess, inst, owner=owner)
+
+
+def _task_owner(task: dict[str, Any]) -> str:
+    """Reservation owner key — one placement task owns the ports its
+    pending bridge intends to close; only that task's own retry may
+    still see them free."""
+    return f"{task.get('step')}:{task.get('substep_idx')}"
 
 
 def _port_axis(sess: GuideToolSession, inst: Any, port_name: str) -> list[float]:
@@ -2621,6 +2706,36 @@ def _target_pool_iids(sess: GuideToolSession, task: dict[str, Any]) -> set[str] 
     return iids
 
 
+def _pin_aware_pool(
+    sess: GuideToolSession,
+    task: dict[str, Any],
+    resolved_pid: str | None,
+    resolved_iids: set[str],
+) -> set[str] | None:
+    """Reconcile the bound pid's instance set with the ref's pinned
+    instance pool. Instance refs ("linkes Rohr aus Schritt 3") and
+    ambiguous kind nouns ("Rohrbogen" between two elbows) resolve no
+    single pid — but they still carry provenance/kind signal: prefer
+    THAT pool over the geometric free-for-all that cross-wired l500
+    onto the wrong elbow branch. None = structured MISS (flagged by
+    _target_pool_iids, no widening)."""
+    pool_iids = _target_pool_iids(sess, task)
+    if pool_iids is None or not pool_iids:
+        return pool_iids if pool_iids is None else resolved_iids
+    overlap = resolved_iids & pool_iids
+    if overlap:
+        return overlap  # provenance narrows inside the resolved kind
+    if resolved_iids:
+        # a bound pid that contradicts the pinned instance pool is the
+        # wrong pid ('rechtes vertikales Rohr (Schritt 9)' bound to l70
+        # while step 9 placed l500) — the pin wins and the clash is
+        # durable evidence, not a silent pick
+        task.setdefault("pid_conflicts", []).append(
+            {"key": "target", "bound_pid": resolved_pid, "ref": task["target"][:80]}
+        )
+    return pool_iids
+
+
 async def _try_attach(
     sess: GuideToolSession,
     task: dict[str, Any],
@@ -2671,16 +2786,12 @@ async def _try_attach(
     # pipe-on-pipe stacks). Feature names that resolve to nothing ("linkes
     # oberes Anschlussrohr") fall through to every placed instance.
     resolved_iids = {iid for iid, i in inst_by_iid.items() if i.part_id == resolved_pid}
-    if not resolved_iids and task.get("target"):
-        # instance refs ("linkes Rohr aus Schritt 3") and ambiguous kind
-        # nouns ("Rohrbogen" between two elbows) resolve no single pid —
-        # but they still carry provenance/kind signal: prefer THAT pool
-        # over the geometric free-for-all that cross-wired l500 onto the
-        # wrong elbow branch. None = structured MISS (flagged, no widening)
-        pool_iids = _target_pool_iids(sess, task)
-        if pool_iids is None:
+    pinned = bool(task.get("target")) and _ref_step(task["target"] or "") is not None
+    if task.get("target") and (pinned or not resolved_iids):
+        narrowed = _pin_aware_pool(sess, task, resolved_pid, resolved_iids)
+        if narrowed is None:
             return None
-        resolved_iids = pool_iids
+        resolved_iids = narrowed
     # chain locality: an attachment almost always mates onto something the
     # manual JUST placed (pipe → adapter → casing in the last steps).
     # Recent instances form the middle tier so an unresolvable target

@@ -133,6 +133,7 @@ MISSION_TOOLS: dict[str, list[str]] = {
         "rotate_instance",
         "unplace_instance",
         "request_repair",
+        "resolve_open_mates",
         "reset_step",
         "render_assembly",
         "check_collisions",

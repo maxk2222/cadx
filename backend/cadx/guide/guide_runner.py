@@ -356,6 +356,37 @@ def _mission_prompt(
                     f"step {f['step']} '{f['part']}' ({f.get('reason', '')})" for f in plan_fail[:6]
                 )
             )
+        _plan_ev = state.assembly.planner or {}
+        _open = [
+            f"step {r['step']} ({r.get('rejected')}"
+            + (f", i2={r.get('i2')}:{r.get('i2_port')}" if r.get("i2") else "")
+            + (f", res={r.get('res_mm')}mm" if r.get("res_mm") is not None else "")
+            + ")"
+            for r in (_plan_ev.get("bridge_retries") or [])
+            if r.get("rejected")
+        ]
+        _open += [
+            f"step {m['step']} target_miss ({m.get('miss', '')[:60]})"
+            for m in (_plan_ev.get("target_misses") or [])
+        ]
+        if _open:
+            ctx_lines.append(
+                "Declared mates the pre-assembly left OPEN — adding instances "
+                "cannot close them; use resolve_open_mates (or request_repair "
+                "if the declared mate is wrong): " + "; ".join(_open[:6])
+            )
+        _conf = _plan_ev.get("pid_conflicts") or []
+        if _conf:
+            ctx_lines.append(
+                "PLAN DEFECT — a reference's provenance pin contradicts its "
+                "bound part id (binding was overridden by the pin): "
+                + "; ".join(
+                    f"step {c['step']} {c.get('key')} '{c.get('ref', '')[:40]}' bound={c.get('bound_pid')}"
+                    for c in _conf[:4]
+                )
+                + ". The pin is authoritative — if the plan's pin number is "
+                "wrong, the STEP text is wrong, not the placement."
+            )
         if state.assembly.instances:
             issues = _completeness_issues(sess)
             ctx_lines.append(
