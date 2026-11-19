@@ -2043,7 +2043,6 @@ def _verify_one_pass_export(
     cancelled,
     cases,
     design_pitch,
-    e,
     eff_robust,
     keep_list,
     mat,
@@ -3291,6 +3290,10 @@ def run_topopt_pipeline(  # noqa: C901
                 spsolve_eff=spsolve_eff,
                 void_cells=void_cells,
                 x0=x0,
+                design_pitch=design_pitch,
+                eff_robust=eff_robust,
+                max_elements=max_elements,
+                res=res,
             )
             if p2.get("cancelled_phase"):
                 return _cancelled_pass(best, p2["cancelled_phase"], opt_dir=opt_dir, out_dir=out_dir, res=res, storage=storage)
