@@ -42,11 +42,11 @@ def test_record_peak_ignores_placeholders(tmp_path):
 
 def test_fits_headroom(tmp_path, monkeypatch):
     led = _ledger(tmp_path, mem_headroom_mb=1000)
-    monkeypatch.setattr(led, "free_mb", lambda: 5000.0)
+    monkeypatch.setattr(led, "free_mb", lambda *a, **kw: 5000.0)
     assert led.fits(4000) is True
     assert led.fits(4001) is False
     # unknown free memory -> admit (RSS watchdog stays the last defence)
-    monkeypatch.setattr(led, "free_mb", lambda: None)
+    monkeypatch.setattr(led, "free_mb", lambda *a, **kw: None)
     assert led.fits(10**9) is True
 
 

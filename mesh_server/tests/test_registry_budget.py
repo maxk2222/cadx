@@ -102,7 +102,7 @@ def registry(tmp_path, monkeypatch):
     # leak into select_llm()/models()
     reg._llm_classes = []
     FREE["mb"] = 1000.0
-    monkeypatch.setattr(reg.ledger, "free_mb", lambda: FREE["mb"])
+    monkeypatch.setattr(reg.ledger, "free_mb", lambda *a, **kw: FREE["mb"])
     return reg
 
 

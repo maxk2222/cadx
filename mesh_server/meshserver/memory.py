@@ -92,14 +92,16 @@ class MemoryLedger:
 
     # -- admission --------------------------------------------------------- #
 
-    def free_mb(self) -> float | None:
+    def free_mb(self, exclude_spec: set[str] | None = None) -> float | None:
         """Host RAM available right now (MB); None when psutil can't tell.
 
         Subtracts speculative reservations (loads in flight whose RSS
         psutil can't see yet) and re-adds recently-released memory
         (note_release) the OS hasn't reported back yet — together they
         bound both over-admission (two concurrent loads passing fits()
-        on the same stale snapshot) and over-eviction in admit loops."""
+        on the same stale snapshot) and over-eviction in admit loops.
+        ``exclude_spec`` ids skip a caller's own speculative reservation —
+        a loader judging OTHER holds must not count its declared need twice."""
         try:
             import psutil
 
@@ -111,7 +113,9 @@ class MemoryLedger:
             self._pending_free = [(t, m) for t, m in self._pending_free if t > cutoff]
             pending = sum(m for _, m in self._pending_free)
             spec = sum(
-                e["mb"] for e in self._residents.values() if e.get("spec")
+                e["mb"]
+                for e in self._residents.values()
+                if e.get("spec") and (not exclude_spec or e["id"] not in exclude_spec)
             )
         return free - spec + pending
 
@@ -125,18 +129,11 @@ class MemoryLedger:
     def fits(self, need_mb: float, *, exclude_spec: set[str] | None = None) -> bool:
         """Admission check: keep mem_headroom_mb free after the newcomer.
         Unknown free memory -> admit (the RSS watchdog bounds the damage).
-        ``exclude_spec`` ids skip the caller's own speculative reservation —
-        without it a loader would count its declared need twice."""
-        free = self.free_mb()
+        ``exclude_spec`` flows into free_mb — the caller's own speculative
+        reservation isn't counted against it."""
+        free = self.free_mb(exclude_spec)
         if free is None:
             return True
-        if exclude_spec:
-            with self._lock:
-                free += sum(
-                    e["mb"]
-                    for e in self._residents.values()
-                    if e.get("spec") and e["id"] in exclude_spec
-                )
         return free - need_mb >= self.cfg.effective("mem_headroom_mb")
 
     # -- resident set ------------------------------------------------------- #

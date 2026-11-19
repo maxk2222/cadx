@@ -77,7 +77,7 @@ async def test_memory_wait_then_timeout(manager, monkeypatch):
     """A job whose model doesn't fit waits in-queue and fails after
     queue_mem_wait_s instead of blocking the worker on it."""
     manager.cfg.queue_mem_wait_s = 1
-    monkeypatch.setattr(manager.registry.ledger, "free_mb", lambda: 0.0)
+    monkeypatch.setattr(manager.registry.ledger, "free_mb", lambda *a, **kw: 0.0)
     job = await manager.submit_image(ImageGenParams(model="fake-image", prompt="x"))
     assert job.resolved_model == "fake-image"
     assert manager._pick_next() is None  # noqa: SLF001
@@ -98,7 +98,7 @@ async def test_unfit_job_does_not_block_fittable(manager, monkeypatch):
     small = await manager.submit_image(ImageGenParams(model="fake-image-2", prompt="s"))
     # 50MB free fits neither declared 100MB model — but fake-image is
     # already resident (in-process mode), so its job needs no new memory
-    monkeypatch.setattr(manager.registry.ledger, "free_mb", lambda: 50.0)
+    monkeypatch.setattr(manager.registry.ledger, "free_mb", lambda *a, **kw: 50.0)
     manager.registry.ledger.reserve("fake-image", 100, pinned=False, kind="model")
     pick = manager._pick_next()  # noqa: SLF001
     assert pick.id == big.id  # resident model -> admitted ahead of small
@@ -107,7 +107,7 @@ async def test_unfit_job_does_not_block_fittable(manager, monkeypatch):
 
 
 async def test_queue_snapshot_fields(manager, monkeypatch):
-    monkeypatch.setattr(manager.registry.ledger, "free_mb", lambda: 12345.0)
+    monkeypatch.setattr(manager.registry.ledger, "free_mb", lambda *a, **kw: 12345.0)
     manager.registry.ledger.reserve("fake-image", 100, pinned=False, kind="model")
     job = await manager.submit_image(ImageGenParams(model="fake-image", prompt="x"))
     snap = manager.queue_snapshot()

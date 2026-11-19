@@ -445,6 +445,11 @@ async def _acquire_slot(
                 )
             except TimeoutError:
                 continue  # poll cadence — refresh position, re-check deadline
+    except asyncio.CancelledError:
+        # caller abandoned while queued (client disconnect / task cancel) —
+        # drop the entry so it can't be granted into the void
+        queue.remove(entry)
+        raise
     except TimeoutError:
         # grant-vs-timeout race: the dispatcher may have moved the entry
         # into in_flight at the same moment the deadline hit — the slot is
@@ -656,30 +661,38 @@ async def _chat_stream(
         last_status = ""
         last_status_at = 0.0
         try:
-            while True:
-                done, _pending = await asyncio.wait({task}, timeout=keep_s)
-                if done:
-                    break
-                yield b": keepalive\n\n"
-                state = prog.get("state", "queued")
-                pos = prog.get("position")
-                if state == "loading":
-                    status = f"loading model '{cls.id}'…"
-                elif pos:
-                    status = f"queued #{pos} — waiting for a '{cls.id}' slot…"
-                else:
-                    status = f"queued — waiting for a '{cls.id}' slot…"
-                now = time.monotonic()
-                # status changes emit immediately; steady-state repeats
-                # every ~10s so clients see a living position
-                if status != last_status or now - last_status_at > 10:
-                    yield _reasoning_chunk(cls.id, status)
-                    last_status = status
-                    last_status_at = now
-            prepared = task.result()
-        except Exception as e:
-            yield _error_chunk(f"llm prepare failed: {e}")
-            return
+            try:
+                while True:
+                    done, _pending = await asyncio.wait({task}, timeout=keep_s)
+                    if done:
+                        break
+                    yield b": keepalive\n\n"
+                    state = prog.get("state", "queued")
+                    pos = prog.get("position")
+                    if state == "loading":
+                        status = f"loading model '{cls.id}'…"
+                    elif pos:
+                        status = f"queued #{pos} — waiting for a '{cls.id}' slot…"
+                    else:
+                        status = f"queued — waiting for a '{cls.id}' slot…"
+                    now = time.monotonic()
+                    # status changes emit immediately; steady-state repeats
+                    # every ~10s so clients see a living position
+                    if status != last_status or now - last_status_at > 10:
+                        yield _reasoning_chunk(cls.id, status)
+                        last_status = status
+                        last_status_at = now
+                prepared = task.result()
+            except Exception as e:
+                yield _error_chunk(f"llm prepare failed: {e}")
+                return
+        finally:
+            # client disconnect mid-queue/load: cancel prepare — its own
+            # cleanup drops the queue entry so no slot leaks into the void
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
         if isinstance(prepared, JSONResponse):
             try:
                 err_body = json.loads(prepared.body).get("error", {})
