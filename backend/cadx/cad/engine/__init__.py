@@ -67,6 +67,11 @@ log = get_logger(__name__)
 
 # --- re-exports: keep every `from cadx.cad.engine import ...` path stable ---
 from cadx.cad.engine.fem_pipelines import (  # noqa: E402,F401
+    _cancelled_pass,
+    _one_pass,
+    _pad_cells,
+    _resolve_cases_on,
+    _verify_one_pass_export,
     run_fem_pipeline,
     run_infill_pipeline,
     run_organic_pipeline,

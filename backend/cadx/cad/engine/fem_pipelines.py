@@ -11,7 +11,7 @@ import math
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -73,6 +73,9 @@ from cadx.cad.spec_features import active_features
 from cadx.db.models import ProjectSettings
 from cadx.logging import get_logger
 from cadx.runtime_config import RuntimeSettings
+
+if TYPE_CHECKING:
+    from cadx.cad.fem.topopt import TopOptParams
 
 log = get_logger(__name__)
 
@@ -1961,6 +1964,436 @@ def run_refine(
     _attach_verify_spec(res, spec, ProjectSettings(), s, envelope_bound_only=True)
     res.timings["total_s"] = round(time.monotonic() - t0, 2)
     return res
+
+def _pad_cells(pitch: float,
+    *,
+    grow_mm,
+)-> int:
+    return math.ceil(grow_mm / max(float(pitch), 1e-6)) if grow_mm > 0 else 0
+
+
+def _resolve_cases_on(dom: Any, warn: bool = True,
+    *,
+    anchors,
+    cases,
+    mat,
+    max_cases,
+    res,
+):
+    """Re-resolve the load cases + passive-pin node masks on `dom` —
+    needed again on the coarse multiresolution grid (masks are
+    domain-specific)."""
+    return _resolve_topopt_cases(
+        dom,
+        cases,
+        anchors,
+        mat,
+        max_cases,
+        warn=warn,
+        warnings_out=res.topopt.setdefault("warnings", []),
+    )
+
+
+def _cancelled_pass(out: dict[str, Any], phase: str,
+    *,
+    opt_dir,
+    out_dir,
+    res,
+    storage,
+)-> ExecResult:
+    _mark_cancelled(res)
+    res.topopt["cancelled_phase"] = phase
+    result = out.get("result")
+    if result is not None:
+        density_path = opt_dir / f"partial_density_pass{out.get('pass_idx', 1)}.npz"
+        np.savez_compressed(density_path, density=result.density.astype(np.float32))
+        res.topopt["partial_density_relpath"] = storage.relpath(density_path)
+        res.topopt["partial_optimizer"] = {
+            "status": result.status,
+            "iterations": result.iterations,
+            "history": _compact_history(result.history),
+            "warnings": result.warnings,
+        }
+    if out.get("verify") is not None:
+        res.fem = out["verify"].model_dump()
+    export_report = out.get("cancelled_report") or out.get("verify_export")
+    if export_report is not None:
+        res.fem_export = export_report.model_dump()
+    opt_mesh = out.get("opt_mesh")
+    if opt_mesh is not None:
+        run_dir = out_dir / "_run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        stl_path = run_dir / "model.stl"
+        with contextlib.suppress(Exception):
+            opt_mesh = export_stl(opt_mesh, stl_path)
+            res.mesh = {
+                "pipeline": "topopt",
+                "partial": True,
+                "stl_relpath": storage.relpath(stl_path),
+                "triangles": len(opt_mesh.faces),
+                "volume_mm3": round(float(opt_mesh.volume), 1),
+            }
+    return res
+
+
+def _verify_one_pass_export(
+    opt_mesh: Any, fem_suffix: str, p: TopOptParams, verify: Any,
+    *,
+    anchors,
+    cancelled,
+    cases,
+    design_pitch,
+    e,
+    eff_robust,
+    keep_list,
+    mat,
+    mat_name,
+    max_elements,
+    out_dir,
+    res,
+    s,
+)-> tuple[dict[str, Any] | None, Any]:
+    try:
+        info = _verify_export_structure(
+            candidate_mesh=opt_mesh,
+            cases=cases,
+            mat_name=mat_name,
+            mat=mat,
+            design_pitch=design_pitch,
+            max_elements=max_elements or s.fem_max_elements,
+            keep_list=keep_list,
+            anchors=anchors,
+            out_dir=out_dir,
+            suffix=f"{fem_suffix}_export",
+            s=s,
+            solver_backend=p.solver_backend,
+            cancelled=cancelled,
+            verify_robust=eff_robust,
+        )
+        if not info.get("cancelled"):
+            res.topopt.setdefault("warnings", []).extend(info["warnings"])
+        return info, info.get("report", verify)
+    except Exception as e:
+        if _is_cancelled(cancelled):
+            return {"cancelled": True, "phase": "during_export_verify"}, verify
+        log.warning("topopt.verify_export.failed", error=str(e)[:200])
+        res.topopt.setdefault("warnings", []).append(
+            f"export FEM solve failed ({str(e)[:80]}) — sf_export "
+            "duplicates the voxel-mask result, not the printed mesh"
+        )
+        return None, verify
+
+
+def _one_pass(
+    volfrac: float,
+    pass_idx: int = 1,
+    warm: np.ndarray | None = None,
+    member_floor_mm: float | None = None,
+    crisp_extraction: bool = False,
+    vol_target_scale: float = 1.0,
+    *,
+    E0_arr,
+    _opt_cancelled,
+    anchors,
+    base_flat,
+    beso,
+    cancelled,
+    case_weights,
+    cases,
+    density_to_mesh,
+    design_domain,
+    dims_spec,
+    domain,
+    drop_island_components,
+    eff_span,
+    keep_list,
+    mat,
+    mat_name,
+    mesh,
+    min_gap,
+    min_member,
+    ndimage,
+    opt,
+    opt_dir,
+    out_dir,
+    params,
+    passive,
+    resolved,
+    run_fem_domain,
+    s,
+    simp,
+    spec,
+    spsolve_eff,
+    void_cells,
+    x0,
+    design_pitch,
+    eff_robust,
+    max_elements,
+    res,
+)-> dict[str, Any]:
+    """One SIMP run at `volfrac` + extraction, smoothing and both FEM
+    verifications. Returns the pieces needed for artifacts/retry.
+    `warm` overrides the run-level x0 (retry passes warm-start from the
+    first pass's converged field)."""
+    out: dict[str, Any] = {"volfrac": volfrac}
+    # pass-indexed render names: pass 1 keeps the historical names,
+    # retries must not overwrite its evidence in out_dir/fem
+    fem_suffix = "" if pass_idx <= 1 else f"_p{pass_idx}"
+    effective_member = min_member if member_floor_mm is None else member_floor_mm
+    p = dataclasses.replace(
+        params,
+        volfrac=volfrac,
+        rmin_mm=max(params.rmin_mm, effective_member / 2),
+    )
+    out["min_member_mm"] = effective_member
+    t = time.monotonic()
+    # solver="beso" routes to the binary evolutionary optimizer — same
+    # contract (domain, E0, nu, cases, passive, params) as simp(), but
+    # the returned density field is natively 0/1
+    opt_fn = beso if p.solver == "beso" else simp
+    result = opt_fn(
+        design_domain,
+        E0_arr,
+        mat.poisson,
+        resolved,
+        passive,
+        p,
+        passive_void=void_cells,
+        case_weights=case_weights,
+        x0=x0 if warm is None else warm,
+        spsolve_dofs=spsolve_eff,
+        cancelled=_opt_cancelled,
+        progress_file=opt_dir / f"history_{volfrac:.2f}.json",
+    )
+    out["simp_s"] = round(time.monotonic() - t, 2)
+    out["result"] = result
+    out["params"] = p
+    out["pass_idx"] = pass_idx
+    if _is_cancelled(cancelled):
+        out["cancelled_phase"] = "after_optimizer"
+        return out
+    # hard-kill ESO can settle on a local optimum worse than spreading
+    # the mass evenly — the baseline check flags that verdict (a no-op
+    # for non-BESO solvers; costs one K assembly + case solves)
+    out.update(
+        _uniform_baseline_check(
+            p.solver,
+            design_domain,
+            E0_arr,
+            mat.poisson,
+            resolved,
+            passive,
+            p,
+            case_weights=case_weights,
+            spsolve_dofs=spsolve_eff,
+            history=result.history,
+        )
+    )
+
+    opt_mesh, final_mask, extract_warnings, n_components, extract_info = density_to_mesh(
+        design_domain,
+        result.density,
+        threshold=p.threshold,
+        passive_solid=passive,
+        # declared void regions + outside-domain cells must stay empty —
+        # min-member dilation / regularization would regrow them otherwise
+        void_cells=void_cells.reshape(design_domain.dims) | ~design_domain.solid,
+        min_member_mm=effective_member,
+        min_gap_mm=min_gap,
+        smooth_iterations=0 if crisp_extraction else s.topopt_smooth_iterations,
+        extract_smooth=opt.extract_smooth and not crisp_extraction,
+        sigma_px=0.0 if crisp_extraction else opt.extract_sigma_px,
+        volume_preserve=opt.volume_preserve,
+        vol_target_scale=vol_target_scale,
+        fill_sealed_voids=opt.fill_sealed_voids,
+        min_shell_mm=opt.min_shell_mm,
+        fill_thin_walled_voids=True,
+    )
+    out["opt_mesh"] = opt_mesh
+    out["final_mask"] = final_mask
+    if _is_cancelled(cancelled):
+        out["cancelled_phase"] = "after_density_extraction"
+        return out
+    # ndarray telemetry must not reach the persisted extract dict —
+    # it kills the version-row JSON flush
+    bridged3 = extract_info.pop("bridged_mask", None)
+    out["n_components"] = n_components
+    out["extract"] = extract_info
+    # marching-cubes can leave zero-volume face-plane slivers — they
+    # count as extra bodies downstream even though they carry no mass.
+    # min_fraction mirrors the refine sliver floor (~1e-4 of the main
+    # body): the default 0.5% would drop real sealed cavities
+    opt_mesh, dropped_slivers = keep_significant_components(opt_mesh, min_fraction=1e-4)
+    if dropped_slivers:
+        extract_warnings.append(
+            f"dropped {dropped_slivers} near-zero-volume mesh sliver components"
+        )
+    # pinned cells for smoothing + island rescue: keep/load/fix cells
+    # plus any bridge-corridor cells the mask builder added — the
+    # connectivity glue must not erode below raster thickness between
+    # mask and export, and an island carrying pinned material is
+    # structurally declared (never silently dropped)
+    pin3 = passive.reshape(design_domain.dims).copy()
+    if bridged3 is not None:
+        pin3 |= np.asarray(bridged3, dtype=bool).reshape(design_domain.dims)
+    # floor-pinned smoothing: keeps a flat manufacturing base flat.
+    # Taubin shrinks thin members measurably per pass — on parts only a
+    # few cells thick, cap iterations so the export keeps the volume
+    # the mask FEM verified. Measured on the part span, not the
+    # extracted extent — the candidate-to-candidate jitter around the
+    # threshold must not flip the smoothing regime between passes.
+    if not crisp_extraction:
+        thin_cells = float(eff_span.min()) / max(design_domain.pitch, 1e-6)
+        opt_mesh = smooth_preserve(
+            opt_mesh,
+            iterations=2 if thin_cells < 4.0 else 4,
+            pin_floor=base_flat,
+            # pin every vertex inside a passive (keep/fix/load) cell —
+            # the surfaces the FEM verified must not drift under Taubin
+            pin_mask=(
+                design_domain.origin,
+                design_domain.pitch,
+                pin3,
+            ),
+        )
+    opt_mesh, output_envelope, output_envelope_ok, envelope_warnings = (
+        _clip_export_to_spec_envelope(
+            opt_mesh, list(dims_spec) if dims_spec else None, label="smoothed export"
+        )
+    )
+    extract_warnings.extend(envelope_warnings)
+    # Restore + re-cut before FEM/export verification: sf_verified,
+    # load_path_ok and feature evidence must describe the shipped mesh.
+    opt_mesh, recut_report, finish_warnings = _post_extract_finish(
+        opt_mesh,
+        base_mesh=mesh,
+        keep_regions=keep_list,
+        anchors=anchors,
+        spec_features=active_features(spec),
+        recut_bores=bool(opt.recut_bores),
+        restore_keeps=bool(opt.restore_planes),
+        helical_threads=False,
+    )
+    out["opt_mesh"] = opt_mesh
+    if _is_cancelled(cancelled):
+        out["cancelled_phase"] = "after_post_extract_finish"
+        return out
+    extract_warnings.extend(finish_warnings)
+    # last-mile sliver drop: the finish path (restore unions, reskin,
+    # re-cut booleans) can mint zero-volume sheets that survive as a
+    # phantom second body and trip the bodies gate on the shipped mesh
+    opt_mesh, dropped_slivers = keep_significant_components(opt_mesh, min_fraction=1e-4)
+    if dropped_slivers:
+        extract_warnings.append(
+            f"dropped {dropped_slivers} near-zero-volume post-finish sliver components"
+        )
+    # structural island rescue: the mask is connectivity-normalized, so
+    # extra bodies here are extraction artifacts — sub-voxel pinch-offs
+    # on thin corridors (the p16 export measured 2 bodies where the
+    # mask verified 1). Drop islands below the fraction cutoff unless
+    # they carry pinned keep/load/fix material; bigger islands stay
+    # and keep the bodies-gate verdict honest
+    opt_mesh, island_rescue = drop_island_components(
+        opt_mesh,
+        max_island_frac=0.02,
+        pin_mask=(design_domain.origin, design_domain.pitch, pin3),
+    )
+    if island_rescue["dropped"]:
+        extract_warnings.append(
+            f"dropped {island_rescue['dropped']} disconnected island(s) "
+            f"({island_rescue['dropped_vol_frac']:.4%} of export volume) "
+            "— sub-voxel extraction pinch-off"
+        )
+    out["island_rescue"] = island_rescue
+    if recut_report is not None:
+        out["recut"] = recut_report
+    if output_envelope is not None:
+        out["output_envelope"] = output_envelope
+    out["output_envelope_ok"] = output_envelope_ok
+    out["extract_warnings"] = extract_warnings
+    mask_volume = float(final_mask.sum()) * design_domain.pitch**3
+    volfrac_mask = float(final_mask.sum()) / max(int(design_domain.solid.sum()), 1)
+    extract_info["vol_error_pct"] = round(
+        100.0 * (abs(float(opt_mesh.volume)) - mask_volume) / max(mask_volume, 1e-9), 3
+    )
+    out["volfrac_export"] = abs(float(opt_mesh.volume)) / max(
+        float(design_domain.solid_count) * design_domain.pitch**3, 1e-9
+    )
+    out["volfrac_mask"] = volfrac_mask
+    extract_info["vol_error_pp"] = round(100.0 * (out["volfrac_export"] - volfrac_mask), 3)
+    out["crisp_extraction"] = crisp_extraction
+    out["opt_mesh"] = opt_mesh
+    out["final_mask"] = final_mask
+    # Post-extraction region survival: a case region whose cells the
+    # optimizer removed entirely can never carry its load — flag it now
+    # so the agent sees the honest verdict early instead of reading a
+    # min-cut failure after the FEM sweep. Pinned cells disappearing is
+    # a separate tell — passive material is not designable.
+    _record_lost_load_regions(design_domain, cases, anchors, final_mask, out, extract_warnings)
+    passive_lost = int((passive.reshape(design_domain.dims) & ~final_mask).sum())
+    if passive_lost:
+        out["passive_cells_lost"] = passive_lost
+        extract_warnings.append(
+            f"{passive_lost} pinned keep/fix/load cell(s) removed in extraction "
+            "— passive material is not designable"
+        )
+    # Surface components include nested cavity walls. The physical body
+    # count is updated from the re-voxelized export solid below.
+    out["n_surface_components"] = int(opt_mesh.body_count)
+    out["n_bodies_export"] = None
+
+    # thin-member metrics (printability feedback for the agent)
+    edt = ndimage.distance_transform_edt(final_mask)
+    inside = edt[final_mask]
+    out["thin_fraction"] = float((inside <= 1.0).mean()) if len(inside) else 0.0
+    out["min_member_mm"] = (
+        round(2 * domain.pitch * float(np.percentile(inside, 5)), 2) if len(inside) else 0.0
+    )
+
+    t = time.monotonic()
+    # opt_mesh is the extraction of this mask — same coordinate frame, so
+    # the renderer can draw the smooth true surface instead of the voxel
+    # hull
+    verify = run_fem_domain(
+        design_domain,
+        final_mask,
+        cases,
+        mat_name,
+        material=mat,
+        out_dir=out_dir,
+        anchors=anchors,
+        keep_regions=keep_list,
+        spsolve_dofs=spsolve_eff,
+        pool_workers=s.exec_pool_workers,
+        mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
+        suffix=fem_suffix,
+        source_mesh=opt_mesh,
+        cancelled=cancelled,
+        solver_backend=params.solver_backend,
+    )
+    out["verify"] = verify
+    out["verify_s"] = round(time.monotonic() - t, 2)
+
+    # export verification: re-voxelize the smoothed mesh that gets printed —
+    # at the requested (spec-snapped) pitch, not the possibly
+    # auto-coarsened design pitch: the mesh is smooth, so verification
+    # fidelity stays nominal and mask/export share one grid convention.
+    # The shared helper adds the eroded/dilated realization sweep
+    # (sf_verified), optional mesh-shift probe and load-path
+    # certificate on top of the nominal export solve.
+    info, verify_exp = _verify_one_pass_export(opt_mesh, fem_suffix, params, verify, anchors=anchors, cancelled=cancelled, cases=cases, design_pitch=design_pitch, eff_robust=eff_robust, keep_list=keep_list, mat=mat, mat_name=mat_name, max_elements=max_elements, out_dir=out_dir, res=res, s=s)
+    if info and info.get("cancelled"):
+        out["cancelled_phase"] = info.get("phase", "export_verify")
+        out["cancelled_report"] = info.get("report")
+        return out
+    if info is not None:
+        out["n_bodies_export"] = info["n_bodies_export"]
+    else:
+        out["export_solve_ok"] = False
+    out["verify_export"] = verify_exp
+    out["export_verify_info"] = info
+    return out
+
 def run_topopt_pipeline(  # noqa: C901
     *,
     mesh_path: Path,
@@ -2151,15 +2584,13 @@ def run_topopt_pipeline(  # noqa: C901
     # designable space only in `design_domain` below
     grow_mm = float(getattr(opt, "grow_mm", 0.0) or 0.0)
 
-    def _pad_cells(pitch: float) -> int:
-        return math.ceil(grow_mm / max(float(pitch), 1e-6)) if grow_mm > 0 else 0
 
     try:
         domain = voxelize(
             mesh,
             design_pitch,
             max_elements or s.fem_max_elements,
-            pad_cells=_pad_cells(design_pitch),
+            pad_cells=_pad_cells(design_pitch, grow_mm=grow_mm),
         )
     except Exception as e:
         res.error = f"voxelization failed: {e}"
@@ -2190,7 +2621,7 @@ def run_topopt_pipeline(  # noqa: C901
                 mesh,
                 new_pitch,
                 max_elements or s.fem_max_elements,
-                pad_cells=_pad_cells(new_pitch),
+                pad_cells=_pad_cells(new_pitch, grow_mm=grow_mm),
             )
         except Exception:
             break
@@ -2298,22 +2729,14 @@ def run_topopt_pipeline(  # noqa: C901
     # --- resolve load cases (with direction-cone expansion for robustness) ---
     max_cases = s.fem_max_effective_cases
 
-    def _resolve_cases_on(dom: Any, warn: bool = True):
-        """Re-resolve the load cases + passive-pin node masks on `dom` —
-        needed again on the coarse multiresolution grid (masks are
-        domain-specific)."""
-        return _resolve_topopt_cases(
-            dom,
-            cases,
-            anchors,
-            mat,
-            max_cases,
-            warn=warn,
-            warnings_out=res.topopt.setdefault("warnings", []),
-        )
 
     resolved, case_weights, fixed_node_masks, load_node_masks, unresolved = _resolve_cases_on(
-        domain
+        domain,
+        anchors=anchors,
+            cases=cases,
+            mat=mat,
+            max_cases=max_cases,
+            res=res,
     )
     if unresolved:
         res.error = (
@@ -2641,7 +3064,7 @@ def run_topopt_pipeline(  # noqa: C901
                 mesh,
                 domain.pitch * 2.0,
                 max_elements or s.fem_max_elements,
-                pad_cells=_pad_cells(domain.pitch * 2.0),
+                pad_cells=_pad_cells(domain.pitch * 2.0, grow_mm=grow_mm),
             )
             # same two-domain split on the coarse grid when grow_mm is on
             coarse_design = coarse
@@ -2654,7 +3077,7 @@ def run_topopt_pipeline(  # noqa: C901
             if coarse.cell_count >= domain.cell_count // 2:
                 res.topopt["warnings"].append("multires: coarse grid not much coarser — skipped")
             else:
-                res_c, w_c, fix_c, load_nm_c, _unres_c = _resolve_cases_on(coarse, warn=False)
+                res_c, w_c, fix_c, load_nm_c, _unres_c = _resolve_cases_on(coarse, warn=False, anchors=anchors, cases=cases, mat=mat, max_cases=max_cases, res=res)
                 if not res_c:
                     res.topopt["warnings"].append(
                         "multires: no solvable case on the coarse grid — skipped"
@@ -2707,348 +3130,53 @@ def run_topopt_pipeline(  # noqa: C901
     opt_dir.mkdir(parents=True, exist_ok=True)
     base_flat = is_flat_bottom(mesh)
 
-    def _cancelled_pass(out: dict[str, Any], phase: str) -> ExecResult:
-        _mark_cancelled(res)
-        res.topopt["cancelled_phase"] = phase
-        result = out.get("result")
-        if result is not None:
-            density_path = opt_dir / f"partial_density_pass{out.get('pass_idx', 1)}.npz"
-            np.savez_compressed(density_path, density=result.density.astype(np.float32))
-            res.topopt["partial_density_relpath"] = storage.relpath(density_path)
-            res.topopt["partial_optimizer"] = {
-                "status": result.status,
-                "iterations": result.iterations,
-                "history": _compact_history(result.history),
-                "warnings": result.warnings,
-            }
-        if out.get("verify") is not None:
-            res.fem = out["verify"].model_dump()
-        export_report = out.get("cancelled_report") or out.get("verify_export")
-        if export_report is not None:
-            res.fem_export = export_report.model_dump()
-        opt_mesh = out.get("opt_mesh")
-        if opt_mesh is not None:
-            run_dir = out_dir / "_run"
-            run_dir.mkdir(parents=True, exist_ok=True)
-            stl_path = run_dir / "model.stl"
-            with contextlib.suppress(Exception):
-                opt_mesh = export_stl(opt_mesh, stl_path)
-                res.mesh = {
-                    "pipeline": "topopt",
-                    "partial": True,
-                    "stl_relpath": storage.relpath(stl_path),
-                    "triangles": len(opt_mesh.faces),
-                    "volume_mm3": round(float(opt_mesh.volume), 1),
-                }
-        return res
 
-    def _verify_one_pass_export(
-        opt_mesh: Any, fem_suffix: str, p: TopOptParams, verify: Any
-    ) -> tuple[dict[str, Any] | None, Any]:
-        try:
-            info = _verify_export_structure(
-                candidate_mesh=opt_mesh,
-                cases=cases,
-                mat_name=mat_name,
-                mat=mat,
-                design_pitch=design_pitch,
-                max_elements=max_elements or s.fem_max_elements,
-                keep_list=keep_list,
-                anchors=anchors,
-                out_dir=out_dir,
-                suffix=f"{fem_suffix}_export",
-                s=s,
-                solver_backend=p.solver_backend,
-                cancelled=cancelled,
-                verify_robust=eff_robust,
-            )
-            if not info.get("cancelled"):
-                res.topopt.setdefault("warnings", []).extend(info["warnings"])
-            return info, info.get("report", verify)
-        except Exception as e:
-            if _is_cancelled(cancelled):
-                return {"cancelled": True, "phase": "during_export_verify"}, verify
-            log.warning("topopt.verify_export.failed", error=str(e)[:200])
-            res.topopt.setdefault("warnings", []).append(
-                f"export FEM solve failed ({str(e)[:80]}) — sf_export "
-                "duplicates the voxel-mask result, not the printed mesh"
-            )
-            return None, verify
 
-    def _one_pass(
-        volfrac: float,
-        pass_idx: int = 1,
-        warm: np.ndarray | None = None,
-        member_floor_mm: float | None = None,
-        crisp_extraction: bool = False,
-        vol_target_scale: float = 1.0,
-    ) -> dict[str, Any]:
-        """One SIMP run at `volfrac` + extraction, smoothing and both FEM
-        verifications. Returns the pieces needed for artifacts/retry.
-        `warm` overrides the run-level x0 (retry passes warm-start from the
-        first pass's converged field)."""
-        out: dict[str, Any] = {"volfrac": volfrac}
-        # pass-indexed render names: pass 1 keeps the historical names,
-        # retries must not overwrite its evidence in out_dir/fem
-        fem_suffix = "" if pass_idx <= 1 else f"_p{pass_idx}"
-        effective_member = min_member if member_floor_mm is None else member_floor_mm
-        p = dataclasses.replace(
-            params,
-            volfrac=volfrac,
-            rmin_mm=max(params.rmin_mm, effective_member / 2),
-        )
-        out["min_member_mm"] = effective_member
-        t = time.monotonic()
-        # solver="beso" routes to the binary evolutionary optimizer — same
-        # contract (domain, E0, nu, cases, passive, params) as simp(), but
-        # the returned density field is natively 0/1
-        opt_fn = beso if p.solver == "beso" else simp
-        result = opt_fn(
-            design_domain,
-            E0_arr,
-            mat.poisson,
-            resolved,
-            passive,
-            p,
-            passive_void=void_cells,
-            case_weights=case_weights,
-            x0=x0 if warm is None else warm,
-            spsolve_dofs=spsolve_eff,
-            cancelled=_opt_cancelled,
-            progress_file=opt_dir / f"history_{volfrac:.2f}.json",
-        )
-        out["simp_s"] = round(time.monotonic() - t, 2)
-        out["result"] = result
-        out["params"] = p
-        out["pass_idx"] = pass_idx
-        if _is_cancelled(cancelled):
-            out["cancelled_phase"] = "after_optimizer"
-            return out
-        # hard-kill ESO can settle on a local optimum worse than spreading
-        # the mass evenly — the baseline check flags that verdict (a no-op
-        # for non-BESO solvers; costs one K assembly + case solves)
-        out.update(
-            _uniform_baseline_check(
-                p.solver,
-                design_domain,
-                E0_arr,
-                mat.poisson,
-                resolved,
-                passive,
-                p,
-                case_weights=case_weights,
-                spsolve_dofs=spsolve_eff,
-                history=result.history,
-            )
-        )
 
-        opt_mesh, final_mask, extract_warnings, n_components, extract_info = density_to_mesh(
-            design_domain,
-            result.density,
-            threshold=p.threshold,
-            passive_solid=passive,
-            # declared void regions + outside-domain cells must stay empty —
-            # min-member dilation / regularization would regrow them otherwise
-            void_cells=void_cells.reshape(design_domain.dims) | ~design_domain.solid,
-            min_member_mm=effective_member,
-            min_gap_mm=min_gap,
-            smooth_iterations=0 if crisp_extraction else s.topopt_smooth_iterations,
-            extract_smooth=opt.extract_smooth and not crisp_extraction,
-            sigma_px=0.0 if crisp_extraction else opt.extract_sigma_px,
-            volume_preserve=opt.volume_preserve,
-            vol_target_scale=vol_target_scale,
-            fill_sealed_voids=opt.fill_sealed_voids,
-            min_shell_mm=opt.min_shell_mm,
-            fill_thin_walled_voids=True,
-        )
-        out["opt_mesh"] = opt_mesh
-        out["final_mask"] = final_mask
-        if _is_cancelled(cancelled):
-            out["cancelled_phase"] = "after_density_extraction"
-            return out
-        # ndarray telemetry must not reach the persisted extract dict —
-        # it kills the version-row JSON flush
-        bridged3 = extract_info.pop("bridged_mask", None)
-        out["n_components"] = n_components
-        out["extract"] = extract_info
-        # marching-cubes can leave zero-volume face-plane slivers — they
-        # count as extra bodies downstream even though they carry no mass.
-        # min_fraction mirrors the refine sliver floor (~1e-4 of the main
-        # body): the default 0.5% would drop real sealed cavities
-        opt_mesh, dropped_slivers = keep_significant_components(opt_mesh, min_fraction=1e-4)
-        if dropped_slivers:
-            extract_warnings.append(
-                f"dropped {dropped_slivers} near-zero-volume mesh sliver components"
-            )
-        # pinned cells for smoothing + island rescue: keep/load/fix cells
-        # plus any bridge-corridor cells the mask builder added — the
-        # connectivity glue must not erode below raster thickness between
-        # mask and export, and an island carrying pinned material is
-        # structurally declared (never silently dropped)
-        pin3 = passive.reshape(design_domain.dims).copy()
-        if bridged3 is not None:
-            pin3 |= np.asarray(bridged3, dtype=bool).reshape(design_domain.dims)
-        # floor-pinned smoothing: keeps a flat manufacturing base flat.
-        # Taubin shrinks thin members measurably per pass — on parts only a
-        # few cells thick, cap iterations so the export keeps the volume
-        # the mask FEM verified. Measured on the part span, not the
-        # extracted extent — the candidate-to-candidate jitter around the
-        # threshold must not flip the smoothing regime between passes.
-        if not crisp_extraction:
-            thin_cells = float(eff_span.min()) / max(design_domain.pitch, 1e-6)
-            opt_mesh = smooth_preserve(
-                opt_mesh,
-                iterations=2 if thin_cells < 4.0 else 4,
-                pin_floor=base_flat,
-                # pin every vertex inside a passive (keep/fix/load) cell —
-                # the surfaces the FEM verified must not drift under Taubin
-                pin_mask=(
-                    design_domain.origin,
-                    design_domain.pitch,
-                    pin3,
-                ),
-            )
-        opt_mesh, output_envelope, output_envelope_ok, envelope_warnings = (
-            _clip_export_to_spec_envelope(
-                opt_mesh, list(dims_spec) if dims_spec else None, label="smoothed export"
-            )
-        )
-        extract_warnings.extend(envelope_warnings)
-        # Restore + re-cut before FEM/export verification: sf_verified,
-        # load_path_ok and feature evidence must describe the shipped mesh.
-        opt_mesh, recut_report, finish_warnings = _post_extract_finish(
-            opt_mesh,
-            base_mesh=mesh,
-            keep_regions=keep_list,
-            anchors=anchors,
-            spec_features=active_features(spec),
-            recut_bores=bool(opt.recut_bores),
-            restore_keeps=bool(opt.restore_planes),
-            helical_threads=False,
-        )
-        out["opt_mesh"] = opt_mesh
-        if _is_cancelled(cancelled):
-            out["cancelled_phase"] = "after_post_extract_finish"
-            return out
-        extract_warnings.extend(finish_warnings)
-        # last-mile sliver drop: the finish path (restore unions, reskin,
-        # re-cut booleans) can mint zero-volume sheets that survive as a
-        # phantom second body and trip the bodies gate on the shipped mesh
-        opt_mesh, dropped_slivers = keep_significant_components(opt_mesh, min_fraction=1e-4)
-        if dropped_slivers:
-            extract_warnings.append(
-                f"dropped {dropped_slivers} near-zero-volume post-finish sliver components"
-            )
-        # structural island rescue: the mask is connectivity-normalized, so
-        # extra bodies here are extraction artifacts — sub-voxel pinch-offs
-        # on thin corridors (the p16 export measured 2 bodies where the
-        # mask verified 1). Drop islands below the fraction cutoff unless
-        # they carry pinned keep/load/fix material; bigger islands stay
-        # and keep the bodies-gate verdict honest
-        opt_mesh, island_rescue = drop_island_components(
-            opt_mesh,
-            max_island_frac=0.02,
-            pin_mask=(design_domain.origin, design_domain.pitch, pin3),
-        )
-        if island_rescue["dropped"]:
-            extract_warnings.append(
-                f"dropped {island_rescue['dropped']} disconnected island(s) "
-                f"({island_rescue['dropped_vol_frac']:.4%} of export volume) "
-                "— sub-voxel extraction pinch-off"
-            )
-        out["island_rescue"] = island_rescue
-        if recut_report is not None:
-            out["recut"] = recut_report
-        if output_envelope is not None:
-            out["output_envelope"] = output_envelope
-        out["output_envelope_ok"] = output_envelope_ok
-        out["extract_warnings"] = extract_warnings
-        mask_volume = float(final_mask.sum()) * design_domain.pitch**3
-        volfrac_mask = float(final_mask.sum()) / max(int(design_domain.solid.sum()), 1)
-        extract_info["vol_error_pct"] = round(
-            100.0 * (abs(float(opt_mesh.volume)) - mask_volume) / max(mask_volume, 1e-9), 3
-        )
-        out["volfrac_export"] = abs(float(opt_mesh.volume)) / max(
-            float(design_domain.solid_count) * design_domain.pitch**3, 1e-9
-        )
-        out["volfrac_mask"] = volfrac_mask
-        extract_info["vol_error_pp"] = round(100.0 * (out["volfrac_export"] - volfrac_mask), 3)
-        out["crisp_extraction"] = crisp_extraction
-        out["opt_mesh"] = opt_mesh
-        out["final_mask"] = final_mask
-        # Post-extraction region survival: a case region whose cells the
-        # optimizer removed entirely can never carry its load — flag it now
-        # so the agent sees the honest verdict early instead of reading a
-        # min-cut failure after the FEM sweep. Pinned cells disappearing is
-        # a separate tell — passive material is not designable.
-        _record_lost_load_regions(design_domain, cases, anchors, final_mask, out, extract_warnings)
-        passive_lost = int((passive.reshape(design_domain.dims) & ~final_mask).sum())
-        if passive_lost:
-            out["passive_cells_lost"] = passive_lost
-            extract_warnings.append(
-                f"{passive_lost} pinned keep/fix/load cell(s) removed in extraction "
-                "— passive material is not designable"
-            )
-        # Surface components include nested cavity walls. The physical body
-        # count is updated from the re-voxelized export solid below.
-        out["n_surface_components"] = int(opt_mesh.body_count)
-        out["n_bodies_export"] = None
-
-        # thin-member metrics (printability feedback for the agent)
-        edt = ndimage.distance_transform_edt(final_mask)
-        inside = edt[final_mask]
-        out["thin_fraction"] = float((inside <= 1.0).mean()) if len(inside) else 0.0
-        out["min_member_mm"] = (
-            round(2 * domain.pitch * float(np.percentile(inside, 5)), 2) if len(inside) else 0.0
-        )
-
-        t = time.monotonic()
-        # opt_mesh is the extraction of this mask — same coordinate frame, so
-        # the renderer can draw the smooth true surface instead of the voxel
-        # hull
-        verify = run_fem_domain(
-            design_domain,
-            final_mask,
-            cases,
-            mat_name,
-            material=mat,
-            out_dir=out_dir,
-            anchors=anchors,
-            keep_regions=keep_list,
-            spsolve_dofs=spsolve_eff,
-            pool_workers=s.exec_pool_workers,
-            mem_budget_mb=float(resources.effective_exec_mem_mb(s)),
-            suffix=fem_suffix,
-            source_mesh=opt_mesh,
-            cancelled=cancelled,
-            solver_backend=params.solver_backend,
-        )
-        out["verify"] = verify
-        out["verify_s"] = round(time.monotonic() - t, 2)
-
-        # export verification: re-voxelize the smoothed mesh that gets printed —
-        # at the requested (spec-snapped) pitch, not the possibly
-        # auto-coarsened design pitch: the mesh is smooth, so verification
-        # fidelity stays nominal and mask/export share one grid convention.
-        # The shared helper adds the eroded/dilated realization sweep
-        # (sf_verified), optional mesh-shift probe and load-path
-        # certificate on top of the nominal export solve.
-        info, verify_exp = _verify_one_pass_export(opt_mesh, fem_suffix, params, verify)
-        if info and info.get("cancelled"):
-            out["cancelled_phase"] = info.get("phase", "export_verify")
-            out["cancelled_report"] = info.get("report")
-            return out
-        if info is not None:
-            out["n_bodies_export"] = info["n_bodies_export"]
-        else:
-            out["export_solve_ok"] = False
-        out["verify_export"] = verify_exp
-        out["export_verify_info"] = info
-        return out
-
-    p1 = _one_pass(params.volfrac, pass_idx=1)
+    p1 = _one_pass(
+        params.volfrac,
+        pass_idx=1,
+        E0_arr=E0_arr,
+        _opt_cancelled=_opt_cancelled,
+        anchors=anchors,
+        base_flat=base_flat,
+        beso=beso,
+        cancelled=cancelled,
+        case_weights=case_weights,
+        cases=cases,
+        density_to_mesh=density_to_mesh,
+        design_domain=design_domain,
+        dims_spec=dims_spec,
+        domain=domain,
+        drop_island_components=drop_island_components,
+        eff_span=eff_span,
+        keep_list=keep_list,
+        mat=mat,
+        mat_name=mat_name,
+        mesh=mesh,
+        min_gap=min_gap,
+        min_member=min_member,
+        ndimage=ndimage,
+        opt=opt,
+        opt_dir=opt_dir,
+        out_dir=out_dir,
+        params=params,
+        passive=passive,
+        resolved=resolved,
+        run_fem_domain=run_fem_domain,
+        s=s,
+        simp=simp,
+        spec=spec,
+        spsolve_eff=spsolve_eff,
+        void_cells=void_cells,
+        x0=x0,
+        design_pitch=design_pitch,
+        eff_robust=eff_robust,
+        max_elements=max_elements,
+        res=res,
+    )
     if p1.get("cancelled_phase"):
-        return _cancelled_pass(p1, p1["cancelled_phase"])
+        return _cancelled_pass(p1, p1["cancelled_phase"], opt_dir=opt_dir, out_dir=out_dir, res=res, storage=storage)
     res.timings["simp_s"] = p1["simp_s"]
     res.timings["verify_s"] = p1["verify_s"]
     best = p1
@@ -3129,9 +3257,43 @@ def run_topopt_pipeline(  # noqa: C901
                 member_floor_mm=retry_member,
                 crisp_extraction=retry_crisp,
                 vol_target_scale=retry_vol_scale,
+                E0_arr=E0_arr,
+                _opt_cancelled=_opt_cancelled,
+                anchors=anchors,
+                base_flat=base_flat,
+                beso=beso,
+                cancelled=cancelled,
+                case_weights=case_weights,
+                cases=cases,
+                density_to_mesh=density_to_mesh,
+                design_domain=design_domain,
+                dims_spec=dims_spec,
+                domain=domain,
+                drop_island_components=drop_island_components,
+                eff_span=eff_span,
+                keep_list=keep_list,
+                mat=mat,
+                mat_name=mat_name,
+                mesh=mesh,
+                min_gap=min_gap,
+                min_member=min_member,
+                ndimage=ndimage,
+                opt=opt,
+                opt_dir=opt_dir,
+                out_dir=out_dir,
+                params=params,
+                passive=passive,
+                resolved=resolved,
+                run_fem_domain=run_fem_domain,
+                s=s,
+                simp=simp,
+                spec=spec,
+                spsolve_eff=spsolve_eff,
+                void_cells=void_cells,
+                x0=x0,
             )
             if p2.get("cancelled_phase"):
-                return _cancelled_pass(best, p2["cancelled_phase"])
+                return _cancelled_pass(best, p2["cancelled_phase"], opt_dir=opt_dir, out_dir=out_dir, res=res, storage=storage)
             sf_exp2 = p2["verify_export"].worst_safety_factor
             sf_gate2 = _gate_sf(p2.get("export_verify_info"), p2["verify_export"])
             trigger_reasons = [
@@ -3511,7 +3673,7 @@ def run_topopt_pipeline(  # noqa: C901
     )
 
     if _is_cancelled(cancelled):
-        return _cancelled_pass(best, "before_final_density_persist")
+        return _cancelled_pass(best, "before_final_density_persist", opt_dir=opt_dir, out_dir=out_dir, res=res, storage=storage)
     np.savez_compressed(
         opt_dir / "density.npz",
         density=result.density.astype(np.float32),
@@ -3544,7 +3706,7 @@ def run_topopt_pipeline(  # noqa: C901
 
     # --- artifacts: STL/GLB/3MF + STL copy used for renders/analysis ----------
     if _is_cancelled(cancelled):
-        return _cancelled_pass(best, "before_final_exports")
+        return _cancelled_pass(best, "before_final_exports", opt_dir=opt_dir, out_dir=out_dir, res=res, storage=storage)
     run_dir = out_dir / "_run"
     run_dir.mkdir(parents=True, exist_ok=True)
     stl_path = run_dir / "model.stl"
