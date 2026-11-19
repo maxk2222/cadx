@@ -99,6 +99,10 @@ async def get_guide(version_id: uuid.UUID, db: AsyncSession = Depends(get_sessio
         "media": _media_files(guide_dir),
         "master_notes": state.master_notes,
         "missions_done": state.missions_done,
+        # frame the instance transforms are expressed in — CAD route is
+        # Z-up mm, blender mode is glTF Y-up. Three.js viewers rotate the
+        # Z-up world into the display frame; see GuideScene's wrapper.
+        "world_frame": state.world_frame,
         "variants": state.variants,
         "annotations": state.annotations,
         "review": {

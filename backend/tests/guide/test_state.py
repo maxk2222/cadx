@@ -101,3 +101,11 @@ def test_lookups() -> None:
     assert s.step_by_number(99) is None
     s.assembly.instances.append(AssemblyInstance(part_id="pipe_l500", placed_in_step=1))
     assert s.placed_part_ids() == {"pipe_l500"}
+
+
+def test_world_frame_from_mode() -> None:
+    """The transform world frame is derived, never stored: cad/auto runs
+    solve in Z-up mm, blender runs already carry the glTF Y-up frame."""
+    assert GuideState(guide_mode="cad").world_frame == "z_up"
+    assert GuideState(guide_mode="auto").world_frame == "z_up"
+    assert GuideState(guide_mode="blender").world_frame == "y_up"

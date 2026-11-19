@@ -79,6 +79,12 @@ type Doc = {
   annotations: EdAnn[];
 };
 type Mode = "translate" | "rotate" | "scale";
+/** The solver world is Z-up mm; three.js renders Y-up. One -90degX
+ *  wrapper presents a Z-up world upright — every transform in the doc
+ *  stays solver-frame, so gizmo/pivot commits read back unchanged
+ *  matrices. Blender-mode guides arrive already Y-up: no wrapper. */
+const ZUP_DISPLAY_ROT: [number, number, number] = [-Math.PI / 2, 0, 0];
+const ZUP_DISPLAY_EULER = new THREE.Euler(-Math.PI / 2, 0, 0);
 /** Editable annotation: server dict + client bookkeeping. `k` is the
  *  identity key (never persisted), `idx` is the index in
  *  state.annotations — undefined means "not yet POSTed". */
@@ -219,6 +225,7 @@ function Scene({
   isolate,
   playing,
   glRef,
+  worldFrame,
 }: {
   versionId: string;
   parts: GuidePartInfo[];
@@ -240,6 +247,7 @@ function Scene({
   isolate: boolean;
   playing: { t0: number } | null;
   glRef: React.MutableRefObject<THREE.WebGLRenderer | null>;
+  worldFrame?: "z_up" | "y_up";
 }) {
   const meshParts = useMemo(() => parts.filter((p) => p.has_mesh), [parts]);
   const urls = useMemo(
@@ -296,6 +304,7 @@ function Scene({
         onAnnTransformed={onAnnTransformed}
         isolate={isolate}
         playing={playing}
+        worldFrame={worldFrame}
       />
       <GizmoHelper alignment="bottom-right" margin={[70, 70]}>
         <GizmoViewport axisColors={["#ff4d5a", "#00d084", "#2b7cff"]} labelColor="#ccc" />
@@ -348,6 +357,7 @@ function SceneInner({
   onAnnTransformed,
   isolate,
   playing,
+  worldFrame,
 }: {
   urls: string[];
   meshParts: GuidePartInfo[];
@@ -367,6 +377,7 @@ function SceneInner({
   onAnnTransformed: (k: string, p: { axis?: number[]; position?: number[] }) => void;
   isolate: boolean;
   playing: { t0: number } | null;
+  worldFrame?: "z_up" | "y_up";
 }) {
   const gltfs = useLoader(GLTFLoader, urls);
   const scenes = useMemo(
@@ -387,6 +398,7 @@ function SceneInner({
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
 
   const contentRef = useRef<THREE.Group>(null);
+  const zUp = worldFrame !== "y_up";
   const visibleIds = useMemo(() => new Set(instances.map((i) => i.id)), [instances]);
   const liveSel = useMemo(
     () => new Set([...sel].filter((i) => visibleIds.has(i))),
@@ -416,12 +428,13 @@ function SceneInner({
     const controls = controlsRef.current;
     if (!inst || !controls) return;
     const p = decompose(inst.transform).pos;
+    if (zUp) p.applyEuler(ZUP_DISPLAY_EULER); // solver coords -> display coords
     const cam = controls.object as THREE.Camera;
     const dir = cam.position.clone().sub(controls.target).normalize();
     controls.target.copy(p);
     cam.position.copy(p.clone().add(dir.multiplyScalar(160)));
     controls.update();
-  }, [focus, instances]);
+  }, [focus, instances, zUp]);
 
   const applyDelta = useCallback(() => {
     const piv = pivotRef.current;
@@ -493,55 +506,56 @@ function SceneInner({
 
   return (
     <>
-      <group ref={contentRef}>
-        {instances.map((i) => {
-          const isNew = (i.placed_in_step ?? 0) === stepNo;
-          const node = (
-            <PartObject
-              key={i.id}
-              scene={scenes[i.part_id] ?? new THREE.Group()}
-              inst={i}
-              selected={liveSel.has(i.id)}
-              ghost={isolate && !isNew}
-              innerRef={(g) => {
-                refs.current[i.id] = g;
-              }}
-              onSelect={(e) => {
-                e.stopPropagation();
-                onSelect(
-                  i.id,
-                  !!(e.ctrlKey || e.metaKey || e.shiftKey),
-                );
-              }}
-              onContext={onContext}
-            />
-          );
-          if (playing && isNew) {
-            return (
-              <AnimatedIn key={i.id} dir={dirFor(i)} delay={(newOrder.get(i.id) ?? 0) * 0.15} t0={playing.t0}>
-                {node}
-              </AnimatedIn>
+      {/* Z-up solver world -> Y-up display: one wrapper rotates parts,
+          annotations AND the selection pivot together, so every local
+          matrix the gizmo touches stays in solver frame. */}
+      <group rotation={zUp ? ZUP_DISPLAY_ROT : [0, 0, 0]}>
+        <group ref={contentRef}>
+          {instances.map((i) => {
+            const isNew = (i.placed_in_step ?? 0) === stepNo;
+            const node = (
+              <PartObject
+                key={i.id}
+                scene={scenes[i.part_id] ?? new THREE.Group()}
+                inst={i}
+                selected={liveSel.has(i.id)}
+                ghost={isolate && !isNew}
+                innerRef={(g) => {
+                  refs.current[i.id] = g;
+                }}
+                onSelect={(e) => {
+                  e.stopPropagation();
+                  onSelect(
+                    i.id,
+                    !!(e.ctrlKey || e.metaKey || e.shiftKey),
+                  );
+                }}
+                onContext={onContext}
+              />
             );
-          }
-          return node;
-        })}
-      </group>
-      <Annotations
-        anns={anns}
-        step={stepNo}
-        instances={instances}
-        selKey={selAnn?.k ?? null}
-        annKey={(a) => (a as EdAnn).k}
-        onSelect={(a) => onAnnSelect((a as EdAnn).k)}
-        annRef={(key, g) => {
-          annRefs.current[key] = g;
-          if (selAnn && key === selAnn.k) setAnnObj(g);
-        }}
-      />
-      <CameraFit content={contentRef} fitKey={urls.length} />
-
-      {showGizmo && (
-        <>
+            if (playing && isNew) {
+              return (
+                <AnimatedIn key={i.id} dir={dirFor(i)} delay={(newOrder.get(i.id) ?? 0) * 0.15} t0={playing.t0}>
+                  {node}
+                </AnimatedIn>
+              );
+            }
+            return node;
+          })}
+        </group>
+        <Annotations
+          anns={anns}
+          step={stepNo}
+          instances={instances}
+          selKey={selAnn?.k ?? null}
+          annKey={(a) => (a as EdAnn).k}
+          onSelect={(a) => onAnnSelect((a as EdAnn).k)}
+          annRef={(key, g) => {
+            annRefs.current[key] = g;
+            if (selAnn && key === selAnn.k) setAnnObj(g);
+          }}
+        />
+        {showGizmo && (
           <group
             position={pivotPos}
             ref={(g) => {
@@ -549,31 +563,33 @@ function SceneInner({
               setPivotObj(g);
             }}
           />
-          {pivotObj && (
-            <TransformControls
-              object={pivotObj}
-            mode={mode}
-            size={0.9}
-            onMouseDown={() => {
-              gizmoDrag(true);
-              pivotStart.current.copy(pivotRef.current.matrix);
-              itemStart.current = {};
-              for (const iid of liveSel) {
-                const g = refs.current[iid];
-                if (g) {
-                  g.updateMatrix();
-                  itemStart.current[iid] = g.matrix.clone();
-                }
+        )}
+      </group>
+      <CameraFit content={contentRef} fitKey={urls.length} />
+
+      {showGizmo && pivotObj && (
+        <TransformControls
+          object={pivotObj}
+          mode={mode}
+          size={0.9}
+          onMouseDown={() => {
+            gizmoDrag(true);
+            pivotStart.current.copy(pivotRef.current.matrix);
+            itemStart.current = {};
+            for (const iid of liveSel) {
+              const g = refs.current[iid];
+              if (g) {
+                g.updateMatrix();
+                itemStart.current[iid] = g.matrix.clone();
               }
-            }}
-            onObjectChange={applyDelta}
-            onMouseUp={() => {
-              gizmoDrag(false);
-              commit();
-            }}
-          />
-          )}
-        </>
+            }
+          }}
+          onObjectChange={applyDelta}
+          onMouseUp={() => {
+            gizmoDrag(false);
+            commit();
+          }}
+        />
       )}
       {selAnn && annObj && (
         <TransformControls
@@ -1422,6 +1438,7 @@ export default function GuideEditor({
             isolate={isolateStep}
             playing={playing}
             glRef={glRef}
+            worldFrame={guide.world_frame}
           />
           {/* canvas overlay — preview transport, isolate, snapshot */}
           <div className="absolute left-2 top-2 flex flex-col gap-1">

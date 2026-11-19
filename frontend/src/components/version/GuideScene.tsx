@@ -15,6 +15,13 @@ const meshUrl = (vid: string, pid: string) =>
 
 const HIGHLIGHT = new THREE.Color(0x2f9e44);
 
+/** The solver world is Z-up mm; three.js renders Y-up. One -90degX
+ *  wrapper presents a Z-up world upright — instance transforms stay in
+ *  solver frame, so gizmo commits read back the same matrix they would
+ *  without the wrapper. Blender-mode guides arrive already Y-up and get
+ *  no wrapper. */
+const ZUP_DISPLAY_ROT: [number, number, number] = [-Math.PI / 2, 0, 0];
+
 function cloneForStep(scene: THREE.Group, isNew: boolean): THREE.Group {
   const obj = scene.clone(true);
   if (!isNew) return obj;
@@ -126,6 +133,7 @@ export default function GuideScene({
   onTransformed,
   readonly,
   annotations,
+  worldFrame,
 }: {
   versionId: string;
   parts: GuidePartInfo[];
@@ -136,6 +144,7 @@ export default function GuideScene({
   onTransformed: (iid: string, m: number[][]) => void;
   readonly?: boolean;
   annotations?: GuideAnnotation[];
+  worldFrame?: "z_up" | "y_up";
 }) {
   const { t } = useTranslation("version");
   const meshParts = useMemo(() => parts.filter((p) => p.has_mesh), [parts]);
@@ -162,6 +171,7 @@ export default function GuideScene({
       onTransformed={onTransformed}
       readonly={readonly}
       annotations={annotations}
+      worldFrame={worldFrame}
       t={t}
     />
   );
@@ -177,6 +187,7 @@ function SceneInner({
   onTransformed,
   readonly,
   annotations,
+  worldFrame,
   t,
 }: {
   urls: string[];
@@ -188,6 +199,7 @@ function SceneInner({
   onTransformed: (iid: string, m: number[][]) => void;
   readonly?: boolean;
   annotations?: GuideAnnotation[];
+  worldFrame?: "z_up" | "y_up";
   t: (k: string, o?: Record<string, unknown>) => string;
 }) {
   // manual loading instead of useLoader: a single 404/malformed mesh must
@@ -265,19 +277,23 @@ function SceneInner({
         <directionalLight position={[140, 220, 160]} intensity={1.1} />
         <directionalLight position={[-120, 80, -140]} intensity={0.35} />
         <Grid args={[800, 800]} cellSize={20} sectionSize={100} fadeDistance={900} />
-        <group ref={contentRef}>
-          {visible.map((i) => (
-            <Instance
-              key={i.id}
-              scene={scenes[i.part_id] ?? new THREE.Group()}
-              inst={i}
-              isNew={(i.placed_in_step ?? 0) === step}
-              innerRef={i.id === sel ? setSelObj : undefined}
-              onSelect={() => onSelect(i.id)}
-            />
-          ))}
+        {/* Z-up solver world -> Y-up display: rotate the whole world
+            (parts + annotations) once, never each transform. */}
+        <group rotation={worldFrame === "y_up" ? [0, 0, 0] : ZUP_DISPLAY_ROT}>
+          <group ref={contentRef}>
+            {visible.map((i) => (
+              <Instance
+                key={i.id}
+                scene={scenes[i.part_id] ?? new THREE.Group()}
+                inst={i}
+                isNew={(i.placed_in_step ?? 0) === step}
+                innerRef={i.id === sel ? setSelObj : undefined}
+                onSelect={() => onSelect(i.id)}
+              />
+            ))}
+          </group>
+          <Annotations anns={annotations ?? []} step={step} instances={visible} />
         </group>
-        <Annotations anns={annotations ?? []} step={step} instances={visible} />
         <CameraFit content={contentRef} fitKey={step} />
         {selObj && !readonly && (
           <TransformControls object={selObj} mode={mode} onMouseUp={commit} />

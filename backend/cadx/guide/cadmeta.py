@@ -7,6 +7,7 @@ task on the cad-light lane — OCC work never runs in the worker.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +53,11 @@ def normalize_mesh_units(src: Path, dst_dir: Path) -> Path:
             return src
         m.apply_scale(1000.0)
         dst_dir.mkdir(parents=True, exist_ok=True)
-        dst = dst_dir / f"{src.stem}_mm.glb"
+        # stem alone collides — every codegen version exports "model.glb",
+        # so two generated parts would overwrite each other's normalized
+        # copy; a deterministic path hash keeps the names unique
+        tag = hashlib.md5(str(src).encode()).hexdigest()[:8]
+        dst = dst_dir / f"{src.stem}_{tag}_mm.glb"
         m.export(str(dst))
         log.info(
             "guide.mesh_units_normalized",

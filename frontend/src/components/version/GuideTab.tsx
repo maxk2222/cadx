@@ -82,6 +82,7 @@ export default function GuideTab({
             onTransformed={() => {}}
             readonly
             annotations={guide.annotations ?? []}
+            worldFrame={guide.world_frame}
           />
         </div>
         <Card className="flex h-fit flex-col gap-2 p-3">

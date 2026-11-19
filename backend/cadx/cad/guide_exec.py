@@ -347,9 +347,17 @@ def _extract_ports_sync(payload: dict[str, Any]) -> dict[str, Any]:
             shape = bd.Compound(list(shape)) if len(shape) > 1 else shape[0]
         bb = shape.bounding_box()
         out_dir = step.parent
-        mesh_path = out_dir / f"{step.stem}.glb"
+        # solver-frame mesh: the guide scene/collision/render consumers and
+        # part ports all share the BRep frame (Z-up mm). bd.export_gltf
+        # would write meters + a -90degX up-axis node (glTF spec) — served
+        # as-is to those consumers the part lands 1000x too small and
+        # rotated. .guide.glb keeps the version's own model.glb artifact
+        # (glTF-correct) untouched.
+        mesh_path = out_dir / f"{step.stem}.guide.glb"
         try:
-            bd.export_gltf(shape, str(mesh_path), binary=True)
+            from cadx.cad.exporters import export_glb_file
+
+            export_glb_file(shape, mesh_path)
         except Exception:
             mesh_path = out_dir / f"{step.stem}.stl"
             bd.export_stl(shape, str(mesh_path))

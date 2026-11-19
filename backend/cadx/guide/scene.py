@@ -30,23 +30,43 @@ def _load_mesh(path: str | Path):
     return scene.to_geometry() if hasattr(scene, "to_geometry") else scene
 
 
+# Z-up CAD world -> glTF Y-up basis change (proper rotation, -90degX).
+# Baked into the exported artifact so the assembly stands upright in ANY
+# glTF consumer (three.js, Unity import, OS previews) — trimesh's glTF
+# export writes vertex data as-is and emits no axis-convention node, so
+# a raw Z-up scene would lie on its side in every viewer.
+_ZUP_TO_GLTF = np.array(
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+)
+
+
 def merged_glb(
     placements: list[tuple[str, str | Path, list]],
     out_path: str | Path,
+    *,
+    world_frame: str = "z_up",
 ) -> Path | None:
     """Combine placed instances into one GLB — ``placements`` is
-    [(name, mesh_path, transform_4x4)]. Deterministic: geometry order and
-    node names follow the placement order. Returns None when nothing
-    loadable remains."""
+    [(name, mesh_path, transform_4x4)] expressed in ``world_frame``
+    (``GuideState.world_frame``: "z_up" for the CAD route, "y_up" for
+    blender mode). Deterministic: geometry order and node names follow
+    the placement order. Returns None when nothing loadable remains."""
     import trimesh
 
+    conv = _ZUP_TO_GLTF if world_frame == "z_up" else None
     scene = trimesh.Scene()
     for name, mesh_path, transform in placements:
         p = Path(mesh_path)
         if not p.exists():
             continue
         mesh = _load_mesh(p)
-        mesh.apply_transform(np.asarray(transform, dtype=float).reshape(4, 4))
+        t = np.asarray(transform, dtype=float).reshape(4, 4)
+        mesh.apply_transform(t if conv is None else conv @ t)
         scene.add_geometry(mesh, node_name=name, geom_name=name)
     if not scene.geometry:
         return None

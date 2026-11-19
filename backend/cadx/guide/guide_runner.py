@@ -510,7 +510,7 @@ async def _emit_assembly_artifacts(
         )
     if not placements:
         return artifacts
-    glb = scene.merged_glb(placements, out_dir / "assembly.glb")
+    glb = scene.merged_glb(placements, out_dir / "assembly.glb", world_frame=state.world_frame)
     if glb is not None:
         artifacts["export:glb"] = storage.relpath(glb)
     if executor is not None:

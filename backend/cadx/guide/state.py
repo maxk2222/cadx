@@ -244,6 +244,16 @@ class GuideState(BaseModel):
     # 'unknown/expired candidate_id' errors in a row after mission_retry).
     preview_cache: dict[str, dict] = Field(default_factory=dict)
 
+    @property
+    def world_frame(self) -> str:
+        """Frame every instance transform / bbox / annotation is expressed
+        in. The CAD route solves in the canonical Z-up mm frame (solver
+        rest/hint semantics are +Z); the blender mission stores transforms
+        already conjugated to the glTF frame (Y-up) — see blender_tools'
+        frame contract. Consumers (glTF export, three.js viewers) must
+        branch on this rather than assume one convention."""
+        return "y_up" if self.guide_mode == "blender" else "z_up"
+
     # -- persistence -------------------------------------------------------- #
 
     def save(self, state_dir: Path | None = None) -> Path:

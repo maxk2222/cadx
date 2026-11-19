@@ -106,3 +106,33 @@ def test_off_axis_hollow_bosses_stay_separate_groups() -> None:
     for e in ends:
         assert e["inner_radius"] == pytest.approx(6.0)
         assert e["outer_radius"] == pytest.approx(8.0)
+
+
+def test_extracted_mesh_is_solver_frame(tmp_path) -> None:
+    """The mesh extract_ports serves must share the port/bbox frame (BRep
+    Z-up mm). bd.export_gltf emits meters + a -90degX up-axis node per the
+    glTF spec — consumers that apply solver transforms to the served mesh
+    (renders, merged_glb, GuideScene, collision) then saw the part 1000x
+    too small and tipped over. It also must NOT clobber the version's own
+    model.glb artifact (that file stays glTF-correct)."""
+    import numpy as np
+    import trimesh
+
+    from cadx.cad.guide_exec import _extract_ports_sync
+
+    tube = bd.Cylinder(radius=11.0, height=70.0)
+    step = tmp_path / "model.step"
+    bd.export_step(tube, str(step))
+    res = _extract_ports_sync({"step_path": str(step)})
+    assert res["ok"]
+    mp = tmp_path / "model.guide.glb"
+    assert res["mesh_path"] == str(mp) and mp.exists()
+    assert not (tmp_path / "model.glb").exists()  # artifact name untouched
+    g = trimesh.load(mp)
+    g = g.to_geometry() if hasattr(g, "to_geometry") else g
+    # Z-up mm: the 70mm tube stands along Z, not meters along Y
+    assert g.extents[2] == pytest.approx(70.0, abs=0.5)
+    # and bounds match the reported BRep bbox exactly
+    assert np.allclose(
+        g.bounds, [res["bbox_min"], res["bbox_max"]], atol=0.5
+    )

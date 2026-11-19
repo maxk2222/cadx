@@ -1592,6 +1592,10 @@ export interface GuideDetail {
   instances: number;
   joints: number;
   instance_list: GuideInstance[];
+  /** frame the instance transforms are expressed in — "z_up" (CAD route,
+   *  mm Z-up world; viewers must rotate -90degX into the Y-up display
+   *  frame) or "y_up" (blender mode, already glTF frame). */
+  world_frame?: "z_up" | "y_up";
 }
 
 export interface GuideStepPatch {
