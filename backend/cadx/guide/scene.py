@@ -9,6 +9,7 @@ module is NOT a dependency here.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -17,6 +18,7 @@ from cadx.logging import get_logger
 log = get_logger(__name__)
 
 _EPS_VOL_MM3 = 1.0  # collision verdict threshold
+_MESH_CACHE_MAX = 32  # parsed GLBs kept per Scene — bound, LRU-evicted
 
 # deterministic per-instance colors — shared by mission renders and the
 # final emit pass so a part looks the same in both
@@ -109,12 +111,31 @@ class Scene:
 
     def __init__(self) -> None:
         self._placed: dict[str, _PlacedMesh] = {}
+        self._mesh_cache: dict[str, tuple[float, Any]] = {}
 
     def clear(self) -> None:
         self._placed.clear()
 
+    def _base_mesh(self, mesh_path: str | Path) -> Any:
+        """Pristine parsed mesh for ``mesh_path`` — cached by resolved path
+        and re-parsed on mtime change (a normalize/re-export pass rewrites
+        the file in place). Callers must transform a ``.copy()`` so the
+        cached base stays clean for the next probe."""
+        p = Path(mesh_path).resolve()
+        mtime = p.stat().st_mtime if p.is_file() else -1.0
+        key = str(p)
+        entry = self._mesh_cache.get(key)
+        if entry is None or entry[0] != mtime:
+            entry = (mtime, _load_mesh(p))
+            self._mesh_cache[key] = entry
+            while len(self._mesh_cache) > _MESH_CACHE_MAX:
+                self._mesh_cache.pop(next(iter(self._mesh_cache)))
+        else:
+            self._mesh_cache[key] = self._mesh_cache.pop(key)  # LRU refresh
+        return entry[1]
+
     def add(self, iid: str, mesh_path: str | Path, transform: list[list[float]]) -> None:
-        mesh = _load_mesh(mesh_path)
+        mesh = self._base_mesh(mesh_path).copy()
         mesh.apply_transform(np.asarray(transform, dtype=float).reshape(4, 4))
         self._placed[iid] = _PlacedMesh(iid, mesh)
 
@@ -131,7 +152,7 @@ class Scene:
 
         AABB prefilter → manifold3d boolean intersection → volume verdict.
         """
-        probe = _load_mesh(mesh_path)
+        probe = self._base_mesh(mesh_path).copy()
         probe.apply_transform(np.asarray(transform, dtype=float).reshape(4, 4))
         pmin, pmax = probe.bounds
         hits: list[dict] = []

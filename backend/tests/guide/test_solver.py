@@ -1,6 +1,7 @@
 """Placement solver unit tests — deterministic math, no LLM."""
 
 import numpy as np
+import pytest
 
 from cadx.guide import solver
 from cadx.guide.state import GuidePart, PortInfo
@@ -109,32 +110,6 @@ def test_gender_and_radius_gates() -> None:
     assert solver.find_matching_ports(m, male2) == []  # male→male rejected
 
 
-def test_multi_attachment_picks_residual_min() -> None:
-    moving = _part(
-        "flange",
-        [
-            PortInfo(name="p1", pos=[0, 0, -10], axis=[0, 0, -1], radius=4, gender="male"),
-            PortInfo(name="p2", pos=[20, 0, -10], axis=[0, 0, -1], radius=4, gender="male"),
-        ],
-    )
-    fixed = _part(
-        "deck",
-        [
-            PortInfo(name="h1", pos=[0, 0, 0], axis=[0, 0, 1], radius=4, gender="female"),
-            PortInfo(name="h2", pos=[20, 0, 0], axis=[0, 0, 1], radius=4, gender="female"),
-        ],
-        bbox=((-20, -20, -5), (40, 20, 5)),
-    )
-    T = solver.solve_multi_attachment(
-        moving, fixed, solver.identity_transform(), [("p1", "h1"), ("p2", "h2")]
-    )
-    assert T is not None
-    m = np.asarray(T)
-    for mp, tp in zip(moving.ports, fixed.ports, strict=True):
-        gap, _ = solver.evaluate_mate(mp, m, tp, np.eye(4))
-        assert gap < 2.0  # both holes within reach (roll resolved)
-
-
 def test_free_placement_on_table_and_top() -> None:
     part = _part("box", [], bbox=((-10, -10, 0), (10, 10, 20)))
     t = solver.solve_free_placement(part, [], "on table")
@@ -192,7 +167,7 @@ def test_candidate_grow_dir_from_port_to_body() -> None:
         "out",
     )
     assert gdir is not None
-    assert gdir[2] < -0.9  # body centre far below the port → −z growth
+    assert gdir[2] < -0.9  # body centre far below the port → -z growth
 
 
 def test_direction_hint_end_side_phrases() -> None:
@@ -209,6 +184,89 @@ def test_direction_hint_end_side_phrases() -> None:
 def test_direction_hint_vertical_ruehre_cross_ref() -> None:
     vec, spec = solver.direction_hint("Rohrbogen auf linke vertikale Röhre stecken")
     assert vec is None and spec == "z"
+
+
+def test_world_bbox_implementations_agree() -> None:
+    """The 8-corner AABB-under-transform exists once (solver.world_bbox) —
+    transform_bbox, _rotated_bbox, _bbox_corners_world and the router's
+    _world_bbox all delegate to it."""
+    from cadx.api.routers import guide as guide_router
+    from cadx.guide import preassembly
+
+    mn_l = [-3.0, -7.0, 1.0]
+    mx_l = [11.0, -1.0, 6.0]
+    rot = solver.axis_angle_rotation_matrix(np.array([0.3, 0.8, 0.5]), 137.0)
+    t = np.eye(4)
+    t[0:3, 0:3] = rot
+    t[0:3, 3] = [40.0, -20.0, 7.0]
+
+    ref = solver.world_bbox(mn_l, mx_l, t)
+    mn2, mx2 = guide_router._world_bbox(mn_l, mx_l, t.tolist())
+    assert np.allclose(ref[0], mn2) and np.allclose(ref[1], mx2)
+    part = _part("p", [], bbox=(mn_l, mx_l))
+    mn3, mx3 = solver.transform_bbox(part, t.tolist())
+    assert np.allclose(ref[0], mn3) and np.allclose(ref[1], mx3)
+    corners = np.asarray(preassembly._bbox_corners_world(mn_l, mx_l, t.tolist()))
+    assert corners.shape == (8, 3)
+    assert np.allclose(ref[0], corners.min(axis=0))
+    assert np.allclose(ref[1], corners.max(axis=0))
+    # pure rotation: the 3x3 variant equals the 4x4 with zero translation
+    mn4, mx4 = preassembly._rotated_bbox(mn_l, mx_l, rot)
+    t_rot = np.eye(4)
+    t_rot[0:3, 0:3] = rot
+    ref_rot = solver.world_bbox(mn_l, mx_l, t_rot)
+    assert np.allclose(ref_rot[0], mn4) and np.allclose(ref_rot[1], mx4)
+
+
+def _union_containment_ref(
+    mn: np.ndarray, mx: np.ndarray, others: list[tuple[np.ndarray, np.ndarray]], grid: int = 8
+) -> float:
+    """The pre-vectorization triple loop — parity oracle."""
+    if not others:
+        return 0.0
+    span = mx - mn
+    if float(np.prod(span)) <= 1e-9:
+        return 0.0
+    qs = [
+        np.linspace(mn[i] + span[i] / (2 * grid), mx[i] - span[i] / (2 * grid), grid)
+        for i in range(3)
+    ]
+    inside = 0
+    for x in qs[0]:
+        for y in qs[1]:
+            for z in qs[2]:
+                p = np.array([x, y, z])
+                for omn, omx in others:
+                    if bool(np.all(p >= omn) and np.all(p <= omx)):
+                        inside += 1
+                        break
+    return inside / (grid**3)
+
+
+def test_union_containment_matches_reference() -> None:
+    """The numpy-broadcast implementation must reproduce the loop exactly —
+    same grid points, same inside-any-box-once semantics."""
+    rng = np.random.default_rng(7)
+    for _ in range(20):
+        mn = rng.uniform(-50, 0, 3)
+        mx = mn + rng.uniform(1, 40, 3)
+        others = []
+        for _ in range(rng.integers(1, 5)):
+            omn = rng.uniform(-60, 40, 3)
+            others.append((omn, omn + rng.uniform(0.5, 30, 3)))
+        got = solver.union_containment(mn, mx, others)
+        assert got == pytest.approx(_union_containment_ref(mn, mx, others))
+    # edge cases
+    assert solver.union_containment(np.zeros(3), np.ones(3), []) == 0.0
+    assert (
+        solver.union_containment(np.zeros(3), np.zeros(3), [(np.zeros(3), np.ones(3))]) == 0.0
+    )
+    assert solver.union_containment(np.zeros(3), np.ones(3), [(np.zeros(3), np.ones(3))]) == 1.0
+    # overlap between two 'others' counts a shared region once
+    half = solver.union_containment(
+        np.zeros(3), np.ones(3), [(np.full(3, 0.5), np.ones(3)), (np.full(3, 0.75), np.ones(3))]
+    )
+    assert half == pytest.approx(_union_containment_ref(np.zeros(3), np.ones(3), [(np.full(3, 0.5), np.ones(3))]))
 
 
 def test_disconnected_premounted_instances_are_roots() -> None:

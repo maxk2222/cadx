@@ -224,19 +224,9 @@ async def patch_instance(
 
 def _world_bbox(local_min: list[float], local_max: list[float], t: list[list[float]]):
     """8-corner world bbox of a local-axis-aligned box under a 4x4."""
-    import numpy as np
+    from cadx.guide.solver import world_bbox
 
-    m = np.asarray(t, dtype=float).reshape(4, 4)
-    corners = np.array(
-        [
-            [x, y, z, 1.0]
-            for x in (local_min[0], local_max[0])
-            for y in (local_min[1], local_max[1])
-            for z in (local_min[2], local_max[2])
-        ]
-    )
-    w = (m @ corners.T).T[:, :3]
-    return w.min(axis=0), w.max(axis=0)
+    return world_bbox(local_min, local_max, t)
 
 
 class InstanceCreate(BaseModel):
@@ -789,7 +779,9 @@ async def upload_guide_media(
     ext = Path(name_in).suffix.lower()
     if ext not in _MEDIA_EXTS:
         raise HTTPException(400, f"unsupported media type '{ext or name_in}'")
-    data = await file.read()
+    if file.size is not None and file.size > _MEDIA_MAX:
+        raise HTTPException(413, "media file too large (max 10 MB)")
+    data = await file.read(_MEDIA_MAX + 1)
     if not data:
         raise HTTPException(400, "empty file")
     if len(data) > _MEDIA_MAX:

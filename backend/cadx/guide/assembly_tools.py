@@ -19,6 +19,12 @@ import numpy as np
 from cadx.guide import scene as gscene
 from cadx.guide import solver
 from cadx.guide.state import AssemblyInstance
+from cadx.guide.tolerances import (
+    POSTHOC_GAP_CAP_MM,
+    POSTHOC_GAP_FACTOR,
+    POSTHOC_NDOT_GATE,
+    PREMOUNT_HOST_GAP_MM,
+)
 from cadx.guide.tools import _b, _fn, _i, _num, _s
 from cadx.logging import get_logger
 
@@ -2193,7 +2199,7 @@ def _connectivity_audit(
     for iid, i in insts.items():
         if not i.premounted or iid not in bboxes:
             continue
-        if any(_bbox_gap(bboxes[iid], hb) <= 100.0 for hb in host_boxes):
+        if any(_bbox_gap(bboxes[iid], hb) <= PREMOUNT_HOST_GAP_MM for hb in host_boxes):
             roots.add(iid)
     return solver.disconnected_instances(
         bboxes, _joint_pairs(s, _ikey, bboxes), sorted(insts), extra_roots=roots
@@ -2297,8 +2303,8 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
             socket_depth = float(getattr(tp, "depth", 0.0) or 0.0)
         elif str(getattr(mp, "gender", "")) == "female":
             socket_depth = float(getattr(mp, "depth", 0.0) or 0.0)
-        allow = max(solver.GAP_GATE_MM * 20, min(socket_depth, 30.0))
-        ok = gap < allow and ndot <= -0.95  # post-hoc tolerance wider than gate
+        allow = max(solver.GAP_GATE_MM * POSTHOC_GAP_FACTOR, min(socket_depth, POSTHOC_GAP_CAP_MM))
+        ok = gap < allow and ndot <= POSTHOC_NDOT_GATE  # post-hoc tolerance wider than gate
         row = {
             "joint": f"{mv.instance_id or mv.part_id}→{fx.instance_id or fx.part_id}",
             "gap_mm": round(gap, 4),
@@ -2419,8 +2425,8 @@ def _materialize_declared_mates(
                 socket_depth = float(getattr(tp, "depth", 0.0) or 0.0)
             elif str(getattr(mp, "gender", "")) == "female":
                 socket_depth = float(getattr(mp, "depth", 0.0) or 0.0)
-            allow = max(solver.GAP_GATE_MM * 20, min(socket_depth, 30.0))
-            if not (gap < allow and ndot <= -0.95):
+            allow = max(solver.GAP_GATE_MM * POSTHOC_GAP_FACTOR, min(socket_depth, POSTHOC_GAP_CAP_MM))
+            if not (gap < allow and ndot <= POSTHOC_NDOT_GATE):
                 still_missing.append({"instance": iid, "missing": pid, "gap_mm": round(gap, 2)})
                 continue
             s.state.assembly.joints.append(

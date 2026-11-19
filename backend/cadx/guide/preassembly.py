@@ -47,6 +47,16 @@ from cadx.guide.assembly_tools import (
     solve_env_preview,
 )
 from cadx.guide.session import GuideToolSession
+from cadx.guide.tolerances import (
+    BRIDGE_AXIS_DOT,
+    BURIAL_FRAC_GATE,
+    LIFT_SHIFT_CLAMP_MM,
+    MISS_RESIDUAL_MAX_MM,
+    PORT_EXPOSURE_MAX_MM,
+    SHIFT_MEAN_MIN_MM,
+    SHIFT_SPREAD_MM,
+    SWALLOW_FRAC_GATE,
+)
 
 log = structlog.get_logger("guide.preassembly")
 
@@ -793,11 +803,9 @@ def _cube_rotations() -> list[np.ndarray]:
 
 
 def _rotated_bbox(mn: Any, mx: Any, rot: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    corners = np.array(
-        [[x, y, z] for x in (mn[0], mx[0]) for y in (mn[1], mx[1]) for z in (mn[2], mx[2])]
-    )
-    w = corners @ rot.T
-    return w.min(axis=0), w.max(axis=0)
+    t = np.eye(4)
+    t[0:3, 0:3] = np.asarray(rot, dtype=float).reshape(3, 3)
+    return solver.world_bbox(mn, mx, t)
 
 
 def _world_part_view(inst: Any, part: Any) -> SimpleNamespace:
@@ -931,7 +939,7 @@ def _task_best_port(
     task_best = -1e18
     task_pos: np.ndarray | None = None
     for (pos_w, ax_w, fp), exp in zip(ports_r, exposure, strict=True):
-        if exp > 60.0:
+        if exp > PORT_EXPOSURE_MAX_MM:
             continue  # recessed past any fitting's reach — an
             # interior junction, not a mount interface
         cand = _interface_score(
@@ -1141,7 +1149,7 @@ def _anchor_lift(
                 ),
                 0.0,
             )
-            if exp > 60.0:
+            if exp > PORT_EXPOSURE_MAX_MM:
                 continue
             sc = _interface_score(
                 moving,
@@ -1258,7 +1266,7 @@ def _bridge_closure_shift(
             continue
         resid = np.asarray(miss["resid"], dtype=float)
         res_n = float(np.linalg.norm(resid))
-        if res_n < 1e-6 or res_n > 80.0:
+        if res_n < 1e-6 or res_n > MISS_RESIDUAL_MAX_MM:
             continue  # absurdly large miss is a pairing error, not a pose error
         i1h = miss.get("i1") in host_set
         i2h = miss.get("i2") in host_set
@@ -1272,10 +1280,10 @@ def _bridge_closure_shift(
     any_axis = False
     for ax in range(3):
         vals = [float(s[ax]) for s in shifts]
-        if max(vals) - min(vals) > 10.0:
+        if max(vals) - min(vals) > SHIFT_SPREAD_MM:
             continue
         mean = float(np.mean(vals))
-        if abs(mean) >= 0.5:
+        if abs(mean) >= SHIFT_MEAN_MIN_MM:
             out[ax] = mean
             any_axis = True
     return out if any_axis else None
@@ -1306,9 +1314,9 @@ def _lift_correct_for_bridges(
         if lift <= 0.0:
             shift = shift.copy()
             shift[2] = 0.0  # no estimated lift — the host may not float
-        shift[2] = float(max(-lift, min(60.0, shift[2])))
-        shift[0] = float(max(-60.0, min(60.0, shift[0])))
-        shift[1] = float(max(-60.0, min(60.0, shift[1])))
+        shift[2] = float(max(-lift, min(LIFT_SHIFT_CLAMP_MM, shift[2])))
+        shift[0] = float(max(-LIFT_SHIFT_CLAMP_MM, min(LIFT_SHIFT_CLAMP_MM, shift[0])))
+        shift[1] = float(max(-LIFT_SHIFT_CLAMP_MM, min(LIFT_SHIFT_CLAMP_MM, shift[1])))
         if float(np.linalg.norm(shift)) < 0.5:
             continue
         for i in sess.state.assembly.instances:
@@ -1426,7 +1434,7 @@ async def _retry_bridges(
                 ],
             },
         )
-        if bf > 0.45 or (sf > 0.6 and moving.id != _host_part_id(sess)):
+        if bf > BURIAL_FRAC_GATE or (sf > SWALLOW_FRAC_GATE and moving.id != _host_part_id(sess)):
             sess.state.assembly.joints.extend(old_joints)
             report.setdefault("bridge_retries", []).append(
                 {
@@ -2199,12 +2207,7 @@ def _orient_score(
 def _bbox_corners_world(
     bbox_min: list[float], bbox_max: list[float], transform: list[list[float]]
 ) -> list[list[float]]:
-    return [
-        _world_pos(transform, [x, y, z])
-        for x in (bbox_min[0], bbox_max[0])
-        for y in (bbox_min[1], bbox_max[1])
-        for z in (bbox_min[2], bbox_max[2])
-    ]
+    return solver.world_corners(bbox_min, bbox_max, np.asarray(transform, dtype=float)).tolist()
 
 
 def _cluster_bbox_growth(
@@ -2317,7 +2320,7 @@ def _score_pairs_for_instance(
                     (corners_w @ solver._unit(np.asarray(fa))).max()
                     - np.dot(np.asarray(wp), solver._unit(np.asarray(fa)))
                 )
-                > 60.0
+                > PORT_EXPOSURE_MAX_MM
             ):
                 continue
             if fp.kind == "plane":
@@ -2562,7 +2565,7 @@ async def _try_bridge(sess: GuideToolSession, task: dict[str, Any], pid: str) ->
     # instead of recording an open/rotated gap as a joint. The measured
     # residual is KEPT on the task — a mostly-vertical miss is a lift
     # error the correction pass can still close, then the bridge retries.
-    if res > _bridge_bound(sess, task, pid, best) or abs(ndot2) < 0.8:
+    if res > _bridge_bound(sess, task, pid, best) or abs(ndot2) < BRIDGE_AXIS_DOT:
         task["bridge_miss"] = {
             "resid": [float(v) for v in resid_v],
             "i1": str(i1.instance_id),

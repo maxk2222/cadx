@@ -43,15 +43,17 @@ def render_pdf(
         import pypdfium2 as pdfium  # type: ignore
 
         pdf = pdfium.PdfDocument(str(pdf_path))
-        limit = len(pdf) if max_pages <= 0 else min(len(pdf), max_pages)
-        out: list[tuple[int, Path, int, int]] = []
-        for i in range(limit):
-            pil = pdf[i].render(scale=scale).to_pil()
-            p = out_dir / f"page_{i + 1:04d}.{image_format}"
-            pil.save(p)
-            out.append((i + 1, p, pil.width, pil.height))
-        pdf.close()
-        return out
+        try:
+            limit = len(pdf) if max_pages <= 0 else min(len(pdf), max_pages)
+            out: list[tuple[int, Path, int, int]] = []
+            for i in range(limit):
+                pil = pdf[i].render(scale=scale).to_pil()
+                p = out_dir / f"page_{i + 1:04d}.{image_format}"
+                pil.save(p)
+                out.append((i + 1, p, pil.width, pil.height))
+            return out
+        finally:
+            pdf.close()
     except ImportError:
         pass
     except Exception as e:
@@ -62,16 +64,18 @@ def render_pdf(
         import pymupdf as fitz  # type: ignore
 
         doc = fitz.open(str(pdf_path))
-        limit = doc.page_count if max_pages <= 0 else min(doc.page_count, max_pages)
-        mat = fitz.Matrix(scale, scale)
-        out = []
-        for i in range(limit):
-            pix = doc.load_page(i).get_pixmap(matrix=mat, alpha=False)
-            p = out_dir / f"page_{i + 1:04d}.{image_format}"
-            pix.save(str(p))
-            out.append((i + 1, p, int(pix.width), int(pix.height)))
-        doc.close()
-        return out
+        try:
+            limit = doc.page_count if max_pages <= 0 else min(doc.page_count, max_pages)
+            mat = fitz.Matrix(scale, scale)
+            out = []
+            for i in range(limit):
+                pix = doc.load_page(i).get_pixmap(matrix=mat, alpha=False)
+                p = out_dir / f"page_{i + 1:04d}.{image_format}"
+                pix.save(str(p))
+                out.append((i + 1, p, int(pix.width), int(pix.height)))
+            return out
+        finally:
+            doc.close()
     except ImportError:
         pass
     except Exception as e:
@@ -107,19 +111,21 @@ def extract_page_texts(pdf_path: Path, max_pages: int = 0) -> dict[int, str]:
         import pypdfium2 as pdfium  # type: ignore
 
         pdf = pdfium.PdfDocument(str(pdf_path))
-        limit = len(pdf) if max_pages <= 0 else min(len(pdf), max_pages)
-        out: dict[int, str] = {}
-        for i in range(limit):
-            page = pdf[i]
-            try:
-                tp = page.get_textpage()
-                out[i + 1] = tp.get_text_range() or ""
-            except Exception:
-                out[i + 1] = ""
-            finally:
-                page.close()
-        pdf.close()
-        return out
+        try:
+            limit = len(pdf) if max_pages <= 0 else min(len(pdf), max_pages)
+            out: dict[int, str] = {}
+            for i in range(limit):
+                page = pdf[i]
+                try:
+                    tp = page.get_textpage()
+                    out[i + 1] = tp.get_text_range() or ""
+                except Exception:
+                    out[i + 1] = ""
+                finally:
+                    page.close()
+            return out
+        finally:
+            pdf.close()
     except ImportError:
         pass
     except Exception:
@@ -130,10 +136,11 @@ def extract_page_texts(pdf_path: Path, max_pages: int = 0) -> dict[int, str]:
         import pymupdf as fitz  # type: ignore
 
         doc = fitz.open(str(pdf_path))
-        limit = doc.page_count if max_pages <= 0 else min(doc.page_count, max_pages)
-        out = {i + 1: (doc.load_page(i).get_text() or "") for i in range(limit)}
-        doc.close()
-        return out
+        try:
+            limit = doc.page_count if max_pages <= 0 else min(doc.page_count, max_pages)
+            return {i + 1: (doc.load_page(i).get_text() or "") for i in range(limit)}
+        finally:
+            doc.close()
     except ImportError:
         pass
     except Exception:
@@ -182,23 +189,25 @@ def extract_figures(
     except Exception as e:
         log.warning("guide.figures_open_failed", error=str(e)[:200])
         return []
-    limit = doc.page_count if max_pages <= 0 else min(doc.page_count, max_pages)
-    mat = fitz.Matrix(scale, scale)
-    out: list[dict[str, Any]] = []
-    for i in range(limit):
-        out.extend(
-            _page_figures(
-                doc.load_page(i),
-                i + 1,
-                mat,
-                out_dir,
-                min_area_ratio=min_area_ratio,
-                max_images=max_images_per_page,
-                fitz=fitz,
+    try:
+        limit = doc.page_count if max_pages <= 0 else min(doc.page_count, max_pages)
+        mat = fitz.Matrix(scale, scale)
+        out: list[dict[str, Any]] = []
+        for i in range(limit):
+            out.extend(
+                _page_figures(
+                    doc.load_page(i),
+                    i + 1,
+                    mat,
+                    out_dir,
+                    min_area_ratio=min_area_ratio,
+                    max_images=max_images_per_page,
+                    fitz=fitz,
+                )
             )
-        )
-    doc.close()
-    return out
+        return out
+    finally:
+        doc.close()
 
 
 def _figure_rects(page: Any, page_area: float, min_area_ratio: float, fitz: Any) -> list[Any]:

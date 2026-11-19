@@ -22,9 +22,24 @@ from typing import Any
 import numpy as np
 
 from cadx.guide.state import GuidePart, PortInfo
+from cadx.guide.tolerances import (
+    CLEAR_RADIUS_FLOOR_MM,
+    CLEAR_RADIUS_SLACK,
+    COLLAR_MARGIN_SPAN_MM,
+    COLLINEAR_DOT,
+    GAP_GATE_MM,
+    IFACE_SCORE_BASE,
+    IFACE_SCORE_FF,
+    IFACE_SCORE_MF,
+    LINE_AXIS_DOT,
+    NORMAL_DOT_GATE,
+    OPENING_RADIUS_FACTOR,
+    OPENING_RADIUS_MM,
+    SOCKET_FIT_MARGIN_MM,
+    THROUGH_BORE_DEPTH_MM,
+    UNRELATED_FAR_FRAC,
+)
 
-GAP_GATE_MM = 0.05
-NORMAL_DOT_GATE = -0.999
 DEFAULT_SNAPS = (0.0, 90.0, 180.0, 270.0)
 
 _IDENTITY = np.eye(4).tolist()
@@ -196,7 +211,7 @@ def _engage_mm(
         deep = min(deep, prot)
     margin = _inner_r(sock) - _outer_r(plug)
     # margin ≤2mm → true socket fit (deep); ≥10mm → collar/nut mate (shallow)
-    t = min(max((margin - 2.0) / 8.0, 0.0), 1.0)
+    t = min(max((margin - SOCKET_FIT_MARGIN_MM) / COLLAR_MARGIN_SPAN_MM, 0.0), 1.0)
     return deep * (1.0 - t) + min(deep, 6.0) * t
 
 
@@ -315,7 +330,7 @@ def _socket_depth(p: PortInfo) -> float:
 def _is_through_bore(p: PortInfo) -> bool:
     """A bore whose seat probe ran out (rim probe 500+, executor through
     marker) — it never grips like a bounded socket seat does."""
-    return p.inner_radius > 0.0 and p.depth >= 400.0
+    return p.inner_radius > 0.0 and p.depth >= THROUGH_BORE_DEPTH_MM
 
 
 def _inner_r(p: PortInfo) -> float:
@@ -390,7 +405,7 @@ def _physical_fit(moving_p: PortInfo, fixed_p: PortInfo) -> float | None:
         return None
     # clear radius is ray-measured ~10% low — accept with slack, still
     # hard-reject a plug that can't physically enter
-    if _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug):
+    if _inner_r(sock) * CLEAR_RADIUS_SLACK + CLEAR_RADIUS_FLOOR_MM < _outer_r(plug):
         return None  # socket can't swallow the plug
     # a HOST bore far wider than the plug is a pass-through opening (wall
     # aperture, housing cutout), not a connection — nothing grips the
@@ -399,7 +414,7 @@ def _physical_fit(moving_p: PortInfo, fixed_p: PortInfo) -> float | None:
     # its thread) and stays legal — the engagement model seats it at
     # the mouth. Only fixed-side sockets are rejected.
     if sock is fixed_p and _inner_r(sock) > max(
-        1.85 * _outer_r(plug), _outer_r(plug) + 12.0
+        OPENING_RADIUS_FACTOR * _outer_r(plug), _outer_r(plug) + OPENING_RADIUS_MM
     ):
         return -1.0  # opening, not an interface
     margin = _inner_r(sock) - _outer_r(plug)
@@ -413,7 +428,7 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
     # (adapter face_0 "mating" a casing rim)
     if a.kind != b.kind:
         return -1.0
-    score = 0.1
+    score = IFACE_SCORE_BASE
     if a.kind == "cylinder" and b.kind == "cylinder" and min(a.radius, b.radius) > 0:
         if _measured(a) and _measured(b):
             # physical connection model: a joint needs a SOCKET receiving a
@@ -440,7 +455,7 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
             # envelope: a plug fatter than the measured bore can never
             # enter, no matter how the manual phrases the joint
             if sock is not None and plug is not None:
-                if _inner_r(sock) * 1.15 + 0.5 < _outer_r(plug):
+                if _inner_r(sock) * CLEAR_RADIUS_SLACK + CLEAR_RADIUS_FLOOR_MM < _outer_r(plug):
                     seat = _thread_seat(a, b)
                     if seat is not None:
                         return 0.5 if a.depth < 4.0 else 0.35
@@ -448,7 +463,7 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
                 # same asymmetry as _physical_fit: only a HOST-side
                 # opening rejects — moving-part bores are loose hardware
                 if sock is b and _inner_r(sock) > max(
-                    1.85 * _outer_r(plug), _outer_r(plug) + 12.0
+                    OPENING_RADIUS_FACTOR * _outer_r(plug), _outer_r(plug) + OPENING_RADIUS_MM
                 ):
                     return -1.0  # pass-through opening, not an interface
             ratio = min(a.radius, b.radius) / max(a.radius, b.radius)
@@ -463,9 +478,9 @@ def _score_pair(a: PortInfo, b: PortInfo, *, include_mismatch: bool) -> float:
             score += ratio
     g = {a.gender, b.gender}
     if g == {"male", "female"}:
-        score += 0.5
+        score += IFACE_SCORE_MF
     elif g == {"female"}:
-        score -= 0.2  # rim ambiguity: socket-over-pipe is plausible but not preferred
+        score -= IFACE_SCORE_FF  # rim ambiguity: socket-over-pipe is plausible but not preferred
     return score
 
 
@@ -719,16 +734,22 @@ def _port(part: GuidePart, name: str) -> PortInfo | None:
 # --------------------------------------------------------------------------- #
 
 
-def world_bbox(
-    bbox_min: Any, bbox_max: Any, transform: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """World-space AABB of a local bbox under a 4x4 transform."""
+def world_corners(bbox_min: Any, bbox_max: Any, transform: np.ndarray) -> np.ndarray:
+    """The 8 world-space corners of a local AABB under a 4x4 transform —
+    the single implementation every AABB-under-transform consumer uses."""
     mn, mx = _v(bbox_min), _v(bbox_max)
     corners = np.array(
         [[x, y, z] for x in (mn[0], mx[0]) for y in (mn[1], mx[1]) for z in (mn[2], mx[2])]
     )
     t = np.asarray(transform, dtype=float).reshape(4, 4)
-    w = corners @ t[0:3, 0:3].T + t[0:3, 3]
+    return corners @ t[0:3, 0:3].T + t[0:3, 3]
+
+
+def world_bbox(
+    bbox_min: Any, bbox_max: Any, transform: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """World-space AABB of a local bbox under a 4x4 transform."""
+    w = world_corners(bbox_min, bbox_max, transform)
     return w.min(axis=0), w.max(axis=0)
 
 
@@ -770,16 +791,15 @@ def union_containment(
     # cell centers over the moving bbox
     qs = [np.linspace(mn[i] + span[i] / (2 * grid), mx[i] - span[i] / (2 * grid), grid)
           for i in range(3)]
-    inside = 0
-    for x in qs[0]:
-        for y in qs[1]:
-            for z in qs[2]:
-                p = np.array([x, y, z])
-                for omn, omx in others:
-                    if bool(np.all(p >= omn) and np.all(p <= omx)):
-                        inside += 1
-                        break
-    return inside / (grid ** 3)
+    pts = np.stack(np.meshgrid(*qs, indexing="ij"), axis=-1).reshape(-1, 3)
+    omins = np.asarray([o[0] for o in others], dtype=float)
+    omaxs = np.asarray([o[1] for o in others], dtype=float)
+    # a point inside ANY box counts once — the vectorized `any` matches the
+    # old triple loop's `break` semantics
+    in_any = np.all(pts[:, None, :] >= omins[None, :, :], axis=2) & np.all(
+        pts[:, None, :] <= omaxs[None, :, :], axis=2
+    )
+    return float(in_any.any(axis=1).sum()) / (grid ** 3)
 
 
 def buried_instances(
@@ -818,7 +838,7 @@ def buried_instances(
             f = union_containment(mn, mx, [boxes[k]])
             if f > chain_worst:
                 chain_worst, chain_host = f, k
-        if far_frac > 0.45:
+        if far_frac > UNRELATED_FAR_FRAC:
             buried.append({"instance": iid, "buried_frac": round(far_frac, 3)})
         elif chain_worst > 0.85:
             buried.append({
@@ -1028,9 +1048,9 @@ def cardinal_roll_candidates(
     mouths: list[np.ndarray] = []
     for p in moving.ports:
         a = _unit(_v(p.axis))
-        if abs(float(np.dot(a, mp_line))) > 0.9:
+        if abs(float(np.dot(a, mp_line))) > LINE_AXIS_DOT:
             continue
-        if any(abs(float(np.dot(a, la))) > 0.9 for la in mouths):
+        if any(abs(float(np.dot(a, la))) > LINE_AXIS_DOT for la in mouths):
             continue
         mouths.append(a)
     if not mouths:
@@ -1053,7 +1073,7 @@ def cardinal_roll_candidates(
                 if nd < 1e-3:
                     continue
                 dp = dp / nd
-                if float(np.dot(w0p, dp)) > 0.998:
+                if float(np.dot(w0p, dp)) > COLLINEAR_DOT:
                     continue  # already cardinal-facing at roll=0
                 ang = math.degrees(
                     math.atan2(
@@ -1072,52 +1092,6 @@ def cardinal_roll_candidates(
         fixed_port_name,
         rotation_snaps=sorted(snaps),
     )
-
-
-def solve_multi_attachment(
-    moving: GuidePart,
-    fixed: GuidePart,
-    fixed_transform: list[list[float]],
-    port_pairs: list[tuple[str, str]],
-) -> list[list[float]] | None:
-    """Multi-port mate: primary pair fixes the frame; the roll angle is
-    chosen to minimise residual distance of the remaining pairs."""
-    if not port_pairs:
-        return None
-    tf = np.asarray(fixed_transform, dtype=float).reshape(4, 4)
-    primary = solve_attachment(
-        moving,
-        port_pairs[0][0],
-        fixed,
-        fixed_transform,
-        port_pairs[0][1],
-        rotation_snaps=[0.0],
-    )
-    if not primary:
-        return None
-    base = np.asarray(primary[0]["transform"], dtype=float).reshape(4, 4)
-    if len(port_pairs) == 1:
-        return base.tolist()
-    # pivot = primary target port world position
-    tp = _port(fixed, port_pairs[0][1])
-    mp = _port(moving, port_pairs[0][0])
-    if tp is None or mp is None:
-        return base.tolist()
-    pivot = tf[0:3, 0:3] @ (_v(tp.pos) - _v(tp.axis) * _engage_mm(mp, tp)) + tf[0:3, 3]
-    axis = tf[0:3, 0:3] @ _v(tp.axis)
-    best, best_res = base, float("inf")
-    for deg in np.linspace(0.0, 360.0, 72, endpoint=False):
-        m = delta_about_pivot(axis, float(deg), pivot) @ base
-        res = 0.0
-        for mpn, tpn in port_pairs[1:]:
-            sp = _port(moving, mpn)
-            tpp = _port(fixed, tpn)
-            if sp is None or tpp is None:
-                continue
-            res += evaluate_mate(sp, m, tpp, tf)[0] ** 2
-        if res < best_res:
-            best, best_res = m, res
-    return [[float(v) for v in row] for row in best.tolist()]
 
 
 def solve_bridge_attachment(
@@ -1288,10 +1262,5 @@ def transform_bbox(
     part: GuidePart, transform: list[list[float]]
 ) -> tuple[list[float], list[float]]:
     """World-space AABB of a part under a transform (8-corner hull)."""
-    m = np.asarray(transform, dtype=float).reshape(4, 4)
-    mn, mx = _v(part.bbox_min), _v(part.bbox_max)
-    corners = np.array(
-        [[x, y, z, 1.0] for x in (mn[0], mx[0]) for y in (mn[1], mx[1]) for z in (mn[2], mx[2])]
-    )
-    w = (m @ corners.T).T[:, :3]
-    return w.min(axis=0).tolist(), w.max(axis=0).tolist()
+    mn, mx = world_bbox(part.bbox_min, part.bbox_max, np.asarray(transform, dtype=float))
+    return mn.tolist(), mx.tolist()
