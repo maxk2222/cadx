@@ -539,7 +539,10 @@ async def _load_llm(
                 manager.llm_loading.pop(token, None)  # own load is over —
                 # a surviving key belongs to a concurrent request still
                 # inside the single-flight window
-            payload: dict[str, Any] = {"message": str(e)}
+            # a wait_for TimeoutError stringifies to "" — name it instead of
+            # shipping an empty error message
+            message = str(e) or f"llm load of '{cls.id}' timed out"
+            payload: dict[str, Any] = {"message": message}
             # a strict-fit rejection is retryable by definition — the caller
             # should come back once a resident finishes/unloads
             retryable = isinstance(e, InsufficientMemoryError)
@@ -590,7 +593,14 @@ async def _prepare_llm(
     if isinstance(slot_or_err, JSONResponse):
         return slot_or_err
     slot = slot_or_err
-    loaded = await _load_llm(registry, cfg, manager, cls, prog=prog, deadline=deadline)
+    try:
+        loaded = await _load_llm(registry, cfg, manager, cls, prog=prog, deadline=deadline)
+    except BaseException:
+        # CancelledError is NOT an Exception — a disconnect mid-admission/
+        # mid-load would otherwise propagate past here holding a granted
+        # capacity slot forever
+        slot.release()
+        raise
     if isinstance(loaded, JSONResponse):
         slot.release()
         return loaded
@@ -853,6 +863,16 @@ async def _proxy_json(url: str, payload: dict, model: str, cfg: Any = None) -> R
     except TimeoutError:
         log.warning("llm.proxy.upstream_timeout", model=model, timeout_s=up_s)
         return _err(504, f"llm upstream did not respond within {up_s:.0f}s")
+    except RuntimeError:
+        # a shared client outlives the loop it bound to (test loops, worker
+        # restarts) — drop it once and retry on a fresh client
+        global _json_client
+        _json_client = None
+        try:
+            r = await _shared_json_client().post(url, json=payload)
+        except (httpx.HTTPError, RuntimeError) as e:
+            log.warning("llm.proxy.upstream_error", model=model, error=str(e))
+            return _err(502, f"llm upstream unreachable: {e}")
     except httpx.HTTPError as e:
         log.warning("llm.proxy.upstream_error", model=model, error=str(e))
         return _err(502, f"llm upstream unreachable: {e}")

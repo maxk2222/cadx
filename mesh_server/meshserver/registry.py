@@ -541,9 +541,13 @@ class Registry:
                     # estimate from free_mb (psutil reports it from here)
                     self.ledger.mark_resident(cls.id)
                 except Exception as e:
-                    # remember the failure so 'auto' skips this adapter next
-                    # time; purge whatever half-loaded state + reservation
-                    self.mark_failed(cls.id, str(e))
+                    # remember real load failures so 'auto' skips the adapter
+                    # next time — but NOT InsufficientMemoryError: transient
+                    # host pressure is not a model fault, and badlisting would
+                    # block the retry after residents unload. Either way the
+                    # half-loaded state + spec reservation are released.
+                    if not isinstance(e, InsufficientMemoryError):
+                        self.mark_failed(cls.id, str(e))
                     self.ledger.release(cls.id)
                     with contextlib.suppress(Exception):
                         inst.unload()
