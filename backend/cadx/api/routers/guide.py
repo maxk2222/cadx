@@ -346,7 +346,9 @@ def _regen_glb(state: Any, guide_dir: Path) -> None:
         if i.part_id in by_id and by_id[i.part_id].mesh_path
     ]
     try:
-        merged_glb(placements, guide_dir / "output" / "assembly.glb")
+        # same frame contract as the initial emit — blender-mode
+        # placements are already glTF Y-up and must pass through
+        merged_glb(placements, guide_dir / "output" / "assembly.glb", world_frame=state.world_frame)
     except Exception as exc:
         log.warning("guide.glb_regen_failed", error=str(exc)[:200])
 

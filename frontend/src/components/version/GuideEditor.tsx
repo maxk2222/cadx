@@ -1014,7 +1014,7 @@ export default function GuideEditor({
         k,
         kind: "text",
         step: step?.number ?? 1,
-        position: [p.x, p.y + 60, p.z],
+        position: [p.x, p.y, p.z + 60],
         text: "",
       });
     });
