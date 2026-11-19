@@ -100,6 +100,65 @@ def test_forbidden_attrs():
     assert not r.ok
 
 
+def test_alias_bypass_blocked():
+    """`o = open; o(...)` skipped every gate because only call sites and
+    `__import__` name-loads were checked — a Load-context forbidden name
+    must now be rejected where it is bound."""
+    for snippet in [
+        "o = open\nresult = o('/etc/passwd')\n",
+        "g = getattr\nresult = g(object, '__subclasses__')()\n",
+        "e = eval\nresult = e('1+1')\n",
+        "x = globals\nresult = x()\n",
+        "s = setattr\nresult = s(object, 'x', 1)\n",
+        "b = __builtins__\nresult = b\n",
+    ]:
+        r = check_code(GOOD + snippet)
+        assert not r.ok, snippet
+        assert any("is not allowed" in e for e in r.errors), snippet
+
+
+def test_store_side_of_forbidden_name_stays_legal():
+    """`open = 5` is a Store-context write — allowed (binds a number, not
+    the function). But a Load of the radioactive name is rejected even
+    after shadowing: the checker does not track rebinding, and refusing
+    `x = open` after `open = 5` costs a legit name nothing."""
+    r = check_code(GOOD + "open = 5\nresult = Box(1, 1, 1)\n")
+    assert r.ok, r.errors
+    r2 = check_code(GOOD + "open = 5\nresult = open\n")
+    assert not r2.ok
+
+
+def test_dir_and_input_identifiers_stay_legal():
+    """`dir`/`input` are plausible CAD identifiers (direction vector,
+    input geometry) — they are Load-banned nowhere."""
+    r = check_code(GOOD + "dir = [1, 0, 0]\ninp = 2.0\nresult = Box(inp, inp, inp)\n")
+    assert r.ok, r.errors
+
+
+def test_numpy_file_io_scoped_ban():
+    """np.load/np.save write files and unpickle — banned only on
+    numpy-rooted attributes (generic `.load` on other objects stays)."""
+    for snippet in [
+        "result = np.load('/tmp/x.npy')\n",
+        "result = np.save('/tmp/x', np.zeros(3))\n",
+        "arr = np.zeros(3)\nresult = arr.tofile('/tmp/x')\n",
+        "arr = np.zeros(3)\nresult = arr.dump('/tmp/x')\n",
+        "result = np.memmap('/tmp/x', shape=(3,))\n",
+        "result = np.frombuffer(b'123')\n",
+        "n = np\nresult = n.load('/tmp/x.npy')\n",
+        "import numpy as n2\nresult = n2.loadtxt('/tmp/x')\n",
+    ]:
+        r = check_code(GOOD + snippet)
+        assert not r.ok, snippet
+
+
+def test_numpy_normal_use_stays_legal():
+    r = check_code(
+        GOOD + "import numpy as np\narr = np.zeros((3, 3))\nresult = Box(float(arr[0, 0]) + 1, 1, 1)\n"
+    )
+    assert r.ok, r.errors
+
+
 def test_missing_params_and_result():
     r = check_code("from build123d import *\nresult = Box(1,1,1)\n")
     assert not r.ok and any("PARAMS" in e for e in r.errors)

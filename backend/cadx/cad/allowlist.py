@@ -52,7 +52,71 @@ FORBIDDEN_ATTRS = {
     "__dict__",
     "__import__",
     "mro",
+    "__bases__",
+    "__base__",
+    "__mro__",
+    "__getattribute__",
+    "__setattr__",
+    "__delattr__",
+    "__getattr__",
+    "__get__",
+    "__set__",
+    "__delete__",
+    "__init_subclass__",
+    "__subclasshook__",
+    "__reduce__",
+    "__reduce_ex__",
+    "__setstate__",
+    "__getstate__",
+    "__getnewargs__",
+    "__getnewargs_ex__",
+    "__wrapped__",
+    "__closure__",
+    "func_globals",
+    "func_code",
+    "f_globals",
+    "f_locals",
+    "f_builtins",
+    "gi_frame",
+    "gi_code",
+    "cr_frame",
+    "cr_code",
+    "tb_frame",
+    "ag_frame",
+    "ag_code",
+    # file/ctypes escape hatches reachable through allowed roots (numpy) —
+    # generated code never performs raw file IO (inputs arrive via injected
+    # helpers); these method names are unambiguous on that surface
+    "ctypeslib",
+    "load_library",
+    "memmap",
+    "frombuffer",
+    "fromstring",
+    "fromregex",
+    "fromfile",
+    "loadtxt",
+    "genfromtxt",
+    "savetxt",
+    "savez",
+    "savez_compressed",
+    "tofile",
+    "dump",
+    "dumps",
 }
+
+# forbidden builtins must not be LOADABLE at all — the alias bypass
+# `o = open; o("…")` / `g = getattr; g(x, "__subclasses__")` skipped every
+# gate because the name itself was never checked. `dir`/`input` stay legal
+# as identifiers (direction vectors, input-geometry names — their aliases
+# can only introspect, not escape); `__builtins__` joins the set because it
+# is also a reachable module-level name.
+FORBIDDEN_LOAD_NAMES = (FORBIDDEN_NAMES - {"dir", "input"}) | {"__builtins__"}
+
+# generic-looking file IO on numpy objects — banned only when the attribute
+# root resolves to the numpy module (`np.load`/`np.save` write files, and
+# `np.load(allow_pickle=True)` unpickles). Scoped so `thing.load()` on
+# non-numpy objects stays legal.
+_NP_SCOPED_ATTRS = {"load", "loads", "save"}
 
 _ALLOWED_LITERAL_TYPES = (int, float, str, bool)
 
@@ -201,6 +265,11 @@ class _Checker(ast.NodeVisitor):
         # re-sews the grown solid every time (observed: 40-cylinder arch →
         # >480 s pipeline hang)
         self._loop_depth = 0
+        # names bound to numpy (filled by check_code's `_numpy_aliases` prepass)
+        self._np_aliases: set[str] = {"np", "numpy"}
+        # func-Name nodes already reported by visit_Call (better message) —
+        # visit_Name skips these ids to avoid double-reporting one violation
+        self._call_func_ids: set[int] = set()
 
     # ---- constant evaluation over literals, PARAMS subs and simple arith ----
     def _const(self, node: ast.AST) -> float | None:
@@ -525,6 +594,7 @@ class _Checker(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_NAMES:
+            self._call_func_ids.add(id(node.func))
             self._err(node, f"call to '{node.func.id}' is not allowed")
         if (
             isinstance(node.func, ast.Name)
@@ -700,13 +770,23 @@ class _Checker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
-        if node.id in {"__import__"}:
+        if node.id in {"__import__"} or (
+            isinstance(node.ctx, ast.Load)
+            and node.id in FORBIDDEN_LOAD_NAMES
+            and id(node) not in self._call_func_ids
+        ):
             self._err(node, f"use of '{node.id}' is not allowed")
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if node.attr in FORBIDDEN_ATTRS:
             self._err(node, f"attribute '{node.attr}' is not allowed")
+        elif node.attr in _NP_SCOPED_ATTRS:
+            root = node.value
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Name) and root.id in self._np_aliases:
+                self._err(node, f"numpy attribute '{node.attr}' is not allowed")
         # `e.center.X`: .center is a METHOD, not a property — the result is a
         # bound method and raises "function object has no attribute 'X'"
         if (
@@ -1003,6 +1083,26 @@ def _unused_params(tree: ast.Module, params: dict[str, object]) -> list[str]:
     return warnings
 
 
+def _numpy_aliases(tree: ast.AST) -> set[str]:
+    """Names bound to the numpy module — `import numpy`, `import numpy as n`,
+    plus one-hop copies `x = np` / `x = numpy`. Backs the scoped attribute ban
+    (`np.load`/`np.save` are file IO the DSL never needs). Seeded with the
+    conventional names — `np.load` must be flagged even when `np` was never
+    imported in the checked source."""
+    roots = {"np", "numpy"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name.split(".")[0] == "numpy":
+                    roots.add(a.asname or a.name.split(".")[0])
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            t, v = node.targets[0], node.value
+            if isinstance(t, ast.Name) and isinstance(v, ast.Name) and v.id in roots:
+                roots.add(t.id)
+    return roots
+
+
 def check_code(code: str, *, sigcheck: bool = False) -> CheckResult:
     """Static check of user code. Returns CheckResult(ok, errors, params).
 
@@ -1035,6 +1135,7 @@ def check_code(code: str, *, sigcheck: bool = False) -> CheckResult:
     # PARAMS values must be known before the walk — constant resolution
     # (ctor dims for the fillet heuristic, param aliases) depends on them
     checker._param_values = params
+    checker._np_aliases = _numpy_aliases(tree)
     checker.visit(tree)
     checker.warnings.extend(_unused_params(tree, params))
     errors = checker.errors + param_errors
