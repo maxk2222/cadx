@@ -846,6 +846,7 @@ def _lint_side_coverage(sess: GuideToolSession, steps: list[Any]) -> list[dict[s
             "substep_idx": i,
             "part": ss.part,
             "target": ss.target or "",
+            "target2": ss.target2 or "",
             "text": ss.text or "",
         }
         for st in steps

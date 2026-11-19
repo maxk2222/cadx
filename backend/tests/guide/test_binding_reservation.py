@@ -266,6 +266,29 @@ def test_reservations_do_not_leak_across_sessions() -> None:
     assert pa._used_port_names(sess, inst) == set()
 
 
+def test_bridge_leg_signature_ignores_shared_clause() -> None:
+    """A bridge substep's text spans BOTH ends — its side words must not
+    merge into one leg's signature: 'brückt das Rohr (unten) mit dem
+    Kurzrohr (oben)' locates neither leg; the leg's own ref does."""
+    task = {
+        "step": 8,
+        "target": "freie obere Seite des linken vertikalen Rohrs (Schritt 7)",
+        "target2": "freie untere Seite des linken oberen Rohrs (Schritt 3)",
+        "text": "Rohrbogen brueckt das linke vertikale Rohr (unten) mit "
+        "dem linken oberen Kurzrohr (oben)",
+    }
+    assert pa._task_side_signature(task) == {"l"}
+    # a plain placement keeps clause words — they often carry the only
+    # location phrase the target name lacks
+    plain = {
+        "step": 7,
+        "target": "Rohrbogen links unten an der Waermepumpe",
+        "target2": "",
+        "text": "Langrohr einfuehren",
+    }
+    assert pa._task_side_signature(plain) == {"l", "d"}
+
+
 @pytest.mark.asyncio
 async def test_resolve_open_mates_fails_honestly_when_nothing_open() -> None:
     """No declared second mate → the tool says so instead of pretending

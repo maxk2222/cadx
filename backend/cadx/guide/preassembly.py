@@ -507,12 +507,19 @@ def _clean_side_text(text: str) -> str:
 def _task_side_signature(t: dict[str, Any]) -> set[str]:
     """Side words that describe a task's TARGET location: the bare target
     name plus only the first text clause (the one naming it) — later
-    clauses describe OTHER parts ("freie Seite auf das obere Rohr")."""
+    clauses describe OTHER parts ("freie Seite auf das obere Rohr").
+
+    A bridge leg (``target2`` set) locates itself — 'freie obere Seite
+    des LINKEN vertikalen Rohrs' — while the shared substep text spans
+    BOTH ends ('brückt das Rohr (unten) mit dem Kurzrohr (oben)') and
+    would merge both legs' side words into each leg's signature."""
+    target = _clean_side_text(t.get("target") or "")
+    if str(t.get("target2") or "").strip():
+        return _side_words(target)
     first_clause = (t.get("text") or "").split(",")[0]
     for cut in (" dann ", " anschließ", " und "):
         first_clause = first_clause.split(cut)[0]
     first_clause = _clean_side_text(first_clause)
-    target = _clean_side_text(t.get("target") or "")
     return _side_words(f"{target} {first_clause}")
 
 
