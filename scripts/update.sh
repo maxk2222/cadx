@@ -124,13 +124,15 @@ detect_mode() {
 app_port() { [ "$MODE" = "dev" ] && echo 8000 || echo 8080; }
 
 active_job_count() {
-  # count non-terminal jobs via the app API; unreachable api -> 0
+  # count non-terminal jobs via the app API. Unreachable api / unparseable
+  # answer -> -1 (sentinel: "cannot verify") — callers must fail CLOSED, a
+  # blind 0 would let an update restart workers mid-generation
   local port out
   for port in $(app_port) 8080 8000; do
     out=$(curl -sf --max-time 5 "http://localhost:$port/api/jobs?active=true" 2>/dev/null) \
-      && { printf '%s' "$out" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null || echo 0; return; }
+      && { printf '%s' "$out" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))' 2>/dev/null || echo -1; return; }
   done
-  echo 0
+  echo -1
 }
 
 # ---------- git helpers ----------
@@ -206,9 +208,21 @@ preflight() {
       fail=1
     fi
     U_ACTIVE_JOBS=$(active_job_count)
+    if [ "$U_ACTIVE_JOBS" -lt 0 ]; then
+      # cannot verify — fail closed. --yes must NOT waive this (the updater
+      # daemon always invokes --yes, so this is the only guard on that path);
+      # --force stays the explicit override
+      if [ "$FORCE" = 0 ]; then
+        err "cannot verify active generation jobs — api unreachable"
+        err "refusing to update blind (workers may still be busy) — pass --force to override"
+        fail=1
+      else
+        warn "cannot verify active generation jobs (api unreachable) — continuing anyway (--force)"
+        U_ACTIVE_JOBS=0
+      fi
     # --yes counts as the explicit confirmation (the api gate or a human typed
     # it); without either flag a running job still blocks the update
-    if [ "$U_ACTIVE_JOBS" -gt 0 ] && [ "$FORCE" = 0 ] && [ "${YES:-0}" = 0 ]; then
+    elif [ "$U_ACTIVE_JOBS" -gt 0 ] && [ "$FORCE" = 0 ] && [ "${YES:-0}" = 0 ]; then
       err "$U_ACTIVE_JOBS generation job(s) still running — let them finish or pass --yes/--force"
       fail=1
     fi
@@ -409,7 +423,7 @@ do_rollback() {
   dump=$(ls -1t data/backups/cadx-*.dump 2>/dev/null | head -1 || true)
   if [ -n "$dump" ]; then
     warn "if the rolled-back code predates applied migrations, restore the DB:"
-    warn "  scripts/restore_db.sh $dump   (or: cat $dump | docker compose exec -T postgres pg_restore -U cadx -d cadx --clean)"
+    warn "  docker compose exec -T postgres pg_restore -U cadx -d cadx --clean --if-exists < $dump"
   fi
   do_deps
   do_restart

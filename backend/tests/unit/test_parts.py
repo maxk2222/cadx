@@ -141,15 +141,23 @@ async def test_child_inherits_parent_part(client):
 async def test_versions_part_filter(client):
     pid = await _project(client, "filter-part")
     p1 = (await client.post(f"/api/projects/{pid}/parts", json={"name": "a"})).json()
+    p2 = (await client.post(f"/api/projects/{pid}/parts", json={"name": "b"})).json()
     await client.post(f"/api/projects/{pid}/generate", json={"prompt": "one", "part_id": p1["id"]})
-    await client.post(f"/api/projects/{pid}/generate", json={"prompt": "two"})
+    await client.post(f"/api/projects/{pid}/generate", json={"prompt": "two", "part_id": p1["id"]})
+    await client.post(f"/api/projects/{pid}/generate", json={"prompt": "three", "part_id": p2["id"]})
 
     tree = (await client.get(f"/api/projects/{pid}/versions")).json()
-    assert len(tree) == 2
-    # newest version first
-    assert [v["number"] for v in tree] == [2, 1]
+    assert len(tree) == 3
+    # numbers are per-part sequences — group the tree by part to avoid
+    # depending on same-timestamp tie ordering across parts
+    by_part: dict[str, list[int]] = {}
+    for v in tree:
+        by_part.setdefault(v["part_id"], []).append(v["number"])
+    assert by_part[p1["id"]] == [2, 1]  # newest first within the part
+    assert by_part[p2["id"]] == [1]
     scoped = (await client.get(f"/api/projects/{pid}/versions?part_id={p1['id']}")).json()
-    assert len(scoped) == 1 and scoped[0]["part_id"] == p1["id"]
+    assert [v["number"] for v in scoped] == [2, 1]
+    assert all(v["part_id"] == p1["id"] for v in scoped)
 
 
 # --------------------------------------------------------------------------- #

@@ -171,6 +171,28 @@ def test_no_image_rejected(app):
         assert r.status_code == 422
 
 
+def test_job_image_filename_is_sanitized(tmp_path):
+    """A hostile multipart filename must not escape the incoming dir."""
+    from fastapi.testclient import TestClient
+
+    cfg = ServerConfig(fake=True, job_dir=tmp_path / "jobs", bg_removal="never")
+
+    with TestClient(create_app(cfg)) as c:
+        files = [
+            ("json", ("p.json", json.dumps({"model": "fake"}), "application/json")),
+            ("images", ("../../evil.png", _png(), "image/png")),
+        ]
+        r = c.post("/v1/jobs", files=files)
+        assert r.status_code == 200, r.text
+        assert list(tmp_path.glob("evil*")) == []  # nothing outside job_dir
+        staged = list((cfg.job_dir / "incoming").iterdir())
+        assert len(staged) == 1 and ".." not in staged[0].name
+        job_id = r.json()["job_id"]
+        c.delete(f"/v1/jobs/{job_id}")
+        # staged inputs are per-job files — deleting the job removes them
+        assert list((cfg.job_dir / "incoming").iterdir()) == []
+
+
 def test_unavailable_model_fails_job(app):
     from fastapi.testclient import TestClient
 

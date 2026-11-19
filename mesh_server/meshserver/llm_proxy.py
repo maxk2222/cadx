@@ -1075,6 +1075,16 @@ def _shared_json_client() -> httpx.AsyncClient:
     return _json_client
 
 
+async def close_shared_client() -> None:
+    """Lifespan teardown — release the shared keep-alive client's connection
+    pool instead of letting it outlive the app's event loop."""
+    global _json_client
+    client, _json_client = _json_client, None
+    if client is not None:
+        with contextlib.suppress(Exception):
+            await client.aclose()
+
+
 async def _proxy_json(url: str, payload: dict, model: str, cfg: Any = None) -> Response:
     effective = getattr(cfg, "effective", None)
     up_v = effective("llm_upstream_timeout_s") if effective else None

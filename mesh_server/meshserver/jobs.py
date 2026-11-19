@@ -366,11 +366,16 @@ class JobManager:
     @staticmethod
     def _cleanup_job_files(job: MeshJob | ImageJob, job_dir: Path) -> None:
         shutil.rmtree(job_dir / job.id, ignore_errors=True)
-        # staged edit-job init image lives in job_dir/incoming/, outside the
-        # per-job dir — remove it explicitly
-        init = getattr(job, "init_image_path", None)
-        if init is not None:
-            init.unlink(missing_ok=True)
+        # staged inputs live in job_dir/incoming/, outside the per-job dir —
+        # remove them explicitly (edit-job init image + mesh-job uploads).
+        # Guard: only ever unlink paths that resolve under job_dir — a
+        # recorded path pointing elsewhere must never delete a foreign file.
+        for p in [getattr(job, "init_image_path", None), *getattr(job, "image_paths", [])]:
+            if p is None:
+                continue
+            with contextlib.suppress(OSError):
+                if p.resolve().is_relative_to(job_dir.resolve()):
+                    p.unlink(missing_ok=True)
 
     async def delete(self, job_id: str) -> bool:
         job = self.jobs.pop(job_id, None)

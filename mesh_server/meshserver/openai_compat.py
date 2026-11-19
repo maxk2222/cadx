@@ -216,6 +216,7 @@ async def images_edits(
     init_path.write_bytes(image_bytes)
     job = await manager.submit_image(params, init_image_path=init_path, priority=priority)
     if job is None:
+        init_path.unlink(missing_ok=True)  # no job owns the staged file
         return JSONResponse(
             {
                 "error": {

@@ -28,7 +28,11 @@ from meshserver.config import ServerConfig, _is_loopback, get_config
 from meshserver.downloads import DownloadManager, downloadable
 from meshserver.jobs import ImageJob, JobManager, MeshJob
 from meshserver.llm_models import register_custom_model, unregister_custom_model
-from meshserver.llm_proxy import chat_completions, embeddings as llm_embeddings
+from meshserver.llm_proxy import (
+    chat_completions,
+    close_shared_client,
+    embeddings as llm_embeddings,
+)
 from meshserver.logging import configure_logging, get_logger
 from meshserver.openai_compat import (
     images_edits,
@@ -109,6 +113,8 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
             await sweep_task
         await manager.stop()
         registry.unload_all()
+        # shared llm-proxy keep-alive client — close its pool on our loop
+        await close_shared_client()
 
     app = FastAPI(title="mesh-server", version="0.1.0", lifespan=lifespan)
 
@@ -178,14 +184,20 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
         job_dir.mkdir(parents=True, exist_ok=True)
         paths: list[Path] = []
         for i, img in enumerate(images):
-            name = img.filename or f"image{i}.png"
-            p = job_dir / f"{name}.{i}"
+            # filename is client-controlled — strip any directory components;
+            # uuid-prefix each staged file so concurrent same-named uploads
+            # can't clobber each other (and per-job cleanup stays safe)
+            safe_name = Path(img.filename or f"image{i}.png").name or f"image{i}.png"
+            p = job_dir / f"img_{uuid.uuid4().hex[:8]}_{i}_{safe_name}"
             p.write_bytes(await img.read())
             paths.append(p)
         job = await manager.submit(
             params, paths, priority=_job_priority(request)
         )
         if job is None:
+            # refusal leaves no job owning the staged files — drop them
+            for p in paths:
+                p.unlink(missing_ok=True)
             raise HTTPException(429, "job queue full")
         return JobCreated(job_id=job.id)
 
@@ -252,6 +264,7 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
             params, init_image_path=init_path, priority=_job_priority(request)
         )
         if job is None:
+            init_path.unlink(missing_ok=True)  # no job owns the staged file
             raise HTTPException(429, "job queue full")
         return JobCreated(job_id=job.id)
 

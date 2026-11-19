@@ -60,6 +60,7 @@ def test_step1x_unavailable_without_cuda():
         torch = None  # no torch at all -> adapter is certainly unavailable
     if (
         torch is not None
+        and getattr(torch, "cuda", None) is not None  # namespace-stub torch has no cuda
         and torch.cuda.is_available()
         and not getattr(torch.version, "hip", None)
     ):

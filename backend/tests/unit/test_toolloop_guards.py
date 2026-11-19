@@ -97,9 +97,15 @@ async def test_turn_cap_ends_session():
     async def ok_verify(code: str):
         return {"ok": True}
 
-    # alternate check tools: identical repeated calls would trip the
-    # repeat-loop detector before the turn cap is even reached
-    llm = FakeLLM([_call("check_code" if i % 2 else "verify") for i in range(40)])
+    # alternate check tools with varying args: identical or cyclically
+    # repeated calls would trip the loop detectors before the turn cap
+    # is even reached
+    llm = FakeLLM(
+        [
+            _call("check_code") if i % 2 else _call("read_lines", start=i + 1, end=i + 2)
+            for i in range(40)
+        ]
+    )
     llm.tools_mode = "auto"
     ctx = _ctx(llm, agent_tool_max_turns=40, agent_tool_max_turns_edit=7, agent_tool_verify_max=20)
     session = ToolSession(ctx, kind="edit", code=BOX_CODE, verify_fn=ok_verify)
@@ -166,8 +172,13 @@ async def test_verify_loop_different_errors_do_not_abort():
     async def varying_verify(code: str):
         return next(it, {"ok": True})
 
-    # interleave reads so identical verify() calls don't trip repeat_loop
-    script = [c for _ in range(4) for c in (_call("verify"), _call("read_lines", start=1, end=3))]
+    # interleave varying reads so the verify→read pattern isn't an
+    # identical/period-k cycle the loop detectors (rightly) kill
+    script = [
+        c
+        for i in range(4)
+        for c in (_call("verify"), _call("read_lines", start=i + 1, end=i + 2))
+    ]
     llm = FakeLLM([*script, {"text": "done"}])
     llm.tools_mode = "auto"
     ctx = _ctx(llm, agent_tool_verify_max=10)

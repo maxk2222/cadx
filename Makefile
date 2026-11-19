@@ -154,10 +154,11 @@ test: ## Backend test suite
 fem-verify: ## FEM verification suite (benchmarks, convergence, MMS, ccx opt-in)
 	cd $(BACKEND) && ../$(VENV)/bin/uv run pytest tests/femverify -x -q
 
-lint: ## ruff + frontend typecheck
+lint: ## ruff + frontend typecheck + i18n key parity
 	cd $(BACKEND) && ../$(VENV)/bin/uv run ruff check .
 	cd $(BACKEND) && ../$(VENV)/bin/uv run ruff format --check .
 	cd $(FRONTEND) && npx tsc --noEmit
+	cd $(FRONTEND) && node scripts/check_i18n.mjs
 
 fmt: ## ruff autofix + format
 	cd $(BACKEND) && ../$(VENV)/bin/uv run ruff check --fix . && ../$(VENV)/bin/uv run ruff format .

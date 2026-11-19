@@ -22,24 +22,30 @@ except ImportError:
     torch = None  # torch is an optional dep — fixture users skip below
 
 
+def _usable_torch():
+    """Real torch exposes .cuda/.version; a namespace-stub (optional-dep
+    shim) does not — skip rather than error on the stub."""
+    if torch is None or getattr(torch, "cuda", None) is None:
+        pytest.skip("torch not installed")
+    return torch
+
+
 @pytest.fixture
 def rocm_torch(monkeypatch):
     """Make the installed (CPU) torch look like a ROCm/HIP build."""
-    if torch is None:
-        pytest.skip("torch not installed")
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.version, "hip", "6.4.2", raising=False)
-    return torch
+    t = _usable_torch()
+    monkeypatch.setattr(t.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(t.version, "hip", "6.4.2", raising=False)
+    return t
 
 
 @pytest.fixture
 def cuda_torch(monkeypatch):
     """Real NVIDIA build: cuda available, no hip."""
-    if torch is None:
-        pytest.skip("torch not installed")
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.version, "hip", None, raising=False)
-    return torch
+    t = _usable_torch()
+    monkeypatch.setattr(t.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(t.version, "hip", None, raising=False)
+    return t
 
 
 def test_is_rocm_detection(rocm_torch):

@@ -196,7 +196,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- helpers ----------
     def _auth(self) -> bool:
-        return self.headers.get("Authorization", "") == f"Bearer {TOKEN}"
+        # constant-time compare (bytes — a non-ASCII header must not raise)
+        auth = self.headers.get("Authorization", "").encode("utf-8", "replace")
+        return secrets.compare_digest(auth, f"Bearer {TOKEN}".encode())
 
     def _json(self, code: int, doc) -> None:
         body = json.dumps(doc).encode()

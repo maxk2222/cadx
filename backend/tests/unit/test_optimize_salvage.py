@@ -407,7 +407,10 @@ def test_struct_budget_covers_a_full_optimize_call() -> None:
 async def test_topopt_fn_refuses_call_that_cannot_land(tmp_path) -> None:
     """The ops budget guard must estimate the FULL call envelope
     (topopt_timeout_s + tail + wait) — a smaller estimate would let the
-    agent start a call that cannot return before the job deadline."""
+    agent start a call that cannot return before the job deadline.
+
+    The FIRST run is deliberately exempt (a partial-density salvage still
+    lands); the guard bites on every subsequent call."""
     import itertools
     import time
     import uuid
@@ -444,6 +447,10 @@ async def test_topopt_fn_refuses_call_that_cannot_land(tmp_path) -> None:
         request_opt={},
     )
     fn = _make_topopt_fn(ops)
+    # first call always goes through — even a timed-out run can land a
+    # salvageable partial density (executor-level outcome, not a refusal)
+    first = await fn({"load_cases": [{"name": "c", "loads": [], "fixed": []}]})
+    assert "budget" not in (first.get("error") or "")
     res = await fn({"load_cases": [{"name": "c", "loads": [], "fixed": []}]})
     assert res["ok"] is False
     assert "budget" in (res.get("error") or "")

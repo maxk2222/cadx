@@ -180,7 +180,7 @@ if [ "$NO_MESH" = 0 ] && [ "$TIER" != "none" ]; then
         echo "MESH_API_KEY=$MESH_API_KEY" >> .env
       fi
       if [ "$LAN" = 1 ]; then
-        info "LAN sidecar: http://$(hostname -I 2>/dev/null | awk '{print $1}' || ipconfig getifaddr en0 2>/dev/null || echo '<lan-ip>'):$MESH_PORT  api key: $MESH_API_KEY"
+        info "LAN sidecar: http://$(hostname -I 2>/dev/null | awk '{print $1}' || ipconfig getifaddr en0 2>/dev/null || echo '<lan-ip>'):$MESH_PORT  api key written to .env as MESH_API_KEY"
         warn "LAN mode: mesh-server binds 0.0.0.0 with bearer auth — clients need Authorization: Bearer <key> (persisted in .env as MESH_API_KEY)"
       else
         warn "mesh-server binds $MESH_HOST (docker workers reach it) with bearer auth — key persisted in .env as MESH_API_KEY"
@@ -285,6 +285,8 @@ if [ "${MESH_HOST:-}" != "" ]; then
         echo "HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}"
         echo "PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-}"
       } > run/mesh-server.env
+      # holds MESH_API_KEY in plaintext — same 600 treatment as run/updater.token
+      chmod 600 run/mesh-server.env
       step_done "pid $! (supervised)"
     fi
   fi
