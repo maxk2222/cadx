@@ -228,6 +228,100 @@ def test_quantity_blocker_names_requirement_sites() -> None:
         assert site in hit[0]["text"]
 
 
+def test_floating_premount_does_not_root_a_satellite() -> None:
+    """'vormontiert am Gerät' is a spatial claim: a premount placed a
+    metre below the host must not root its subtree — the whole tree is
+    disconnected debris the audit must name."""
+    from cadx.guide.assembly_tools import joint_geometry_audit
+
+    host = _part("casing")
+    host.bbox_min, host.bbox_max = [-50, -50, -100], [50, 50, 100]
+    fitting = _part("adapter")
+    fitting.bbox_min, fitting.bbox_max = [-10, -10, -10], [10, 10, 10]
+    tf_host = solver.identity_transform()
+    tf_host[2][3] = 1000.0  # casing hovers a metre up
+    tf_pre = solver.identity_transform()  # premount left at floor level
+    host_i = AssemblyInstance(
+        part_id="casing", instance_id="casing#1", transform=tf_host, placed_in_step=1
+    )
+    pre_i = AssemblyInstance(
+        part_id="adapter",
+        instance_id="adapter#1",
+        transform=tf_pre,
+        placed_in_step=2,
+        premounted=True,
+    )
+    leaf_i = AssemblyInstance(
+        part_id="adapter",
+        instance_id="adapter#2",
+        transform=tf_pre,
+        placed_in_step=3,
+    )
+    asm = AssemblyState(
+        instances=[host_i, pre_i, leaf_i],
+        joints=[
+            {
+                "step": 3,
+                "moving_instance": "adapter#2",
+                "fixed_instance": "adapter#1",
+                "moving_part": "adapter",
+                "fixed_part": "adapter",
+            }
+        ],
+    )
+    sess = _sess([host, fitting], assembly=asm)
+    audit = joint_geometry_audit(sess)
+    lost = {d["instance"] for d in audit["disconnected_instances"]}
+    assert {"adapter#1", "adapter#2"} <= lost, audit["disconnected_instances"]
+
+
+def test_premount_on_host_still_roots() -> None:
+    """A premount flush against the host keeps its root status — the
+    exemption exists for real on-device hardware."""
+    from cadx.guide.assembly_tools import joint_geometry_audit
+
+    host = _part("casing")
+    host.bbox_min, host.bbox_max = [-50, -50, -100], [50, 50, 100]
+    fitting = _part("adapter")
+    fitting.bbox_min, fitting.bbox_max = [-10, -10, -10], [10, 10, 10]
+    host_i = AssemblyInstance(
+        part_id="casing",
+        instance_id="casing#1",
+        transform=solver.identity_transform(),
+        placed_in_step=1,
+    )
+    tf_pre = solver.identity_transform()
+    tf_pre[0][3] = 60.0  # flush against the casing's right face
+    pre_i = AssemblyInstance(
+        part_id="adapter",
+        instance_id="adapter#1",
+        transform=tf_pre,
+        placed_in_step=2,
+        premounted=True,
+    )
+    leaf_i = AssemblyInstance(
+        part_id="adapter",
+        instance_id="adapter#2",
+        transform=tf_pre,
+        placed_in_step=3,
+    )
+    asm = AssemblyState(
+        instances=[host_i, pre_i, leaf_i],
+        joints=[
+            {
+                "step": 3,
+                "moving_instance": "adapter#2",
+                "fixed_instance": "adapter#1",
+                "moving_part": "adapter",
+                "fixed_part": "adapter",
+            }
+        ],
+    )
+    sess = _sess([host, fitting], assembly=asm)
+    audit = joint_geometry_audit(sess)
+    assert audit["disconnected_instances"] == []
+
+
 def _rim(name: str) -> PortInfo:
     return PortInfo(
         name=name, kind="cylinder", pos=[0, 0, 0], axis=[0, 0, 1], radius=5, gender="female"

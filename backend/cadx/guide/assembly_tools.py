@@ -2177,12 +2177,36 @@ def _connectivity_audit(
     topologically complete yet physically wrong (observed: heatpump run
     joined 10 joints adapter→pipe→elbow, zero joints to the casing)."""
     insts = {i.instance_id: i for i in s.state.assembly.instances}
-    # premounted hardware is a second rigid root — it sits on the machine
-    # body, not on the casing, so its subtree is legitimately host-anchored
-    roots = {iid for iid, i in insts.items() if i.premounted}
+    # premounted hardware is a second rigid root ONLY while it sits on the
+    # machine body — 'vormontiert am Gerät' is a spatial claim, not a free
+    # pass: a premount floating a metre below the host roots nothing, and
+    # its subtree must earn connectivity through real joints (observed:
+    # premount adapters spawned at floor level while the casing hovered
+    # ~1m up — the exemption hid the entire disconnected pipe tree)
+    host_pid = _host_part_id(s)
+    host_boxes = [
+        bboxes[iid]
+        for iid, i in insts.items()
+        if i.part_id == host_pid and iid in bboxes
+    ]
+    roots: set[str] = set()
+    for iid, i in insts.items():
+        if not i.premounted or iid not in bboxes:
+            continue
+        if any(_bbox_gap(bboxes[iid], hb) <= 100.0 for hb in host_boxes):
+            roots.add(iid)
     return solver.disconnected_instances(
         bboxes, _joint_pairs(s, _ikey, bboxes), sorted(insts), extra_roots=roots
     )
+
+
+def _bbox_gap(a: tuple[Any, Any], b: tuple[Any, Any]) -> float:
+    """Min corner-to-corner distance between two AABBs (0 when they
+    overlap/touch) — adjacency measure for 'mounted on'."""
+    mn_a, mx_a = np.asarray(a[0], dtype=float), np.asarray(a[1], dtype=float)
+    mn_b, mx_b = np.asarray(b[0], dtype=float), np.asarray(b[1], dtype=float)
+    d = np.maximum(np.maximum(mn_a - mx_b, mn_b - mx_a), 0.0)
+    return float(np.linalg.norm(d))
 
 
 def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:

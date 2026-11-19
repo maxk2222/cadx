@@ -673,6 +673,64 @@ def _lint_duplicate_occurrences(sess: GuideToolSession, steps: list[Any]) -> lis
     return findings
 
 
+def _lint_part_usage(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
+    """A registered part no step ever references — not as the placed part,
+    not as a mate target, not in required_parts — is either a dropped
+    requirement (the plan forgot the BOM's socket↔socket return elbow
+    while declaring single-mate spigot elbows at both tube ends) or an
+    honest spare. Either way the evidence belongs in the report.
+
+    Warning severity: kits legitimately ship spare hardware, so an unused
+    registration is not itself illegal — but the finding names the part so
+    review/missions can reconcile it against the manual."""
+    referenced: set[str] = set()
+    idx = _name_index(sess)
+    ctx = {
+        pid
+        for n in getattr(sess.state, "context_names", []) or []
+        if (pid := _resolve_part(sess, n, 0) or idx.get(_norm2(n)))
+    }
+    for st in steps:
+        for name in st.required_parts or []:
+            pid = _resolve_part(sess, name, st.number)
+            if pid:
+                referenced.add(pid)
+        for ss in st.sub_steps:
+            for attr, raw in (
+                ("part_pid", ss.part),
+                ("target_pid", ss.target),
+                ("target2_pid", getattr(ss, "target2", None)),
+            ):
+                pid = getattr(ss, attr, None) or _resolve_part(sess, raw, st.number)
+                if pid:
+                    referenced.add(pid)
+    findings: list[dict[str, Any]] = []
+    doc = getattr(sess.state, "document", None)
+    det = getattr(doc, "detected_part_qty", None) or {}
+    for p in sess.state.parts:
+        if p.id in referenced or p.id in ctx:
+            continue
+        qty = p.quantity
+        if qty is None:
+            q = next(
+                (v for n, v in det.items() if (sess._aliases_store.get(n) or idx.get(n)) == p.id),
+                None,
+            )
+            qty = q
+        findings.append(
+            {
+                "mission": "steps",
+                "severity": "warning",
+                "text": f"registered part '{p.id}'"
+                + (f" (parts list ships {qty}x)" if qty is not None else "")
+                + " is never referenced by any step — if the manual "
+                "requires it the plan dropped it; if it is a spare or "
+                "context part, mark it context or leave it",
+            }
+        )
+    return findings
+
+
 def _lint_anchor(sess: GuideToolSession, steps: list[Any]) -> list[dict[str, Any]]:
     """The biggest registered part is the assembly's host/base — a plan that
     neither places it nor mates anything to it builds a satellite assembly
@@ -1368,6 +1426,7 @@ def plan_lint(sess: GuideToolSession) -> list[dict[str, Any]]:
     findings += _lint_step_refs(sess, steps)
     findings += _lint_binding_conflicts(sess, steps)
     findings += _lint_duplicate_occurrences(sess, steps)
+    findings += _lint_part_usage(sess, steps)
     findings += _lint_bridge_reach(sess, steps)
     findings += _lint_asset_coverage(sess)
     blockers = sum(1 for f in findings if f["severity"] == "blocker")
