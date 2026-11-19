@@ -244,3 +244,21 @@ Add `evals/suite/<name>.json` — `name`, `project` (defaults to
 `generate` or `meshgen`; `from_stage`/`assets_from` may only reference
 earlier stages. Pydantic validates the file at load — `cadx eval cases`
 shows the parse errors.
+
+## Debugging a saved guide state
+
+`evals/sim_preassembly.py` replays `run_preassembly` deterministically
+against a persisted `state.json` — no 20-minute live eval needed:
+
+```bash
+cd backend && ../.venv/bin/uv run python ../evals/sim_preassembly.py \
+    <path-to-state.json>
+```
+
+It copies the state into a temp dir, rewrites container mesh paths to
+the local data root, clears the placed assembly and dumps the joint
+graph, instance poses and physical invariants. Failed eval runs keep
+their state under `data/projects/<pid>/versions/<vid>/guide/state.json`.
+
+`evals/NOTES_*.md` are per-run operational journals (psql/job-watching
+recipes for live stacks) — not part of the durable report set.
