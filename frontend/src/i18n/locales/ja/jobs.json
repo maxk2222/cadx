@@ -1,6 +1,8 @@
 {
   "title": "ジョブ",
+  "active_n_one": "{{count}} 件実行中",
   "active_n_other": "{{count}} 件実行中",
+  "total_n_one": "合計 {{count}} 件",
   "total_n_other": "合計 {{count}} 件",
   "filter_all": "すべて",
   "filter_active": "実行中 + キュー",
@@ -32,6 +34,7 @@
   "cancel_title": "ジョブを中止 — 結果は破棄されます",
   "retry": "再試行",
   "retry_title": "このジョブを再起動 — 新しい実行を作成",
+  "more_questions_one": "（+{{count}} 件）",
   "more_questions_other": "（+{{count}} 件）",
   "step": {
     "intake": "受付",

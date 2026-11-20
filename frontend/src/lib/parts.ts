@@ -41,3 +41,17 @@ export function groupVersionsByPart(
   const orphans = versions.filter((v) => !known.has(v.part_id)).sort(descNumber);
   return { groups, orphans };
 }
+
+/** AR guides live in companion parts whose versions carry kind="guide" —
+ *  they get a 1-based G-sequence ordered by part.number (first guide built
+ *  = G1). Shared by PartsSection, VersionHeader and the project-page guide
+ *  preview card so the numbering never diverges. */
+export function guidePartNums(groups: PartGroup[]): Map<string, number> {
+  const m = new Map<string, number>();
+  groups
+    .filter((g) => g.versions.some((v) => v.kind === "guide"))
+    .sort((a, b) => a.part.number - b.part.number)
+    .forEach((g, i) => m.set(g.part.id, i + 1));
+  return m;
+}
+

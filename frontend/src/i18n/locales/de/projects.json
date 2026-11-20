@@ -9,7 +9,7 @@
   "load_error_hint": "Läuft die API?",
   "empty_search": "Keine Projekte passen zur Suche",
   "empty": "Noch keine Projekte",
-  "empty_hint": "Erstelle ein Projekt, um 3D-Modelle zu generieren.",
+  "empty_hint": "Erstelle ein Projekt, um 3D-Modelle und Anleitungen zu generieren.",
   "no_render": "noch kein Rendering",
   "live": "live",
   "versions_count_one": "{{count}} Version",
@@ -64,5 +64,10 @@
   "parts_count_one": "{{count}} Teil",
   "parts_count_other": "{{count}} Teile",
   "parts_ungrouped": "Ungruppiert",
-  "guide_n": "Anleitung {{n}}"
+  "guide_n": "Anleitung {{n}}",
+  "guide_add": "Anleitung",
+  "guide_add_title": "Montageanleitung in diesem Projekt erstellen",
+  "or_new_guide": "oder Anleitung erstellen",
+  "guide_card_title": "Anleitung",
+  "guide_building": "Anleitung wird erstellt…"
 }

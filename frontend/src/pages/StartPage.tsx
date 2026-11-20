@@ -1,29 +1,43 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, FileText, Images, Layers, Rocket } from "lucide-react";
+import { Check, FileText, Goal, Images, Layers, NotebookPen, Paperclip, Rocket } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import StepGoal from "../components/wizard/StepGoal";
+import StepGuideFiles from "../components/wizard/StepGuideFiles";
+import StepGuideNotes from "../components/wizard/StepGuideNotes";
+import StepGuideReview from "../components/wizard/StepGuideReview";
 import StepImages from "../components/wizard/StepImages";
 import StepMode from "../components/wizard/StepMode";
 import StepPrompt from "../components/wizard/StepPrompt";
 import StepReview from "../components/wizard/StepReview";
 import WizardProgress from "../components/wizard/WizardProgress";
-import { Card } from "../components/ui";
+import { Card, ConfirmModal } from "../components/ui";
 import { api, errMsg } from "../lib/api";
 import { deriveProjectName, suggestMode } from "../lib/suggest";
-import type { GenMode, MeshHealth, RunOptions } from "../lib/types";
+import type { GenMode, GuideOpts, MeshHealth, RunOptions, WizardGoal } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
 
 const DRAFT_KEY = "wizard:draft";
 
-const STEPS = [
-  { id: 0, labelKey: "step_describe", icon: FileText },
-  { id: 1, labelKey: "step_images", icon: Images },
-  { id: 2, labelKey: "step_mode", icon: Layers },
-  { id: 3, labelKey: "step_generate", icon: Rocket },
+const PART_STEPS = [
+  { id: 0, labelKey: "step_goal", icon: Goal },
+  { id: 1, labelKey: "step_describe", icon: FileText },
+  { id: 2, labelKey: "step_images", icon: Images },
+  { id: 3, labelKey: "step_mode", icon: Layers },
+  { id: 4, labelKey: "step_generate", icon: Rocket },
+];
+
+const GUIDE_STEPS = [
+  { id: 0, labelKey: "step_goal", icon: Goal },
+  { id: 1, labelKey: "step_files", icon: Paperclip },
+  { id: 2, labelKey: "step_notes", icon: NotebookPen },
+  { id: 3, labelKey: "step_start", icon: Rocket },
 ];
 
 interface WizardState {
+  /** "" = goal not picked yet — step 0 shows the Part/Anleitung cards */
+  goal: WizardGoal | "";
   step: number;
   /** furthest step ever reached — stepper may navigate back AND forward to it */
   maxStep: number;
@@ -34,13 +48,23 @@ interface WizardState {
   modeTouched: boolean;
   options: RunOptions;
   name: string;
+  /** user typed a name — auto-derivation (prompt / PDF stem) must not override */
+  nameTouched: boolean;
   projectId: string | null;
+  /** deep-linked into an existing project (?project=) — the wizard must
+   *  never create a new one nor offer to delete it on "start over" */
+  adoptedProject: boolean;
   selected: string[];
+  /** guide flow: the instruction PDF (required, single) + CAD part uploads */
+  pdfId: string | null;
+  cadIds: string[];
+  guideOpts: GuideOpts;
   jobId: string | null;
   versionId: string | null;
 }
 
 const INITIAL: WizardState = {
+  goal: "",
   step: 0,
   maxStep: 0,
   phase: "edit",
@@ -49,21 +73,38 @@ const INITIAL: WizardState = {
   modeTouched: false,
   options: {},
   name: "",
+  nameTouched: false,
   projectId: null,
+  adoptedProject: false,
   selected: [],
+  pdfId: null,
+  cadIds: [],
+  guideOpts: { allowGeneration: true, attachImages: true, language: "", audience: "" },
   jobId: null,
   versionId: null,
 };
+
+const stem = (filename?: string) => (filename ?? "").replace(/\.[^.]+$/, "").trim();
 
 function loadDraft(): WizardState {
   try {
     const raw = localStorage.getItem(DRAFT_KEY);
     if (!raw) return INITIAL;
-    const d = { ...INITIAL, ...(JSON.parse(raw) as Partial<WizardState>) };
+    const parsed = JSON.parse(raw) as Partial<WizardState>;
+    const d = { ...INITIAL, ...parsed };
+    if (parsed.goal === undefined) {
+      // pre-goal draft: steps shift +1 (0 goal | 1 describe | 2 images |
+      // 3 mode | 4 review) — a stored part run resumes at the same place
+      d.goal = "part";
+      d.step = Math.min((parsed.step ?? 0) + 1, PART_STEPS.length - 1);
+      d.maxStep = Math.min((parsed.maxStep ?? 0) + 1, PART_STEPS.length - 1);
+      d.nameTouched = !!(d.name && d.name !== deriveProjectName(d.prompt));
+    }
     // progress without a job/version is a broken draft — back to the steps
     if (d.phase === "progress" && !(d.jobId && d.versionId)) {
       d.phase = "edit";
       d.step = 0;
+      d.goal = d.goal || "";
     }
     return d;
   } catch {
@@ -75,14 +116,40 @@ export default function StartPage() {
   const { t } = useTranslation("wizard");
   useTitle(t("page_title"));
   const nav = useNavigate();
+  const [sp] = useSearchParams();
   const qc = useQueryClient();
-  const [s, setS] = useState<WizardState>(loadDraft);
+  const [s, setS] = useState<WizardState>(() => {
+    const pid = sp.get("project");
+    const goal = sp.get("goal");
+    const validGoal = goal === "guide" || goal === "part" ? goal : "";
+    // deep link (?goal=&project= — e.g. "Neue Anleitung" on a project
+    // page): fresh wizard bound to the existing project, goal pre-picked
+    if (pid)
+      return {
+        ...INITIAL,
+        projectId: pid,
+        adoptedProject: true,
+        goal: validGoal,
+        step: validGoal ? 1 : 0,
+        maxStep: validGoal ? 1 : 0,
+      };
+    const d = loadDraft();
+    return validGoal
+      ? { ...d, goal: validGoal, step: Math.max(d.step, 1), maxStep: Math.max(d.maxStep, 1) }
+      : d;
+  });
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  // "start over" on an empty wizard-created project offers deletion via
+  // ConfirmModal — same pattern as the rest of the app, no window.confirm
+  const [discardPid, setDiscardPid] = useState<string | null>(null);
+  const [discardBusy, setDiscardBusy] = useState(false);
   const seenAssets = useRef<Set<string>>(new Set());
   const projectIdRef = useRef<string | null>(s.projectId);
   /** in-flight createProject promise — dedupes concurrent ensureProject calls */
   const creatingRef = useRef<Promise<string> | null>(null);
+
+  const steps = s.goal === "guide" ? GUIDE_STEPS : s.goal === "part" ? PART_STEPS : [PART_STEPS[0]];
 
   // draft persistence — reload resumes the wizard (and a running job)
   useEffect(() => {
@@ -95,7 +162,7 @@ export default function StartPage() {
     api.getJob(s.jobId).catch(() =>
       setS((w) =>
         w.jobId === s.jobId
-          ? { ...w, phase: "edit", step: 0, jobId: null, versionId: null }
+          ? { ...w, phase: "edit", step: w.goal ? 1 : 0, jobId: null, versionId: null }
           : w
       )
     );
@@ -110,11 +177,16 @@ export default function StartPage() {
         patch.step != null ? Math.max(w.maxStep, patch.step) : w.maxStep,
     }));
 
+  const autoName = () =>
+    s.goal === "guide"
+      ? stem(pdfAsset?.filename) || deriveProjectName(s.prompt)
+      : deriveProjectName(s.prompt);
+
   const ensureProject = async (): Promise<string> => {
     if (projectIdRef.current) return projectIdRef.current;
     if (creatingRef.current) return creatingRef.current;
     const run = (async () => {
-      const name = s.name.trim() || deriveProjectName(s.prompt);
+      const name = s.name.trim() || autoName();
       const p = await api.createProject(name, "");
       projectIdRef.current = p.id;
       setS((w) => ({
@@ -133,8 +205,8 @@ export default function StartPage() {
     }
   };
 
-  /** entering the images step requires the project to exist (uploads,
-   *  image generation and asset listing all need an id). */
+  /** entering step ≥1 requires the project to exist (uploads, image
+   *  generation and asset listing all need an id). */
   const gotoStep = async (next: number) => {
     setError("");
     if (next >= 1 && !projectIdRef.current && !creatingRef.current) {
@@ -153,9 +225,9 @@ export default function StartPage() {
 
   /** mode step entered for the first time → preselect the suggestion */
   const gotoModeStep = () => {
-    void gotoStep(2).then(() => {
+    void gotoStep(3).then(() => {
       setS((w) =>
-        w.step === 2 && !w.modeTouched ? { ...w, mode: suggested } : w
+        w.step === 3 && !w.modeTouched ? { ...w, mode: suggested } : w
       );
     });
   };
@@ -177,6 +249,25 @@ export default function StartPage() {
     enabled: !!s.projectId,
   });
 
+  const pdfAsset = (assets.data ?? []).find((a) => a.id === s.pdfId);
+
+  // adopted project: seed the untouched name field with the real project
+  // name — review then shows the truth and Start can't silently rename it
+  const adoptedProj = useQuery({
+    queryKey: ["project", s.projectId],
+    queryFn: () => api.getProject(s.projectId!),
+    enabled: s.adoptedProject && !!s.projectId,
+  });
+  useEffect(() => {
+    const p = adoptedProj.data;
+    if (!p) return;
+    setS((w) =>
+      w.adoptedProject && !w.nameTouched && w.name !== p.name
+        ? { ...w, name: p.name }
+        : w
+    );
+  }, [adoptedProj.data]);
+
   const meshHealth = useQuery<MeshHealth>({
     queryKey: ["meshHealth"],
     queryFn: api.meshHealth,
@@ -191,10 +282,15 @@ export default function StartPage() {
     retry: false,
   });
 
-  // auto-select newly added assets (deselected ones stay deselected)
+  // auto-select newly added IMAGE assets (deselected ones stay deselected;
+  // pdf/cad kinds are guide inputs and pick themselves in StepGuideFiles)
   useEffect(() => {
     const list = assets.data ?? [];
-    const fresh = list.filter((a) => !seenAssets.current.has(a.id));
+    const fresh = list.filter(
+      (a) =>
+        !seenAssets.current.has(a.id) &&
+        (a.kind === "image" || a.kind === "generated_image")
+    );
     if (!fresh.length) return;
     fresh.forEach((a) => seenAssets.current.add(a.id));
     setS((w) => ({ ...w, selected: [...w.selected, ...fresh.map((a) => a.id)] }));
@@ -210,7 +306,22 @@ export default function StartPage() {
     mutationFn: async () => {
       const pid = await ensureProject();
       const name = s.name.trim();
-      if (name) await api.updateProject(pid, { name });
+      // adopted projects keep their name unless the user deliberately
+      // retyped it — the wizard never renames someone else's project
+      if (name && (!s.adoptedProject || s.nameTouched))
+        await api.updateProject(pid, { name });
+      if (s.goal === "guide") {
+        if (!s.pdfId) throw new Error(t("gfiles_pdf_required"));
+        return api.startGuide(pid, {
+          pdf_asset_id: s.pdfId,
+          cad_asset_ids: s.cadIds,
+          prompt: s.prompt,
+          allow_generation: s.guideOpts.allowGeneration,
+          attach_images: s.guideOpts.attachImages,
+          language: s.guideOpts.language,
+          audience: s.guideOpts.audience,
+        });
+      }
       return api.generate(pid, s.prompt, s.selected, s.mode, s.options);
     },
     onSuccess: (r) => {
@@ -231,12 +342,23 @@ export default function StartPage() {
     try {
       const versions = await api.listVersions(pid);
       if (versions.length) return;
-      if (window.confirm(t("discard_draft_confirm"))) {
-        await api.deleteProject(pid);
-        qc.invalidateQueries({ queryKey: ["projects"] });
-      }
+      setDiscardPid(pid);
     } catch {
-      /* lookup/delete failed — keep the project */
+      /* lookup failed — keep the project */
+    }
+  };
+
+  const confirmDiscard = async () => {
+    if (!discardPid) return;
+    setDiscardBusy(true);
+    try {
+      await api.deleteProject(discardPid);
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    } catch {
+      /* delete failed — project stays around empty */
+    } finally {
+      setDiscardBusy(false);
+      setDiscardPid(null);
     }
   };
 
@@ -248,7 +370,24 @@ export default function StartPage() {
     seenAssets.current = new Set();
     setError("");
     setS(INITIAL);
-    if (pid) void discardEmptyDraft(pid);
+    if (pid && !s.adoptedProject) void discardEmptyDraft(pid);
+  };
+
+  const onAssetDeleted = (id: string) =>
+    set({
+      selected: s.selected.filter((x) => x !== id),
+      pdfId: s.pdfId === id ? null : s.pdfId,
+      cadIds: s.cadIds.filter((x) => x !== id),
+    });
+
+  const pickPdf = (id: string) => {
+    const a = (assets.data ?? []).find((x) => x.id === id);
+    set({
+      pdfId: id,
+      // an untouched auto name follows the manual's filename — but an
+      // adopted project keeps its real name (Start can't rename it anyway)
+      ...(s.nameTouched || s.adoptedProject ? {} : { name: stem(a?.filename) || s.name }),
+    });
   };
 
   return (
@@ -260,7 +399,7 @@ export default function StartPage() {
 
       {/* stepper */}
       <div className="mb-6 flex items-center gap-1">
-        {STEPS.map((st, i) => {
+        {steps.map((st, i) => {
           const Icon = st.icon;
           const active = s.phase === "edit" && s.step === i;
           const reached = i <= s.maxStep || s.phase === "progress";
@@ -286,7 +425,7 @@ export default function StartPage() {
                 )}
                 {t(st.labelKey)}
               </button>
-              {i < STEPS.length - 1 && <span className="h-px flex-1 bg-edge" />}
+              {i < steps.length - 1 && <span className="h-px flex-1 bg-edge" />}
             </div>
           );
         })}
@@ -299,6 +438,7 @@ export default function StartPage() {
             versionId={s.versionId}
             projectId={s.projectId}
             projectName={s.name}
+            variant={s.goal === "guide" ? "guide" : "part"}
             onSelectJob={(id) => set({ jobId: id })}
             onDone={() => {
               qc.invalidateQueries({ queryKey: ["version", s.versionId] });
@@ -307,70 +447,132 @@ export default function StartPage() {
               qc.invalidateQueries({ queryKey: ["projects"] });
             }}
             onAdjustPrompt={() =>
-              set({ phase: "edit", step: 0, jobId: null, versionId: null })
+              // back to editing after a failed run — for a guide the review
+              // step is the useful anchor (files/notes stay in the draft)
+              set({
+                phase: "edit",
+                step: s.goal === "guide" ? 3 : 1,
+                jobId: null,
+                versionId: null,
+              })
             }
             onNewPart={reset}
           />
-        ) : s.step === 0 ? (
-          <StepPrompt
-            prompt={s.prompt}
-            onChange={(v) => set({ prompt: v })}
-            onNext={() => void gotoStep(1)}
+        ) : s.step === 0 || !s.goal ? (
+          <StepGoal
             busy={creating}
             error={error}
+            onPick={(g) => {
+              // switching branches: the reached steps don't map 1:1 — cap
+              // the stepper at the step we're about to enter
+              if (g !== s.goal)
+                setS((w) => ({ ...w, goal: g, maxStep: Math.min(w.maxStep, 1) }));
+              else set({ goal: g });
+              void gotoStep(1);
+            }}
           />
+        ) : s.goal === "part" ? (
+          s.step === 1 ? (
+            <StepPrompt
+              prompt={s.prompt}
+              onChange={(v) => set({ prompt: v })}
+              onNext={() => void gotoStep(2)}
+              busy={creating}
+              error={error}
+            />
+          ) : s.step === 2 ? (
+            <StepImages
+              projectId={s.projectId}
+              projectName={s.name}
+              assets={assets.data ?? []}
+              selected={new Set(s.selected)}
+              onToggle={(id) =>
+                set({
+                  selected: s.selected.includes(id)
+                    ? s.selected.filter((x) => x !== id)
+                    : [...s.selected, id],
+                })
+              }
+              onAssetReplaced={(srcId, newId) =>
+                set({
+                  selected: s.selected.includes(srcId)
+                    ? s.selected.map((x) => (x === srcId ? newId : x))
+                    : s.selected,
+                })
+              }
+              onDeleted={onAssetDeleted}
+              onNext={() => gotoModeStep()}
+              onBack={() => set({ step: 1 })}
+            />
+          ) : s.step === 3 ? (
+            <StepMode
+              value={s.mode}
+              onChange={(m) => set({ mode: m, modeTouched: true })}
+              suggested={suggested}
+              hasImages={s.selected.length > 0}
+              health={meshHealth.data}
+              loading={meshHealth.isPending}
+              onNext={() => set({ step: 4 })}
+              onBack={() => set({ step: 2 })}
+            />
+          ) : (
+            <StepReview
+              name={s.name || deriveProjectName(s.prompt)}
+              nameAuto={!s.nameTouched}
+              onNameChange={(v) => set({ name: v, nameTouched: true })}
+              prompt={s.prompt}
+              assetCount={s.selected.length}
+              mode={s.mode}
+              suggested={suggested}
+              options={s.options}
+              onOptionsChange={(o) => set({ options: o })}
+              busy={generate.isPending}
+              llmConfigured={health.data?.llm_configured}
+              error={error}
+              onGenerate={() => generate.mutate()}
+              onBack={() => set({ step: 3 })}
+            />
+          )
         ) : s.step === 1 ? (
-          <StepImages
+          <StepGuideFiles
             projectId={s.projectId}
             projectName={s.name}
             assets={assets.data ?? []}
-            selected={new Set(s.selected)}
-            onToggle={(id) =>
+            pdfId={s.pdfId}
+            cadIds={s.cadIds}
+            onPickPdf={pickPdf}
+            onToggleCad={(id) =>
               set({
-                selected: s.selected.includes(id)
-                  ? s.selected.filter((x) => x !== id)
-                  : [...s.selected, id],
+                cadIds: s.cadIds.includes(id)
+                  ? s.cadIds.filter((x) => x !== id)
+                  : [...s.cadIds, id],
               })
             }
-            onAssetReplaced={(srcId, newId) =>
-              set({
-                selected: s.selected.includes(srcId)
-                  ? s.selected.map((x) => (x === srcId ? newId : x))
-                  : s.selected,
-              })
-            }
-            onDeleted={(id) =>
-              set({ selected: s.selected.filter((x) => x !== id) })
-            }
-            onNext={() => gotoModeStep()}
+            onDeleted={onAssetDeleted}
+            onNext={() => set({ step: 2 })}
             onBack={() => set({ step: 0 })}
           />
         ) : s.step === 2 ? (
-          <StepMode
-            value={s.mode}
-            onChange={(m) => set({ mode: m, modeTouched: true })}
-            suggested={suggested}
-            hasImages={s.selected.length > 0}
-            health={meshHealth.data}
-            loading={meshHealth.isPending}
+          <StepGuideNotes
+            prompt={s.prompt}
+            onChange={(v) => set({ prompt: v })}
             onNext={() => set({ step: 3 })}
             onBack={() => set({ step: 1 })}
           />
         ) : (
-          <StepReview
-            name={s.name || deriveProjectName(s.prompt)}
-            nameAuto={!s.name || s.name === deriveProjectName(s.prompt)}
-            onNameChange={(v) => set({ name: v })}
-            prompt={s.prompt}
-            assetCount={s.selected.length}
-            mode={s.mode}
-            suggested={suggested}
-            options={s.options}
-            onOptionsChange={(o) => set({ options: o })}
+          <StepGuideReview
+            name={s.name || autoName()}
+            nameAuto={!s.nameTouched}
+            onNameChange={(v) => set({ name: v, nameTouched: true })}
+            pdfName={pdfAsset?.filename ?? ""}
+            cadCount={s.cadIds.length}
+            notes={s.prompt}
+            opts={s.guideOpts}
+            onOptsChange={(o) => set({ guideOpts: o })}
             busy={generate.isPending}
             llmConfigured={health.data?.llm_configured}
             error={error}
-            onGenerate={() => generate.mutate()}
+            onStart={() => generate.mutate()}
             onBack={() => set({ step: 2 })}
           />
         )}
@@ -383,7 +585,7 @@ export default function StartPage() {
             onClick={reset}
           >
             {t("start_over")}
-            {s.projectId ? ` ${t("start_over_note")}` : ""}
+            {s.projectId && !s.adoptedProject ? ` ${t("start_over_note")}` : ""}
           </button>
         </div>
       )}
@@ -394,6 +596,15 @@ export default function StartPage() {
           {t("browse_projects")}
         </button>
       </div>
+
+      <ConfirmModal
+        open={!!discardPid}
+        onClose={() => setDiscardPid(null)}
+        onConfirm={() => void confirmDiscard()}
+        busy={discardBusy}
+        title={t("common:action.delete")}
+        body={t("discard_draft_confirm")}
+      />
     </div>
   );
 }

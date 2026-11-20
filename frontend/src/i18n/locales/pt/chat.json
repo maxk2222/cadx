@@ -1,7 +1,7 @@
 {
   "title": "Chat",
   "index_title": "Chat",
-  "index_sub": "Converse com o agente — ele pode criar projetos, gerar, editar, analisar e otimizar peças.",
+  "index_sub": "Converse com o agente — ele pode criar projetos, gerar, editar, analisar e otimizar peças, e criar guias.",
   "new_chat": "novo chat",
   "no_project": "sem projeto",
   "running": "em execução…",
@@ -22,7 +22,7 @@
   "hide_panel": "ocultar painel do modelo",
   "show_panel": "mostrar painel do modelo",
   "start_title": "Iniciar a conversa",
-  "start_hint": "Descreva uma peça, anexe imagens de referência ou peça ao agente para modificar uma versão existente.",
+  "start_hint": "Descreva uma peça ou um guia, anexe arquivos ou peça ao agente para modificar uma versão existente.",
   "latest_result": "resultado mais recente",
   "delete_title": "Excluir chat?",
   "delete_body": "O histórico da conversa é removido; versões e tarefas geradas permanecem.",
@@ -31,7 +31,7 @@
   "remove_attachment": "remover anexo",
   "attach_images": "anexar imagens",
   "drop_images": "solte as imagens aqui",
-  "ph": "Descreva uma peça, peça uma alteração… (Enter para enviar)",
+  "ph": "Descreva uma peça ou um guia… (Enter para enviar)",
   "send": "enviar",
   "send_aria": "enviar mensagem",
   "tool_failed": "falhou",
@@ -71,5 +71,6 @@
   "live_preview": "prévia ao vivo",
   "final": "final",
   "it_short": "it {{n}}",
-  "guide_title": "Construtor de guia AR"
+  "guide_title": "Construtor de guia AR",
+  "sug_4": "Montar o guia de montagem do meu PDF"
 }

@@ -4,6 +4,86 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Mesh sidecar llama.cpp concurrency suite (CUDA/RTX-class hosts):
+  `llm_kv_unified` (`--kv-unified` — `-c` becomes one KV pool shared
+  dynamically by all parallel slots instead of a static ctx/N split,
+  vLLM-style), `llm_kv_per_slot`, `llm_kv_cache_type` (`--cache-type-k/v`,
+  e.g. `q8_0`), `llm_flash_attn`, `llm_gpu_layers` (`-ngl`, default -1 =
+  full offload) and `llm_prompt_cache_mb` → `--cache-ram` +
+  `--cache-idle-slots`. All flags are feature-probed against
+  `llama-server --help` (cached) so older binaries never receive unknown
+  args; `mesh_server/scripts/install_llm_cuda.sh` installs a current
+  CUDA `llama-server` build (sm_120 needs CUDA ≥ 12.8, matching the
+  updated `Dockerfile.cuda` toolchain). The `llama_cpp.server` python
+  fallback gains `--n_gpu_layers`/`--cache_type_*`/`--flash_attn` — its
+  previous `n_gpu_layers=0` default would have run CUDA models on CPU.
+  Adapters carry `kv_bytes_per_token` for hybrid-arch KV-budget logs,
+  and `server_env()` lets backends pass env knobs (mlx `APC_ENABLED`
+  via `llm_apc`, vlm-only `--kv-quant-scheme` via `llm_kv_scheme`).
+- Media-part capability gating: `video_url`/`input_video`/`video` parts
+  join image parts on the vision path, `input_audio`/`audio_url`/`audio`
+  parts require `supports_audio` (registerable via
+  `POST /v1/models/register` `audio: true` — e.g. Qwen-Omni); audio
+  requests no longer silently match vision-only models.
+- Start wizard goal step: the new-part wizard now opens with a
+  **Part / Anleitung** choice. The Part branch is unchanged (describe →
+  images → mode → review); the Guide branch walks through manual PDF +
+  CAD-part uploads, optional agent notes and a review step exposing all
+  guide run options, then hands off to the shared job-progress view.
+- Guide run options end-to-end: `POST /projects/{id}/guide` (and the
+  wizard review step) accept `language` (BCP-47 output pin — locks
+  `detect_language` so PDF autodetect cannot override it) and `audience`
+  (`beginner` | `intermediate` | `pro` — an audience text-variant rewrite
+  is applied before the artifacts are emitted, shared with the post-hoc
+  REST rewrite via `kiara/guide/rewrite.py`).
+- AssetManager accepts `.pdf`/`.glb`/`.gltf` uploads with per-kind size
+  caps matching the server (PDF 100 MB, CAD 50 MB, other 25 MB).
+- KIARA-style 3D guide editor overhaul (`GuideEditor`):
+  - Full annotation model end-to-end — `GuideAnnotation` supports
+    `kind: "arrow" | "text"` with `position`/`label`/`color`/`size`, backed
+    by new REST endpoints (`POST/PATCH/DELETE
+    /versions/{id}/guide/annotations[/…]`) with step/part validation and
+    renumbering on step insert/delete. Arrows render with `Html` label
+    placards in preview *and* editor via a shared `guideAnnotations`
+    renderer; free text fields are selectable/movable in-scene.
+  - Collapsible right rail with a scrollable **Steps** editor (title /
+    text / display text / safety hint for every step, annotation counts,
+    per-step delete) and an **Objects** tab (instance list, numeric
+    transforms, quick rotations, align-height/flatten, annotation list).
+  - Step media workflow: pick from extracted guide media, copy a project
+    image asset in, upload a file, or capture a **viewport snapshot** —
+    via new `POST /versions/{id}/guide/media` (multipart upload or
+    `{asset_id}` copy, path-safe unique names).
+  - Step duplicate, isolate-step ghosting, staggered slide-in animation
+    preview along each step's arrow axis, Delete-key annotation removal,
+    red error vs green info feedback. Server step ops flush the pending
+    doc diff first so debounced saves can't hit shifted step numbers.
+- Guides as first-class citizens across the frontend:
+  - Persistent guide preview card on the project page — cumulative 3D
+    assembly (`GuideScene`, latest step), live-refreshing while a guide job
+    builds, multi-guide picker, and an editor button opening `GuideEditor`
+    as a modal in place.
+  - Guide entry points everywhere: Parts-section "Guide" button and an
+    *or create a guide* link deep-linking to `/?goal=guide&project=<id>`;
+    the wizard adopts the existing project (no draft project, no
+    delete-on-reset, no silent rename).
+  - VersionPage guide focus: defaults to the guide tab, purple `G{n}`
+    header chip, part-only actions/editors/compare/master hidden;
+    `EditPage` shows an informational state for guide versions; the
+    project parts list stays visible in the inspector.
+  - Guide hygiene: guide companion parts filtered out of *into part*
+    pickers; PDF assets visible but unselectable as part inputs.
+  - Mid-run guide notes REST endpoint `POST /versions/{id}/guide/notes`
+    (same `user_notes.jsonl` format as the chat tool) plus a note composer
+    on the guide tab while the job runs.
+  - Neutral wording: nav button, chat hints and a "build the assembly
+    guide from my PDF" suggestion; guide icons in version tree and jobs
+    list.
+
 ## [0.1.0-alpha.2] - 2026-10-25
 
 End-to-end validated on the live Docker stack: the `robot_arm_mount` eval

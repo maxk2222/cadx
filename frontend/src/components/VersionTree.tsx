@@ -1,4 +1,4 @@
-import { BadgeCheck, ChevronDown, ChevronRight, CircleDot } from "lucide-react";
+import { BadgeCheck, BookOpenCheck, ChevronDown, ChevronRight, CircleDot } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
@@ -95,7 +95,12 @@ export default function VersionTree({
               {v.name && (
                 <span className="ml-1 font-medium text-fg">{v.name}</span>
               )}
-              <span className="ml-1 text-muted">{v.kind}</span>
+              <span className="ml-1 inline-flex items-center gap-0.5 text-muted">
+                {v.kind === "guide" && (
+                  <BookOpenCheck className="h-3 w-3 text-purple-300" />
+                )}
+                {v.kind}
+              </span>
               {v.resolved_mode && (
                 <span
                   className={`ml-1 rounded px-1 text-[9px] uppercase ${

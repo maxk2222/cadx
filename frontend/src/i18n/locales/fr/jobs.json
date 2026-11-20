@@ -1,8 +1,10 @@
 {
   "title": "Tâches",
   "active_n_one": "{{count}} active",
+  "active_n_many": "{{count}} actives",
   "active_n_other": "{{count}} actives",
   "total_n_one": "{{count}} au total",
+  "total_n_many": "{{count}} au total",
   "total_n_other": "{{count}} au total",
   "filter_all": "toutes",
   "filter_active": "en cours + en file",
@@ -35,6 +37,7 @@
   "retry": "réessayer",
   "retry_title": "relancer cette tâche — crée une nouvelle exécution",
   "more_questions_one": "(+{{count}} autre)",
+  "more_questions_many": "(+{{count}} autres)",
   "more_questions_other": "(+{{count}} autres)",
   "step": {
     "intake": "admission",

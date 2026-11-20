@@ -44,7 +44,7 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
 - Run cad executor:      `make dev-executor`
 - Run frontend dev:      `cd frontend && npm install && npm run dev`
 - Full stack (docker):   `make up` → http://localhost:8080
-- Tests:                 `make test`  (or `cd backend && ../.venv/bin/uv run pytest tests -x -q`)
+- Tests:                 `make test`  (or `cd backend && ../.venv/bin/uv run pytest tests -x -q -m "not verify"`)
 - FEM verification:      `make fem-verify` — `tests/femverify/` declarative
   suite (fast analytical cases + `verify`-marked heavy benchmarks/convergence
   trends + MMS order check + TopOpt invariants; opt-in CalculiX same-mesh
@@ -77,7 +77,17 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   semaphore + `MESH_LLM_QUEUE_WAIT_S` → honest `503{loading,retry_after_s}`,
   `MESH_LLM_PARALLEL` = llama.cpp `--parallel` at next load) — runtime-mutable
   via auth'd `GET/PUT /v1/config` (overlay `model_dir/server_config.json`;
-  see `docs/mesh-server-api.md`).
+  see `docs/mesh-server-api.md`). llama.cpp flag suite (CUDA hosts):
+  `MESH_LLM_KV_UNIFIED` (`--kv-unified` shared KV pool — the vLLM-style
+  concurrency lever), `MESH_LLM_KV_PER_SLOT`, `MESH_LLM_KV_CACHE_TYPE`
+  (`q8_0` etc.), `MESH_LLM_FLASH_ATTN`, `MESH_LLM_GPU_LAYERS` (`-ngl`,
+  -1 = all) and `MESH_LLM_PROMPT_CACHE_MB` (`--cache-ram`) — all
+  feature-probed against `llama-server --help` so old binaries stay safe;
+  `mesh_server/scripts/install_llm_cuda.sh` installs a current CUDA build
+  (RTX 50xx/sm_120 needs CUDA ≥ 12.8). Multimodal gating: video parts map
+  to `supports_vision`, audio parts to `supports_audio` (registered via
+  `/v1/models/register` `audio: true` — Qwen3.8 itself does image+video
+  but NOT audio).
 
 ## Conventions (must follow)
 - Python: type hints everywhere; `ruff` line-length 100; async FastAPI handlers;
@@ -271,6 +281,24 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   manifold3d. Unity export converts mm/Z-up RH → m/Y-up LH explicitly
   (`guide/unity.py`, golden-tested). Guide jobs need `KIARA_AGENT_MAX_JOBS ≥ 2`
   when generating missing parts.
+- **Generalizability is a hard requirement for the guide/assembly pipeline**
+  (user rule, repeated many times — do NOT forget): every mechanism in
+  `kiara/guide/` must work for ANY assembly manual, not the one currently being
+  debugged. FORBIDDEN in pipeline code: manual-specific hacks, hard-coded part
+  names/categories (e.g. "adapter", "elbow", "pipe", "casing", product names),
+  hard-coded step counts/sequences/orderings, thresholds or special cases tuned
+  to one fixture's geometry or wording, fallbacks that silently guess instead
+  of failing honestly. What IS allowed: domain-general mechanics (port/socket
+  mating, positional-qualifier parsing for target selection, premount/premount
+  semantics, joint/bridge reconciliation) that derive decisions from the plan,
+  the parts' port data, and the document — never from fixture knowledge. When
+  unsure whether a heuristic generalizes, prefer honest failure/evidence over
+  a guess that happens to fit the current fixture.
+- **Deep root-cause work, never quick fixes** (user rule, repeated many
+  times — do NOT forget): before implementing, reproduce the problem, trace
+  the full code path, and identify the actual root cause — not the nearest
+  symptom. Plan the fix at the correct level of abstraction, then implement
+  it completely (mechanism + audit evidence + tests). No band-aid patches.
 
 ## Testing
 - `tests/cad` must run both natively and inside the executor image

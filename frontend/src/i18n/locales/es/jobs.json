@@ -1,8 +1,10 @@
 {
   "title": "Trabajos",
   "active_n_one": "{{count}} activo",
+  "active_n_many": "{{count}} activos",
   "active_n_other": "{{count}} activos",
   "total_n_one": "{{count}} en total",
+  "total_n_many": "{{count}} en total",
   "total_n_other": "{{count}} en total",
   "filter_all": "todos",
   "filter_active": "en curso + en cola",
@@ -35,6 +37,7 @@
   "retry": "reintentar",
   "retry_title": "reiniciar este trabajo — crea una nueva ejecución",
   "more_questions_one": "(+{{count}} más)",
+  "more_questions_many": "(+{{count}} más)",
   "more_questions_other": "(+{{count}} más)",
   "step": {
     "intake": "intake",

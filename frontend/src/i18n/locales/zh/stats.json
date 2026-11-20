@@ -21,6 +21,7 @@
   "kpi_score": "平均分",
   "kpi_score_best": "最佳 {{n}}",
   "kpi_tokens": "LLM 词元",
+  "kpi_tokens_sub_one": "{{count}} 次调用",
   "kpi_tokens_sub_other": "{{count}} 次调用",
   "kpi_tok_success": "词元 / 成功",
   "kpi_tok_success_sub": "每个成功版本",

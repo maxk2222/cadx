@@ -1,5 +1,5 @@
 {
-  "new_part": "Nueva pieza",
+  "new_part": "Crear",
   "chat": "Chat",
   "projects": "Proyectos",
   "jobs": "Trabajos",
@@ -11,6 +11,7 @@
     "active_jobs": "trabajos activos",
     "waiting_input": "un trabajo espera entrada",
     "updates_one": "{{count}} actualización disponible",
+    "updates_many": "{{count}} actualizaciones disponibles",
     "updates_other": "{{count}} actualizaciones disponibles"
   },
   "language": "Idioma"

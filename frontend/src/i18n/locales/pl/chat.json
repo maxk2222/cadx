@@ -1,7 +1,7 @@
 {
   "title": "Czat",
   "index_title": "Czat",
-  "index_sub": "Rozmawiaj z agentem — może tworzyć projekty, generować, edytować, analizować i optymalizować części.",
+  "index_sub": "Porozmawiaj z agentem — może tworzyć projekty, generować, edytować, analizować i optymalizować części oraz tworzyć instrukcje.",
   "new_chat": "nowy czat",
   "no_project": "bez projektu",
   "running": "w toku…",
@@ -22,7 +22,7 @@
   "hide_panel": "ukryj panel modelu",
   "show_panel": "pokaż panel modelu",
   "start_title": "Rozpocznij rozmowę",
-  "start_hint": "Opisz część, dołącz obrazy referencyjne lub poproś agenta o modyfikację istniejącej wersji.",
+  "start_hint": "Opisz część lub instrukcję, dołącz pliki albo poproś agenta o modyfikację istniejącej wersji.",
   "latest_result": "najnowszy wynik",
   "delete_title": "Usunąć czat?",
   "delete_body": "Historia rozmowy zostanie usunięta; utworzone wersje i zadania pozostaną.",
@@ -31,7 +31,7 @@
   "remove_attachment": "usuń załącznik",
   "attach_images": "dołącz obrazy",
   "drop_images": "upuść obrazy tutaj",
-  "ph": "Opisz część, poproś o zmianę… (Enter — wyślij)",
+  "ph": "Opisz część lub instrukcję… (Enter, aby wysłać)",
   "send": "wyślij",
   "send_aria": "wyślij wiadomość",
   "tool_failed": "niepowodzenie",
@@ -72,5 +72,6 @@
   "live_preview": "podgląd na żywo",
   "final": "końcowy",
   "it_short": "it {{n}}",
-  "guide_title": "Kreator instrukcji AR"
+  "guide_title": "Kreator instrukcji AR",
+  "sug_4": "Zbuduj instrukcję montażu z mojego PDF"
 }

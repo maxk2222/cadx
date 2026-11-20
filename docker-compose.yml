@@ -210,8 +210,15 @@ services:
       MESH_DEVICE: cuda
       MESH_FAKE: ${MESH_FAKE:-}
       HF_HOME: /models/hf
+      # the image binds 0.0.0.0 → create_app refuses to start without a key;
+      # reuse the shared MESH_API_KEY from .env (worker sends it as Bearer)
+      MESH_API_KEYS: ${MESH_API_KEY:-}
     volumes:
       - mesh_models:/models
+    # LAN serving (llm chat + image gen for other hosts): publish the port —
+    # the Bearer key above protects every route but /v1/health
+    # ports:
+    #   - "8765:8765"
     networks: [internal, public]  # internal: reachable by worker; public: HF model downloads
 
   # AMD variant (Linux + ROCm): docker compose --profile gpu-rocm up -d

@@ -1,7 +1,7 @@
 {
   "title": "聊天",
   "index_title": "聊天",
-  "index_sub": "与智能体对话 — 它可以创建项目、生成、编辑、分析和优化零件。",
+  "index_sub": "与 Agent 交谈 — 可以创建项目、生成/编辑/分析/优化零件，还能生成指南。",
   "new_chat": "新聊天",
   "no_project": "无项目",
   "running": "运行中…",
@@ -22,7 +22,7 @@
   "hide_panel": "隐藏模型面板",
   "show_panel": "显示模型面板",
   "start_title": "开始对话",
-  "start_hint": "描述一个零件、附加参考图片，或让智能体修改现有版本。",
+  "start_hint": "描述零件或指南、上传文件，或请 Agent 修改现有版本。",
   "latest_result": "最新结果",
   "delete_title": "删除聊天？",
   "delete_body": "对话历史将被删除；已生成的版本和任务会保留。",
@@ -31,7 +31,7 @@
   "remove_attachment": "移除附件",
   "attach_images": "附加图片",
   "drop_images": "将图片拖到此处",
-  "ph": "描述一个零件、请求修改…（Enter 发送）",
+  "ph": "描述零件或指南…（Enter 发送）",
   "send": "发送",
   "send_aria": "发送消息",
   "tool_failed": "失败",
@@ -47,6 +47,7 @@
   "tokens": "词元",
   "iteration": "迭代",
   "eta": "预计剩余",
+  "calls_n_one": "{{count}} 次调用",
   "calls_n_other": "{{count}} 次调用",
   "run_n": "第 {{n}} 次运行",
   "alt_preview": "版本预览",
@@ -69,5 +70,6 @@
   "live_preview": "实时预览",
   "final": "最终",
   "it_short": "第 {{n}} 次迭代",
-  "guide_title": "AR指南构建器"
+  "guide_title": "AR指南构建器",
+  "sug_4": "根据我的 PDF 生成装配指南"
 }

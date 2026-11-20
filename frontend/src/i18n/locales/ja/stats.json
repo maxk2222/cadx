@@ -21,6 +21,7 @@
   "kpi_score": "平均スコア",
   "kpi_score_best": "ベスト {{n}}",
   "kpi_tokens": "LLM トークン",
+  "kpi_tokens_sub_one": "{{count}} 回の呼び出し",
   "kpi_tokens_sub_other": "{{count}} 回の呼び出し",
   "kpi_tok_success": "トークン / 成功",
   "kpi_tok_success_sub": "成功バージョンあたり",

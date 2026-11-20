@@ -1,6 +1,8 @@
 {
   "title": "任务",
+  "active_n_one": "{{count}} 个进行中",
   "active_n_other": "{{count}} 个进行中",
+  "total_n_one": "共 {{count}} 个",
   "total_n_other": "共 {{count}} 个",
   "filter_all": "全部",
   "filter_active": "运行中 + 排队",
@@ -32,6 +34,7 @@
   "cancel_title": "中止任务 — 丢弃结果",
   "retry": "重试",
   "retry_title": "重新运行此任务 — 创建新的运行",
+  "more_questions_one": "（+{{count}} 个）",
   "more_questions_other": "（+{{count}} 个）",
   "step": {
     "intake": "接收",

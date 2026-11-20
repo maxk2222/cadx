@@ -272,128 +272,6 @@ wheels = [
 ]
 
 [[package]]
-name = "kiara"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "alembic" },
-    { name = "arq" },
-    { name = "bd-warehouse" },
-    { name = "build123d" },
-    { name = "cryptography" },
-    { name = "fast-simplification" },
-    { name = "fastapi" },
-    { name = "greenlet" },
-    { name = "httpx" },
-    { name = "lxml" },
-    { name = "manifold3d" },
-    { name = "mcp" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "nlopt" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "pillow" },
-    { name = "psycopg", extra = ["binary"] },
-    { name = "pydantic-settings" },
-    { name = "pymupdf" },
-    { name = "pypdfium2" },
-    { name = "pyransac3d" },
-    { name = "python-multipart" },
-    { name = "pyvista" },
-    { name = "pyyaml" },
-    { name = "quiddity" },
-    { name = "redis" },
-    { name = "rembg", extra = ["cpu"] },
-    { name = "rtree" },
-    { name = "scikit-image" },
-    { name = "shapely" },
-    { name = "sqlmodel" },
-    { name = "sse-starlette" },
-    { name = "structlog" },
-    { name = "trimesh" },
-    { name = "typer" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "vtk" },
-]
-
-[package.optional-dependencies]
-fem = [
-    { name = "pyamg" },
-    { name = "scikit-sparse" },
-]
-repair = [
-    { name = "pymeshlab" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "aiosqlite" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "respx" },
-    { name = "ruff" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "alembic", specifier = ">=1.13" },
-    { name = "arq", specifier = ">=0.26" },
-    { name = "bd-warehouse", specifier = ">=0.4,<0.5" },
-    { name = "build123d", specifier = ">=0.13,<0.14" },
-    { name = "cryptography", specifier = ">=42" },
-    { name = "fast-simplification", specifier = ">=0.1.7,<0.3" },
-    { name = "fastapi", specifier = ">=0.115,<0.150" },
-    { name = "greenlet", specifier = ">=3.0" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "lxml", specifier = ">=5.0" },
-    { name = "manifold3d", specifier = ">=2.3,<4" },
-    { name = "mcp", specifier = ">=2.2,<3" },
-    { name = "networkx", specifier = ">=3.0" },
-    { name = "nlopt", specifier = ">=2.7" },
-    { name = "numpy", specifier = ">=2.0,<3.0" },
-    { name = "pillow", specifier = ">=10.0" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
-    { name = "pyamg", marker = "extra == 'fem'", specifier = ">=5.0,<6" },
-    { name = "pydantic-settings", specifier = ">=2.4" },
-    { name = "pymeshlab", marker = "extra == 'repair'", specifier = ">=2023.12" },
-    { name = "pymupdf", specifier = ">=1.24" },
-    { name = "pypdfium2", specifier = ">=4.30" },
-    { name = "pyransac3d", specifier = ">=0.7,<0.8" },
-    { name = "python-multipart", specifier = ">=0.0.9" },
-    { name = "pyvista", specifier = ">=0.44" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "quiddity", specifier = ">=0.3.11,<0.4" },
-    { name = "redis", specifier = ">=5.0" },
-    { name = "rembg", extras = ["cpu"], specifier = ">=2.0.57" },
-    { name = "rtree", specifier = ">=1.0" },
-    { name = "scikit-image", specifier = ">=0.24" },
-    { name = "scikit-sparse", marker = "extra == 'fem'", git = "https://github.com/scikit-sparse/scikit-sparse?rev=5f4772d01053bafb534672191457beb2d2a8c21c" },
-    { name = "shapely", specifier = ">=2.0" },
-    { name = "sqlmodel", specifier = ">=0.0.22" },
-    { name = "sse-starlette", specifier = ">=2.1" },
-    { name = "structlog", specifier = ">=24.1" },
-    { name = "trimesh", specifier = ">=4.0" },
-    { name = "typer", specifier = ">=0.12" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
-    { name = "vtk", specifier = ">=9.3,<10" },
-]
-provides-extras = ["repair", "fem"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "aiosqlite", specifier = ">=0.20" },
-    { name = "mypy", specifier = ">=1.11" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-asyncio", specifier = ">=0.23" },
-    { name = "respx", specifier = ">=0.21" },
-    { name = "ruff", specifier = ">=0.6" },
-    { name = "types-pyyaml" },
-]
-
-[[package]]
 name = "certifi"
 version = "2026.10.23"
 source = { registry = "https://pypi.org/simple" }
@@ -1464,6 +1342,128 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe", size = 18437, upload-time = "2025-09-08T01:34:57.871Z" },
+]
+
+[[package]]
+name = "kiara"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "alembic" },
+    { name = "arq" },
+    { name = "bd-warehouse" },
+    { name = "build123d" },
+    { name = "cryptography" },
+    { name = "fast-simplification" },
+    { name = "fastapi" },
+    { name = "greenlet" },
+    { name = "httpx" },
+    { name = "lxml" },
+    { name = "manifold3d" },
+    { name = "mcp" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "nlopt" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "pillow" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pydantic-settings" },
+    { name = "pymupdf" },
+    { name = "pypdfium2" },
+    { name = "pyransac3d" },
+    { name = "python-multipart" },
+    { name = "pyvista" },
+    { name = "pyyaml" },
+    { name = "quiddity" },
+    { name = "redis" },
+    { name = "rembg", extra = ["cpu"] },
+    { name = "rtree" },
+    { name = "scikit-image" },
+    { name = "shapely" },
+    { name = "sqlmodel" },
+    { name = "sse-starlette" },
+    { name = "structlog" },
+    { name = "trimesh" },
+    { name = "typer" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "vtk" },
+]
+
+[package.optional-dependencies]
+fem = [
+    { name = "pyamg" },
+    { name = "scikit-sparse" },
+]
+repair = [
+    { name = "pymeshlab" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "aiosqlite" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "respx" },
+    { name = "ruff" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "alembic", specifier = ">=1.13" },
+    { name = "arq", specifier = ">=0.26" },
+    { name = "bd-warehouse", specifier = ">=0.4,<0.5" },
+    { name = "build123d", specifier = ">=0.13,<0.14" },
+    { name = "cryptography", specifier = ">=42" },
+    { name = "fast-simplification", specifier = ">=0.1.7,<0.3" },
+    { name = "fastapi", specifier = ">=0.115,<0.150" },
+    { name = "greenlet", specifier = ">=3.0" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "lxml", specifier = ">=5.0" },
+    { name = "manifold3d", specifier = ">=2.3,<4" },
+    { name = "mcp", specifier = ">=2.2,<3" },
+    { name = "networkx", specifier = ">=3.0" },
+    { name = "nlopt", specifier = ">=2.7" },
+    { name = "numpy", specifier = ">=2.0,<3.0" },
+    { name = "pillow", specifier = ">=10.0" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
+    { name = "pyamg", marker = "extra == 'fem'", specifier = ">=5.0,<6" },
+    { name = "pydantic-settings", specifier = ">=2.4" },
+    { name = "pymeshlab", marker = "extra == 'repair'", specifier = ">=2023.12" },
+    { name = "pymupdf", specifier = ">=1.24" },
+    { name = "pypdfium2", specifier = ">=4.30" },
+    { name = "pyransac3d", specifier = ">=0.7,<0.8" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
+    { name = "pyvista", specifier = ">=0.44" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "quiddity", specifier = ">=0.3.11,<0.4" },
+    { name = "redis", specifier = ">=5.0" },
+    { name = "rembg", extras = ["cpu"], specifier = ">=2.0.57" },
+    { name = "rtree", specifier = ">=1.0" },
+    { name = "scikit-image", specifier = ">=0.24" },
+    { name = "scikit-sparse", marker = "extra == 'fem'", git = "https://github.com/scikit-sparse/scikit-sparse?rev=5f4772d01053bafb534672191457beb2d2a8c21c" },
+    { name = "shapely", specifier = ">=2.0" },
+    { name = "sqlmodel", specifier = ">=0.0.22" },
+    { name = "sse-starlette", specifier = ">=2.1" },
+    { name = "structlog", specifier = ">=24.1" },
+    { name = "trimesh", specifier = ">=4.0" },
+    { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
+    { name = "vtk", specifier = ">=9.3,<10" },
+]
+provides-extras = ["repair", "fem"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "aiosqlite", specifier = ">=0.20" },
+    { name = "mypy", specifier = ">=1.11" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "respx", specifier = ">=0.21" },
+    { name = "ruff", specifier = ">=0.6" },
+    { name = "types-pyyaml" },
 ]
 
 [[package]]

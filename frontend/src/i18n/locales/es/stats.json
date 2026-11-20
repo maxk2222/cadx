@@ -22,6 +22,7 @@
   "kpi_score_best": "mejor {{n}}",
   "kpi_tokens": "Tokens LLM",
   "kpi_tokens_sub_one": "{{count}} llamada",
+  "kpi_tokens_sub_many": "{{count}} llamadas",
   "kpi_tokens_sub_other": "{{count}} llamadas",
   "kpi_tok_success": "Tokens / éxito",
   "kpi_tok_success_sub": "por versión exitosa",

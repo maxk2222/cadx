@@ -56,8 +56,11 @@
   },
   "time": {
     "just_now": "刚刚",
+    "minutes_ago_one": "{{count}} 分钟前",
     "minutes_ago_other": "{{count}} 分钟前",
+    "hours_ago_one": "{{count}} 小时前",
     "hours_ago_other": "{{count}} 小时前",
+    "days_ago_one": "{{count}} 天前",
     "days_ago_other": "{{count}} 天前"
   },
   "field": {
@@ -213,7 +216,9 @@
       "submit": "生成",
       "submit_edit": "生成编辑",
       "slow_note": "本地生成可能需要片刻 — 首次使用时加载模型",
+      "generated_n_one": "已生成 {{count}} 张图片",
       "generated_n_other": "已生成 {{count}} 张图片",
+      "edited_n_one": "已编辑 {{count}} 张图片",
       "edited_n_other": "已编辑 {{count}} 张图片",
       "seed_ph": "例如 42"
     },

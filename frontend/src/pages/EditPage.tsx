@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  BookOpenCheck,
   Check,
   CircleDot,
   Copy,
@@ -25,6 +26,7 @@ import {
   Card,
   Chip,
   Crumbs,
+  EmptyState,
   Field,
   IconBtn,
   NumInput,
@@ -614,6 +616,24 @@ export default function EditPage() {
   if (!v)
     return (
       <div className="p-6 text-sm text-muted">{t("not_found")}</div>
+    );
+
+  // guide versions have their own editor (GuideEditor on the guide tab) —
+  // the parametric model editor is meaningless for them
+  if (v.kind === "guide")
+    return (
+      <div className="mx-auto flex h-screen max-w-lg flex-col items-center justify-center gap-4 p-6">
+        <EmptyState
+          icon={<BookOpenCheck className="h-8 w-8" />}
+          title={t("version:edit_guide_unsupported")}
+          hint={t("version:edit_guide_unsupported_hint")}
+        />
+        <Link to={`/versions/${v.id}`}>
+          <Btn variant="subtle" size="sm">
+            <ArrowLeft className="h-3.5 w-3.5" /> v{v.number}
+          </Btn>
+        </Link>
+      </div>
     );
 
   const editable = v.status === "succeeded" || v.status === "needs_review";

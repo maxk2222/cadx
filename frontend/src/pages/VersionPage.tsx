@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import ArtifactsTable from "../components/ArtifactsTable";
@@ -25,6 +25,7 @@ import {
   useToast,
 } from "../components/ui";
 import { api, errMsg } from "../lib/api";
+import { groupVersionsByPart, guidePartNums } from "../lib/parts";
 import type { GenMode, Job, RunOptions } from "../lib/types";
 import { useJobEvents } from "../lib/useJobEvents";
 import { useTitle } from "../lib/useTitle";
@@ -147,6 +148,20 @@ export default function VersionPage() {
     setOtherId(null);
   }, [id]);
 
+  // guide versions land on the guide tab; navigating back to a part version
+  // resets to overview (a stale "guide" tab would have no content)
+  useEffect(() => {
+    setTab(v?.kind === "guide" ? "guide" : "overview");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v?.id]);
+
+  // G-sequence for guide companion parts — shared numbering with the
+  // project page so the header can show G{n} instead of the raw P-chip
+  const guideNums = useMemo(() => {
+    const { groups } = groupVersionsByPart(versions.data ?? [], parts.data ?? []);
+    return guidePartNums(groups);
+  }, [versions.data, parts.data]);
+
   // default compare target: the parent version, else the latest other
   useEffect(() => {
     if (!compareOpen || otherId || !v) return;
@@ -260,9 +275,10 @@ export default function VersionPage() {
       ? stream.job
       : null;
   const dfmCount = v.dfm?.warnings?.length ?? 0;
-  // compare: candidate versions (never self), the selected one, its glb url
+  // compare: candidate versions (never self, never guides — a part↔guide
+  // model diff is meaningless), the selected one, its glb url
   const others = (versions.data ?? [])
-    .filter((x) => x.id !== v.id)
+    .filter((x) => x.id !== v.id && x.kind !== "guide")
     .sort((a, b) => b.number - a.number);
   const otherSel = others.find((x) => x.id === otherId) ?? null;
   const otherGlb =
@@ -277,8 +293,9 @@ export default function VersionPage() {
           projectName={project.data?.name}
           projectId={v.project_id}
           part={(parts.data ?? []).find((p) => p.id === v.part_id) ?? null}
+          guideIndex={guideNums.get(v.part_id)}
           compareOpen={compareOpen}
-          canCompare={others.length > 0}
+          canCompare={others.length > 0 && v.kind !== "guide"}
           onToggleCompare={() => {
             setCompareOpen((o) => !o);
             setTab("overview");
@@ -398,7 +415,7 @@ export default function VersionPage() {
         )}
 
         {tab === "guide" && (
-          <GuideTab versionId={v.id} name={v.name ?? v.id} />
+          <GuideTab versionId={v.id} name={v.name ?? v.id} running={jobLive} projectId={v.project_id} />
         )}
 
         {tab === "files" && (
@@ -427,6 +444,7 @@ export default function VersionPage() {
         onEditVisual={() => nav(`/versions/${v.id}/edit`)}
         onEditStructural={() => setOptimizeOpen(true)}
         onEditOrganic={() => setOrganicOpen(true)}
+        onEditGuide={() => setTab("guide")}
         edit={{
           editPrompt,
           setEditPrompt,

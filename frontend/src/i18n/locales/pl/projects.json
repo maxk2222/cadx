@@ -11,7 +11,7 @@
   "load_error_hint": "Czy API działa?",
   "empty_search": "Żaden projekt nie pasuje do wyszukiwania",
   "empty": "Brak projektów",
-  "empty_hint": "Utwórz projekt, aby zacząć generować modele 3D.",
+  "empty_hint": "Utwórz projekt, aby generować modele 3D i instrukcje.",
   "no_render": "brak renderu",
   "live": "na żywo",
   "versions_count_one": "{{count}} wersja",
@@ -78,5 +78,10 @@
   "parts_count_many": "{{count}} części",
   "parts_count_other": "{{count}} części",
   "parts_ungrouped": "Bez grupy",
-  "guide_n": "Instrukcja {{n}}"
+  "guide_n": "Instrukcja {{n}}",
+  "guide_add": "Instrukcja",
+  "guide_add_title": "Utwórz instrukcję montażu w tym projekcie",
+  "or_new_guide": "lub utwórz instrukcję",
+  "guide_card_title": "Instrukcja",
+  "guide_building": "Instrukcja jest tworzona…"
 }

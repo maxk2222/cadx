@@ -1,4 +1,5 @@
 import {
+  BookOpenCheck,
   PencilRuler,
   Plus,
   Shrink,
@@ -19,7 +20,7 @@ import type {
   VersionDetail,
   VersionSummary,
 } from "../../lib/types";
-import { groupVersionsByPart } from "../../lib/parts";
+import { groupVersionsByPart, guidePartNums } from "../../lib/parts";
 import type { JobStream } from "../../lib/useJobEvents";
 import FeatureEditPanel from "../FeatureEditPanel";
 import JobLog from "../JobLog";
@@ -264,6 +265,7 @@ export default function Inspector({
   onEditVisual,
   onEditStructural,
   onEditOrganic,
+  onEditGuide,
   edit,
 }: {
   v: VersionDetail;
@@ -279,14 +281,18 @@ export default function Inspector({
   onEditVisual: () => void;
   onEditStructural: () => void;
   onEditOrganic: () => void;
+  /** jump to the guide tab where the real editor lives (guide versions) */
+  onEditGuide: () => void;
   edit: Omit<Parameters<typeof EditWithPrompt>[0], "v" | "assets" | "library">;
 }) {
   const { t } = useTranslation("version");
   const finished =
     v.status === "succeeded" || v.status === "needs_review";
+  const isGuide = v.kind === "guide";
   const hasGlb = v.artifacts.some((a) => a.kind === "glb");
   // part-grouped version list — same cards as the project page, read-only
   const { groups, orphans } = groupVersionsByPart(versions, parts);
+  const guideNums = guidePartNums(groups);
 
   return (
     <div className="flex flex-col gap-4">
@@ -304,7 +310,20 @@ export default function Inspector({
         />
       </SectionCollapsible>
 
-      {finished && (
+      {finished && isGuide && (
+        <SectionCollapsible title={t("insp_actions")} persistKey="ver:actions" pad="p-3">
+          <div className="flex flex-col gap-1.5">
+            <ActionRow
+              icon={<BookOpenCheck className="h-4 w-4" />}
+              label={t("action_edit_guide")}
+              hint={t("action_edit_guide_hint")}
+              onClick={onEditGuide}
+            />
+          </div>
+        </SectionCollapsible>
+      )}
+
+      {finished && !isGuide && (
         <SectionCollapsible title={t("insp_actions")} persistKey="ver:actions" pad="p-3">
           <div className="flex flex-col gap-1.5">
             {hasGlb && (
@@ -333,7 +352,7 @@ export default function Inspector({
         </SectionCollapsible>
       )}
 
-      {finished && (
+      {finished && !isGuide && (
         <SectionCollapsible
           title={
             <span className="inline-flex items-center gap-1.5">
@@ -368,7 +387,7 @@ export default function Inspector({
         </SectionCollapsible>
       )}
 
-      {v.resolved_mode !== "mesh" && (
+      {!isGuide && v.resolved_mode !== "mesh" && (
         <SectionCollapsible
           title={t("insp_feature_edit")}
           defaultOpen={false}
@@ -393,6 +412,7 @@ export default function Inspector({
               group={g}
               projectId={v.project_id}
               activeId={v.id}
+              guideIndex={guideNums.get(g.part.id)}
               readonly
               forceOpen={g.versions.some((x) => x.id === v.id)}
             />

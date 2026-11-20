@@ -1,11 +1,13 @@
-# mesh-server on NVIDIA (CUDA 12.4): TRELLIS.2 + TripoSG adapters.
+# mesh-server on NVIDIA (CUDA 12.8): TRELLIS.2 + TripoSG adapters.
+# CUDA 12.8 is the first toolkit with native Blackwell (sm_120) kernels —
+# older images run RTX 50xx through PTX JIT or fail outright.
 #
 # Build:  docker build -f mesh_server/Dockerfile.cuda -t meshserver:cuda .
 # Run:    docker run --gpus all -p 8765:8765 -v mesh_models:/models meshserver:cuda
 #
 # Heavy model deps (TRELLIS.2 submodules, flash-attn) are installed via the
 # setup script — keep image builds repeatable by pinning the repo commit.
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -30,15 +32,17 @@ COPY meshserver ./meshserver
 RUN uv venv /opt/venv && \
     . /opt/venv/bin/activate && \
     uv pip install -e ".[cuda]" && \
-    uv pip install "torch==2.6.*" --index-url https://download.pytorch.org/whl/cu124
+    uv pip install "torch==2.7.*" --index-url https://download.pytorch.org/whl/cu128
 
 ENV PATH=/opt/venv/bin:$PATH
 
-# Optional: local-LLM backends (llama.cpp GGUF serving). llama-cpp-python
-# compiles from source and needs cmake — opt in with --build-arg WITH_LLM=1.
-# The built-in catalog auto-shows GGUF variants on non-darwin hosts; for
-# CUDA offload use a llama.cpp build with GGML_CUDA, e.g.
-# CMAKE_ARGS="-DGGML_CUDA=on" before this layer.
+# Optional: local-LLM backends (llama.cpp GGUF serving). The preferred
+# path is the prebuilt CUDA llama-server binary — see
+# scripts/install_llm_cuda.sh (unified-KV pool, --parallel slots, mmproj).
+# llama-cpp-python (WITH_LLM=1) remains a fallback: it compiles from
+# source, needs cmake, and serves serially (no continuous batching);
+# for CUDA offload it needs
+# CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=120" before this layer.
 ARG WITH_LLM=0
 RUN if [ "$WITH_LLM" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends cmake && \

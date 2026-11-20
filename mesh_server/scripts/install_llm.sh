@@ -54,4 +54,5 @@ else
   fi
   ok "llm extras installed"
   info "gguf models additionally need llama-server on PATH or LLAMA_SERVER_BIN"
+  info "CUDA host (RTX, unified-KV/parallel slots): run mesh_server/scripts/install_llm_cuda.sh"
 fi

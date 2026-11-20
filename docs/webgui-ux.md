@@ -9,19 +9,26 @@ development mode.
 
 ![GUI tour — start page, projects, project, version, editors, jobs, chat, library and stats](screenshots/walkthrough.gif)
 
-The **Start page** (`/`) is a guided four-step wizard for creating a brand-new
-part: **Describe** the part (with clickable example prompts) → **Images**
-(upload references or generate a concept image — both optional) → **Mode**
-(explained mode cards with a heuristic suggestion) → **Review & generate**
-(auto-named project, run options, one-click start). The project is created
-eagerly on entering the Images step — uploads and AI image generation need a
-project id — with a name auto-derived from the prompt (editable in Review;
-abandoned drafts can be discarded via *start over* or deleted on Projects).
-After starting, the wizard shows the job's live progress, provisional renders and
-clarifying questions inline (same stream as the version page); on success it
-hands off to the version page, on failure it offers *Back & adjust* (draft
-preserved). Wizard state is kept in localStorage, so reloading resumes —
-including a running job.
+The **Start page** (`/`) is a guided wizard that opens with a **goal
+step**: **Part** or **Anleitung** (interactive assembly guide). The Part
+branch keeps the classic four-step flow — **Describe** the part (with
+clickable example prompts) → **Images** (upload references or generate a
+concept image — both optional) → **Mode** (explained mode cards with a
+heuristic suggestion) → **Review & generate** (auto-named project, run
+options, one-click start). The Guide branch runs **Files** (required
+manual PDF ≤ 100 MB + optional CAD parts STEP/STL/GLB ≤ 50 MB) →
+**Notes** (optional free text that lands in `user_notes`) → **Review &
+start** (project name plus all four run options: generate missing parts,
+send images to the LLM, output language, audience rewrite). The project
+is created eagerly on entering the first input step — uploads need a
+project id — with a name auto-derived from the prompt or PDF filename
+(editable in Review; abandoned drafts can be discarded via *start over*
+or deleted on Projects). After starting, the wizard shows the job's live
+progress, provisional renders and clarifying questions inline (same
+stream as the version page); on success it hands off to the version page
+(Guide versions open on the guide tab), on failure it offers *Back &
+adjust* (draft preserved). Wizard state is kept in localStorage, so
+reloading resumes — including a running job.
 
 ![New-part wizard — mode selection with heuristic suggestion](screenshots/start-wizard.png)
 
@@ -38,8 +45,9 @@ paginates older history.
 
 The **Chat page** (`/chat`) is a persistent conversation with the agent —
 it can create projects, generate, edit, analyse and optimise parts as tools,
-with spawned jobs rendered as live cards and the latest version in a 3D
-panel. See [chat.md](chat.md).
+and build assembly guides (`start_guide_builder`), with spawned jobs
+rendered as live cards and the latest version in a 3D panel. See
+[chat.md](chat.md).
 
 ![Chat — project picker and conversation list](screenshots/chat.png)
 
@@ -58,12 +66,31 @@ and optional reusable library parts.
   design then optimizes it.
 - Per-run options include manufacturing process, material, FEM analysis,
   topology optimization/target volume, and standard fasteners.
+- Assembly guides are first-class on the project page: the Parts column has a
+  **Guide** button and the generate card an *or create a guide* link — both
+  deep-link into the wizard (`/?goal=guide&project=<id>`), which adopts the
+  existing project instead of creating a draft. Projects containing guides
+  show a persistent **guide preview card** under the hero render: the
+  cumulative 3D assembly (latest step) via the same `GuideScene`, refreshing
+  while a guide job builds, with a multi-guide picker and an **editor**
+  button that opens the full `GuideEditor` modal in place. Guide companion
+  parts are hidden from the *into part* picker, and PDF assets stay visible
+  but unselectable as part-generation inputs.
 
 ![Projects overview — project cards with thumbnails and status](screenshots/projects.png)
 
 ![Project page — prompt, mode selection and reference assets](screenshots/project.png)
 
 ### Version detail
+
+Guide versions are handled specially on the Version page: they land on the
+**Guide tab** by default (step-scrubbed `GuideScene` + `GuideEditor` modal),
+the header shows the purple `G{n}` chip instead of the raw `P{n}` part chip,
+part-only actions (visual/structural/organic editors, prompt edit, compare,
+master toggle) are hidden, `/versions/{id}/edit` shows an informational
+empty state instead of the model editor, and while a guide job is running
+the tab offers a note composer (`POST /versions/{id}/guide/notes`) whose
+lines reach the agent via `user_notes.jsonl` exactly like the chat tool.
 
 The Version page provides:
 

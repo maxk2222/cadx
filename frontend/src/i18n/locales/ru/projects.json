@@ -11,7 +11,7 @@
   "load_error_hint": "API запущен?",
   "empty_search": "Нет проектов по запросу",
   "empty": "Проектов пока нет",
-  "empty_hint": "Создайте проект, чтобы начать генерировать 3D-модели.",
+  "empty_hint": "Создайте проект, чтобы генерировать 3D-модели и инструкции.",
   "no_render": "рендера пока нет",
   "live": "live",
   "versions_count_one": "{{count}} версия",
@@ -78,5 +78,10 @@
   "parts_count_many": "{{count}} деталей",
   "parts_count_other": "{{count}} детали",
   "parts_ungrouped": "Без группы",
-  "guide_n": "Руководство {{n}}"
+  "guide_n": "Руководство {{n}}",
+  "guide_add": "Инструкция",
+  "guide_add_title": "Создать инструкцию по сборке в этом проекте",
+  "or_new_guide": "или создать инструкцию",
+  "guide_card_title": "Инструкция",
+  "guide_building": "Инструкция создаётся…"
 }

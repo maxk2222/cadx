@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleDot, MessagesSquare, Pencil, Sparkles, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { BookOpenCheck, CircleDot, MessagesSquare, Pencil, Sparkles, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import AssetManager from "../components/AssetManager";
@@ -8,6 +8,7 @@ import ModeSelector from "../components/ModeSelector";
 import OptionsPanel from "../components/OptionsPanel";
 import PartsSection from "../components/parts/PartsSection";
 import ProjectFormModal from "../components/ProjectFormModal";
+import GuidePreviewCard from "../components/version/GuidePreviewCard";
 import {
   Btn,
   Card,
@@ -21,6 +22,7 @@ import {
   useToast,
 } from "../components/ui";
 import { api, errMsg } from "../lib/api";
+import { groupVersionsByPart, guidePartNums } from "../lib/parts";
 import type { GenMode, RunOptions, VersionSummary } from "../lib/types";
 import { useTitle } from "../lib/useTitle";
 
@@ -185,6 +187,13 @@ export default function ProjectPage() {
     },
   });
 
+  // guide companion parts get their own G-sequence and are excluded from
+  // part-generation pickers (they hold guide versions, not editable parts)
+  const guideNums = useMemo(() => {
+    const { groups } = groupVersionsByPart(versions.data ?? [], parts.data ?? []);
+    return guidePartNums(groups);
+  }, [versions.data, parts.data]);
+
   // adopt project default gen mode once loaded
   useEffect(() => {
     if (modeInit || !project.data) return;
@@ -320,6 +329,12 @@ export default function ProjectPage() {
           tick={versions.dataUpdatedAt}
         />
 
+        <GuidePreviewCard
+          projectId={id}
+          versions={versions.data ?? []}
+          guideNums={guideNums}
+        />
+
         <Card className="p-4">
           <SectionTitle
             right={
@@ -361,7 +376,7 @@ export default function ProjectPage() {
                 onChange={(e) => setPartSel(e.target.value)}
               >
                 <option value="">{t("gen_new_part")}</option>
-                {(parts.data ?? []).map((p) => (
+                {(parts.data ?? []).filter((pt) => !guideNums.has(pt.id)).map((p) => (
                   <option key={p.id} value={p.id}>
                     P{p.number}
                     {p.name ? ` · ${p.name}` : ""}
@@ -417,6 +432,17 @@ export default function ProjectPage() {
             <Sparkles className="h-4 w-4" />
             {t("generate")}{selected.size ? ` · ${t("assets_n", { count: selected.size })}` : ""}
           </Btn>
+          <div className="mt-2.5 flex items-center gap-2.5">
+            <span className="h-px flex-1 bg-edge" />
+            <button
+              type="button"
+              onClick={() => nav(`/?goal=guide&project=${id}`)}
+              className="flex items-center gap-1 text-[11px] text-faint transition-colors hover:text-muted"
+            >
+              <BookOpenCheck className="h-3.5 w-3.5" /> {t("or_new_guide")}
+            </button>
+            <span className="h-px flex-1 bg-edge" />
+          </div>
         </Card>
 
         <Card className="p-4">
@@ -456,6 +482,9 @@ export default function ProjectPage() {
                 return n;
               })
             }
+            // only real images are valid part-generation inputs — PDFs and
+            // CAD files belong to the guide flow, notes open separately
+            unselectable={(a) => a.kind !== "image" && a.kind !== "generated_image"}
           />
         </Card>
       </div>

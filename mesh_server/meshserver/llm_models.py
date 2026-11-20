@@ -5,7 +5,8 @@ llama.cpp elsewhere). Custom entries persist to
 ``cfg.model_dir/"custom_models.json"`` — one JSON list of::
 
     {"repo": "org/name", "backend": "mlx-lm"|"llama.cpp"|"",
-     "name": str, "vision": bool, "tools": bool, "est_mem_mb": int|null,
+     "name": str, "vision": bool, "audio": bool, "tools": bool,
+     "est_mem_mb": int|null,
      "files": [gguf...], "mmproj": str|null, "ctx": int}
 
 ``backend`` empty resolves to mlx-lm on darwin-arm64, llama.cpp elsewhere;
@@ -116,7 +117,13 @@ def _builtin_gguf() -> list[type[LlmAdapter]]:
             id="qwen3.8-27b-gguf",
             name="Qwen3.8 27B Q4_K_M (llama.cpp, ~17 GB)",
             ctx=262144,
-            est_mb=17000,
+            # weights ~17 GB + unified KV pool + runtime margin — the
+            # ledger must reserve headroom so parallel image jobs don't
+            # OOM the card (RTX 5090 32 GB target)
+            est_mb=22000,
+            # hybrid arch: only 16 of 64 layers are full_attention
+            # (interval 4) → 16 L × 4 kv_heads × 256 dim × 2(K,V) × 2 B
+            kv_bytes_per_token=262144,
         ),
         make_gguf_adapter(
             "unsloth/Qwen3.6-35B-A3B-GGUF",
@@ -213,6 +220,7 @@ def _entry_to_class(entry: dict) -> type[LlmAdapter] | None:
         "id": _entry_id(entry),
         "name": str(entry.get("name") or repo),
         "vision": bool(entry.get("vision", False)),
+        "audio": bool(entry.get("audio", False)),
         "tools": bool(entry.get("tools", True)),
         "ctx": ctx,
         "est_mb": entry.get("est_mem_mb"),
@@ -267,6 +275,7 @@ def register_custom_model(cfg: Any, req: RegisterModelRequest) -> ModelInfo:
         "backend": backend,
         "name": req.name or repo,
         "vision": req.vision,
+        "audio": req.audio,
         "tools": req.tools,
         "est_mem_mb": req.est_mem_mb,
     }
@@ -300,6 +309,7 @@ def register_custom_model(cfg: Any, req: RegisterModelRequest) -> ModelInfo:
         backend=cls.backend,
         kind="llm",
         supports_vision=cls.supports_vision,
+        supports_audio=cls.supports_audio,
         supports_tools=cls.supports_tools,
         context_len=cls.context_len,
         est_mem_mb=cls.est_mem_mb,

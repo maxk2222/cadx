@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, PencilRuler, RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, NotebookPen, PencilRuler, RefreshCw, Send } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api, errMsg } from "../../lib/api";
@@ -6,7 +6,7 @@ import type { GuideDetail } from "../../lib/types";
 import SafeImg from "../SafeImg";
 import GuideEditor from "./GuideEditor";
 import GuideScene from "./GuideScene";
-import { Btn, Card, Chip, Spinner } from "../ui";
+import { Btn, Card, Chip, Spinner, inputCls, useToast } from "../ui";
 
 const mediaUrl = (vid: string, name: string) =>
   `/api/versions/${vid}/guide/media/${encodeURIComponent(name)}`;
@@ -16,17 +16,26 @@ const mediaUrl = (vid: string, name: string) =>
 export default function GuideTab({
   versionId,
   name,
+  running,
+  projectId,
 }: {
   versionId: string;
   name: string;
+  /** a guide job is still building — show the mid-run note composer */
+  running?: boolean;
+  /** owning project — needed for the editor's asset→media copy picker */
+  projectId?: string;
 }) {
   const { t } = useTranslation("version");
+  const toast = useToast();
   const [guide, setGuide] = useState<GuideDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [cur, setCur] = useState(0);
   const [open, setOpen] = useState(false);
   const [reload, setReload] = useState(0);
+  const [note, setNote] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
 
   useEffect(() => {
     api
@@ -41,6 +50,22 @@ export default function GuideTab({
     [guide],
   );
   const step = steps[Math.min(cur, Math.max(0, steps.length - 1))];
+
+  // mid-run user notes — same user_notes.jsonl the chat tool writes, so
+  // running missions pick it up via list_user_notes
+  const sendNote = () => {
+    const n = note.trim();
+    if (!n) return;
+    setNoteBusy(true);
+    api
+      .guideNote(versionId, n)
+      .then(() => {
+        setNote("");
+        toast(t("guide_note_sent"), "success");
+      })
+      .catch((e) => toast(errMsg(e), "error"))
+      .finally(() => setNoteBusy(false));
+  };
 
   if (err)
     return (
@@ -60,7 +85,12 @@ export default function GuideTab({
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
-        <Btn size="sm" onClick={() => setOpen(true)}>
+        <Btn
+          size="sm"
+          disabled={running}
+          title={running ? t("projects:guide_building") : t("guide_open_editor")}
+          onClick={() => setOpen(true)}
+        >
           <PencilRuler className="h-3.5 w-3.5" /> {t("guide_open_editor")}
         </Btn>
         <Chip tone="zinc">{t("guide_instances", { n: guide.instances })}</Chip>
@@ -69,6 +99,27 @@ export default function GuideTab({
           {t("guide_score", { n: guide.review.score })}/10
         </Chip>
       </div>
+
+      {running && (
+        <Card className="flex items-center gap-2 p-2.5">
+          <NotebookPen className="h-4 w-4 shrink-0 text-faint" />
+          <input
+            className={`${inputCls} flex-1 py-1 text-xs`}
+            placeholder={t("guide_note_ph")}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                sendNote();
+              }
+            }}
+          />
+          <Btn size="sm" busy={noteBusy} disabled={!note.trim()} onClick={sendNote}>
+            <Send className="h-3.5 w-3.5" /> {t("guide_note_send")}
+          </Btn>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1fr_300px]">
         <div className="h-[560px] overflow-hidden rounded-lg border border-edge bg-bg">
@@ -191,6 +242,7 @@ export default function GuideTab({
         <GuideEditor
           versionId={versionId}
           name={name}
+          projectId={projectId}
           onClose={() => {
             setOpen(false);
             setReload((r) => r + 1);

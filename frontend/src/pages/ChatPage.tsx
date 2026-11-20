@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  BookOpenCheck,
   Boxes,
   FolderOpen,
   MessageSquarePlus,
@@ -152,7 +153,7 @@ function TurnTimerChip() {
 }
 
 /** Clickable starter prompts for an empty thread. */
-const SUGGESTION_KEYS = ["sug_1", "sug_2", "sug_3"] as const;
+const SUGGESTION_KEYS = ["sug_1", "sug_2", "sug_3", "sug_4"] as const;
 
 function ChatView({ chatId }: { chatId: string }) {
   const { t } = useTranslation("chat");
@@ -511,7 +512,10 @@ function ChatView({ chatId }: { chatId: string }) {
       {/* right: live model panel + job monitor */}
       {show3d && panelVid && (
         <div className="hidden w-[420px] shrink-0 flex-col border-l border-edge lg:flex">
-          <div className="border-b border-edge px-3 py-2 text-xs font-medium text-muted">
+          <div className="flex items-center gap-1.5 border-b border-edge px-3 py-2 text-xs font-medium text-muted">
+            {panelVersion.data?.kind === "guide" && (
+              <BookOpenCheck className="h-3.5 w-3.5 text-purple-300" />
+            )}
             {t("latest_result")}
           </div>
           <div className="relative min-h-0 flex-1">

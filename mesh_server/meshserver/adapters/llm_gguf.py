@@ -14,7 +14,9 @@ vision projector via the server's --mmproj flag.
 
 from __future__ import annotations
 
+import re
 import shutil
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -30,6 +32,38 @@ from meshserver.adapters.llm_base import (
 from meshserver.logging import get_logger
 
 log = get_logger(__name__)
+
+# `llama-server --help` flag sets, cached per resolved argv prefix — an
+# unknown flag crashes the spawn, so newer knobs (unified KV pool, cache
+# types, flash-attn, prompt cache) are only emitted when the binary
+# advertises them. None = probe failed (treat as "only classic flags").
+_FLAG_RE = re.compile(r"-{1,2}[a-zA-Z][a-zA-Z0-9_-]*")
+_HELP_CACHE: dict[str, set[str] | None] = {}
+
+
+def _server_flags(prefix: list[str]) -> set[str] | None:
+    """Flag set from `<prefix> --help`; None when the probe itself failed."""
+    key = " ".join(prefix)
+    if key in _HELP_CACHE:
+        return _HELP_CACHE[key]
+    flags: set[str] | None = None
+    try:
+        r = subprocess.run(
+            prefix + ["--help"],
+            capture_output=True,
+            text=True,
+            # python -m llama_cpp.server imports torch — cold probes can
+            # exceed the usual instant --help; cached afterwards anyway
+            timeout=20,
+            check=False,
+        )
+        flags = set(_FLAG_RE.findall(r.stdout + r.stderr))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        flags = None
+    _HELP_CACHE[key] = flags
+    if flags is None:
+        log.warning("llm.gguf.flag_probe_failed", argv=key)
+    return flags
 
 
 class LlamaCppAdapter(LlmAdapter):
@@ -135,12 +169,15 @@ class LlamaCppAdapter(LlmAdapter):
             )
         prefix, flavor = resolved
         model = self._model_path()
-        eff = getattr(self.cfg, "effective", None)
-        ctx = int(
-            (eff("llm_ctx") if callable(eff) else getattr(self.cfg, "llm_ctx", 0))
-            or self.context_len
-            or 16384
-        )
+        effective = getattr(self.cfg, "effective", None)
+
+        def get(name: str, d: Any = None) -> Any:
+            return effective(name) if effective else getattr(self.cfg, name, d)
+
+        ctx = int(get("llm_ctx", 0) or self.context_len or 16384)
+        parallel = int(get("llm_parallel", 1) or 1)
+        ngl = int(get("llm_gpu_layers", -1))
+        ctype = str(get("llm_kv_cache_type", "") or "").strip()
         if flavor == "bin":
             argv = prefix + [
                 "-m",
@@ -152,21 +189,73 @@ class LlamaCppAdapter(LlmAdapter):
                 "--ctx-size",
                 str(ctx),
                 "--jinja",  # honor the repo's chat template (tool calls too)
+                "--n-gpu-layers",
+                str(ngl),
             ]
             if mmproj := self._mmproj_path():
                 argv += ["--mmproj", str(mmproj)]
+            flags = _server_flags(prefix) or set()
+            # unified KV pool (-kvu): -c becomes ONE pool shared by all
+            # parallel slots (vLLM-style) instead of ctx-per-slot division.
+            # Explicit --parallel without -kvu disables it on new builds —
+            # emit both deliberately.
+            if get("llm_kv_unified", True):
+                if "--kv-unified" in flags:
+                    argv += ["--kv-unified"]
+                    per_slot = int(get("llm_kv_per_slot", 0) or 0)
+                    if per_slot and "--kv-unified-per-slot" in flags:
+                        argv += ["--kv-unified-per-slot", str(per_slot)]
+                else:
+                    log.warning(
+                        "llm.gguf.kvu_unsupported",
+                        model=self.id,
+                        hint="update llama-server (>= ~b70xx) for the shared KV pool",
+                    )
+            if ctype:
+                if "--cache-type-k" in flags:
+                    argv += ["--cache-type-k", ctype, "--cache-type-v", ctype]
+                else:
+                    log.warning("llm.gguf.cache_type_unsupported", model=self.id)
+            if get("llm_flash_attn", True):
+                if "--flash-attn" in flags:
+                    argv += ["--flash-attn"]
+                elif "-fa" in flags:
+                    argv += ["-fa"]
+            cache_mb = int(get("llm_prompt_cache_mb", 0) or 0)
+            if cache_mb and "--cache-ram" in flags:
+                if mmproj:
+                    # llama.cpp's host-RAM prompt cache is incompatible
+                    # with mtmd — never emit it on a projector build
+                    log.warning(
+                        "llm.gguf.cache_ram_mtmd",
+                        model=self.id,
+                        hint="prompt cache disabled on multimodal (mmproj) servers",
+                    )
+                else:
+                    argv += ["--cache-ram", str(cache_mb)]
+                    if "--cache-idle-slots" in flags:
+                        argv += ["--cache-idle-slots"]
             # runtime-mutable slot count — concurrent client requests get
             # real parallel decode (continuous batching) instead of the
-            # default single sequence queue; KV cache scales with it, so
-            # the ledger estimate carries a headroom margin
-            effective = getattr(self.cfg, "effective", None)
-            parallel = int(effective("llm_parallel") if effective else 1) or 1
+            # default single sequence queue; with -kvu the ctx pool is
+            # shared dynamically, without it each slot gets ctx/parallel
             if parallel > 1:
                 argv += ["--parallel", str(parallel)]
+            if kv_bpt := int(getattr(self, "kv_bytes_per_token", 0) or 0):
+                eff_b = kv_bpt // (4 if ctype.startswith("q4") else 2 if ctype == "q8_0" else 1)
+                log.info(
+                    "llm.gguf.kv_budget",
+                    model=self.id,
+                    ctx=ctx,
+                    parallel=parallel,
+                    kv_mb_est=ctx * eff_b // 1_000_000,
+                )
             return argv
-        # llama_cpp.server — different flag names, no --mmproj support worth
-        # relying on across versions; vision customs should use the binary
-        return prefix + [
+        # llama_cpp.server — different flag names, no KVU/continuous batching
+        # (requests serialize); vision customs should use the binary. Kept as
+        # a working fallback, incl. the GPU fix: its default n_gpu_layers=0
+        # would silently run the model on CPU.
+        argv = prefix + [
             "--model",
             str(model),
             "--host",
@@ -175,7 +264,23 @@ class LlamaCppAdapter(LlmAdapter):
             str(port),
             "--n_ctx",
             str(ctx),
+            "--n_gpu_layers",
+            str(ngl),  # ancient flag, always safe — fixes the CPU default
         ]
+        # optional flags probed too — llama-cpp-python versions vary
+        py_flags = _server_flags(prefix) or set()
+        if ctype and "--cache_type_k" in py_flags:
+            argv += ["--cache_type_k", ctype, "--cache_type_v", ctype]
+        if get("llm_flash_attn", True) and "--flash_attn" in py_flags:
+            argv += ["--flash_attn"]
+        if get("llm_kv_unified", True) or parallel > 1:
+            log.warning(
+                "llm.gguf.pyflavor_serial",
+                model=self.id,
+                hint="install a llama-server CUDA binary "
+                "(mesh_server/scripts/install_llm_cuda.sh) for parallel slots / unified KV",
+            )
+        return argv
 
 
 def make_gguf_adapter(
@@ -190,6 +295,8 @@ def make_gguf_adapter(
     ctx: int = 16384,
     est_mb: int | None = None,
     custom: bool = False,
+    kv_bytes_per_token: int = 0,
+    audio: bool = False,
 ) -> type[LlmAdapter]:
     """Factory: an adapter class serving `files` (GGUF inside `repo`) via
     llama.cpp."""
@@ -203,9 +310,11 @@ def make_gguf_adapter(
             "gguf_files": list(files),
             "gguf_mmproj": mmproj,
             "supports_vision": bool(vision or mmproj),
+            "supports_audio": bool(audio),
             "supports_tools": bool(tools),
             "context_len": int(ctx),
             "est_mem_mb": est_mb,
             "custom": bool(custom),
+            "kv_bytes_per_token": int(kv_bytes_per_token),
         },
     )

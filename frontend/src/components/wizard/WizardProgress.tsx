@@ -17,6 +17,7 @@ export default function WizardProgress({
   versionId,
   projectId,
   projectName,
+  variant = "part",
   onSelectJob,
   onDone,
   onAdjustPrompt,
@@ -26,6 +27,8 @@ export default function WizardProgress({
   versionId: string;
   projectId: string | null;
   projectName: string;
+  /** "guide" swaps the part-flavoured progress texts for guide ones */
+  variant?: "part" | "guide";
   onSelectJob: (id: string) => void;
   onDone?: () => void;
   onAdjustPrompt: () => void;
@@ -37,6 +40,7 @@ export default function WizardProgress({
   const job = stream.job;
   const status = job?.status ?? "queued";
   const done = TERMINAL.includes(status);
+  const g = variant === "guide";
 
   const errorText = useMemo(() => {
     if (status !== "failed" && status !== "cancelled") return "";
@@ -49,13 +53,21 @@ export default function WizardProgress({
       <h2 className="text-lg font-semibold">
         {done
           ? status === "succeeded"
-            ? t("prog_ready")
+            ? g
+              ? t("prog_guide_ready")
+              : t("prog_ready")
             : status === "cancelled"
               ? t("prog_cancelled")
               : t("prog_failed")
-          : t("prog_running")}
+          : g
+            ? t("prog_guide_running")
+            : t("prog_running")}
       </h2>
-      {!done && <p className="mt-1 text-sm text-faint">{t("prog_hint")}</p>}
+      {!done && (
+        <p className="mt-1 text-sm text-faint">
+          {g ? t("prog_guide_hint") : t("prog_hint")}
+        </p>
+      )}
       {projectId && (
         <div className="mt-1 flex items-center gap-1.5 text-[11px] text-faint/80">
           <FolderOpen className="h-3 w-3" />
@@ -88,13 +100,14 @@ export default function WizardProgress({
         <Card className="anim-fade-in-up mt-4 flex flex-wrap items-center gap-3 border-emerald-800/60 bg-emerald-950/20 p-4">
           <CheckCircle2 className="h-5 w-5 text-emerald-400" />
           <div className="min-w-0 flex-1 text-sm text-fg">
-            {t("prog_done_hint")}
+            {g ? t("prog_guide_done_hint") : t("prog_done_hint")}
           </div>
           <Btn onClick={() => nav(`/versions/${versionId}?job=${jobId}`)}>
             {t("prog_open")}
           </Btn>
           <Btn variant="ghost" onClick={onNewPart}>
-            <RotateCcw className="h-4 w-4" /> {t("prog_another")}
+            <RotateCcw className="h-4 w-4" />{" "}
+            {g ? t("prog_guide_another") : t("prog_another")}
           </Btn>
         </Card>
       )}

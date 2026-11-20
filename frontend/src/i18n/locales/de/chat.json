@@ -1,7 +1,7 @@
 {
   "title": "Chat",
   "index_title": "Chat",
-  "index_sub": "Sprich mit dem Agenten — er kann Projekte anlegen, Teile generieren, bearbeiten, analysieren und optimieren.",
+  "index_sub": "Sprich mit dem Agenten — er kann Projekte anlegen, Teile generieren, bearbeiten, analysieren, optimieren und Anleitungen bauen.",
   "new_chat": "neuer Chat",
   "no_project": "kein Projekt",
   "running": "läuft…",
@@ -22,7 +22,7 @@
   "hide_panel": "Modellansicht ausblenden",
   "show_panel": "Modellansicht einblenden",
   "start_title": "Konversation starten",
-  "start_hint": "Beschreibe ein Teil, hänge Referenzbilder an oder bitte den Agenten, eine bestehende Version zu ändern.",
+  "start_hint": "Beschreibe ein Teil oder eine Anleitung, hänge Dateien an oder bitte den Agenten, eine bestehende Version zu ändern.",
   "latest_result": "neuestes Ergebnis",
   "delete_title": "Chat löschen?",
   "delete_body": "Der Verlauf wird entfernt; gestartete Versionen und Jobs bleiben erhalten.",
@@ -31,7 +31,7 @@
   "remove_attachment": "Anhang entfernen",
   "attach_images": "Bilder anhängen",
   "drop_images": "Bilder hier ablegen",
-  "ph": "Beschreibe ein Teil, bitte um eine Änderung… (Enter zum Senden)",
+  "ph": "Beschreibe ein Teil oder eine Anleitung… (Enter zum Senden)",
   "send": "senden",
   "send_aria": "Nachricht senden",
   "tool_failed": "fehlgeschlagen",
@@ -70,5 +70,6 @@
   "live_preview": "Live-Vorschau",
   "final": "final",
   "it_short": "it {{n}}",
-  "guide_title": "AR-Anleitungs-Builder"
+  "guide_title": "AR-Anleitungs-Builder",
+  "sug_4": "Baue die Montageanleitung aus meinem PDF"
 }

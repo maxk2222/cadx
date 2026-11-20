@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CircleDot, Flag, Inbox, RotateCcw, Square } from "lucide-react";
+import { BookOpenCheck, CircleDot, Flag, Inbox, RotateCcw, Square } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
@@ -71,7 +71,12 @@ const JobRow = memo(function JobRow({
         ) : (
           <StatusBadge status={job.status} title={t("job_status_title")} />
         )}
-        <span className="text-xs font-medium uppercase text-muted">{job.type}</span>
+        <span className="inline-flex items-center gap-1 text-xs font-medium uppercase text-muted">
+          {job.type === "guide" && (
+            <BookOpenCheck className="h-3 w-3 text-purple-300" />
+          )}
+          {job.type}
+        </span>
         <Link
           to={`/projects/${job.project_id}`}
           onClick={(e) => e.stopPropagation()}
@@ -86,7 +91,9 @@ const JobRow = memo(function JobRow({
             onClick={(e) => e.stopPropagation()}
             className="text-xs text-faint transition-colors hover:text-brand-300"
           >
-            · {job.part_name}
+            {/* guide companion parts are auto-named "AR-Guide <pdf-stem>" —
+                the stem is the informative bit */}
+            · {job.type === "guide" ? job.part_name.replace(/^AR-Guide\s*/, "") : job.part_name}
           </Link>
         )}
         {/* version badge only when it diverges — identical job/version

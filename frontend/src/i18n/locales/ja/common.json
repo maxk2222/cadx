@@ -56,8 +56,11 @@
   },
   "time": {
     "just_now": "たった今",
+    "minutes_ago_one": "{{count}} 分前",
     "minutes_ago_other": "{{count}} 分前",
+    "hours_ago_one": "{{count}} 時間前",
     "hours_ago_other": "{{count}} 時間前",
+    "days_ago_one": "{{count}} 日前",
     "days_ago_other": "{{count}} 日前"
   },
   "field": {
@@ -213,7 +216,9 @@
       "submit": "生成",
       "submit_edit": "編集を生成",
       "slow_note": "ローカル生成には時間がかかることがあります — 初回使用時にモデルを読み込みます",
+      "generated_n_one": "{{count}} 枚の画像を生成しました",
       "generated_n_other": "{{count}} 枚の画像を生成しました",
+      "edited_n_one": "{{count}} 枚の画像を編集しました",
       "edited_n_other": "{{count}} 枚の画像を編集しました",
       "seed_ph": "例: 42"
     },

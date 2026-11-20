@@ -1,10 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Plus, Search } from "lucide-react";
+import { BookOpenCheck, Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../../lib/api";
-import { groupVersionsByPart } from "../../lib/parts";
+import { groupVersionsByPart, guidePartNums } from "../../lib/parts";
 import type { Part, VersionSummary } from "../../lib/types";
 import { Card, SectionTitle, inputCls, useDebounced, useToast } from "../ui";
 import PartCard from "./PartCard";
@@ -27,6 +27,7 @@ export default function PartsSection({
   activeId?: string;
 }) {
   const { t } = useTranslation("projects");
+  const nav = useNavigate();
   const qc = useQueryClient();
   const toast = useToast();
   const [vFilter, setVFilter] = useState("");
@@ -41,14 +42,7 @@ export default function PartsSection({
   );
   // AR guides get their own G-sequence instead of a P-number — numbered
   // chronologically (first guide built = Guide 1)
-  const guideNums = useMemo(() => {
-    const m = new Map<string, number>();
-    groups
-      .filter((g) => g.versions.some((v) => v.kind === "guide"))
-      .sort((a, b) => a.part.number - b.part.number)
-      .forEach((g, i) => m.set(g.part.id, i + 1));
-    return m;
-  }, [groups]);
+  const guideNums = useMemo(() => guidePartNums(groups), [groups]);
 
   const needle = vq.trim().toLowerCase();
   const match = (v: VersionSummary) =>
@@ -83,15 +77,25 @@ export default function PartsSection({
       <Card className="p-3">
         <SectionTitle
           right={
-            <button
-              type="button"
-              onClick={() => addPart.mutate()}
-              disabled={addPart.isPending}
-              title={t("part_add_title")}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium normal-case tracking-normal text-brand-400 transition-colors hover:bg-panel2 hover:text-brand-300"
-            >
-              <Plus className="h-3.5 w-3.5" /> {t("part_add")}
-            </button>
+            <span className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => nav(`/?goal=guide&project=${projectId}`)}
+                title={t("guide_add_title")}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium normal-case tracking-normal text-purple-300 transition-colors hover:bg-panel2 hover:text-purple-200"
+              >
+                <BookOpenCheck className="h-3.5 w-3.5" /> {t("guide_add")}
+              </button>
+              <button
+                type="button"
+                onClick={() => addPart.mutate()}
+                disabled={addPart.isPending}
+                title={t("part_add_title")}
+                className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium normal-case tracking-normal text-brand-400 transition-colors hover:bg-panel2 hover:text-brand-300"
+              >
+                <Plus className="h-3.5 w-3.5" /> {t("part_add")}
+              </button>
+            </span>
           }
         >
           {t("parts_title")}

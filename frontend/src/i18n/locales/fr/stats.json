@@ -22,6 +22,7 @@
   "kpi_score_best": "meilleur {{n}}",
   "kpi_tokens": "Jetons LLM",
   "kpi_tokens_sub_one": "{{count}} appel",
+  "kpi_tokens_sub_many": "{{count}} appels",
   "kpi_tokens_sub_other": "{{count}} appels",
   "kpi_tok_success": "Jetons / succès",
   "kpi_tok_success_sub": "par version aboutie",

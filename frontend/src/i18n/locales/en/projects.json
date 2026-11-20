@@ -9,7 +9,7 @@
   "load_error_hint": "Is the API running?",
   "empty_search": "No projects match your search",
   "empty": "No projects yet",
-  "empty_hint": "Create a project to start generating 3D models.",
+  "empty_hint": "Create a project to start generating 3D models and guides.",
   "no_render": "no render yet",
   "live": "live",
   "versions_count_one": "{{count}} version",
@@ -64,5 +64,10 @@
   "parts_count_one": "{{count}} part",
   "parts_count_other": "{{count}} parts",
   "parts_ungrouped": "Ungrouped",
-  "guide_n": "Guide {{n}}"
+  "guide_n": "Guide {{n}}",
+  "guide_add": "Guide",
+  "guide_add_title": "Build an assembly guide in this project",
+  "or_new_guide": "or create a guide",
+  "guide_card_title": "Guide",
+  "guide_building": "Guide is being built…"
 }

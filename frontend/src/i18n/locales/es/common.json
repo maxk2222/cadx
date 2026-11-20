@@ -57,10 +57,13 @@
   "time": {
     "just_now": "ahora mismo",
     "minutes_ago_one": "hace {{count}}m",
+    "minutes_ago_many": "hace {{count}}m",
     "minutes_ago_other": "hace {{count}}m",
     "hours_ago_one": "hace {{count}}h",
+    "hours_ago_many": "hace {{count}}h",
     "hours_ago_other": "hace {{count}}h",
     "days_ago_one": "hace {{count}}d",
+    "days_ago_many": "hace {{count}}d",
     "days_ago_other": "hace {{count}}d"
   },
   "field": {
@@ -217,8 +220,10 @@
       "submit_edit": "Generar edición",
       "slow_note": "la generación local puede tardar — el modelo se carga en el primer uso",
       "generated_n_one": "{{count}} imagen generada",
+      "generated_n_many": "{{count}} imágenes generadas",
       "generated_n_other": "{{count}} imágenes generadas",
       "edited_n_one": "{{count}} imagen editada",
+      "edited_n_many": "{{count}} imágenes editadas",
       "edited_n_other": "{{count}} imágenes editadas",
       "seed_ph": "p. ej. 42"
     },

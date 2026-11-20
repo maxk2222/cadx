@@ -45,7 +45,11 @@ export default function StepImages({
         <div className="mt-4">
           <AssetManager
             projectId={projectId}
+            // guide manuals are never part-generation inputs — keep them
+            // visible but unselectable so a stray click can't send a PDF
+            // into the part pipeline
             assets={assets}
+            unselectable={(a) => a.kind !== "image" && a.kind !== "generated_image"}
             selected={selected}
             onToggle={onToggle}
             onAssetReplaced={onAssetReplaced}

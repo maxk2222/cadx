@@ -1,4 +1,4 @@
-import { BadgeCheck, Gauge, GitCompareArrows, Package, Pencil, Trash2 } from "lucide-react";
+import { BadgeCheck, BookOpenCheck, Gauge, GitCompareArrows, Package, Pencil, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
@@ -17,6 +17,7 @@ export default function VersionHeader({
   projectName,
   projectId,
   part,
+  guideIndex,
   compareOpen,
   canCompare,
   onToggleCompare,
@@ -30,6 +31,9 @@ export default function VersionHeader({
   projectId: string;
   /** owning part — chip links back to its section on the project page */
   part?: Part | null;
+  /** G-number when this version's part is a guide companion (purple chip
+   *  replaces the P-chip — guide parts aren't real parts) */
+  guideIndex?: number;
   compareOpen: boolean;
   canCompare: boolean;
   onToggleCompare: () => void;
@@ -106,10 +110,18 @@ export default function VersionHeader({
         <Chip tone="zinc" className="uppercase">
           {v.kind}
         </Chip>
-        {part && (
+        {part && guideIndex == null && (
           <Link to={`/projects/${projectId}?part=${part.id}`}>
             <Chip tone="blue" title={t("part_title")}>
               <Package className="h-3 w-3" /> P{part.number}
+              {part.name ? ` · ${part.name}` : ""}
+            </Chip>
+          </Link>
+        )}
+        {part && guideIndex != null && (
+          <Link to={`/projects/${projectId}?part=${part.id}`}>
+            <Chip tone="purple" title={t("part_title")}>
+              <BookOpenCheck className="h-3 w-3" /> G{guideIndex}
               {part.name ? ` · ${part.name}` : ""}
             </Chip>
           </Link>
@@ -143,26 +155,30 @@ export default function VersionHeader({
           </Chip>
         )}
         <span className="flex-1" />
-        <Btn
-          variant={v.accepted_at ? "success" : "subtle"}
-          size="sm"
-          aria-pressed={!!v.accepted_at}
-          title={v.accepted_at ? t("unaccept_title") : t("accept_title")}
-          busy={acceptBusy}
-          onClick={onToggleAccept}
-        >
-          <BadgeCheck className="h-3.5 w-3.5" />
-          {v.accepted_at ? t("unaccept") : t("accept")}
-        </Btn>
-        <Btn
-          variant="subtle"
-          size="sm"
-          aria-pressed={compareOpen}
-          title={canCompare ? t("compare_title") : t("compare_none")}
-          onClick={onToggleCompare}
-        >
-          <GitCompareArrows className="h-3.5 w-3.5" /> {t("compare")}
-        </Btn>
+        {v.kind !== "guide" && (
+          <>
+            <Btn
+              variant={v.accepted_at ? "success" : "subtle"}
+              size="sm"
+              aria-pressed={!!v.accepted_at}
+              title={v.accepted_at ? t("unaccept_title") : t("accept_title")}
+              busy={acceptBusy}
+              onClick={onToggleAccept}
+            >
+              <BadgeCheck className="h-3.5 w-3.5" />
+              {v.accepted_at ? t("unaccept") : t("accept")}
+            </Btn>
+            <Btn
+              variant="subtle"
+              size="sm"
+              aria-pressed={compareOpen}
+              title={canCompare ? t("compare_title") : t("compare_none")}
+              onClick={onToggleCompare}
+            >
+              <GitCompareArrows className="h-3.5 w-3.5" /> {t("compare")}
+            </Btn>
+          </>
+        )}
         <OverflowMenu
           title={t("more_actions")}
           items={[

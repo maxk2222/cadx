@@ -1,7 +1,7 @@
 {
   "title": "Chat",
   "index_title": "Chat",
-  "index_sub": "Talk to the agent — it can create projects, generate, edit, analyse and optimise parts.",
+  "index_sub": "Talk to the agent — it can create projects, generate, edit, analyse and optimise parts, and build guides.",
   "new_chat": "new chat",
   "no_project": "no project",
   "running": "running…",
@@ -22,7 +22,7 @@
   "hide_panel": "hide model panel",
   "show_panel": "show model panel",
   "start_title": "Start the conversation",
-  "start_hint": "Describe a part, attach reference images, or ask the agent to modify an existing version.",
+  "start_hint": "Describe a part or a guide, attach files, or ask the agent to modify an existing version.",
   "latest_result": "latest result",
   "delete_title": "Delete chat?",
   "delete_body": "The conversation history is removed; spawned versions and jobs stay.",
@@ -31,7 +31,7 @@
   "remove_attachment": "remove attachment",
   "attach_images": "attach images",
   "drop_images": "drop images here",
-  "ph": "Describe a part, ask for a change… (Enter to send)",
+  "ph": "Describe a part or a guide… (Enter to send)",
   "send": "send",
   "send_aria": "send message",
   "tool_failed": "failed",
@@ -70,5 +70,6 @@
   "live_preview": "live preview",
   "final": "final",
   "it_short": "it {{n}}",
-  "guide_title": "AR Guide Builder"
+  "guide_title": "AR Guide Builder",
+  "sug_4": "Build the assembly guide from my PDF"
 }

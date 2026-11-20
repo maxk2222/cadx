@@ -37,6 +37,20 @@ const KIND_LABEL: Record<string, string> = {
 
 const isImage = (k: Asset["kind"]) => k === "image" || k === "generated_image";
 
+/** client-side mirror of the server's `_KIND_MAX_BYTES` — PDFs and CAD
+ *  parts are legitimately bigger than reference photos */
+const KIND_CAPS_MB: Record<string, number> = {
+  pdf: 100,
+  step: 50,
+  stp: 50,
+  stl: 50,
+  glb: 50,
+  gltf: 50,
+  dxf: 50,
+};
+const capMb = (filename: string) =>
+  KIND_CAPS_MB[filename.split(".").pop()?.toLowerCase() ?? ""] ?? 25;
+
 export default function AssetManager({
   projectId,
   assets,
@@ -44,6 +58,7 @@ export default function AssetManager({
   onToggle,
   onAssetReplaced,
   onDeleted,
+  unselectable,
 }: {
   projectId: string;
   assets: Asset[];
@@ -53,6 +68,9 @@ export default function AssetManager({
   /** fired after a successful delete so parents can drop the id from any
    *  selection state (otherwise a stale id is submitted on generate/edit) */
   onDeleted?: (id: string) => void;
+  /** assets that must stay visible/manageable but can't be picked as
+   *  inputs (e.g. PDFs are guide sources, not part reference images) */
+  unselectable?: (a: Asset) => boolean;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -71,10 +89,14 @@ export default function AssetManager({
 
   const upload = async (files: FileList | null) => {
     if (!files?.length) return;
-    const MAX_MB = 25;
-    const tooBig = Array.from(files).filter((f) => f.size > MAX_MB * 1024 * 1024);
+    const tooBig = Array.from(files).filter((f) => f.size > capMb(f.name) * 1024 * 1024);
     if (tooBig.length) {
-      setErr(t("asset.too_big", { names: tooBig.map((f) => f.name).join(", "), max: MAX_MB }));
+      setErr(
+        t("asset.too_big", {
+          names: tooBig.map((f) => `${f.name} ≤${capMb(f.name)} MB`).join(", "),
+          max: Math.min(...tooBig.map((f) => capMb(f.name))),
+        })
+      );
       return;
     }
     setUploading(true);
@@ -149,7 +171,7 @@ export default function AssetManager({
           type="file"
           multiple
           hidden
-          accept="image/*,.step,.stp,.stl,.dxf"
+          accept="image/*,.pdf,.step,.stp,.stl,.glb,.gltf,.dxf"
           onChange={(e) => upload(e.target.files)}
         />
       </div>
@@ -168,17 +190,18 @@ export default function AssetManager({
         <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-4">
           {assets.map((a) => {
             const sel = selected?.has(a.id);
+            const noSel = !!onToggle && !sel && !!unselectable?.(a);
             return (
               <div
                 key={a.id}
                 className={`group relative overflow-hidden rounded-md border-2 transition-colors ${
                   sel ? "border-brand-500" : "border-edge hover:border-edge2"
-                }`}
+                } ${noSel ? "opacity-60" : ""}`}
               >
                 <button
-                  className="block w-full"
+                  className={`block w-full ${noSel ? "cursor-default" : ""}`}
                   onClick={() => {
-                    if (onToggle) onToggle(a.id);
+                    if (onToggle) { if (!noSel) onToggle(a.id); }
                     else if (isImage(a.kind)) setLightbox(a.url);
                     else if (a.kind === "note") window.open(a.url, "_blank");
                   }}

@@ -1,7 +1,7 @@
 {
   "title": "Chat",
   "index_title": "Chat",
-  "index_sub": "Parlez à l'agent — il peut créer des projets, générer, modifier, analyser et optimiser des pièces.",
+  "index_sub": "Parlez à l'agent — il peut créer des projets, générer, modifier, analyser et optimiser des pièces, et créer des guides.",
   "new_chat": "nouveau chat",
   "no_project": "sans projet",
   "running": "en cours…",
@@ -22,7 +22,7 @@
   "hide_panel": "masquer le panneau modèle",
   "show_panel": "afficher le panneau modèle",
   "start_title": "Démarrez la conversation",
-  "start_hint": "Décrivez une pièce, joignez des images de référence ou demandez à l'agent de modifier une version existante.",
+  "start_hint": "Décrivez une pièce ou un guide, joignez des fichiers ou demandez à l'agent de modifier une version existante.",
   "latest_result": "dernier résultat",
   "delete_title": "Supprimer le chat ?",
   "delete_body": "L'historique de la conversation est supprimé ; les versions et tâches générées sont conservées.",
@@ -31,7 +31,7 @@
   "remove_attachment": "retirer la pièce jointe",
   "attach_images": "joindre des images",
   "drop_images": "déposez les images ici",
-  "ph": "Décrivez une pièce, demandez une modification… (Entrée pour envoyer)",
+  "ph": "Décrivez une pièce ou un guide… (Entrée pour envoyer)",
   "send": "envoyer",
   "send_aria": "envoyer le message",
   "tool_failed": "échoué",
@@ -48,6 +48,7 @@
   "iteration": "itération",
   "eta": "reste",
   "calls_n_one": "{{count}} appel",
+  "calls_n_many": "{{count}} appels",
   "calls_n_other": "{{count}} appels",
   "run_n": "essai {{n}}",
   "alt_preview": "aperçu de la version",
@@ -70,5 +71,6 @@
   "live_preview": "aperçu en direct",
   "final": "final",
   "it_short": "it {{n}}",
-  "guide_title": "Constructeur de guide AR"
+  "guide_title": "Constructeur de guide AR",
+  "sug_4": "Créer le guide de montage depuis mon PDF"
 }

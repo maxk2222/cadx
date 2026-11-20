@@ -1,7 +1,7 @@
 {
   "title": "Chat",
   "index_title": "Chat",
-  "index_sub": "Habla con el agente — puede crear proyectos, generar, editar, analizar y optimizar piezas.",
+  "index_sub": "Habla con el agente — puede crear proyectos, generar, editar, analizar y optimizar piezas, y crear guías.",
   "new_chat": "nuevo chat",
   "no_project": "sin proyecto",
   "running": "ejecutando…",
@@ -22,7 +22,7 @@
   "hide_panel": "ocultar panel del modelo",
   "show_panel": "mostrar panel del modelo",
   "start_title": "Inicia la conversación",
-  "start_hint": "Describe una pieza, adjunta imágenes de referencia o pide al agente modificar una versión existente.",
+  "start_hint": "Describe una pieza o una guía, adjunta archivos o pide al agente que modifique una versión existente.",
   "latest_result": "último resultado",
   "delete_title": "¿Eliminar chat?",
   "delete_body": "El historial se elimina; las versiones y jobs generados se conservan.",
@@ -31,7 +31,7 @@
   "remove_attachment": "quitar adjunto",
   "attach_images": "adjuntar imágenes",
   "drop_images": "suelta las imágenes aquí",
-  "ph": "Describe una pieza, pide un cambio… (Enter para enviar)",
+  "ph": "Describe una pieza o una guía… (Enter para enviar)",
   "send": "enviar",
   "send_aria": "enviar mensaje",
   "tool_failed": "falló",
@@ -48,6 +48,7 @@
   "iteration": "iteración",
   "eta": "eta",
   "calls_n_one": "{{count}} llamada",
+  "calls_n_many": "{{count}} llamadas",
   "calls_n_other": "{{count}} llamadas",
   "run_n": "ejecución {{n}}",
   "alt_preview": "vista previa de la versión",
@@ -70,5 +71,6 @@
   "live_preview": "vista previa en vivo",
   "final": "final",
   "it_short": "it {{n}}",
-  "guide_title": "Constructor de guía AR"
+  "guide_title": "Constructor de guía AR",
+  "sug_4": "Crea la guía de montaje desde mi PDF"
 }

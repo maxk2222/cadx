@@ -57,10 +57,13 @@
   "time": {
     "just_now": "à l'instant",
     "minutes_ago_one": "il y a {{count}} min",
+    "minutes_ago_many": "il y a {{count}} min",
     "minutes_ago_other": "il y a {{count}} min",
     "hours_ago_one": "il y a {{count}} h",
+    "hours_ago_many": "il y a {{count}} h",
     "hours_ago_other": "il y a {{count}} h",
     "days_ago_one": "il y a {{count}} j",
+    "days_ago_many": "il y a {{count}} j",
     "days_ago_other": "il y a {{count}} j"
   },
   "field": {
@@ -217,8 +220,10 @@
       "submit_edit": "Générer l'édition",
       "slow_note": "la génération locale peut prendre un moment — le modèle se charge au premier usage",
       "generated_n_one": "{{count}} image générée",
+      "generated_n_many": "{{count}} images générées",
       "generated_n_other": "{{count}} images générées",
       "edited_n_one": "{{count}} image modifiée",
+      "edited_n_many": "{{count}} images modifiées",
       "edited_n_other": "{{count}} images modifiées",
       "seed_ph": "p. ex. 42"
     },
