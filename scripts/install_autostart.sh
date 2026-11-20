@@ -6,8 +6,8 @@
 # Usage:
 #   scripts/install_autostart.sh [--uninstall] [--no-color] [-h|--help]
 #
-#     macOS:  ~/Library/LaunchAgents/ai.cadx.updater.plist
-#     Linux:  systemd user unit ~/.config/systemd/user/cadx-updater.service
+#     macOS:  ~/Library/LaunchAgents/ai.kiara.updater.plist
+#     Linux:  systemd user unit ~/.config/systemd/user/kiara-updater.service
 #             (falls back to a @reboot cron entry when systemd --user is off)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -27,10 +27,10 @@ done
 
 ROOT="$(pwd)"
 PY="$(command -v python3)"
-LABEL="ai.cadx.updater"
+LABEL="ai.kiara.updater"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-UNIT="$HOME/.config/systemd/user/cadx-updater.service"
-CRON_MARK="# cadx-updater-autostart"
+UNIT="$HOME/.config/systemd/user/kiara-updater.service"
+CRON_MARK="# kiara-updater-autostart"
 
 install_macos() {
   mkdir -p "$HOME/Library/LaunchAgents"
@@ -76,7 +76,7 @@ StandardError=append:$ROOT/logs/updater.log
 WantedBy=default.target
 EOF
   systemctl --user daemon-reload
-  systemctl --user enable --now cadx-updater.service
+  systemctl --user enable --now kiara-updater.service
   ok "systemd user unit installed: $UNIT (Restart=always)"
   info "for headless boot without login: loginctl enable-linger $USER"
 }
@@ -98,7 +98,7 @@ uninstall() {
     ok "removed $PLIST"
   fi
   if [ -f "$UNIT" ]; then
-    systemctl --user disable --now cadx-updater.service 2>/dev/null || true
+    systemctl --user disable --now kiara-updater.service 2>/dev/null || true
     rm -f "$UNIT"
     systemctl --user daemon-reload 2>/dev/null || true
     ok "removed $UNIT"
@@ -110,12 +110,12 @@ uninstall() {
 }
 
 if [ "$UNINSTALL" = 1 ]; then
-  say "removing cadx autostart"
+  say "removing kiara autostart"
   uninstall
   exit 0
 fi
 
-say "installing cadx autostart ($ROOT)"
+say "installing kiara autostart ($ROOT)"
 mkdir -p logs run
 case "$(uname -s)" in
   Darwin) install_macos ;;

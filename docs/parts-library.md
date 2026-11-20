@@ -64,22 +64,22 @@ placement, axis, `threaded`, `covers_features`). Two paths consume it:
   directly with zero LLM calls.
 
 `build_standard_part_code(parts)` emits a parametric script: every value
-lands in `PARAMS` (parametric like any other candidate), `CADX_FEATURES`
+lands in `PARAMS` (parametric like any other candidate), `KIARA_FEATURES`
 carries the structured feature records (thread pitch/length/diameter/axis/
-position, catalog geometry adjustments), `CADX_BOM` declares the bill of
+position, catalog geometry adjustments), `KIARA_BOM` declares the bill of
 materials — the runner prefers these declarations over namespace scanning.
 Classes whose required params take host objects (`fastener`, `bearing`,
 `ring`, `key` — hole/seat/groove ops) are reported as *context helpers, not
 standalone parts*.
 
-### Thread level-of-detail: `CADX_DETAIL_MODE`
+### Thread level-of-detail: `KIARA_DETAIL_MODE`
 
-The runner injects `CADX_DETAIL_MODE` (`"preview"` | `"export"`) — an
+The runner injects `KIARA_DETAIL_MODE` (`"preview"` | `"export"`) — an
 executor-controlled flag, never an LLM boolean:
 
 - **preview** (`verify`/`render_model`/iteration runs): threadable classes
   build with `simple=True` (fast core body); thread classes without a
-  `simple` switch get a plain cylinder proxy. The `CADX_FEATURES` thread
+  `simple` switch get a plain cylinder proxy. The `KIARA_FEATURES` thread
   records feed a helix-line overlay in the render views plus a `thread_detail`
   close-up camera — the thread is clearly *visible* as a preview cue without
   paying for real helix geometry. `preview_thread_count` reports the marker
@@ -90,14 +90,14 @@ executor-controlled flag, never an LLM boolean:
   fused per part into single solids — chunk-wise: a real thread arrives as
   one solid per helix turn (≈76 on an M10×120 full thread), and a single
   N-way boolean over all of them runs O(n²) section work that crashed OCC in
-  the executor (exit -11); `_cadx_fuse_solids` fuses contiguous groups of ≤8
+  the executor (exit -11); `_kiara_fuse_solids` fuses contiguous groups of ≤8
   instead, which also preserves the helical BSPLINE faces the runner's
   thread check counts on (`glue=True` collapses them — never use it here).
   `thread_count` must then match the declared expected count or the run
   fails — a smooth-shaft preview can never ship as the final artifact. All
   four formats (STEP/STL/3MF/GLB) are produced from that real geometry.
 
-`CADX_FEATURES` coordinates are emitted in the **final part frame** — the
+`KIARA_FEATURES` coordinates are emitted in the **final part frame** — the
 placement transform (axis rotation + XY seating lift) is baked into
 `position_mm`/`start`, so the helix overlay lands on the rendered body even
 when the recipe flips a head-datum part upside down (`start` then measures
@@ -114,7 +114,7 @@ export ≈ 7.3 s sandbox build.
 reporting wrapper around `safe_fillet_shape`/`safe_chamfer_shape`: it returns
 `(result, {"requested", "applied"})` and **raises** when the radius collapsed
 to 0 instead of silently succeeding — generated code appends the record to
-`CADX_FEATURES` so the run reports what actually landed.
+`KIARA_FEATURES` so the run reports what actually landed.
 
 Known limits: context-helper classes (holes/seats/grooves) can't be emitted
 as standalone parts; `Pipe` needs `length_mm` (its `path` Edge is generated
@@ -168,7 +168,7 @@ API: `POST/GET/DELETE /api/library`, `GET /api/library/{id}/file`,
 
 ## BOM (`bom.json` + `Version.bom`)
 
-A declared `CADX_BOM` in generated code (emitted by the standard-part recipe
+A declared `KIARA_BOM` in generated code (emitted by the standard-part recipe
 builder) is authoritative — explicit part instances, not guesses. Otherwise
 `runner_entry.py` scans the executed namespace for `bd_warehouse` objects and
 groups them by `(class, type, size)` — using the semantic `*_size` attributes

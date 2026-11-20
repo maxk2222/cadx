@@ -2,8 +2,8 @@
 
 import math
 
-from cadx.agent.worker_jobs import _json_safe
-from cadx.llm.schemas import ParamDef
+from kiara.agent.worker_jobs import _json_safe
+from kiara.llm.schemas import ParamDef
 
 
 def test_paramdef_nonfinite_bounds_become_none() -> None:

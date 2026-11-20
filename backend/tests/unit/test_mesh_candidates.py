@@ -6,11 +6,11 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx, InputAsset
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx, InputAsset
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -41,7 +41,7 @@ def _ctx() -> AgentCtx:
 
 
 async def test_select_candidate_viable_generator_kept_over_heightfield():
-    from cadx.agent.orchestrator import _select_candidate
+    from kiara.agent.orchestrator import _select_candidate
 
     ctx = _ctx()
     scores = {(1, "a"): 0.6}
@@ -53,7 +53,7 @@ async def test_select_candidate_viable_generator_kept_over_heightfield():
 
 
 async def test_select_candidate_weak_generator_uses_heightfield():
-    from cadx.agent.orchestrator import _select_candidate
+    from kiara.agent.orchestrator import _select_candidate
 
     ctx = _ctx()
     scores = {(1, "a"): 0.2}
@@ -65,8 +65,8 @@ async def test_select_candidate_weak_generator_uses_heightfield():
 
 async def test_arrange_gen_images_drops_unlabelled_views():
     """Multiview adapter: 'other'-role images are not fed as view slots."""
-    from cadx.agent.orchestrator import _arrange_gen_images
-    from cadx.llm.schemas import PartSpec
+    from kiara.agent.orchestrator import _arrange_gen_images
+    from kiara.llm.schemas import PartSpec
 
     img = FIXTURES / "images" / "knob.png"
     imgs = [InputAsset(asset_id=f"a{i}", kind="image", path=img) for i in range(4)]

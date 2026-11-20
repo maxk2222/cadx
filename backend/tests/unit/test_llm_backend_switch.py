@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from cadx.llm.client import LLMClient, make_llm
-from cadx.runtime_config import RuntimeSettings
+from kiara.llm.client import LLMClient, make_llm
+from kiara.runtime_config import RuntimeSettings
 
 
 def test_external_backend_uses_llm_base_url():

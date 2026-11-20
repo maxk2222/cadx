@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from cadx.vision.prep import prepare_for_meshgen
+from kiara.vision.prep import prepare_for_meshgen
 
 
 def _synthetic(path, *, margin_side: str = "right") -> None:

@@ -5,8 +5,8 @@ import pytest
 import trimesh
 from build123d import Box, Cylinder, Pos, Rot
 
-from cadx.cad import mesh_boolean as mb
-from cadx.cad.mesh_ops import mesh_to_solid
+from kiara.cad import mesh_boolean as mb
+from kiara.cad.mesh_ops import mesh_to_solid
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def test_boolean_fuse_and_intersect(sphere_solid):
 def test_boolean_refuses_oversize_unbacked_body(sphere_solid):
     """A huge sewn shape without an attached mesh must raise (the cadlib
     caller then falls back to OCC) instead of spending minutes tessellating."""
-    import cadx.cad.mesh_boolean as m
+    import kiara.cad.mesh_boolean as m
 
     monkey = m.MAX_FACES_FOR_TESS
     m.MAX_FACES_FOR_TESS = 10
@@ -190,7 +190,7 @@ def test_recut_bounded_does_not_pierce_strut_on_same_ray():
     cutter pierced the strut and produced a phantom bore."""
     leg = Pos(-57.5, 0, 50) * Box(5, 30, 100)
     arm = Pos(0, 0, 97.5) * Box(120, 30, 5)
-    from cadx.cad import cadlib
+    from kiara.cad import cadlib
 
     part = leg + arm + cadlib.strut((-55, 0, 35), (15, 0, 95), 10, 6)
     strut_probe = (-14.0, 0.0, 70.0)
@@ -272,7 +272,7 @@ def test_recut_through_anchor_keeps_gap_to_other_body():
 def test_cadlib_backend_injection(sphere_solid):
     """cadlib.mesh_cut must route to the injected backend when OCC output is
     unusable — and keep working identically when OCC succeeds."""
-    from cadx.cad import cadlib
+    from kiara.cad import cadlib
 
     calls = []
 
@@ -299,7 +299,7 @@ def test_cadlib_mesh_cut_rescue_via_backend(sphere_solid, monkeypatch):
     deliver the cut — that is the entire point of the rescue lane."""
     from build123d import Shape
 
-    from cadx.cad import cadlib
+    from kiara.cad import cadlib
 
     calls = []
 

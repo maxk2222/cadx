@@ -1,9 +1,9 @@
 """MCP server tools: catalog shape, LLM-free guarantee, handler guards and an
 in-process client round-trip.
 
-SA-2 contract under test (`cadx/mcpserver/session.py` + `server.py`):
+SA-2 contract under test (`kiara/mcpserver/session.py` + `server.py`):
   * `McpToolSession(ProjectToolSession)` — `ctx.llm is None`, `ctx.executor` is
-    a QueueExecutor, `enqueue_fn=cadx.api.deps.enqueue`, `execute()` checks
+    a QueueExecutor, `enqueue_fn=kiara.api.deps.enqueue`, `execute()` checks
     `MCP_HANDLERS` before inherited `_tool_*` methods.
   * `server.py` maps the session's tool schemas onto MCP tools and dict
     results/`_images` onto MCP content.
@@ -29,8 +29,8 @@ from typing import Any
 
 import pytest
 
-from cadx import storage
-from cadx.db.models import (
+from kiara import storage
+from kiara.db.models import (
     Asset,
     AssetKind,
     Job,
@@ -42,10 +42,10 @@ from cadx.db.models import (
     VersionKind,
     VersionStatus,
 )
-from cadx.db.session import create_all, session_scope
-from cadx.mcpserver.tools import MCP_HANDLERS, MCP_TOOL_NAMES, MCP_TOOL_SCHEMAS
-from cadx.runtime_config import RuntimeSettings
-from cadx.spawn import SpawnError
+from kiara.db.session import create_all, session_scope
+from kiara.mcpserver.tools import MCP_HANDLERS, MCP_TOOL_NAMES, MCP_TOOL_SCHEMAS
+from kiara.runtime_config import RuntimeSettings
+from kiara.spawn import SpawnError
 
 # tools that must NEVER be exposed over MCP — every one of them drives the
 # WebGUI's LLM (or destroys data); the MCP surface is strictly LLM-free
@@ -857,13 +857,13 @@ async def test_use_project_binds_via_attach():
 
 
 def _build_server() -> Any:
-    """Construct the MCP server object SA-2 ships in `cadx/mcpserver/server.py`.
+    """Construct the MCP server object SA-2 ships in `kiara/mcpserver/server.py`.
 
     The frozen contract says the module builds a `mcp.server.lowlevel.Server`
     calling `session.execute(name, args)`; the factory/attribute name is an
     integration guess — adjust here if SA-2 names it differently.
     """
-    mod = pytest.importorskip("cadx.mcpserver.server")
+    mod = pytest.importorskip("kiara.mcpserver.server")
     for name in ("build_server", "create_server", "make_server"):
         fn = getattr(mod, name, None)
         if callable(fn):
@@ -872,12 +872,12 @@ def _build_server() -> Any:
         srv = getattr(mod, name, None)
         if srv is not None:
             return srv
-    pytest.fail("cadx.mcpserver.server exposes no Server factory/instance")
+    pytest.fail("kiara.mcpserver.server exposes no Server factory/instance")
 
 
 def _make_mcp_session() -> Any:
     """Construct SA-2's `McpToolSession` (contract: ctx.llm=None, QueueExecutor)."""
-    mod = pytest.importorskip("cadx.mcpserver.session")
+    mod = pytest.importorskip("kiara.mcpserver.session")
     return mod.McpToolSession()
 
 
@@ -889,7 +889,7 @@ async def _connected_client(server: Any) -> AsyncIterator[Any]:
 
     # fresh session pool per test — the pool is process-global and a bound
     # project would otherwise leak across tests
-    from cadx.mcpserver.session import SESSIONS
+    from kiara.mcpserver.session import SESSIONS
 
     SESSIONS.clear()
 
@@ -920,12 +920,12 @@ def test_server_object_constructs():
 
 async def test_session_is_llm_free(monkeypatch):
     """The MCP session must never construct or call an LLM."""
-    import cadx.llm.client
+    import kiara.llm.client
 
     def _boom(*_a: Any, **_k: Any) -> None:
         raise AssertionError("LLMClient constructed inside the MCP session")
 
-    monkeypatch.setattr(cadx.llm.client, "LLMClient", _boom)
+    monkeypatch.setattr(kiara.llm.client, "LLMClient", _boom)
     session = _make_mcp_session()
     assert session.ctx.llm is None
     assert getattr(session.ctx, "executor", None) is not None

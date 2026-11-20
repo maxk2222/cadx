@@ -1,8 +1,8 @@
-"""Tests for cadx.cad.defects — B-Rep defect location + STEP roundtrip gate."""
+"""Tests for kiara.cad.defects — B-Rep defect location + STEP roundtrip gate."""
 
 from build123d import Box, Shell, Solid
 
-from cadx.cad.defects import (
+from kiara.cad.defects import (
     defect_summary,
     locate_defects,
     step_roundtrip_check,
@@ -93,7 +93,7 @@ def test_step_roundtrip_existing_file_write_false(tmp_path):
 def test_pipeline_invalid_result_reports_defect_coords(tmp_path):
     """End-to-end: generated code producing an invalid solid surfaces defect
     coordinates in the ExecResult warnings/features for the repair loop."""
-    from cadx.cad.engine import run_pipeline
+    from kiara.cad.engine import run_pipeline
 
     code = (
         "from build123d import *\n"
@@ -113,7 +113,7 @@ def test_pipeline_invalid_result_reports_defect_coords(tmp_path):
 
 def test_pipeline_step_gate_no_warning_on_clean_box(tmp_path):
     """Happy path: a clean box produces no STEP roundtrip warning."""
-    from cadx.cad.engine import run_pipeline
+    from kiara.cad.engine import run_pipeline
 
     res = run_pipeline(
         code="from build123d import *\nPARAMS = {}\nresult = Box(10, 10, 10)\n",

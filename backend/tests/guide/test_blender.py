@@ -17,9 +17,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from cadx.guide import blender_check, blender_client, blender_tools
-from cadx.guide.blender_client import BlenderClient, BlenderError
-from cadx.guide.state import AssemblyState, GuidePart, GuideState
+from kiara.guide import blender_check, blender_client, blender_tools
+from kiara.guide.blender_client import BlenderClient, BlenderError
+from kiara.guide.state import AssemblyState, GuidePart, GuideState
 
 # -- fake socket server ------------------------------------------------------ #
 
@@ -141,11 +141,11 @@ def test_unreachable_raises_with_remediation():
 
 
 def test_path_bridge_roundtrip(tmp_path, monkeypatch):
-    from cadx import storage
+    from kiara import storage
 
     host_root = tmp_path / "hostdata"
     host_root.mkdir()
-    monkeypatch.setenv("CADX_DATA_HOST_ROOT", str(host_root))
+    monkeypatch.setenv("KIARA_DATA_HOST_ROOT", str(host_root))
     # worker sees /data as storage.data_root — emulate by pointing the
     # bridge at the same root (identity mapping in tests)
     monkeypatch.setattr(storage, "data_root", lambda: host_root)
@@ -161,8 +161,8 @@ def test_path_bridge_roundtrip(tmp_path, monkeypatch):
 
 
 def test_path_bridge_requires_root(monkeypatch):
-    monkeypatch.delenv("CADX_DATA_HOST_ROOT", raising=False)
-    with pytest.raises(BlenderError, match="CADX_DATA_HOST_ROOT"):
+    monkeypatch.delenv("KIARA_DATA_HOST_ROOT", raising=False)
+    with pytest.raises(BlenderError, match="KIARA_DATA_HOST_ROOT"):
         blender_client.to_host_path(Path("/data/anything"))
 
 
@@ -215,7 +215,7 @@ def test_build_instances_bindings():
 
 
 def _inst(iid: str, pid: str, x: float = 0.0, step: int = 1, premount=False):
-    from cadx.guide.state import AssemblyInstance
+    from kiara.guide.state import AssemblyInstance
 
     t = [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)]
     t[0][3], t[1][3], t[2][3] = x, 0.0, 0.0
@@ -248,7 +248,7 @@ def test_overlap_fraction_and_world_aabb():
 async def test_scene_gate_blockers(tmp_path, monkeypatch):
     """Gate blocks: empty scene, unplaced registered part, degenerate
     transform, buried overlap — all as honest blockers."""
-    from cadx.guide.state import GuideStep
+    from kiara.guide.state import GuideStep
 
     part = _boxed_part("casing")
     sess = _sess(tmp_path, parts=[part, _part("loose"), _part("stray")])
@@ -259,7 +259,7 @@ async def test_scene_gate_blockers(tmp_path, monkeypatch):
 
     class FakeClient:
         def execute_code(self, code, **kw):
-            return '__CADX__{"Obj": {"part": "casing", "step": 1, "matrix": ' + \
+            return '__KIARA__{"Obj": {"part": "casing", "step": 1, "matrix": ' + \
                 json.dumps([[1.0 if i == j else 0.0 for j in range(4)]
                             for i in range(4)]) + "}}"
 
@@ -310,7 +310,7 @@ async def test_scene_gate_buried_blocker(tmp_path, monkeypatch):
     }
     class FakeClient:
         def execute_code(self, code, **kw):
-            return "__CADX__" + json.dumps(scene)
+            return "__KIARA__" + json.dumps(scene)
     monkeypatch.setattr(blender_client, "get_client", lambda: FakeClient())
     blockers, manifest = await blender_check.run_scene_gate(sess)
     assert any("solid" in b for b in blockers)
@@ -321,7 +321,7 @@ async def test_scene_gate_buried_blocker(tmp_path, monkeypatch):
 
 
 def test_mission_order_modes():
-    from cadx.guide.guide_runner import BLENDER_MISSION_ORDER, MISSION_ORDER, _mission_order
+    from kiara.guide.guide_runner import BLENDER_MISSION_ORDER, MISSION_ORDER, _mission_order
 
     s = GuideState(output_dir="/tmp/x")
     assert _mission_order(s) == MISSION_ORDER
@@ -334,7 +334,7 @@ def test_mission_order_modes():
 def test_guide_request_mode_validation():
     import uuid
 
-    from cadx.api.schemas import GuideRequest
+    from kiara.api.schemas import GuideRequest
 
     r = GuideRequest(pdf_asset_id=uuid.uuid4(), mode="blender")
     assert r.mode == "blender"
@@ -347,14 +347,14 @@ def test_guide_request_mode_validation():
 def test_spawn_guide_stores_mode():
     import inspect as _inspect
 
-    from cadx import spawn
+    from kiara import spawn
 
     sig = _inspect.signature(spawn.spawn_guide)
     assert "mode" in sig.parameters
 
 
 def test_build_tool_allowlist():
-    from cadx.guide.tools import MISSION_TOOLS, merged_handlers, merged_schemas
+    from kiara.guide.tools import MISSION_TOOLS, merged_handlers, merged_schemas
 
     allow = set(MISSION_TOOLS["build"])
     schemas = merged_schemas()
@@ -402,8 +402,8 @@ def test_wait_for_file_stability(tmp_path):
 
 
 def test_sync_auto_registers_tagged_parts(tmp_path, monkeypatch):
-    """Tag = binding contract: an unregistered cadx_part tag auto-exports
-    as a part at sync — objects sharing cadx_inst group as the master."""
+    """Tag = binding contract: an unregistered kiara_part tag auto-exports
+    as a part at sync — objects sharing kiara_inst group as the master."""
     sess = _sess(tmp_path, parts=[_part("casing")])
     ident = [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)]
     objects = {
@@ -438,7 +438,7 @@ def test_sync_auto_registers_tagged_parts(tmp_path, monkeypatch):
 
     res = asyncio.run(blender_tools.blender_sync_scene(sess, {}))
     # casing already registered -> untouched; elbow auto-registered with
-    # quantity=1 (one cadx_inst group of two objects); dichtring is
+    # quantity=1 (one kiara_inst group of two objects); dichtring is
     # declared context -> collision error, not a registration
     assert registered.keys() == {"elbow"}
     _name, qty, names = registered["elbow"]
@@ -572,8 +572,8 @@ def test_forced_checkpoint_syncs_and_resets(tmp_path, monkeypatch):
 
     class FakeClient:
         def execute_code(self, code, **kw):
-            if "matrix_world" in code or "__CADX__" in code:
-                return "__CADX__" + json.dumps(
+            if "matrix_world" in code or "__KIARA__" in code:
+                return "__KIARA__" + json.dumps(
                     {"TubeA": {"part": "pipe", "step": 1, "matrix": ident}}
                 )
             return "print ok"
@@ -600,7 +600,7 @@ def test_touch_pairs_adjacency():
     the eps bridges them; a far instance is not a partner."""
     import numpy as np
 
-    from cadx.guide import solver
+    from kiara.guide import solver
 
     boxes = {
         "a#1": (np.array([0.0, 0, 0]), np.array([10.0, 10, 10])),
@@ -617,7 +617,7 @@ def test_audit_blender_touch_graph_exempts_joints(tmp_path):
     mode derives partners from physical contact: the socketed adapter is
     exempt, the floating part 400mm away is unreachable debris."""
 
-    from cadx.guide import assembly_tools
+    from kiara.guide import assembly_tools
 
     sess = _sess(tmp_path)
     sess.state.guide_mode = "blender"
@@ -642,7 +642,7 @@ def test_joint_pairs_cad_mode_keeps_declared_only(tmp_path):
     the contract there; touching instances stay unpartnered."""
     import numpy as np
 
-    from cadx.guide import assembly_tools
+    from kiara.guide import assembly_tools
 
     boxes = {
         "a#1": (np.array([0.0, 0, 0]), np.array([10.0, 10, 10])),

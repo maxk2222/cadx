@@ -10,14 +10,14 @@ from pathlib import Path
 import pytest
 from build123d import Box, Sphere, export_brep
 
-from cadx import storage
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.toolspecs import ToolSession
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.runtime_config import RuntimeSettings
+from kiara import storage
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.toolspecs import ToolSession
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.runtime_config import RuntimeSettings
 
 SEED = '''"""seed scaffold."""
 
@@ -55,7 +55,7 @@ def _ctx(**settings_kw) -> AgentCtx:
 async def _real_verify(code: str):
     """Runs the buffer through the actual sandbox — the emitted block only
     'verifies' when the generated code really executes."""
-    from cadx.cad.sandbox import run_user_code
+    from kiara.cad.sandbox import run_user_code
 
     out = run_user_code(code, Path(tempfile.mkdtemp()))
     return {
@@ -86,10 +86,10 @@ async def test_machine_feature_emits_block_and_auto_verifies():
     assert "face='top'" in res["emitted_code"]
     assert res["verify"]["ok"], res["verify"]
     assert "## block: machine_drill" in session.buffer
-    assert "CADX_FEATURES = [_feat_drill_0]" in session.buffer
+    assert "KIARA_FEATURES = [_feat_drill_0]" in session.buffer
 
 
-async def test_machine_feature_tap_registers_thread_in_cadx_features():
+async def test_machine_feature_tap_registers_thread_in_kiara_features():
     ctx = _ctx(agent_build_verify_max=4)
     session = ToolSession(ctx, kind="build", code=SEED, verify_fn=_real_verify)
     _write_session_brep(ctx, Box(60, 40, 20))
@@ -103,7 +103,7 @@ async def test_machine_feature_tap_registers_thread_in_cadx_features():
     )
     assert res["ok"], res
     assert res["approach_normal"] == pytest.approx([-1, 0, 0], abs=1e-3)
-    assert "CADX_FEATURES = [_feat_tap_0]" in session.buffer
+    assert "KIARA_FEATURES = [_feat_tap_0]" in session.buffer
     # the emitted record carries the thread fields the export gate counts
     assert "kind': 'thread'" in res["emitted_code"] or "machine_on_face" in res["emitted_code"]
     verify = res["verify"]

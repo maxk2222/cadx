@@ -13,9 +13,9 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.regions import _anchor_geometry, resolve_case_dofs
-from cadx.cad.fem.voxelize import voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.regions import _anchor_geometry, resolve_case_dofs
+from kiara.cad.fem.voxelize import voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 
 def _block_with_bores() -> trimesh.Trimesh:
@@ -145,7 +145,7 @@ def test_bearing_n_hint_miss_warns_not_binds(domain) -> None:
 
 # --- interface_regions: unified keep/void protection per fastener anchor -----
 
-from cadx.cad.fem.regions import interface_regions  # noqa: E402
+from kiara.cad.fem.regions import interface_regions  # noqa: E402
 
 
 def test_interface_regions_blind_signed_axis() -> None:
@@ -227,7 +227,7 @@ def test_interface_regions_spec_only_filter() -> None:
 
 # --- expand_attaches: attach/mechanism sugar → concrete regions -------------
 
-from cadx.cad.fem.regions import expand_attaches  # noqa: E402
+from kiara.cad.fem.regions import expand_attaches  # noqa: E402
 
 _ATT_ANCHORS = [
     {
@@ -455,7 +455,7 @@ def test_bore_region_is_a_wall_shell_not_a_sleeve(domain) -> None:
     0.35·dia froze a Ø51 sleeve around a Ø30 seat (~19% of the domain). The
     shell must stay ~1.5 cells / 0.15·dia thick: cells exist on the wall but
     the radial extent stays bounded."""
-    from cadx.cad.fem.regions import _bore_cells
+    from kiara.cad.fem.regions import _bore_cells
 
     r = RegionSpec(kind="bore", axis="+y", center=[0, 0, 65], diameter_mm=30.0)
     cells = _bore_cells(domain, r, _ANCHORS)
@@ -547,7 +547,7 @@ def test_oob_anchor_axial_clamps_to_declared_face() -> None:
     keep ring must clamp onto the declared entry face and pin the real bore
     mouth — a ring centred at the declared point pins air and lets TopOpt
     erase the lug."""
-    from cadx.cad.fem.regions import region_cell_mask
+    from kiara.cad.fem.regions import region_cell_mask
 
     dom = voxelize(_lug_with_x_bore(), 2.0, 400_000)
     anchors = [

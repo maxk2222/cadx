@@ -1,6 +1,6 @@
 """Cancel-key scoping — a task timeout must never cancel the whole job.
 
-Regression: _run_task used to set cancel:{job_id} (the CADX job) on task
+Regression: _run_task used to set cancel:{job_id} (the KIARA job) on task
 timeout; every later task of that job then read the same flag and returned
 'cancelled' instantly. One 480s pipeline hang pre-doomed a whole
 generation run.
@@ -8,7 +8,7 @@ generation run.
 
 from __future__ import annotations
 
-from cadx.cad.tasks import _cancel_keys
+from kiara.cad.tasks import _cancel_keys
 
 
 def test_cancel_keys_job_only_when_no_task_id() -> None:

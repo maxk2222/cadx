@@ -7,10 +7,10 @@ import uuid
 import pytest
 from sqlmodel import col, select
 
-from cadx.agent import chat_worker
-from cadx.db.models import Chat, ChatMessage, ChatRole, Project
-from cadx.db.session import create_all, session_scope
-from cadx.llm.fake import FakeLLM
+from kiara.agent import chat_worker
+from kiara.db.models import Chat, ChatMessage, ChatRole, Project
+from kiara.db.session import create_all, session_scope
+from kiara.llm.fake import FakeLLM
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -152,7 +152,7 @@ async def test_drain_pending_persists_immediately(monkeypatch):
 async def test_asset_refs_dehydrate_and_hydrate():
     """asset_ref markers survive the llm_messages round trip; hydrate emits
     image parts only for the vision role."""
-    from cadx.agent.types import InputAsset
+    from kiara.agent.types import InputAsset
 
     m = {
         "role": "user",
@@ -239,11 +239,11 @@ async def test_unbound_turn_agent_creates_project(monkeypatch):
 async def test_tool_gating_unbound(monkeypatch):
     """Unbound session: project/attach/list + catalog/library tools only —
     project-bound tools appear after create_project."""
-    from cadx.agent.chat_tools import ChatToolSession
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.db.models import ProjectSettings
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.agent.chat_tools import ChatToolSession
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.db.models import ProjectSettings
+    from kiara.runtime_config import RuntimeSettings
 
     async with session_scope() as db:
         c = Chat(project_id=None, title="t")
@@ -314,11 +314,11 @@ async def test_create_project_tool_publishes_chat_update(monkeypatch):
         await db.refresh(c)
         cid = c.id
 
-    from cadx.agent.chat_tools import ChatToolSession
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.db.models import ProjectSettings
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.agent.chat_tools import ChatToolSession
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.db.models import ProjectSettings
+    from kiara.runtime_config import RuntimeSettings
 
     async def emit(*_a, **_k) -> None:
         pass

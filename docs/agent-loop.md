@@ -1,6 +1,6 @@
 # Agent loop
 
-State machine in `backend/cadx/agent/orchestrator.py`:
+State machine in `backend/kiara/agent/orchestrator.py`:
 
 ```mermaid
 flowchart TD

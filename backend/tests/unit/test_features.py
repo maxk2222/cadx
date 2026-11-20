@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from build123d import Align, Box, Cone, Cylinder, Pos, export_stl, import_stl
 
-from cadx.cad.features import _mesh_through_holes, extract_features
+from kiara.cad.features import _mesh_through_holes, extract_features
 
 
 @pytest.fixture()
@@ -100,7 +100,7 @@ def test_extract_features_merge_keeps_analytic_confidence(bored_stl: Path) -> No
 def test_fillet_check_fails_on_reliable_brep(tmp_path: Path) -> None:
     """A spec fillet missing from a reliable analytic solid → FAIL, not
     UNVERIFIED (the status only survives on approximate evidence)."""
-    from cadx.cad.verifyspec import _fillet_check
+    from kiara.cad.verifyspec import _fillet_check
 
     checks: list[dict] = []
     _fillet_check(
@@ -127,9 +127,9 @@ def test_verify_spec_flags_degraded_topopt_holes() -> None:
     spec bore group that shrank/collapsed to fewer members is a MAJOR
     finding → spec_features FAIL (regression: robot_arm v9 shipped 1 of 2
     flange holes, verify_spec saw no evidence at all → UNVERIFIED → PASS)."""
-    from cadx.cad.features import MeasuredFeatures, compare_features
-    from cadx.cad.verifyspec import verify_spec
-    from cadx.llm.schemas import Feature
+    from kiara.cad.features import MeasuredFeatures, compare_features
+    from kiara.cad.verifyspec import verify_spec
+    from kiara.llm.schemas import Feature
 
     spec = {
         "features": [
@@ -177,7 +177,7 @@ def test_boss_axis_detected_and_compared() -> None:
 
     from build123d import Rot
 
-    from cadx.cad.features import compare_features
+    from kiara.cad.features import compare_features
 
     base = Pos(0, 0, 4) * Box(60, 20, 8)
     tube_x = Pos(0, 0, 8) * Rot(0, 90, 0) * Cylinder(radius=6, height=60)
@@ -209,7 +209,7 @@ def test_typed_rib_with_boss_in_prose_is_not_a_tube_demand() -> None:
     Untyped/other features keep the rescue path."""
     from types import SimpleNamespace
 
-    from cadx.cad.features import compare_features
+    from kiara.cad.features import compare_features
 
     base = Pos(0, 0, 4) * Box(60, 20, 8)
     tube_z = Pos(0, 0, 15) * Cylinder(radius=6, height=20)
@@ -249,7 +249,7 @@ def test_mesh_profile_reports_spine(tmp_path: Path) -> None:
     # show the drift that a bbox alone would hide
     from build123d import export_brep
 
-    from cadx.cad.runner_entry import _mesh_profile
+    from kiara.cad.runner_entry import _mesh_profile
 
     part = Box(40, 10, 8) + Pos(25, 8, 0) * Box(10, 10, 8)
     path = tmp_path / "stepped.brep"

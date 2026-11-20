@@ -19,8 +19,8 @@ from __future__ import annotations
 import numpy as np
 import trimesh
 
-from cadx.cad.fem.solver import assemble, reduce_case, solve_reduced
-from cadx.cad.fem.voxelize import voxelize
+from kiara.cad.fem.solver import assemble, reduce_case, solve_reduced
+from kiara.cad.fem.voxelize import voxelize
 
 from . import harness
 

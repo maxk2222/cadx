@@ -14,10 +14,10 @@ from typing import Any
 
 import pytest
 
-import cadx.api.deps as deps
-from cadx import queue as q
-from cadx.api.deps import enqueue as real_enqueue  # bound at import — survives conftest's stub
-from cadx.db.models import (
+import kiara.api.deps as deps
+from kiara import queue as q
+from kiara.api.deps import enqueue as real_enqueue  # bound at import — survives conftest's stub
+from kiara.db.models import (
     Chat,
     ChatMessage,
     ChatRole,
@@ -28,7 +28,7 @@ from cadx.db.models import (
     Version,
     VersionKind,
 )
-from cadx.db.session import create_all, session_scope
+from kiara.db.session import create_all, session_scope
 
 
 @pytest.fixture(scope="module", autouse=True)

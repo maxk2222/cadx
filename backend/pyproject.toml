@@ -1,5 +1,5 @@
 [project]
-name = "cadx"
+name = "kiara"
 version = "0.1.0"
 description = "LLM-driven CAD agent: images + text -> parametric build123d models for 3D printing & CNC"
 license = "AGPL-3.0-or-later"
@@ -42,7 +42,7 @@ dependencies = [
     "pypdfium2>=4.30",  # anleitungsbuilder PDF->page images/text (guide/pdfdoc.py)
     "pymupdf>=1.24",  # guide figure crops (extract_figures); degrades to pages-only when absent
     "nlopt>=2.7",
-    "mcp>=2.2,<3",  # MCP server core — exposes deterministic cadx tools to external agents
+    "mcp>=2.2,<3",  # MCP server core — exposes deterministic kiara tools to external agents
 ]
 
 [project.optional-dependencies]
@@ -86,10 +86,10 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["cadx"]
+packages = ["kiara"]
 
 [project.scripts]
-kiara = "cadx.cli:app"
+kiara = "kiara.cli:app"
 
 [tool.ruff]
 line-length = 100
@@ -103,14 +103,14 @@ ignore = ["E501"]
 max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
-"cadx/api/routers/*.py" = ["B008"]
-"cadx/cli.py" = ["B008"]
+"kiara/api/routers/*.py" = ["B008"]
+"kiara/cli.py" = ["B008"]
 "tests/fixtures/*.py" = ["F401", "F403", "F405", "PTH", "SIM117"]
 "alembic/**" = ["ALL"]
 
 [tool.mypy]
 python_version = "3.11"
-packages = ["cadx"]
+packages = ["kiara"]
 warn_return_any = true
 warn_unused_ignores = true
 ignore_missing_imports = true
@@ -119,12 +119,12 @@ mypy_path = "."
 
 # pyvista stubs mis-decorate plotting methods (false positives)
 [[tool.mypy.overrides]]
-module = "cadx.cad.render"
+module = "kiara.cad.render"
 disable_error_code = ["call-arg", "arg-type"]
 
 # bd_warehouse has no type stubs for its class-level catalogs
 [[tool.mypy.overrides]]
-module = "cadx.cad.catalog"
+module = "kiara.cad.catalog"
 disable_error_code = ["call-arg", "attr-defined"]
 
 [tool.pytest.ini_options]

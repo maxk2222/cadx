@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CADX installer — fetch a release tarball OR run in-tree, then setup + start.
+# KIARA installer — fetch a release tarball OR run in-tree, then setup + start.
 #
 # Usage:
 #   curl -fsSL <release-asset>/install.sh | bash -s -- [--channel alpha|stable]
@@ -20,7 +20,7 @@
 #                            releases/latest endpoint ignores prereleases,
 #                            hence the list API)
 #   --tag vX.Y.Z             explicit release tag (bootstrap/--update)
-#   --dir PATH               install dir (default: ./cadx; with --update the
+#   --dir PATH               install dir (default: ./kiara; with --update the
 #                            existing install to refresh)
 #   --dev                    also set up native frontend dev (needs node ≥20)
 #   --fake / --tier T / --skip-mesh / --skip-image   passed to setup.sh
@@ -121,7 +121,7 @@ for r in json.load(sys.stdin):
 fetch_release() { # <tag> <destdir> — download + verify + extract into destdir
   local tag="$1" dest="$2" ver asset base tmp
   ver="${tag#v}"
-  asset="cadx-$ver.tar.gz"
+  asset="kiara-$ver.tar.gz"
   base="https://github.com/$REPO/releases/download/$tag"
   tmp="$(mktemp -d)"
   info "downloading $asset ($tag)"
@@ -140,7 +140,7 @@ fetch_release() { # <tag> <destdir> — download + verify + extract into destdir
     warn "no SHA256SUMS.txt on the release — skipping verification"
   fi
   mkdir -p "$dest"
-  # release tarballs carry a cadx-<ver>/ root — strip it (BSD + GNU tar)
+  # release tarballs carry a kiara-<ver>/ root — strip it (BSD + GNU tar)
   tar xzf "$tmp/$asset" -C "$dest" --strip-components 1
   rm -rf "$tmp"
 }
@@ -198,7 +198,7 @@ setup_and_start() { # <srcdir> — in-tree phase: preflight, .env, setup, start
   else
     info "--no-start: run scripts/start.sh when ready"
   fi
-  ok "done — CADX installed in $src"
+  ok "done — KIARA installed in $src"
 }
 
 reexec_args() { # flags to forward into the extracted/updated copy
@@ -223,7 +223,7 @@ fi
 
 if [ "$UPDATE" = 1 ]; then
   [ -z "$DIR" ] && die "--update needs --dir <existing install>"
-  [ -f "$DIR/run/install.json" ] || die "$DIR is not a CADX install (no run/install.json)"
+  [ -f "$DIR/run/install.json" ] || die "$DIR is not a KIARA install (no run/install.json)"
   preflight_tools
   [ -z "$TAG" ] && TAG="$(resolve_tag)"
   info "updating $DIR → $TAG"
@@ -248,9 +248,9 @@ fi
 
 # ---------- bootstrap ----------
 preflight_tools
-DIR="${DIR:-./cadx}"
+DIR="${DIR:-./kiara}"
 [ -z "$TAG" ] && TAG="$(resolve_tag)"
-info "installing CADX $TAG (channel $CHANNEL) → $DIR"
+info "installing KIARA $TAG (channel $CHANNEL) → $DIR"
 fetch_release "$TAG" "$DIR"
 ok "extracted → $DIR"
 mapfile -t ra < <(reexec_args) 2>/dev/null || ra=()

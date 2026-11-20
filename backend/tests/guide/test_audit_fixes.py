@@ -15,10 +15,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cadx.guide import cadmeta, solver
-from cadx.guide import scene as gscene
-from cadx.guide.guide_runner import _review_verdict
-from cadx.guide.state import GuidePart, GuideState, PortInfo, ReviewFinding
+from kiara.guide import cadmeta, solver
+from kiara.guide import scene as gscene
+from kiara.guide.guide_runner import _review_verdict
+from kiara.guide.state import GuidePart, GuideState, PortInfo, ReviewFinding
 
 
 def _box_mesh(path: Path, size=(20.0, 10.0, 5.0)) -> Path:
@@ -148,7 +148,7 @@ def test_unbury_hint_blender_axes(tmp_path: Path) -> None:
     'reposition' alone produced re-measurement loops. Frames: the gate's
     world AABBs are glTF y-up; the agent moves objects in Blender z-up
     (gltf y->blender z, gltf z->blender -y)."""
-    from cadx.guide.blender_check import _unbury_hint
+    from kiara.guide.blender_check import _unbury_hint
 
     # buried box sits ABOVE the other in glTF-Y -> +Z in Blender
     buried = (np.array([0, 8, -5]), np.array([10, 12, 5]))   # overlap d=2 on y
@@ -167,8 +167,8 @@ def test_build_missing_outputs_scene_truth(tmp_path: Path) -> None:
     complete — done_mission never fired and the run aborted before the
     scene gate could certify the work (attempt 16: 9 parts, 17 instances,
     321 renders -> mission_failed). Durable outputs decide completion."""
-    from cadx.guide.guide_runner import _build_missing_outputs
-    from cadx.guide.state import AssemblyInstance, GuideStep
+    from kiara.guide.guide_runner import _build_missing_outputs
+    from kiara.guide.state import AssemblyInstance, GuideStep
 
     state = GuideState(output_dir=str(tmp_path), guide_mode="blender")
     assert _build_missing_outputs(state), "empty state is not complete"
@@ -195,7 +195,7 @@ def test_review_report_consistency_gates(tmp_path: Path) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide.review_tools import write_review_report
+    from kiara.guide.review_tools import write_review_report
 
     state = GuideState(output_dir=str(tmp_path))
     s = SimpleNamespace(state=state)
@@ -222,7 +222,7 @@ def test_review_report_consistency_gates(tmp_path: Path) -> None:
 
 
 def test_free_placement_front_is_positive_y() -> None:
-    """CADX convention (AGENTS.md): +Y is front."""
+    """KIARA convention (AGENTS.md): +Y is front."""
     part = GuidePart(id="p", name="P", bbox_min=[-5, -5, 0], bbox_max=[5, 5, 10])
     placed = [{"bbox_min_world": [-5, -5, 0], "bbox_max_world": [5, 5, 10]}]
     t = np.asarray(solver.solve_free_placement(part, placed, "front")).reshape(4, 4)
@@ -260,7 +260,7 @@ def test_ask_user_question_shape() -> None:
     contract, not {text, context}."""
     import asyncio
 
-    from cadx.guide.session import GuideToolSession
+    from kiara.guide.session import GuideToolSession
 
     class _Ctx:
         runtime_settings = type("R", (), {"guide_image_budget": 24})()
@@ -290,7 +290,7 @@ def test_done_mission_preloads_guards(tmp_path) -> None:
     import importlib
     import sys
 
-    from cadx.guide import tools as gtools
+    from kiara.guide import tools as gtools
 
     # guards register at *_tools module import — earlier test files may
     # already have imported them, and then a bare DONE_GUARDS.clear() can
@@ -305,7 +305,7 @@ def test_done_mission_preloads_guards(tmp_path) -> None:
         "review_tools",
         "annotate_tools",
     ):
-        mod = sys.modules.get(f"cadx.guide.{name}")
+        mod = sys.modules.get(f"kiara.guide.{name}")
         if mod is not None:
             importlib.reload(mod)
     gtools.merged_handlers()
@@ -314,7 +314,7 @@ def test_done_mission_preloads_guards(tmp_path) -> None:
 
 
 def test_unity_model_ref_prefers_glb_basename(tmp_path: Path) -> None:
-    from cadx.guide import unity
+    from kiara.guide import unity
 
     p = GuidePart(id="a", name="A", step_path="/data/x/base.step")
     p.mesh_path = "/data/x/base.glb"
@@ -326,8 +326,8 @@ def test_unity_model_ref_prefers_glb_basename(tmp_path: Path) -> None:
 def test_unity_joint_arrow_anchors_at_fixed_port(tmp_path: Path) -> None:
     """Arrow origin must sit at the mate surface (fixed port world pos),
     not the part origin — a corner-origin part would offset arrows."""
-    from cadx.guide import unity
-    from cadx.guide.state import AssemblyInstance, AssemblyState
+    from kiara.guide import unity
+    from kiara.guide.state import AssemblyInstance, AssemblyState
 
     st = GuideState(output_dir=str(tmp_path))
     fixed = GuidePart(
@@ -356,7 +356,7 @@ def test_unity_joint_arrow_anchors_at_fixed_port(tmp_path: Path) -> None:
     )
     st.steps = [
         # minimal step — number/display required
-        __import__("cadx.guide.state", fromlist=["GuideStep"]).GuideStep(
+        __import__("kiara.guide.state", fromlist=["GuideStep"]).GuideStep(
             number=1, text="t", display_text="d"
         )
     ]
@@ -374,9 +374,9 @@ def test_emit_artifacts_registers_media(tmp_path: Path) -> None:
     """step.media_image ships next to the JSON as a render artifact."""
     import asyncio
 
-    from cadx import storage
-    from cadx.guide.guide_runner import _emit_artifacts
-    from cadx.guide.state import GuideStep
+    from kiara import storage
+    from kiara.guide.guide_runner import _emit_artifacts
+    from kiara.guide.state import GuideStep
 
     # state dir must live under data root or relpath() raises
     sd = storage.data_root() / "guide-test" / "guide"
@@ -405,7 +405,7 @@ def test_meter_glb_normalized_to_mm(tmp_path):
     normalized copy; all downstream consumers then see mm."""
     import trimesh
 
-    from cadx.guide.cadmeta import normalize_mesh_units
+    from kiara.guide.cadmeta import normalize_mesh_units
 
     tube = trimesh.creation.cylinder(radius=0.011, height=0.07, sections=16)
     src = tmp_path / "pipe.glb"
@@ -422,8 +422,8 @@ def test_rim_ports_on_elbow_mesh():
     planar-normal heuristic used to miss entirely."""
     import trimesh
 
-    from cadx.guide.cadmeta import _rim_ports
-    from cadx.guide.state import GuidePart
+    from kiara.guide.cadmeta import _rim_ports
+    from kiara.guide.state import GuidePart
 
     # L-bend: two cylinders at right angles, sharp rim at each open end
     a = trimesh.creation.cylinder(radius=5, height=20, sections=24)
@@ -442,7 +442,7 @@ def test_mission_retries_once_on_bare_final():
     plain-text endings are a wobble, not a failure."""
     import inspect
 
-    from cadx.guide import guide_runner
+    from kiara.guide import guide_runner
 
     src = inspect.getsource(guide_runner._run_mission)
     assert 'total_attempts = 3 if mission == "build" else 2' in src
@@ -457,8 +457,8 @@ def test_optional_mission_failure_does_not_fail_job(monkeypatch) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide import guide_runner
-    from cadx.guide.state import GuideState
+    from kiara.guide import guide_runner
+    from kiara.guide.state import GuideState
 
     state = GuideState(output_dir="/tmp/x")
     calls = {"n": 0}
@@ -493,8 +493,8 @@ def test_required_mission_failure_still_fails(monkeypatch) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide import guide_runner
-    from cadx.guide.state import GuideState
+    from kiara.guide import guide_runner
+    from kiara.guide.state import GuideState
 
     state = GuideState(output_dir="/tmp/x")
 
@@ -524,9 +524,9 @@ def test_llm_outage_is_clean_mission_failure_not_crash(monkeypatch) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide import guide_runner
-    from cadx.guide.state import GuideState
-    from cadx.llm.client import LLMError
+    from kiara.guide import guide_runner
+    from kiara.guide.state import GuideState
+    from kiara.llm.client import LLMError
 
     state = GuideState(output_dir="/tmp/x")
 
@@ -650,8 +650,8 @@ def test_joint_audit_part_alias_is_not_a_foreign_host(tmp_path) -> None:
     counts as burial."""
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import joint_geometry_audit
-    from cadx.guide.state import AssemblyInstance, AssemblyState
+    from kiara.guide.assembly_tools import joint_geometry_audit
+    from kiara.guide.state import AssemblyInstance, AssemblyState
 
     state = GuideState(output_dir=str(tmp_path))
     host = _phys_part("host", [_sock("m", inner=11.0)], bbox=((-50, -50, 0), (50, 50, 100)))
@@ -696,8 +696,8 @@ def test_joint_audit_socket_depth_is_engagement_allowance(tmp_path) -> None:
     nuts never bottom out); the same 8mm on a face joint is detached."""
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import joint_geometry_audit
-    from cadx.guide.state import AssemblyInstance, AssemblyState
+    from kiara.guide.assembly_tools import joint_geometry_audit
+    from kiara.guide.state import AssemblyInstance, AssemblyState
 
     def _state(gap: float, sock_seat: float) -> GuideState:
         state = GuideState(output_dir=str(tmp_path))
@@ -748,7 +748,7 @@ def test_resolve_name_context_breaks_part_ties() -> None:
     picks the muffe-muffe variant."""
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import _resolve_name
+    from kiara.guide.assembly_tools import _resolve_name
 
     state = GuideState(output_dir="/tmp/x")
     state.parts = [
@@ -774,8 +774,8 @@ def test_step_requirements_resolve_with_step_context(tmp_path) -> None:
     resolved with context → 'not required by any step' quota rejection."""
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import _step_requirements
-    from cadx.guide.state import GuideStep, GuideSubStep
+    from kiara.guide.assembly_tools import _step_requirements
+    from kiara.guide.state import GuideStep, GuideSubStep
 
     state = GuideState(output_dir=str(tmp_path))
     a = _phys_part("spigot_elbow", [])
@@ -809,8 +809,8 @@ def test_review_report_rejects_high_score_on_bad_audit(tmp_path) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide.review_tools import write_review_report
-    from cadx.guide.state import AssemblyInstance, AssemblyState
+    from kiara.guide.review_tools import write_review_report
+    from kiara.guide.state import AssemblyInstance, AssemblyState
 
     state = GuideState(output_dir=str(tmp_path))
     fixed = _phys_part(
@@ -948,7 +948,7 @@ def test_resolve_name_distinctive_single_token() -> None:
     ('rohr') shared by several parts still can't resolve alone."""
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import _resolve_name
+    from kiara.guide.assembly_tools import _resolve_name
 
     state = GuideState(output_dir="/tmp/x")
     state.parts = [
@@ -982,9 +982,9 @@ def test_resolve_name_context_feature_never_token_scores() -> None:
     over host demotion."""
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import _resolve_name
-    from cadx.guide.planlint import _resolve_part
-    from cadx.guide.state import GuideStep, GuideSubStep
+    from kiara.guide.assembly_tools import _resolve_name
+    from kiara.guide.planlint import _resolve_part
+    from kiara.guide.state import GuideStep, GuideSubStep
 
     state = GuideState(output_dir="/tmp/x")
     state.parts = [
@@ -1049,7 +1049,7 @@ def test_resolve_name_feature_of_host_when_context_undeclared() -> None:
     skipped the declaration."""
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import _resolve_name
+    from kiara.guide.assembly_tools import _resolve_name
 
     state = GuideState(output_dir="/tmp/x")
     state.parts = [
@@ -1104,8 +1104,8 @@ def test_context_name_resolves_to_host_and_refuses_alias() -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import _resolve_name
-    from cadx.guide.part_tools import alias_part
+    from kiara.guide.assembly_tools import _resolve_name
+    from kiara.guide.part_tools import alias_part
 
     state = GuideState(output_dir="/tmp/x")
     state.parts = [
@@ -1145,8 +1145,8 @@ def test_resolve_name_side_position_beats_incidental_token() -> None:
     the incidental token."""
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import _resolve_name
-    from cadx.guide.state import GuideStep, GuideSubStep
+    from kiara.guide.assembly_tools import _resolve_name
+    from kiara.guide.state import GuideStep, GuideSubStep
 
     state = GuideState(output_dir="/tmp/x")
     spigot = _phys_part("elbow_socket_spigot", [])
@@ -1224,7 +1224,7 @@ def test_resolve_name_side_position_beats_incidental_token() -> None:
 def test_side_words_canonical_inflections() -> None:
     """'(links oben)' and 'linken oberen' are the same side signature —
     mixed inflection vocab produced disjoint sets and phantom premounts."""
-    from cadx.guide.preassembly import _side_words
+    from kiara.guide.preassembly import _side_words
 
     assert _side_words("(links oben)") == _side_words("linken oberen")
     assert _side_words("rechts unten") == _side_words("rechter unterer")
@@ -1239,8 +1239,8 @@ def test_assembly_snapshot_survives_preassembly(monkeypatch, tmp_path) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide import guide_runner
-    from cadx.guide.state import AssemblyInstance, GuideState
+    from kiara.guide import guide_runner
+    from kiara.guide.state import AssemblyInstance, GuideState
 
     state = GuideState(output_dir=str(tmp_path))
     state.missions_done = ["doc", "steps", "parts"]
@@ -1255,7 +1255,7 @@ def test_assembly_snapshot_survives_preassembly(monkeypatch, tmp_path) -> None:
         state.assembly.instances.clear()
         return SimpleNamespace(end_reason="repeat_loop", tool_log=[])
 
-    monkeypatch.setattr("cadx.guide.preassembly.run_preassembly", fake_preassembly)
+    monkeypatch.setattr("kiara.guide.preassembly.run_preassembly", fake_preassembly)
     monkeypatch.setattr(guide_runner, "run_session", fake_session)
     sess = SimpleNamespace(parked=False, parked_questions=[], state=state)
     ctx = SimpleNamespace(check_cancel=None)
@@ -1278,7 +1278,7 @@ def _mate_state(tmp_path, *, sub_action="place") -> object:
     """Two parts: moving declared a mate onto fixed but jointed elsewhere."""
     from types import SimpleNamespace
 
-    from cadx.guide.state import (
+    from kiara.guide.state import (
         AssemblyInstance,
         GuideState,
         GuideStep,
@@ -1313,7 +1313,7 @@ def _mate_state(tmp_path, *, sub_action="place") -> object:
 def test_declared_mates_flags_wrong_and_missing_mates(tmp_path) -> None:
     """A clean mate on the WRONG part passes gap/alignment but violates
     the plan contract — both directions must surface."""
-    from cadx.guide.assembly_tools import _declared_mates
+    from kiara.guide.assembly_tools import _declared_mates
 
     s = _mate_state(tmp_path)
     out = _declared_mates(s)
@@ -1324,7 +1324,7 @@ def test_declared_mates_flags_wrong_and_missing_mates(tmp_path) -> None:
 def test_declared_mates_flags_unplaced_substep(tmp_path) -> None:
     """A place sub-step whose instance never materialized is silent plan
     loss (dropped task, quota block, prep-mislabeled step)."""
-    from cadx.guide.assembly_tools import _declared_mates
+    from kiara.guide.assembly_tools import _declared_mates
 
     s = _mate_state(tmp_path)
     s.state.assembly.instances = [i for i in s.state.assembly.instances if i.part_id != "pipe_a"]
@@ -1334,7 +1334,7 @@ def test_declared_mates_flags_unplaced_substep(tmp_path) -> None:
 
 
 def test_declared_mates_clean_when_plan_matches(tmp_path) -> None:
-    from cadx.guide.assembly_tools import _declared_mates
+    from kiara.guide.assembly_tools import _declared_mates
 
     s = _mate_state(tmp_path)
     s.state.assembly.joints = [{"moving_instance": "pipe_a#1", "fixed_instance": "pipe_b#1"}]
@@ -1347,7 +1347,7 @@ def test_unfulfilled_mate_reports_port_gap(tmp_path) -> None:
     """The issue must carry the measured port distance — '392mm' reads as
     a broken plan, '2mm' as a retryable miss; without it the mission
     cannot tell them apart (baseline r1 churned 94 calls on a 390mm gap)."""
-    from cadx.guide.assembly_tools import _declared_mates
+    from kiara.guide.assembly_tools import _declared_mates
 
     s = _mate_state(tmp_path)
     s.state.parts[1].ports = [PortInfo(name="p", pos=[0, 0, 0])]
@@ -1370,7 +1370,7 @@ def test_mark_context_part_rejects_kit_name_collision(tmp_path) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide.part_tools import mark_context_part
+    from kiara.guide.part_tools import mark_context_part
 
     st = GuideState(output_dir=str(tmp_path))
     st.parts = [
@@ -1394,7 +1394,7 @@ def test_context_tokens_ignore_kit_collisions(tmp_path) -> None:
     part references to the host — the token is dropped, not trusted."""
     from types import SimpleNamespace
 
-    from cadx.guide.part_tools import _context_tokens
+    from kiara.guide.part_tools import _context_tokens
 
     st = GuideState(output_dir=str(tmp_path))
     st.parts = [GuidePart(id="elbow_a", name="Rohrbogen DN22, Anschluss 2x außen")]
@@ -1413,8 +1413,8 @@ def test_mark_context_part_rejects_paraphrase_steal(tmp_path) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide.part_tools import mark_context_part
-    from cadx.guide.state import GuideStep, GuideSubStep
+    from kiara.guide.part_tools import mark_context_part
+    from kiara.guide.state import GuideStep, GuideSubStep
 
     st = GuideState(output_dir=str(tmp_path))
     st.parts = [
@@ -1473,8 +1473,8 @@ def test_mark_context_part_premount_ref_not_stolen(tmp_path) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide.part_tools import mark_context_part
-    from cadx.guide.state import GuideStep, GuideSubStep
+    from kiara.guide.part_tools import mark_context_part
+    from kiara.guide.state import GuideStep, GuideSubStep
 
     st = GuideState(output_dir=str(tmp_path))
     st.parts = [
@@ -1511,8 +1511,8 @@ def test_lint_dropped_placements_blocks_prep_step(tmp_path) -> None:
     the planner — plan_lint must block it before preassembly."""
     from types import SimpleNamespace
 
-    from cadx.guide.planlint import _lint_dropped_placements
-    from cadx.guide.state import GuideState, GuideStep, GuideSubStep
+    from kiara.guide.planlint import _lint_dropped_placements
+    from kiara.guide.state import GuideState, GuideStep, GuideSubStep
 
     state = GuideState(output_dir=str(tmp_path))
     state.parts = [_phys_part("host", []), _phys_part("elbow", [])]
@@ -1537,7 +1537,7 @@ def _mate_geom_state(tmp_path, mv_z: float = 0.0):
     moving plug. Returns (session-like, engage_mm, move_transform)."""
     from types import SimpleNamespace
 
-    from cadx.guide.state import AssemblyInstance, GuideStep, GuideSubStep
+    from kiara.guide.state import AssemblyInstance, GuideStep, GuideSubStep
 
     pa = _plug("pa", axis=(0, 0, 1), pos=(0, 0, 0))
     sb = _sock("sb", axis=(0, 0, -1), pos=(0, 0, 10))
@@ -1587,7 +1587,7 @@ def test_materialize_geometrically_satisfied_mate(tmp_path) -> None:
     """A declared mate whose persisted transforms already seat the port
     pair is a physical fact — the audit records the joint instead of
     flagging a correct placement for an LLM repair loop."""
-    from cadx.guide.assembly_tools import _declared_mates
+    from kiara.guide.assembly_tools import _declared_mates
 
     s = _mate_geom_state(tmp_path)
     out = _declared_mates(s)
@@ -1600,7 +1600,7 @@ def test_materialize_geometrically_satisfied_mate(tmp_path) -> None:
 def test_materialize_rejects_unsatisfied_mate(tmp_path) -> None:
     """A declared mate NOT geometrically seated stays an honest
     unfulfilled finding — materialization never fakes the joint."""
-    from cadx.guide.assembly_tools import _declared_mates
+    from kiara.guide.assembly_tools import _declared_mates
 
     s = _mate_geom_state(tmp_path, mv_z=50.0)
     out = _declared_mates(s)
@@ -1615,9 +1615,9 @@ def test_unplace_demolish_gate_and_request_repair(tmp_path, monkeypatch) -> None
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide import assembly_tools as at
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import AssemblyInstance, GuideStep
+    from kiara.guide import assembly_tools as at
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import AssemblyInstance, GuideStep
 
     state = GuideState(output_dir=str(tmp_path))
     state.parts = [_phys_part("elbow", []), _phys_part("pipe", [])]
@@ -1680,7 +1680,7 @@ def test_dedup_tasks_drops_exact_duplicates(tmp_path) -> None:
     differ in mate or qualifier text are genuine operations and stay."""
     from types import SimpleNamespace
 
-    from cadx.guide.preassembly import _dedup_tasks
+    from kiara.guide.preassembly import _dedup_tasks
 
     s = SimpleNamespace(state=GuideState(output_dir=str(tmp_path)), _aliases_store={})
     base = {
@@ -1710,8 +1710,8 @@ def test_reorder_reports_missing_and_duplicated(tmp_path) -> None:
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide.state import GuideStep
-    from cadx.guide.step_tools import reorder_steps
+    from kiara.guide.state import GuideStep
+    from kiara.guide.step_tools import reorder_steps
 
     state = GuideState(output_dir=str(tmp_path))
     state.steps = [GuideStep(number=i, text=f"s{i}", display_text=f"d{i}") for i in (1, 2, 3)]
@@ -1724,15 +1724,15 @@ def test_reorder_reports_missing_and_duplicated(tmp_path) -> None:
 
 def test_finalize_steps_blender_skips_substep_grammar(tmp_path: Path) -> None:
     """Blender mode never consumes sub_steps (blender_tools/blender_check/
-    unity read only cadx_step tags — sub_steps drive CAD port resolution
+    unity read only kiara_step tags — sub_steps drive CAD port resolution
     only). Requiring them made the step mission emit a formal grammar
     small models cannot produce reliably: attempt 18 died on 7 lint
     blockers that were all grammar violations, zero geometry defects."""
     import asyncio
     from types import SimpleNamespace
 
-    from cadx.guide import step_tools
-    from cadx.guide.state import GuideStep
+    from kiara.guide import step_tools
+    from kiara.guide.state import GuideStep
 
     for mode, expect_ok in (("blender", True), ("cad", False)):
         state = GuideState(output_dir=str(tmp_path), guide_mode=mode)
@@ -1760,9 +1760,9 @@ def test_plan_gate_blender_skips_planlint(
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide import blender_check, planlint
-    from cadx.guide.guide_runner import _plan_gate
-    from cadx.guide.session import GuideToolSession
+    from kiara.guide import blender_check, planlint
+    from kiara.guide.guide_runner import _plan_gate
+    from kiara.guide.session import GuideToolSession
 
     async def fake_scene_gate(s):
         return [], {"objects": 3}
@@ -1795,7 +1795,7 @@ def test_plan_gate_blender_skips_planlint(
 def test_mission_prompt_carries_guide_mode(tmp_path: Path) -> None:
     """The steps prompt's MODE RULE keys off the 'Guide mode:' context
     line — it must be injected for every mission."""
-    from cadx.guide.guide_runner import _mission_prompt
+    from kiara.guide.guide_runner import _mission_prompt
 
     state = GuideState(output_dir=str(tmp_path), guide_mode="blender")
     msgs = _mission_prompt("steps", state)

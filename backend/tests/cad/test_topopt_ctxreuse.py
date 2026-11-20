@@ -13,9 +13,9 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.regions import resolve_case_dofs
-from cadx.cad.fem.solver import assemble
-from cadx.cad.fem.topopt import (
+from kiara.cad.fem.regions import resolve_case_dofs
+from kiara.cad.fem.solver import assemble
+from kiara.cad.fem.topopt import (
     TopOptParams,
     _CaseCtx,
     _ctx_snapshot,
@@ -25,8 +25,8 @@ from cadx.cad.fem.topopt import (
     _solve_u,
     simp,
 )
-from cadx.cad.fem.voxelize import voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.voxelize import voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36
@@ -66,12 +66,12 @@ def test_rtol_band() -> None:
 def test_refresh_ctx_updates_values() -> None:
     """A same-pattern Kf refresh keeps the factor working — new values,
     correct solve, no shape error."""
-    from cadx.cad.fem.topopt import _prepare_solve
+    from kiara.cad.fem.topopt import _prepare_solve
 
     dom = voxelize(_box_mesh(), 3.0, 150_000)
     fixed, F = _cantilever_case(dom)
     K, edof, _ = assemble(dom, np.full(dom.cell_count, E_PLA), NU)
-    from cadx.cad.fem.solver import _fixed_dofs
+    from kiara.cad.fem.solver import _fixed_dofs
 
     fd = np.unique(_fixed_dofs(fixed, dom.node_count))
     used = np.unique(edof.ravel())
@@ -96,12 +96,12 @@ def test_ctx_snapshot_drops_mutable_factor() -> None:
     """Snapshots returned for adjoint solves keep free/Kf/M but must not
     carry a mutable CholmodFactor — a later eval refactorises it onto a
     different density's values."""
-    from cadx.cad.fem.solver import CholmodFactor, factor_symmetric
+    from kiara.cad.fem.solver import CholmodFactor, factor_symmetric
 
     dom = voxelize(_box_mesh(), 3.0, 150_000)
     fixed, _ = _cantilever_case(dom)
     K, edof, _ = assemble(dom, np.full(dom.cell_count, E_PLA), NU)
-    from cadx.cad.fem.solver import _fixed_dofs
+    from kiara.cad.fem.solver import _fixed_dofs
 
     fd = np.unique(_fixed_dofs(fixed, dom.node_count))
     used = np.unique(edof.ravel())
@@ -123,7 +123,7 @@ def test_solve_u_iters_and_watchdog() -> None:
     dom = voxelize(_box_mesh(), 3.0, 150_000)
     fixed, F = _cantilever_case(dom)
     K, edof, _ = assemble(dom, np.full(dom.cell_count, E_PLA), NU)
-    from cadx.cad.fem.solver import _fixed_dofs
+    from kiara.cad.fem.solver import _fixed_dofs
 
     fd = np.unique(_fixed_dofs(fixed, dom.node_count))
     used = np.unique(edof.ravel())
@@ -145,8 +145,8 @@ def test_solve_u_iters_and_watchdog() -> None:
 
 def test_simp_reuses_solver_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """With reuse on, _prepare_solve runs ~once per signature over the
-    whole run; with CADX_TOPOPT_M_REUSE=0 it runs per iteration."""
-    import cadx.cad.fem.topopt as tp
+    whole run; with KIARA_TOPOPT_M_REUSE=0 it runs per iteration."""
+    import kiara.cad.fem.topopt as tp
 
     dom = voxelize(_box_mesh(), 3.0, 150_000)
     fixed, F = _cantilever_case(dom)
@@ -175,7 +175,7 @@ def test_simp_reuses_solver_state(monkeypatch: pytest.MonkeyPatch) -> None:
     assert reuse_calls <= 1 + len(res.history)  # build + at most per-iter rebuilds
 
     calls["n"] = 0
-    monkeypatch.setenv("CADX_TOPOPT_M_REUSE", "0")
+    monkeypatch.setenv("KIARA_TOPOPT_M_REUSE", "0")
     assert not _m_reuse()
     res2 = simp(
         dom,

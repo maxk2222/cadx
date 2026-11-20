@@ -4,7 +4,7 @@ import type { MeshOp } from "./types";
 /**
  * Client-side evaluator for the rigid subset of the mesh ops stack
  * (set_up / rotate / mirror / scale). Ports the exact semantics of
- * backend/cadx/cad/mesh_ops.py — orient(), per-op transforms about the
+ * backend/kiara/cad/mesh_ops.py — orient(), per-op transforms about the
  * bbox centre, and rest_on_xy_center() after EVERY op — so the instant
  * preview matches what the server replays. Returns null as soon as a
  * geometry op appears (those need the server preview).

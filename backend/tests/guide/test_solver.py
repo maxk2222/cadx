@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from cadx.guide import solver
-from cadx.guide.state import GuidePart, PortInfo
+from kiara.guide import solver
+from kiara.guide.state import GuidePart, PortInfo
 
 
 def _part(pid: str, ports: list[PortInfo], bbox=((-10, -10, -10), (10, 10, 10))) -> GuidePart:
@@ -190,8 +190,8 @@ def test_world_bbox_implementations_agree() -> None:
     """The 8-corner AABB-under-transform exists once (solver.world_bbox) —
     transform_bbox, _rotated_bbox, _bbox_corners_world and the router's
     _world_bbox all delegate to it."""
-    from cadx.api.routers import guide as guide_router
-    from cadx.guide import preassembly
+    from kiara.api.routers import guide as guide_router
+    from kiara.guide import preassembly
 
     mn_l = [-3.0, -7.0, 1.0]
     mx_l = [11.0, -1.0, 6.0]

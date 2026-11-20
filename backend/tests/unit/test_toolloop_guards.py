@@ -5,14 +5,14 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.toolloop import _trim_tool_results, run_session
-from cadx.agent.toolspecs import ToolSession
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.toolloop import _trim_tool_results, run_session
+from kiara.agent.toolspecs import ToolSession
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -283,7 +283,7 @@ def test_trim_tool_results_elides_image_keeps_text_parts():
 def test_only_dim_issues_gate():
     """Repair gate: pure dim failures skip the LLM refine session; any other
     major issue (critique/feature/solids) keeps it."""
-    from cadx.agent.orchestrator import _only_dim_issues
+    from kiara.agent.orchestrator import _only_dim_issues
 
     dims = ["width_y: expected 34.0, measured 29.8"]
     only = [{"source": "dims", "severity": "major", "what": "dimension mismatch"}]
@@ -335,7 +335,7 @@ def test_trim_tool_results_img_keep_one():
 async def test_optimize_session_trims_images_to_one(monkeypatch):
     """The session-level wiring: kind='optimize' passes img_keep_last=1 —
     other kinds keep the default 2."""
-    import cadx.agent.toolloop as tl
+    import kiara.agent.toolloop as tl
 
     seen: list[int] = []
     real = tl._trim_tool_results

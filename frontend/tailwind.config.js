@@ -19,7 +19,7 @@ export default {
         fg: v("--c-fg"), // primary text
         muted: v("--c-muted"), // secondary text
         faint: v("--c-faint"), // placeholder / dimmest text
-        // CADX accent — single point to re-theme the whole app
+        // KIARA accent — single point to re-theme the whole app
         brand: colors.blue,
         accent: colors.blue,
       },

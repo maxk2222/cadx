@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from cadx.cad.sandbox import run_user_code
+from kiara.cad.sandbox import run_user_code
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -79,7 +79,7 @@ def test_load_reference(workdir, tmp_path):
     code = "PARAMS = {}\nref = load_reference('a1')\nresult = ref\n"
     out = run_user_code(code, workdir, references=[])  # missing ref -> error
     assert not out.ok
-    from cadx.cad.sandbox import Reference
+    from kiara.cad.sandbox import Reference
 
     out2 = run_user_code(code, workdir, references=[Reference(asset_id="a1", path=str(ref))])
     assert out2.ok, (out2.error, out2.traceback)
@@ -134,7 +134,7 @@ def test_warm_zygote_survives_child_timeout(workdir, tmp_path):
 def test_cold_fallback_when_zygote_broken(workdir, monkeypatch):
     """If the zygote cannot spawn/serve, run_user_code must silently fall
     back to the cold subprocess — the security model is identical."""
-    import cadx.cad.sandbox as sb
+    import kiara.cad.sandbox as sb
 
     sb._ZYGOTE.kill()  # force a spawn attempt on next run
 
@@ -152,7 +152,7 @@ def test_warm_path_skipped_for_foreign_zygote(workdir, monkeypatch):
     writing into the parent's protocol."""
     import os
 
-    import cadx.cad.sandbox as sb
+    import kiara.cad.sandbox as sb
 
     calls = []
     monkeypatch.setattr(sb._ZYGOTE, "run", lambda *a, **k: calls.append((a, k)))
@@ -167,7 +167,7 @@ def test_zygote_kill_never_kills_foreign_owner(monkeypatch):
     parent's zygote."""
     import os
 
-    import cadx.cad.sandbox as sb
+    import kiara.cad.sandbox as sb
 
     killed = []
     monkeypatch.setattr(sb._ZYGOTE, "proc", type("P", (), {"kill": lambda self: killed.append(1)})())

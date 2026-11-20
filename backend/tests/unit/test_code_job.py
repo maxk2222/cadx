@@ -10,8 +10,8 @@ import uuid
 import pytest
 from sqlmodel import select
 
-from cadx import spawn, storage
-from cadx.db.models import (
+from kiara import spawn, storage
+from kiara.db.models import (
     Asset,
     AssetKind,
     Job,
@@ -23,8 +23,8 @@ from cadx.db.models import (
     VersionKind,
     VersionStatus,
 )
-from cadx.db.session import async_session, create_all
-from cadx.runtime_config import RuntimeSettings, save_runtime_settings
+from kiara.db.session import async_session, create_all
+from kiara.runtime_config import RuntimeSettings, save_runtime_settings
 
 CODE = 'PARAMS = {"w": 20.0}\nfrom build123d import Box\nresult = Box(PARAMS["w"], 10.0, 5.0)\n'
 CODE_NO_PARAMS = "PARAMS = {}\nfrom build123d import Box\nresult = Box(10, 10, 5)\n"
@@ -210,7 +210,7 @@ async def _mk_code_version(code: str = CODE_NO_PARAMS) -> tuple[uuid.UUID, uuid.
 
 
 async def test_run_code_job_executes_and_succeeds(monkeypatch):
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     fake = _FakeExec()
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: fake)
@@ -237,7 +237,7 @@ async def test_run_code_job_executes_and_succeeds(monkeypatch):
 
 
 async def test_run_code_job_audits_numeric_params(monkeypatch):
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     fake = _FakeExec()
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: fake)
@@ -254,7 +254,7 @@ async def test_run_code_job_audits_numeric_params(monkeypatch):
 
 
 async def test_run_code_job_exec_failure_marks_failed(monkeypatch):
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     fake = _FakeExec({"ok": False, "error": "sandbox blew up"})
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: fake)
@@ -276,7 +276,7 @@ async def test_run_code_job_exec_failure_marks_failed(monkeypatch):
 
 
 async def test_run_params_job_prefers_version_code(monkeypatch):
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     fake = _FakeExec()
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: fake)
@@ -743,7 +743,7 @@ async def test_spawn_enqueue_failure_raises_503_and_fails_rows(monkeypatch):
     """deps.enqueue returning None must surface as SpawnError(503) and the
     committed Version/Job rows get marked failed — nothing may stay queued
     with no arq task behind it."""
-    import cadx.api.deps as deps
+    import kiara.api.deps as deps
 
     async def _none_enqueue(func, payload):
         return None
@@ -803,12 +803,12 @@ class _FakeMesh:
         self.req = None
 
     async def health(self):
-        from cadx.agent.mesh_client import MeshHealth
+        from kiara.agent.mesh_client import MeshHealth
 
         return MeshHealth(ok=True, device="fake")
 
     async def generate(self, req, on_progress, should_abort=None):
-        from cadx.agent.mesh_client import MeshGenResult
+        from kiara.agent.mesh_client import MeshGenResult
 
         self.req = req
         req.out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -841,7 +841,7 @@ class _FakeMeshExec(_FakeExec):
 
 
 async def test_run_meshgen_job_generates_processes_and_succeeds(monkeypatch):
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     mesh = _FakeMesh()
     fake = _FakeMeshExec()

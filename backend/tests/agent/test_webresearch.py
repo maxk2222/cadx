@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import httpx
 
-from cadx.agent import webresearch
+from kiara.agent import webresearch
 
 
 def _client(handler) -> httpx.AsyncClient:
@@ -80,7 +80,7 @@ async def test_safe_url_blocks_internal():
         "ftp://x/y",
         "not a url",
         # single-label hosts — docker/k8s service names resolve internally
-        "http://cadx-api:8000/api/system/stack",
+        "http://kiara-api:8000/api/system/stack",
         "http://redis:6379/",
         "http://worker.internal/x",
     ):

@@ -14,7 +14,7 @@ import enum
 import re
 from pathlib import Path
 
-import cadx.db.models as models
+import kiara.db.models as models
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "alembic" / "versions"
 

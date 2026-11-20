@@ -11,15 +11,15 @@ from pathlib import Path
 
 import pytest
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.mesh_client import FakeMeshClient, MeshHealth, MeshModelInfo
-from cadx.agent.orchestrator import RunOutcome
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx, InputAsset
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import ModelingPlan, PartSpec
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.mesh_client import FakeMeshClient, MeshHealth, MeshModelInfo
+from kiara.agent.orchestrator import RunOutcome
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx, InputAsset
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import ModelingPlan, PartSpec
+from kiara.runtime_config import RuntimeSettings
 
 
 def _ctx(**kw) -> AgentCtx:
@@ -60,7 +60,7 @@ def _img(seed: int = 7) -> InputAsset:
     from PIL import Image, ImageDraw
 
     aid = str(uuid.uuid4())
-    p = Path(tempfile.mkdtemp(prefix="cadx-img-")) / f"{aid[:8]}.png"
+    p = Path(tempfile.mkdtemp(prefix="kiara-img-")) / f"{aid[:8]}.png"
     rng = random.Random(seed)
     img = Image.new("RGB", (64, 64))
     dr = ImageDraw.Draw(img)
@@ -85,7 +85,7 @@ def _spec(dims: tuple[float, float, float], **kw) -> PartSpec:
 
 
 def test_base_seed_honors_fixed_mesh_seed_across_random_eval_ids() -> None:
-    from cadx.agent.orchestrator import _base_seed
+    from kiara.agent.orchestrator import _base_seed
 
     settings = ProjectSettings(mesh_seed=4242)
     first = _ctx(settings=settings, assets=[_img(1)])
@@ -120,7 +120,7 @@ class _OmniMesh(FakeMeshClient):
 
 
 async def test_omni_bbox_control_passed_to_client():
-    from cadx.agent.orchestrator import _generate_mesh
+    from kiara.agent.orchestrator import _generate_mesh
 
     mesh = _OmniMesh()
     ctx = _ctx(
@@ -141,7 +141,7 @@ async def test_omni_bbox_control_passed_to_client():
 
 
 async def test_bbox_control_not_sent_to_other_adapters():
-    from cadx.agent.orchestrator import _generate_mesh
+    from kiara.agent.orchestrator import _generate_mesh
 
     mesh = FakeMeshClient()
     ctx = _ctx(
@@ -160,7 +160,7 @@ async def test_bbox_control_not_sent_to_other_adapters():
 
 
 async def test_omni_bbox_control_in_batch():
-    from cadx.agent.orchestrator import _generate_mesh_batch
+    from kiara.agent.orchestrator import _generate_mesh_batch
 
     mesh = _OmniMesh()
     ctx = _ctx(
@@ -196,7 +196,7 @@ async def test_omni_bbox_control_in_batch():
 async def test_synth_views_assigned_left_right_roles(monkeypatch, tmp_path):
     from PIL import Image
 
-    from cadx.agent import orchestrator as orch
+    from kiara.agent import orchestrator as orch
 
     async def fake_gen(ctx, prompt, *, count=1, **kw):
         out = []
@@ -208,7 +208,7 @@ async def test_synth_views_assigned_left_right_roles(monkeypatch, tmp_path):
             out.append(a)
         return out
 
-    monkeypatch.setattr("cadx.agent.concept_image.generate_concept_images", fake_gen)
+    monkeypatch.setattr("kiara.agent.concept_image.generate_concept_images", fake_gen)
 
     hero = _img()
     ctx = _ctx(assets=[hero], image=object(), image_available=True)
@@ -228,7 +228,7 @@ async def test_synth_views_assigned_left_right_roles(monkeypatch, tmp_path):
 
 
 async def test_synth_views_skipped_when_flat_or_multi(monkeypatch, tmp_path):
-    from cadx.agent import orchestrator as orch
+    from kiara.agent import orchestrator as orch
 
     calls = []
 
@@ -236,7 +236,7 @@ async def test_synth_views_skipped_when_flat_or_multi(monkeypatch, tmp_path):
         calls.append(prompt)
         return []
 
-    monkeypatch.setattr("cadx.agent.concept_image.generate_concept_images", fake_gen)
+    monkeypatch.setattr("kiara.agent.concept_image.generate_concept_images", fake_gen)
 
     # flat part: the measured-outline 'back' synth covers that case instead
     hero = _img()
@@ -253,7 +253,7 @@ async def test_synth_views_skipped_when_flat_or_multi(monkeypatch, tmp_path):
     async def boom(ctx, prompt, **kw):
         raise RuntimeError("image backend down")
 
-    monkeypatch.setattr("cadx.agent.concept_image.generate_concept_images", boom)
+    monkeypatch.setattr("kiara.agent.concept_image.generate_concept_images", boom)
     hero = _img()
     ctx = _ctx(assets=[hero], image=object(), image_available=True)
     assert await orch._ensure_synth_views(ctx, 1, _spec((40.0, 30.0, 35.0)), hero) == []
@@ -264,7 +264,7 @@ async def test_synth_views_skipped_when_flat_or_multi(monkeypatch, tmp_path):
 async def test_synth_views_never_used_as_reference_mask(monkeypatch, tmp_path):
     from PIL import Image
 
-    from cadx.agent import orchestrator as orch
+    from kiara.agent import orchestrator as orch
 
     async def fake_gen(ctx, prompt, *, count=1, **kw):
         out = []
@@ -276,13 +276,13 @@ async def test_synth_views_never_used_as_reference_mask(monkeypatch, tmp_path):
             out.append(a)
         return out
 
-    monkeypatch.setattr("cadx.agent.concept_image.generate_concept_images", fake_gen)
+    monkeypatch.setattr("kiara.agent.concept_image.generate_concept_images", fake_gen)
     seen: list[str] = []
 
     def fake_mask(p):
         seen.append(Path(p).name)
 
-    monkeypatch.setattr("cadx.cad.silhouette.reference_mask", fake_mask)
+    monkeypatch.setattr("kiara.cad.silhouette.reference_mask", fake_mask)
 
     hero = _img()
     ctx = _ctx(assets=[hero], image=object(), image_available=True)
@@ -308,7 +308,7 @@ def test_synth_view_roles_recovered_on_reload(tmp_path):
     reconstructed or every rerun regenerates both views (~13min of imagegen)."""
     from PIL import Image
 
-    from cadx.agent import orchestrator as orch
+    from kiara.agent import orchestrator as orch
 
     hero = _img()
     synths = []
@@ -346,7 +346,7 @@ def _circle_mask(size: int = 64):
 
 
 def test_spec_silhouette_ops_revolve_emits_radial_profile():
-    from cadx.agent.orchestrator import _spec_silhouette_ops
+    from kiara.agent.orchestrator import _spec_silhouette_ops
 
     pytest.importorskip("skimage")
     ctx = _ctx()
@@ -376,7 +376,7 @@ def _wide_mask(size: int = 64, aspect: float = 5.0):
 
 
 def test_spec_silhouette_ops_generic_part_carves():
-    from cadx.agent.orchestrator import _spec_silhouette_ops
+    from kiara.agent.orchestrator import _spec_silhouette_ops
 
     pytest.importorskip("skimage")
     ctx = _ctx()
@@ -397,7 +397,7 @@ def test_spec_silhouette_ops_rejects_aspect_mismatched_mask():
     """A mask whose subject aspect is wildly off the measured view-plane
     aspect is junk/mismatched evidence — emit nothing rather than trim the
     mesh into a wrong-aspect sliver."""
-    from cadx.agent.orchestrator import _spec_silhouette_ops
+    from kiara.agent.orchestrator import _spec_silhouette_ops
 
     pytest.importorskip("skimage")
     ctx = _ctx()
@@ -411,7 +411,7 @@ def test_spec_silhouette_ops_rejects_aspect_mismatched_mask():
 
 
 def test_spec_silhouette_ops_conservative_without_evidence():
-    from cadx.agent.orchestrator import _spec_silhouette_ops
+    from kiara.agent.orchestrator import _spec_silhouette_ops
 
     ctx = _ctx()
     spec = _spec((40.0, 40.0, 30.0), summary="round knob")
@@ -460,7 +460,7 @@ class _BadMeshExec(InProcessExecutor):
 
 
 async def test_pregate_rejects_silhouette_dim_mismatch_without_critique():
-    from cadx.agent.orchestrator import _run_mesh
+    from kiara.agent.orchestrator import _run_mesh
 
     spec = _spec((100.0, 40.0, 40.0), name="block")
     plan = _plan()
@@ -522,7 +522,7 @@ def test_flat_spec_dims_does_not_flag_elongated_parts():
     """A 130x32x32 grip is not 'flat' — comparing z to max() misclassifies
     any elongated part and silently skips side-view synthesis + back-view
     handling. Flat must be thin-in-Z relative to BOTH horizontal dims."""
-    from cadx.agent.orchestrator import _is_flat_spec_dims
+    from kiara.agent.orchestrator import _is_flat_spec_dims
 
     assert _is_flat_spec_dims((100.0, 80.0, 5.0)) is True  # plate
     assert _is_flat_spec_dims((50.0, 50.0, 3.0)) is True  # square plate
@@ -597,7 +597,7 @@ def _param_ctx(executor: _ParamExec) -> tuple[AgentCtx, PartSpec]:
 
 
 async def _run_mesh_finalize(ctx: AgentCtx, spec: PartSpec) -> RunOutcome:
-    from cadx.agent.orchestrator import _run_mesh
+    from kiara.agent.orchestrator import _run_mesh
 
     async def no() -> bool:
         return False
@@ -662,7 +662,7 @@ async def test_parametrize_rejected_on_large_chamfer():
     ctx, spec = _param_ctx(executor)
     outcome = await _run_mesh_finalize(ctx, spec)
 
-    from cadx.cad.mesh_ops import mesh_params_schema
+    from kiara.cad.mesh_ops import mesh_params_schema
 
     # rejected — the outcome keeps the pure-mesh fields
     assert outcome.code is None
@@ -677,7 +677,7 @@ async def test_parametrize_executor_exception_is_best_effort():
     ctx, spec = _param_ctx(executor)
     outcome = await _run_mesh_finalize(ctx, spec)
 
-    from cadx.cad.mesh_ops import mesh_params_schema
+    from kiara.cad.mesh_ops import mesh_params_schema
 
     assert outcome.status == "succeeded"  # mesh path itself is unaffected
     assert outcome.code is None

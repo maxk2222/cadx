@@ -56,7 +56,7 @@ def daemon(tmp_path):
             "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
             "UPDATE_HOST": "127.0.0.1",
             "UPDATE_PORT": str(port),
-            "CADX_UPDATE_TOKEN": TOKEN,
+            "KIARA_UPDATE_TOKEN": TOKEN,
         },
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

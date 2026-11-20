@@ -60,8 +60,8 @@ LOCK_HELD=0
 
 PREV_SHA=""; PREV_REF=""; NEW_SHA=""; TARGET_REF=""
 U_STATE="idle"; U_PHASE=""; U_ERROR=""; U_ACTIVE_JOBS=0
-# U_STARTED_AT survives the self re-exec via CADX_UPDATE_STARTED
-U_STARTED_AT="${CADX_UPDATE_STARTED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; U_FINISHED_AT=""
+# U_STARTED_AT survives the self re-exec via KIARA_UPDATE_STARTED
+U_STARTED_AT="${KIARA_UPDATE_STARTED:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; U_FINISHED_AT=""
 MODE="docker"
 
 state_write() {
@@ -308,7 +308,7 @@ maybe_reexec() {
   [ "$DRY" = 1 ] && return 0
   touch "$REEXEC_MARK"
   U_PHASE="reexec"; state_write
-  export CADX_UPDATE_STARTED="$U_STARTED_AT"
+  export KIARA_UPDATE_STARTED="$U_STARTED_AT"
   local args=(--continue --yes)
   [ "$FORCE" = 1 ] && args+=(--force)
   [ "$NO_RESTART" = 1 ] && args+=(--no-restart)
@@ -341,7 +341,7 @@ PY
   run_step "pg_dump (data/backups)" bash scripts/backup.sh \
     || warn "backup failed — update continues WITHOUT a database snapshot"
   if [ -f "$marker" ]; then :; else
-    LATEST=$(ls -1t data/backups/cadx-*.dump 2>/dev/null | head -1 || true)
+    LATEST=$(ls -1t data/backups/kiara-*.dump 2>/dev/null | head -1 || true)
     [ -n "$LATEST" ] && cat > "$marker" <<EOF
 {"file": "$LATEST", "target": "$NEW_SHA", "taken_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF
@@ -420,10 +420,10 @@ do_rollback() {
   # code rolled back — but alembic only moves forward. If the rollback
   # crossed a migration, the newest pre-update dump is the way back.
   local dump
-  dump=$(ls -1t data/backups/cadx-*.dump 2>/dev/null | head -1 || true)
+  dump=$(ls -1t data/backups/kiara-*.dump 2>/dev/null | head -1 || true)
   if [ -n "$dump" ]; then
     warn "if the rolled-back code predates applied migrations, restore the DB:"
-    warn "  docker compose exec -T postgres pg_restore -U cadx -d cadx --clean --if-exists < $dump"
+    warn "  docker compose exec -T postgres pg_restore -U kiara -d kiara --clean --if-exists < $dump"
   fi
   do_deps
   do_restart

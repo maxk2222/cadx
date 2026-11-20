@@ -1,6 +1,6 @@
 # KIARA — Technischer Masterplan (Repository Deep Audit)
 
-**Stand:** 2026-11-19 · **Basis:** `feature/anleitungsbuilder` @ `d4d01c4` · **Scope:** gesamtes Repository (backend/cadx ~126k LOC Python, frontend ~27k LOC TS/TSX, mesh_server eigene Quellen, scripts/, evals/, docs/)
+**Stand:** 2026-11-19 · **Basis:** `feature/anleitungsbuilder` @ `d4d01c4` · **Scope:** gesamtes Repository (backend/kiara ~126k LOC Python, frontend ~27k LOC TS/TSX, mesh_server eigene Quellen, scripts/, evals/, docs/)
 
 > Erstellt aus einem vollständigen Audit durch 3 parallele Analyse-Agents plus
 > manuelle Verifikation der kritischen Befunde (Sandbox-Escape live bewiesen,
@@ -16,7 +16,7 @@ KIARA ist eine **überdurchschnittlich gereifte** Codebase: die Resilienz-Mechan
 2. **Zwei God-Modules**, die jede fachliche Änderung riskant machen: `cad/engine.py` (6,7k LOC, davon ~4k FEM-Orchestrierung in drei monolithischen Pipelines) und `agent/orchestrator.py` (6,6k LOC, 103 Top-Level-Defs, `_run_cad` = 1.235 LOC am Stück). Git-Churn bestätigt: das sind die zwei meist-editierten Dateien des Repos (118 / 112 Commits in 12 Monaten).
 3. **Eine Schicht kleiner, sich summierender Effizienz-Lecks** (kein einzelner Blocker): N+1-Queries, per-Call-`httpx.Client`s, per-Call-GLB-Parsing, DB-Write pro Progress-Event, ein Redis-Pool-Leak im MCP-Session-Pool, ungeschützte Upload-Memory-Reads.
 
-**Rust-Urteil vorweg:** Das Repo besitzt bereits ein ausgereiftes PyO3-Modul (`cadx_native`: BVH-Mesh-Queries, CSR-Assembly, SpMV, PCG, Feature-Edges, Collapse-Remap) mit sauberem Adapter-Pattern, Env-Killswitches und Parity-Tests — die naheliegenden Kernel sind **bereits migriert**. Verbleibend ist genau **ein** marginaler Kandidat (Boundary-Pair-Finding in `mesh_ops`). Kein pauschaler Rust-Rewrite ist zu empfehlen; die Strategie „Rust dort, wo ein messbarer Python-Hotspot existiert, hinter dem `native.py`-Adapter" bleibt die richtige.
+**Rust-Urteil vorweg:** Das Repo besitzt bereits ein ausgereiftes PyO3-Modul (`kiara_native`: BVH-Mesh-Queries, CSR-Assembly, SpMV, PCG, Feature-Edges, Collapse-Remap) mit sauberem Adapter-Pattern, Env-Killswitches und Parity-Tests — die naheliegenden Kernel sind **bereits migriert**. Verbleibend ist genau **ein** marginaler Kandidat (Boundary-Pair-Finding in `mesh_ops`). Kein pauschaler Rust-Rewrite ist zu empfehlen; die Strategie „Rust dort, wo ein messbarer Python-Hotspot existiert, hinter dem `native.py`-Adapter" bleibt die richtige.
 
 ---
 
@@ -38,10 +38,10 @@ KIARA ist eine **überdurchschnittlich gereifte** Codebase: die Resilienz-Mechan
 │      │   assembly-Mission → scene/unity-Export   (eigener Tool-Session-Kosmos)
 ├─ mcpserver/ (strictly LLM-free Tool-Surface, Session-Pool pro Transport)
 ├─ mesh_server/meshserver (FastAPI-Nebendienst: GPU-Jobs, LLM-Proxy, Warm-Worker)
-└─ cadx_native (Rust/PyO3-Wheel, in Docker-Images gebaut, Fallback-Adapter)
+└─ kiara_native (Rust/PyO3-Wheel, in Docker-Images gebaut, Fallback-Adapter)
 ```
 
-**Bewertete Schichtungsqualität:** `api` → `spawn` → `worker_jobs` → `cad/tasks` ist sauber entkoppelt; `guide/` hat eine klare Layering-Kette (`state`→`solver`→`session/tools`→`runner`). **Einzige echte Schichtverletzung:** `queue.py` lazy-importet `cadx.api.deps` innerhalb von Funktionen (queue.py:89,119,210,233,267) — die Queue-Schicht kennt die API-Schicht; funktional notwendig (Zirkularvermeidung), aber architektonisch invertiert. Zweitens zieht `executor_client.py:17-23` via Top-Level-Import `cadx.cad.tasks` den gesamten build123d/OCCT-Stack in jeden Prozess, der nur `QueueExecutor` braucht (inkl. API-Prozess via `mcpserver/session.py:56`).
+**Bewertete Schichtungsqualität:** `api` → `spawn` → `worker_jobs` → `cad/tasks` ist sauber entkoppelt; `guide/` hat eine klare Layering-Kette (`state`→`solver`→`session/tools`→`runner`). **Einzige echte Schichtverletzung:** `queue.py` lazy-importet `kiara.api.deps` innerhalb von Funktionen (queue.py:89,119,210,233,267) — die Queue-Schicht kennt die API-Schicht; funktional notwendig (Zirkularvermeidung), aber architektonisch invertiert. Zweitens zieht `executor_client.py:17-23` via Top-Level-Import `kiara.cad.tasks` den gesamten build123d/OCCT-Stack in jeden Prozess, der nur `QueueExecutor` braucht (inkl. API-Prozess via `mcpserver/session.py:56`).
 
 **Churn-Heatmap (12 Monate, bestätigt die God-Module):** orchestrator.py 118 · engine.py 112 · guide/assembly_tools.py 76 · toolspecs.py 72 · worker_jobs.py 61 · guide/preassembly.py 55 · types.ts 51 · guide_runner.py 51.
 
@@ -142,7 +142,7 @@ Gemessen/verfolgt (keine Theorie):
 
 ## 6. Rust-Migrationspotenzial
 
-**Ist-Zustand:** `backend/cadx_native` (PyO3 0.30, abi3-py312, maturin-Wheel im selben trixie-Base wie die Images gebaut) implementiert bereits: Mesh-BVH (`MeshIndex`: contains/ray_any/ray_locs/scanline_fill), FEM-CSR-Assembler, paralleles SpMV, PCG-Solver, `feature_edges`, `collapse_remap`. Adapter `cad/cad/native.py`: jede Funktion gibt `None` bei Fehlen/Fehler → Python-Fallback; `CADX_NATIVE{,_GEOM,_FEM}=0` Killswitches; Determinismus-Dokumentation (rtol 1e-9 Assembly / 1e-5 Solve); 6 Parity-Testdateien in `tests/native/`. **In Produktion geladen** (worker + executor Container verifiziert, `cadx_native 0.1.0`).
+**Ist-Zustand:** `backend/kiara_native` (PyO3 0.30, abi3-py312, maturin-Wheel im selben trixie-Base wie die Images gebaut) implementiert bereits: Mesh-BVH (`MeshIndex`: contains/ray_any/ray_locs/scanline_fill), FEM-CSR-Assembler, paralleles SpMV, PCG-Solver, `feature_edges`, `collapse_remap`. Adapter `cad/cad/native.py`: jede Funktion gibt `None` bei Fehlen/Fehler → Python-Fallback; `KIARA_NATIVE{,_GEOM,_FEM}=0` Killswitches; Determinismus-Dokumentation (rtol 1e-9 Assembly / 1e-5 Solve); 6 Parity-Testdateien in `tests/native/`. **In Produktion geladen** (worker + executor Container verifiziert, `kiara_native 0.1.0`).
 
 | Kandidat | Stand | Urteil |
 |---|---|---|
@@ -159,7 +159,7 @@ Gemessen/verfolgt (keine Theorie):
 | `token estimation`/LLM-Stream | netz-gebunden | **nicht sinnvoll** |
 | `cadmeta` Ray-Ringe | bereits vektorisiert + native rtree | **keep** |
 
-**Empfehlung:** Rust-Budget in die **Verbreiterung des `cadx_native`-Vertrags** nur dort, wo ein `_qt`-Profil (features.py hat die Instrumentierung bereits) einen >20%-Anteil misst. Der einzige dokumentierte Kandidat ist das Boundary-Pair-Finding; vorher Numpy-Batch probieren.
+**Empfehlung:** Rust-Budget in die **Verbreiterung des `kiara_native`-Vertrags** nur dort, wo ein `_qt`-Profil (features.py hat die Instrumentierung bereits) einen >20%-Anteil misst. Der einzige dokumentierte Kandidat ist das Boundary-Pair-Finding; vorher Numpy-Batch probieren.
 
 ---
 
@@ -241,7 +241,7 @@ Legende: **Aufwand** S<2h / M<1d / G>1d · **Prio** kritisch>hoch>mittel>niedrig
 
 **Risiken:** Orchestrator/Engine leben von geteiltem mutablem `AgentCtx`/Closure-State — Extraktion nur mit identischem Verhalten; Fassade-Reexports halten alle Import-Pfade stabil. **Strategie:** mechanische Moves zuerst (git-bewahrt Historie via `git mv`), dann Funktionshebung, jeweils mit vollem Suite-Lauf dazwischen. Kein Verhaltens-Refactoring im selben Commit wie Moves.
 
-**Gate P3:** `pytest tests` + `make eval ARGS="--case l_bracket_rib"` unverändert; `ruff` ohne neue `noqa`; Public-API-Import-Test (`from cadx.cad.engine import run_pipeline` etc.).
+**Gate P3:** `pytest tests` + `make eval ARGS="--case l_bracket_rib"` unverändert; `ruff` ohne neue `noqa`; Public-API-Import-Test (`from kiara.cad.engine import run_pipeline` etc.).
 
 ### Phase 4 — Verifikation vermuteter Risiken (Audit→Code, kein Blindfix)
 
@@ -259,7 +259,7 @@ Legende: **Aufwand** S<2h / M<1d / G>1d · **Prio** kritisch>hoch>mittel>niedrig
 | # | Maßnahme | Bedingung | Aufw. |
 |---|---|---|---|
 | 5.1 | `_qt`-Instrumentierung auf `mesh_ops` Boundary-Pair-Finding (`mesh_ops.py:2288-2303`) — Profil auf echten Mesh-Edit-Jobs | Wenn >20% der `process_mesh`-Zeit: zuerst `scipy.spatial.cKDTree.query_ball_point`-Batch (kein Rust nötig); erst dann `edges.rs` erweitern | S (Messung) |
-| 5.2 | `cadx_native` Parity-Suite in `make test`-Pfad dokumentiert halten (bereits `tests/native/`) | — | — |
+| 5.2 | `kiara_native` Parity-Suite in `make test`-Pfad dokumentiert halten (bereits `tests/native/`) | — | — |
 | 5.3 | Keine weiteren Rust-Kandidaten ohne Profil-Beweis | — | — |
 
 ### Phase 6 — Qualitätssicherung & Dokumentation
@@ -298,7 +298,7 @@ P6 (QA/Docs)    ── kontinuierlich; i18n-CI nach 2.9
 - **P5:** Benchmark-Protokoll (vorher/nachher `_qt`-Zahlen) für jede Native-Erweiterung, Parity-Tests grün.
 - **P6:** `make lint` + i18n-Parity-Check + `pytest tests -x -q -m "not verify"` in CI-Pflicht; keine Module >3.5k LOC ohne dokumentierte Begründung in `AGENTS.md`.
 
-**Globale Kriterien:** Ruff sauber (aktuell 11 minimale Befunde — mitziehen); TS strict ohne neue `any`; keine neuen `os.environ`-Stellen außerhalb des Settings-Moduls; `cadx_native` Kill-Switches bleiben für jede neue Kernel-Funktion verpflichtend.
+**Globale Kriterien:** Ruff sauber (aktuell 11 minimale Befunde — mitziehen); TS strict ohne neue `any`; keine neuen `os.environ`-Stellen außerhalb des Settings-Moduls; `kiara_native` Kill-Switches bleiben für jede neue Kernel-Funktion verpflichtend.
 
 ---
 
@@ -347,7 +347,7 @@ geringeres Risiko:
      `AGENTS.md`, `docs/updating.md`, `frontend/src/i18n/*`, `Makefile` (i18n-Gate)
 2. **Blame-erhaltende God-Module-Splits (P3).** Statt Neuanlage:
    `git mv cad/engine.py cad/engine/__init__.py` — die Datei wird zum Package-
-   `__init__`, alle `from cadx.cad.engine import X` bleiben funktional UND
+   `__init__`, alle `from kiara.cad.engine import X` bleiben funktional UND
    `git log --follow` behält die Historie. Danach Funktionsgruppen schrittweise
    in Geschwistermodule (`engine/topopt.py` etc.) heben; `__init__` re-exportiert.
    Analog `agent/orchestrator.py → agent/orchestrator/__init__.py`.

@@ -11,20 +11,20 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from cadx.agent.image_client import (
+from kiara.agent.image_client import (
     ImageGenError,
     ImageGenRequest,
     OpenAIImageClient,
     make_image_client,
 )
-from cadx.agent.mesh_client import (
+from kiara.agent.mesh_client import (
     HttpMeshClient,
     MeshGenError,
     MeshGenRequest,
     make_mesh_client,
 )
-from cadx.agent.tripo_client import TripoMeshClient
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.tripo_client import TripoMeshClient
+from kiara.runtime_config import RuntimeSettings
 
 
 class _Transport:

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from cadx.evalkit.metrics import harvest
-from cadx.evalkit.models import CaseResult, GateResult, StageOutcome, StageResult
-from cadx.evalkit.runner import _aggregate_verdict, _persist, _summary_md
+from kiara.evalkit.metrics import harvest
+from kiara.evalkit.models import CaseResult, GateResult, StageOutcome, StageResult
+from kiara.evalkit.runner import _aggregate_verdict, _persist, _summary_md
 
 
 def _out(**kw) -> StageOutcome:

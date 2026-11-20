@@ -17,14 +17,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cadx.cad.fem.regions import (
+from kiara.cad.fem.regions import (
     _anchor_geometry,
     case_anchor_keep_mask,
     region_cell_mask,
     resolve_case_dofs,
 )
-from cadx.cad.fem.voxelize import VoxelDomain
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.voxelize import VoxelDomain
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 
 def _grid_centers(dom: VoxelDomain) -> np.ndarray:
@@ -378,7 +378,7 @@ def _boss_on_plate_domain() -> VoxelDomain:
 def test_region_fallback_prefers_hint_elevation():
     """+z fallback hinted at a boss top must not bind the plate shoulder —
     the axial band around the hint wins over the shared in-plane disc."""
-    from cadx.cad.fem.regions import _region_fallback
+    from kiara.cad.fem.regions import _region_fallback
 
     dom = _boss_on_plate_domain()
     r = RegionSpec(kind="surface", axis="+z", center=[0.0, 0.0, 25.0], margin_mm=2.0)
@@ -390,7 +390,7 @@ def test_region_fallback_prefers_hint_elevation():
 
 def test_region_fallback_z_range_filters_face():
     """z_range clips the fallback face before the hint band is applied."""
-    from cadx.cad.fem.regions import _region_fallback
+    from kiara.cad.fem.regions import _region_fallback
 
     dom = _boss_on_plate_domain()
     r = RegionSpec(
@@ -409,7 +409,7 @@ def test_region_fallback_z_range_filters_face():
 def test_auto_void_regions_pins_bore_cylinders():
     """Anchored bores become empty-pinned cylinders so a grown design domain
     cannot fill their interior."""
-    from cadx.cad.fem.regions import auto_void_regions
+    from kiara.cad.fem.regions import auto_void_regions
 
     anchors = [
         {"index": 1, "axis": "+z", "x": 10.0, "y": -5.0, "z": 4.0, "dia": 8.5},
@@ -428,7 +428,7 @@ def test_auto_void_regions_pins_bore_cylinders():
 
 
 def test_auto_void_regions_skips_bad_anchors():
-    from cadx.cad.fem.regions import auto_void_regions
+    from kiara.cad.fem.regions import auto_void_regions
 
     assert auto_void_regions([]) == []
     assert auto_void_regions([{"index": 1, "axis": "+z", "x": 1.0, "y": 0.0}]) == []

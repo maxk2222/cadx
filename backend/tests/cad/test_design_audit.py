@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from cadx.cad.design_audit import audit_params
+from kiara.cad.design_audit import audit_params
 
 CODE = """from build123d import *
 

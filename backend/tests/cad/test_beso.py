@@ -16,12 +16,12 @@ import pytest
 import trimesh
 from scipy import ndimage
 
-import cadx.cad.fem.beso as beso_mod
-from cadx.cad.fem.beso import _bond_keep, beso
-from cadx.cad.fem.regions import region_node_mask, resolve_case
-from cadx.cad.fem.topopt import RHO_MIN, TopOptParams, passive_solid_mask
-from cadx.cad.fem.voxelize import voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+import kiara.cad.fem.beso as beso_mod
+from kiara.cad.fem.beso import _bond_keep, beso
+from kiara.cad.fem.regions import region_node_mask, resolve_case
+from kiara.cad.fem.topopt import RHO_MIN, TopOptParams, passive_solid_mask
+from kiara.cad.fem.voxelize import voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36
@@ -164,7 +164,7 @@ def test_beso_void_pins_mirror_across_symmetry_plane(monkeypatch: pytest.MonkeyP
 def test_cg_maxiter_bounds_runaway_solves() -> None:
     """The adaptive cap: first solves get the full budget, regressions are
     capped at a multiple of the previous count with a sane floor."""
-    from cadx.cad.fem.topopt import _CG_CAP_MAX, _CG_CAP_MIN, _cg_maxiter
+    from kiara.cad.fem.topopt import _CG_CAP_MAX, _CG_CAP_MIN, _cg_maxiter
 
     assert _cg_maxiter(0) == _CG_CAP_MAX  # no baseline → full budget
     assert _cg_maxiter(170) == 510  # 3x regression headroom

@@ -1,11 +1,11 @@
-"""Tests for cadx.cad.mesh_features — deterministic mesh feature detection."""
+"""Tests for kiara.cad.mesh_features — deterministic mesh feature detection."""
 
 from __future__ import annotations
 
 import pytest
 import trimesh
 
-from cadx.cad.mesh_features import detect_mesh_features
+from kiara.cad.mesh_features import detect_mesh_features
 
 
 def _handle_like() -> trimesh.Trimesh:

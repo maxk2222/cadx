@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.regions import resolve_case
-from cadx.cad.fem.topopt import (
+from kiara.cad.fem.regions import resolve_case
+from kiara.cad.fem.topopt import (
     RHO_MIN,
     TopOptParams,
     _mirror_index_map,
@@ -20,8 +20,8 @@ from cadx.cad.fem.topopt import (
     passive_solid_mask,
     simp,
 )
-from cadx.cad.fem.voxelize import voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, OptimizeSpec, RegionSpec
+from kiara.cad.fem.voxelize import voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, OptimizeSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36

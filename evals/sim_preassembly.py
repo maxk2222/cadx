@@ -22,9 +22,9 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
-from cadx.guide.preassembly import run_preassembly
-from cadx.guide.session import GuideToolSession
-from cadx.guide.state import GuideState
+from kiara.guide.preassembly import run_preassembly
+from kiara.guide.session import GuideToolSession
+from kiara.guide.state import GuideState
 
 
 def _load_state(state_path: Path, *, reextract_ports: bool = False) -> tuple[GuideState, Path]:
@@ -53,8 +53,8 @@ def _reextract(raw: dict) -> None:
     bore/seat measurement model carry stale port metadata."""
     import trimesh
 
-    from cadx.guide.cadmeta import _rim_ports
-    from cadx.guide.state import GuidePart
+    from kiara.guide.cadmeta import _rim_ports
+    from kiara.guide.state import GuidePart
 
     for p in raw.get("parts", []):
         mp = p.get("mesh_path")

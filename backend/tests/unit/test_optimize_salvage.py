@@ -6,19 +6,19 @@ from __future__ import annotations
 
 import pytest
 
-from cadx.agent.steps.optimize import _best_run_index, _opt_overrides
-from cadx.agent.toolspecs import ToolSession
+from kiara.agent.steps.optimize import _best_run_index, _opt_overrides
+from kiara.agent.toolspecs import ToolSession
 
 
 def _session_with_runs() -> ToolSession:
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
     from tests.unit.test_session_condense import _ctx
 
     return ToolSession(_ctx(FakeLLM([{"content": "x"}])), kind="optimize")
 
 
 def test_recut_bores_defaults_on_and_can_be_disabled() -> None:
-    from cadx.llm.schemas import OptimizeSpec
+    from kiara.llm.schemas import OptimizeSpec
 
     assert OptimizeSpec().recut_bores is True
     assert _opt_overrides({"recut_bores": False}) == {"recut_bores": False}
@@ -33,9 +33,9 @@ async def test_topopt_run_merges_request_opt_for_unexpressible_fields(tmp_path) 
     import uuid
     from typing import Any
 
-    from cadx.agent.steps.optimize import _make_topopt_fn, _SessionOps
-    from cadx.llm.fake import FakeLLM
-    from cadx.llm.schemas import Dim, PartSpec
+    from kiara.agent.steps.optimize import _make_topopt_fn, _SessionOps
+    from kiara.llm.fake import FakeLLM
+    from kiara.llm.schemas import Dim, PartSpec
     from tests.unit.test_session_condense import _ctx
 
     captured: dict[str, Any] = {}
@@ -93,8 +93,8 @@ async def test_topopt_run_merges_request_opt_for_unexpressible_fields(tmp_path) 
 def test_successful_in_pipeline_recut_prevents_duplicate_auto_refine() -> None:
     import uuid
 
-    from cadx.agent.worker_jobs import _injob_refine_committed
-    from cadx.db.models import Version, VersionKind
+    from kiara.agent.worker_jobs import _injob_refine_committed
+    from kiara.db.models import Version, VersionKind
 
     version = Version(
         project_id=uuid.uuid4(),
@@ -352,8 +352,8 @@ def test_topopt_images_capped_at_budget(tmp_path) -> None:
     files are untouched, only the context payload shrinks."""
     import types
 
-    from cadx import storage
-    from cadx.agent.steps.optimize import _TOPOPT_IMAGE_BUDGET, _topopt_images
+    from kiara import storage
+    from kiara.agent.steps.optimize import _TOPOPT_IMAGE_BUDGET, _topopt_images
 
     assert _TOPOPT_IMAGE_BUDGET == 8
     img_dir = storage.ensure(storage.data_root() / "_test_imgs" / str(tmp_path.name))
@@ -379,8 +379,8 @@ async def test_optimize_wait_covers_optimizer_budget_plus_tail() -> None:
     multi-realization export verification, finishing and serialize still
     run afterwards (observed tail ~400-800s). A wait of timeout+120 alone
     discarded a verified artifact ~3min before it returned."""
-    from cadx.agent.executor_client import _OPT_TAIL_S, QueueExecutor
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.agent.executor_client import _OPT_TAIL_S, QueueExecutor
+    from kiara.runtime_config import RuntimeSettings
 
     ex = QueueExecutor(runtime_settings=RuntimeSettings(topopt_timeout_s=4800))
     seen: dict = {}
@@ -398,7 +398,7 @@ def test_struct_budget_covers_a_full_optimize_call() -> None:
     """agent_struct_budget_s must afford ONE full optimize envelope —
     smaller defaults let a single maxed call zero the session's remaining
     structural tools even when the call committed a usable run."""
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.runtime_config import RuntimeSettings
 
     s = RuntimeSettings()
     assert s.agent_struct_budget_s >= s.topopt_timeout_s + 1020.0
@@ -415,9 +415,9 @@ async def test_topopt_fn_refuses_call_that_cannot_land(tmp_path) -> None:
     import time
     import uuid
 
-    from cadx.agent.steps.optimize import _make_topopt_fn, _SessionOps
-    from cadx.llm.fake import FakeLLM
-    from cadx.llm.schemas import Dim, PartSpec
+    from kiara.agent.steps.optimize import _make_topopt_fn, _SessionOps
+    from kiara.llm.fake import FakeLLM
+    from kiara.llm.schemas import Dim, PartSpec
     from tests.unit.test_session_condense import _ctx
 
     ctx = _ctx(FakeLLM([]))
@@ -499,8 +499,8 @@ async def test_run_task_tolerates_transient_status_errors(monkeypatch) -> None:
     keeps running server-side, and an agent retry would queue behind it."""
     from arq.jobs import JobStatus
 
-    import cadx.agent.executor_client as ec
-    from cadx.agent.executor_client import QueueExecutor
+    import kiara.agent.executor_client as ec
+    from kiara.agent.executor_client import QueueExecutor
 
     blip = ConnectionError("Timeout connecting to server")
     job = _FakeJob([blip, blip, JobStatus.complete], {"ok": True, "sf": 3.0})
@@ -515,8 +515,8 @@ async def test_run_task_tolerates_transient_status_errors(monkeypatch) -> None:
 async def test_run_task_runtime_budget_starts_when_job_is_in_progress(monkeypatch) -> None:
     from arq.jobs import JobStatus
 
-    import cadx.agent.executor_client as ec
-    from cadx.agent.executor_client import QueueExecutor
+    import kiara.agent.executor_client as ec
+    from kiara.agent.executor_client import QueueExecutor
 
     clock = [0.0]
     monkeypatch.setattr(ec.time, "monotonic", lambda: clock[0])
@@ -539,8 +539,8 @@ async def test_run_task_runtime_budget_starts_when_job_is_in_progress(monkeypatc
 
 
 async def test_run_task_queue_wait_has_independent_hard_cap(monkeypatch) -> None:
-    import cadx.agent.executor_client as ec
-    from cadx.agent.executor_client import QueueExecutor
+    import kiara.agent.executor_client as ec
+    from kiara.agent.executor_client import QueueExecutor
 
     clock = [0.0]
     monkeypatch.setattr(ec.time, "monotonic", lambda: clock[0])
@@ -570,8 +570,8 @@ async def test_run_task_queue_wait_has_independent_hard_cap(monkeypatch) -> None
 async def test_run_task_times_out_after_dequeue_runtime(monkeypatch) -> None:
     from arq.jobs import JobStatus
 
-    import cadx.agent.executor_client as ec
-    from cadx.agent.executor_client import QueueExecutor
+    import kiara.agent.executor_client as ec
+    from kiara.agent.executor_client import QueueExecutor
 
     clock = [0.0]
     monkeypatch.setattr(ec.time, "monotonic", lambda: clock[0])
@@ -594,8 +594,8 @@ async def test_run_task_times_out_after_dequeue_runtime(monkeypatch) -> None:
 async def test_run_task_marks_maybe_running_after_poll_patience(monkeypatch) -> None:
     """Past the tolerated streak the result must say MAYBE-running so the
     agent never resubmits a duplicate behind its own live task."""
-    import cadx.agent.executor_client as ec
-    from cadx.agent.executor_client import QueueExecutor
+    import kiara.agent.executor_client as ec
+    from kiara.agent.executor_client import QueueExecutor
 
     monkeypatch.setattr(ec, "_POLL_FAIL_PATIENCE_S", 2.0)
     job = _FakeJob([ConnectionError("down")])
@@ -610,7 +610,7 @@ async def test_run_task_marks_maybe_running_after_poll_patience(monkeypatch) -> 
 async def test_run_task_submit_failure_says_safe_to_retry() -> None:
     """A failed enqueue means no task exists — the agent can and should be
     told a retry is safe (the opposite of the poll-failure case)."""
-    from cadx.agent.executor_client import QueueExecutor
+    from kiara.agent.executor_client import QueueExecutor
 
     ex = QueueExecutor(pool=_FakePool(enqueue_exc=ConnectionError("refused")))
     res = await ex._run_task("fem_analyze", {}, 60.0)
@@ -622,8 +622,8 @@ async def test_run_task_result_fetch_retries_once(monkeypatch) -> None:
     """A blip on job.result() must not mask a finished task — retry once."""
     from arq.jobs import JobStatus
 
-    import cadx.agent.executor_client as ec
-    from cadx.agent.executor_client import QueueExecutor
+    import kiara.agent.executor_client as ec
+    from kiara.agent.executor_client import QueueExecutor
 
     job = _FakeJob([JobStatus.complete], result=ConnectionError("blip"))
     monkeypatch.setattr(ec, "Job", lambda *a, **k: job)
@@ -636,7 +636,7 @@ async def test_run_task_result_fetch_retries_once(monkeypatch) -> None:
 def test_stage_deadline_caps_agent_optimize_budget() -> None:
     from datetime import UTC, datetime, timedelta
 
-    from cadx.agent.worker_jobs import _agent_optimize_budget_s
+    from kiara.agent.worker_jobs import _agent_optimize_budget_s
 
     now = datetime(2026, 11, 4, 12, tzinfo=UTC)
     payload = {"_stage_deadline_at": (now + timedelta(seconds=1000)).isoformat()}
@@ -651,7 +651,7 @@ def test_stage_deadline_caps_agent_optimize_budget() -> None:
 def test_optimize_request_accepts_optional_bounded_stage_timeout() -> None:
     from pydantic import ValidationError
 
-    from cadx.api.schemas import OptimizeRequest
+    from kiara.api.schemas import OptimizeRequest
 
     assert OptimizeRequest().stage_timeout_s is None
     assert OptimizeRequest(stage_timeout_s=7200).stage_timeout_s == 7200

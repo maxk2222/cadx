@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-from cadx.evalkit.local import _mesh_artifact_files
+from kiara.evalkit.local import _mesh_artifact_files
 
 
 def _version(tmp_path: Path) -> tuple[SimpleNamespace, Path]:
@@ -21,7 +21,7 @@ def _version(tmp_path: Path) -> tuple[SimpleNamespace, Path]:
 
 
 def _patch_storage(monkeypatch, v_dir: Path):
-    from cadx import storage
+    from kiara import storage
 
     monkeypatch.setattr(storage, "version_dir", lambda pid, vid: v_dir)
     monkeypatch.setattr(storage, "resolve", lambda rel: v_dir / rel)

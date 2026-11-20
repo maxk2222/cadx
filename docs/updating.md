@@ -45,7 +45,7 @@ publishing progress to `run/update-state.json`:
    (`update.sh`/`lib/*.sh`), the script re-executes the new version and
    resumes at the deps step.
 5. **backup** — `scripts/backup.sh` takes a `pg_dump -Fc` of the database
-   into `data/backups/cadx-<ts>.dump` + metadata sidecar **before** anything
+   into `data/backups/kiara-<ts>.dump` + metadata sidecar **before** anything
    restarts — this is the pre-migration schema, the one a code rollback may
    need. Skips (with a warning, update continues) when postgres is down;
    idempotent across the self-reexec via `run/update-backup.json`.
@@ -59,7 +59,7 @@ publishing progress to `run/update-state.json`:
    failure the run is marked `failed` and `--rollback` is offered.
 
 The daemon also watches the run: an update process with no log output for
-30 min (`CADX_UPDATE_STALL_S`, measured by log+state mtime — never state
+30 min (`KIARA_UPDATE_STALL_S`, measured by log+state mtime — never state
 alone, long builds write the log continuously) or exceeding 3 h total is
 killed as a process group and marked `failed`.
 
@@ -84,10 +84,10 @@ confirmation dialog warns and requires a second confirm. After a failed run a
   migrations are **forward-only**: rolling code back across a migration can
   break the DB. Every update takes a `pg_dump` first (see the backup phase);
   if the rollback crossed a migration, restore it:
-  `docker compose exec -T postgres pg_restore -U cadx -d cadx --clean --if-exists < data/backups/cadx-<ts>.dump`.
+  `docker compose exec -T postgres pg_restore -U kiara -d kiara --clean --if-exists < data/backups/kiara-<ts>.dump`.
   The rollback path prints the newest dump + the command automatically.
 - **Auth** — every daemon endpoint except `/v1/health` requires a bearer
-  token (`run/updater.token`, also `.env` `CADX_UPDATE_TOKEN` for the docker
+  token (`run/updater.token`, also `.env` `KIARA_UPDATE_TOKEN` for the docker
   api). In docker mode the daemon binds `0.0.0.0` so `host.docker.internal`
   can reach it; in dev mode it stays on loopback.
 - **Restart survival** — `stop.sh` skips the updater pidfile while an update
@@ -120,5 +120,5 @@ The GUI card degrades to instructions and `/api/system/*` returns `503`
 | `run/update.lock` | mkdir lock serialising updates |
 | `run/mode` | `docker` or `dev` — how to restart |
 | `logs/update-*.log` | per-run logs; `updater-launch.log` for spawns |
-| `backend/cadx/api/routers/system.py` | `/api/system/*` proxy |
+| `backend/kiara/api/routers/system.py` | `/api/system/*` proxy |
 | `frontend/src/components/UpdateCard.tsx` | Settings → System card |

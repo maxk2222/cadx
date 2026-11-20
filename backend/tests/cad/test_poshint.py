@@ -1,10 +1,10 @@
-"""cadx.cad.poshint — shared spec position-hint parser."""
+"""kiara.cad.poshint — shared spec position-hint parser."""
 
 from __future__ import annotations
 
 import pytest
 
-from cadx.cad.poshint import (
+from kiara.cad.poshint import (
     parse_axis_ranges,
     parse_coord_points,
     parse_position_hints,

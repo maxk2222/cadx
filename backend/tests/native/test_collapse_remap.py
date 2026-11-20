@@ -5,9 +5,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-cadx_native = pytest.importorskip("cadx_native")
+kiara_native = pytest.importorskip("kiara_native")
 
-from cadx.cad import native  # noqa: E402
+from kiara.cad import native  # noqa: E402
 
 
 def _py_remap(pairs: set[tuple[int, int]], n: int) -> np.ndarray:

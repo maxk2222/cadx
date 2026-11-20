@@ -22,9 +22,9 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.engine import normalize_mesh_to_spec_envelope
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
-from cadx.runtime_config import RuntimeSettings
+from kiara.cad.engine import normalize_mesh_to_spec_envelope
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.runtime_config import RuntimeSettings
 
 VOXEL_MM = 1.5
 
@@ -54,7 +54,7 @@ def _cantilever_case() -> dict[str, Any]:
 
 
 def _pipeline(src: Path, out_dir: Path, **opt: Any):
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     return run_topopt_pipeline(
         mesh_path=src,
@@ -159,9 +159,9 @@ def test_pipeline_history_contract(tmp_path: Path) -> None:
 def test_simp_history_phase_timings() -> None:
     """Every OC history record carries assemble_s/factorize_s/solve_s/
     filter_s — measured around the real calls, non-negative."""
-    from cadx.cad.fem.regions import resolve_case
-    from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-    from cadx.cad.fem.voxelize import voxelize
+    from kiara.cad.fem.regions import resolve_case
+    from kiara.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+    from kiara.cad.fem.voxelize import voxelize
 
     dom = voxelize(_box(20.0, 8.0, 8.0), 1.0, 200_000)
     fixed, F, _ = resolve_case(dom, _cantilever(), [])
@@ -188,9 +188,9 @@ def test_move_limit_oscillation_warning() -> None:
     """A run whose OC update stays saturated at the move cap for 15+
     consecutive iterations is a limit cycle — it must surface a warning so
     the caller can react (symmetry plane, different filter/threshold)."""
-    from cadx.cad.fem.regions import resolve_case
-    from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-    from cadx.cad.fem.voxelize import voxelize
+    from kiara.cad.fem.regions import resolve_case
+    from kiara.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+    from kiara.cad.fem.voxelize import voxelize
 
     dom = voxelize(_box(20.0, 8.0, 8.0), 1.0, 200_000)
     fixed, F, _ = resolve_case(dom, _cantilever(), [])
@@ -221,9 +221,9 @@ def test_limit_cycle_break_at_beta_cap() -> None:
     """Once the Heaviside continuation sits at beta_max and the density still
     saturates the move cap, no mechanism remains to settle the field — the
     loop must break and extract rather than burn solver minutes to the cap."""
-    from cadx.cad.fem.regions import resolve_case
-    from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-    from cadx.cad.fem.voxelize import voxelize
+    from kiara.cad.fem.regions import resolve_case
+    from kiara.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+    from kiara.cad.fem.voxelize import voxelize
 
     dom = voxelize(_box(20.0, 8.0, 8.0), 1.0, 200_000)
     fixed, F, _ = resolve_case(dom, _cantilever(), [])
@@ -255,7 +255,7 @@ def test_limit_cycle_break_at_beta_cap() -> None:
 def test_multires_default_on_with_opt_out(tmp_path: Path) -> None:
     """S1: multires runs by default once the domain clears
     topopt_multires_min_cells; an explicit multires=false opts out."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box(24.0, 24.0, 24.0).export(str(src))  # 16^3 = 4096 cells > 4000 gate
@@ -284,9 +284,9 @@ def test_symmetry_plane_mismatch_warns() -> None:
     about distorts the load paths — the run must warn instead of silently
     producing a mangled skeleton (observed: L-bracket at symmetry="xz",
     a Y-flip on a Y-asymmetric part, stalling at SF 0.04)."""
-    from cadx.cad.fem.regions import resolve_case
-    from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-    from cadx.cad.fem.voxelize import VoxelDomain
+    from kiara.cad.fem.regions import resolve_case
+    from kiara.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+    from kiara.cad.fem.voxelize import VoxelDomain
 
     # L-section: base plate (z<2) + wall (y<2), full in X — symmetric about
     # the yz mid-plane (X-flip) only
@@ -332,7 +332,7 @@ def test_optimizer_deadline_stops_simp_and_still_commits(tmp_path: Path) -> None
     timed out)."""
     import time as _time
 
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box(20.0, 8.0, 8.0).export(str(src))

@@ -7,13 +7,13 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadx.db.session import create_all
+from kiara.db.session import create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -21,9 +21,9 @@ async def client():
 
 async def _succeeded_version_with_stl(client, name: str = "editor") -> tuple[str, str]:
     """Create a project + version marked succeeded with an exports/model.stl."""
-    from cadx import storage
-    from cadx.db.models import Version, VersionStatus
-    from cadx.db.session import session_scope
+    from kiara import storage
+    from kiara.db.models import Version, VersionStatus
+    from kiara.db.session import session_scope
 
     pid = (await client.post("/api/projects", json={"name": name})).json()["id"]
     vid = (await client.post(f"/api/projects/{pid}/generate", json={"prompt": "a block"})).json()[
@@ -66,8 +66,8 @@ async def test_mesh_preview_validation(client):
     vid2 = (await client.post(f"/api/projects/{pid2}/generate", json={"prompt": "x"})).json()[
         "version_id"
     ]
-    from cadx.db.models import Version, VersionStatus
-    from cadx.db.session import session_scope
+    from kiara.db.models import Version, VersionStatus
+    from kiara.db.session import session_scope
 
     async with session_scope() as db:
         v = await db.get(Version, uuid.UUID(vid2))
@@ -83,8 +83,8 @@ async def test_mesh_preview_validation(client):
 
 
 async def test_mesh_preview_ok_and_scratch_file(client, monkeypatch):
-    from cadx import storage
-    from cadx.api.routers import editor
+    from kiara import storage
+    from kiara.api.routers import editor
 
     pid, vid = await _succeeded_version_with_stl(client, "mp-ok")
 
@@ -151,7 +151,7 @@ async def test_mesh_edit_creates_child(client):
 
 
 async def test_fem_preview_and_check(client, monkeypatch):
-    from cadx.api.routers import editor
+    from kiara.api.routers import editor
 
     _, vid = await _succeeded_version_with_stl(client, "fem-api")
 

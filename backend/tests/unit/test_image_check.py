@@ -8,23 +8,23 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from cadx.agent.context import (
+from kiara.agent.context import (
     _optimize_note,
     codegen_build_system,
     codegen_system,
     codegen_tools_system,
 )
-from cadx.agent.image_check import (
+from kiara.agent.image_check import (
     ImageVerdict,
     _spec_summary,
     generate_with_verification,
     verify_concept_image,
 )
-from cadx.agent.types import AgentCtx, InputAsset
-from cadx.db.models import ProjectSettings
-from cadx.llm.client import LLMResponse
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import Feature, OptimizeSpec, PartSpec
+from kiara.agent.types import AgentCtx, InputAsset
+from kiara.db.models import ProjectSettings
+from kiara.llm.client import LLMResponse
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import Feature, OptimizeSpec, PartSpec
 
 _DIM = {"value": 80.0, "unit": "mm", "source": "stated"}
 

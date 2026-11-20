@@ -12,15 +12,15 @@ import uuid
 
 import pytest
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.steps import codegen as codegen_step
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import Dim, PartSpec
-from cadx.llm.structured import LLMFormatError
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.steps import codegen as codegen_step
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import Dim, PartSpec
+from kiara.llm.structured import LLMFormatError
+from kiara.runtime_config import RuntimeSettings
 
 GOOD = "from build123d import *\nPARAMS = {}\nresult = Box(10, 10, 5)"
 GOOD_LONG = GOOD + "\n\n# deliberate padding to lose the shorter-code tiebreak\n" + ("# x\n" * 20)

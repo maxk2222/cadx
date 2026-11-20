@@ -20,9 +20,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cadx.guide import preassembly as pa
-from cadx.guide import solver
-from cadx.guide.state import (
+from kiara.guide import preassembly as pa
+from kiara.guide import solver
+from kiara.guide.state import (
     AssemblyInstance,
     AssemblyState,
     GuidePart,
@@ -828,8 +828,8 @@ def test_bound_pids_preferred_over_fuzzy_names() -> None:
     resolves those ids even when the free-text name is ambiguous."""
     from types import SimpleNamespace
 
-    from cadx.guide.preassembly import _tpart, _ttgt
-    from cadx.guide.state import AssemblyState, GuidePart, GuideState
+    from kiara.guide.preassembly import _tpart, _ttgt
+    from kiara.guide.state import AssemblyState, GuidePart, GuideState
 
     state = GuideState(output_dir="/tmp/x")
     state.parts = [
@@ -857,7 +857,7 @@ def test_bound_pids_preferred_over_fuzzy_names() -> None:
 
 def _mk_state_with_instances() -> tuple[SimpleNamespace, list]:
     """Parts + placed instances mimicking the heatpump topology."""
-    from cadx.guide.state import (
+    from kiara.guide.state import (
         AssemblyInstance,
         AssemblyState,
         GuidePart,
@@ -897,7 +897,7 @@ def _mk_state_with_instances() -> tuple[SimpleNamespace, list]:
 
 
 def test_ref_step_parsing() -> None:
-    from cadx.guide.preassembly import _ref_step
+    from kiara.guide.preassembly import _ref_step
 
     assert _ref_step("oberes Rohr aus Schritt 3") == 3
     assert _ref_step("upper pipe from step 7") == 7
@@ -908,7 +908,7 @@ def test_ref_step_parsing() -> None:
 def test_ref_instances_provenance_pin() -> None:
     """'Rohr aus Schritt 3' — the bare noun is ambiguous between the two
     pipes, but provenance pins the instance step 3 placed."""
-    from cadx.guide.preassembly import _ref_instances
+    from kiara.guide.preassembly import _ref_instances
 
     sess, _insts = _mk_state_with_instances()
     pool = _ref_instances(sess, "linkes oberes Rohr aus Schritt 3")
@@ -921,7 +921,7 @@ def test_ref_instances_provenance_pin() -> None:
 def test_ref_instances_kind_pool() -> None:
     """Ambiguous kind noun without a step pin restricts to the tied
     parts' instances — never every placed instance."""
-    from cadx.guide.preassembly import _ref_instances
+    from kiara.guide.preassembly import _ref_instances
 
     sess, _insts = _mk_state_with_instances()
     pool = _ref_instances(sess, "Rohrbogen")
@@ -936,8 +936,8 @@ def test_kind_pool_step_provenance_pin() -> None:
     'oberes Rohr aus Schritt 3' is {l70}, not the whole pipe family. The
     live run bound a bridge leg against l500 because the loose pipe pool
     admitted it; a {l70}-pool would have flagged the joint as unexpected."""
-    from cadx.guide.preassembly import _kind_pool
-    from cadx.guide.state import GuideStep, GuideSubStep
+    from kiara.guide.preassembly import _kind_pool
+    from kiara.guide.state import GuideStep, GuideSubStep
 
     sess, _insts = _mk_state_with_instances()
     sess.state.steps = [
@@ -965,7 +965,7 @@ def test_ref_instances_empty_pin_pool_is_a_miss() -> None:
     returning None meant 'no signal' and callers free-fell onto every
     placed instance (pipe onto casing, skipping its adapter). An empty
     list is terminal evidence, not a widening license."""
-    from cadx.guide.preassembly import _ref_instances
+    from kiara.guide.preassembly import _ref_instances
 
     sess, _insts = _mk_state_with_instances()
     assert _ref_instances(sess, "Bohrung des Adapters (Schritt 1)") == []
@@ -977,7 +977,7 @@ def test_ref_instances_compound_noun_kind_pool() -> None:
     """German compound kind nouns classify by their suffix head —
     'Anschlussrohr' is a pipe ref even though '\brohr\b' misses the
     compound."""
-    from cadx.guide.preassembly import _ref_instances
+    from kiara.guide.preassembly import _ref_instances
 
     sess, _insts = _mk_state_with_instances()
     pool = _ref_instances(sess, "freies Ende des linken oberen Anschlussrohrs")
@@ -998,8 +998,8 @@ def test_infer_legs_consumes_orient_substep_declaration() -> None:
     placing sub-step so the audit sees the contract."""
     from types import SimpleNamespace
 
-    from cadx.guide.preassembly import _infer_legs
-    from cadx.guide.state import (
+    from kiara.guide.preassembly import _infer_legs
+    from kiara.guide.state import (
         AssemblyState,
         GuidePart,
         GuideState,
@@ -1067,7 +1067,7 @@ def test_feeds_bridge_dir_points_at_placed_partner() -> None:
     partner already sits at the upper bore (z+) — the elbow feeding the
     descending-closing bridge gets +Z hints so the solver doesn't run
     the chain away from its declared mate."""
-    from cadx.guide.state import (
+    from kiara.guide.state import (
         AssemblyInstance,
         AssemblyState,
         GuideState,
@@ -1118,7 +1118,7 @@ def test_feeds_bridge_dir_points_at_placed_partner() -> None:
 def test_feeds_bridge_dir_silent_without_partner() -> None:
     """Partner not placed yet → no hint (the mechanism never invents a
     direction from thin air)."""
-    from cadx.guide.state import (
+    from kiara.guide.state import (
         AssemblyInstance,
         AssemblyState,
         GuideState,
@@ -1301,7 +1301,7 @@ def test_feeds_bridge_reach_returns_partner_tips() -> None:
     """The chain's free mouth must stand within the bridge's sideways
     reach — the helper surfaces the partner's free tip points plus the
     bridge part's arm span, [] when the partner is not placed."""
-    from cadx.guide.state import (
+    from kiara.guide.state import (
         AssemblyInstance,
         AssemblyState,
         GuideState,
@@ -1474,7 +1474,7 @@ def test_bridge_pools_narrow_to_declared_pids() -> None:
     the search mate both legs onto the l70 pair — place_instance then
     correctly rejected it as a target mismatch and the leg never
     materialized as a joint."""
-    from cadx.guide.state import (
+    from kiara.guide.state import (
         AssemblyInstance,
         AssemblyState,
         GuideState,
@@ -1531,7 +1531,7 @@ def test_bridge_search_rejects_same_instance_legs() -> None:
     """Both legs on ONE instance is the degenerate self-loop — two rim
     detections of one mouth can always fake a closure on residual alone.
     The search must skip i1 == i2 pairs so a self-mate can never win."""
-    from cadx.guide.state import (
+    from kiara.guide.state import (
         AssemblyInstance,
         AssemblyState,
         GuideState,
@@ -1606,8 +1606,8 @@ def test_candidate_burial_exempts_both_bridge_legs() -> None:
     tip's box — counting it as burial killed every honest retry
     (buried_frac 0.53 on the l70 tip while the close was 0.55mm). The
     gate must exempt BOTH mate instances, not only leg-1's."""
-    from cadx.guide.assembly_tools import _candidate_burial
-    from cadx.guide.state import (
+    from kiara.guide.assembly_tools import _candidate_burial
+    from kiara.guide.state import (
         AssemblyInstance,
         AssemblyState,
         GuideState,

@@ -8,7 +8,7 @@ appear as a Unity rotation about Y.
 
 import numpy as np
 
-from cadx.guide import unity
+from kiara.guide import unity
 
 
 def test_position_mm_zup_to_m_yup() -> None:
@@ -70,7 +70,7 @@ def test_handedness_preserved_through_conjugation() -> None:
 
 
 def test_build_unity_guide_smoke() -> None:
-    from cadx.guide.state import (
+    from kiara.guide.state import (
         AssemblyInstance,
         GuidePart,
         GuideState,
@@ -103,7 +103,7 @@ def _arrow_state() -> "object":
     """Two mated parts: `host` fixed at origin with an upward-facing port,
     `plug` mated onto it — the joint's approach_axis is the fixed port's
     outward normal (+Z local = +Z world under identity)."""
-    from cadx.guide.state import (
+    from kiara.guide.state import (
         AssemblyInstance,
         GuidePart,
         GuideState,
@@ -216,8 +216,8 @@ def test_preassembly_joint_axis_is_the_fixed_port_axis() -> None:
     fixed-port axis, never the [0,0,1] fallback."""
     from unittest.mock import MagicMock
 
-    from cadx.guide.preassembly import _port_axis
-    from cadx.guide.state import GuidePart, PortInfo
+    from kiara.guide.preassembly import _port_axis
+    from kiara.guide.state import GuidePart, PortInfo
 
     sess = MagicMock()
     sess.state.part_by_id.side_effect = lambda pid: GuidePart(

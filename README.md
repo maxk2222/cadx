@@ -64,7 +64,7 @@ Most image→3D tools hand you a mesh and wish you luck. KIARA closes the loop.
 
 ## Quickstart
 
-From a release (no git clone needed — installs to `./cadx`):
+From a release (no git clone needed — installs to `./kiara`):
 
 ```bash
 curl -fsSL https://github.com/maxk2222/cadx/releases/download/v0.1.0-alpha.1/install.sh | bash
@@ -215,7 +215,7 @@ uv run kiara mcp          # stdio transport
 uv run kiara mcp --http   # Streamable HTTP on :8001/mcp
 ```
 
-The main API also serves `/mcp` (gated by `CADX_MCP_TOKEN` when set). Typical
+The main API also serves `/mcp` (gated by `KIARA_MCP_TOKEN` when set). Typical
 flow: `codegen_contract` → `check_code` → `execute_cad` → `submit_code` →
 `wait_job`. Full tool list and semantics:
 **[docs/mcp-server.md](docs/mcp-server.md)**.

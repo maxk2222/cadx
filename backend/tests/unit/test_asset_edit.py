@@ -9,14 +9,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from cadx.db.session import create_all
-from cadx.llm.images import prepare
+from kiara.db.session import create_all
+from kiara.llm.images import prepare
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -129,7 +129,7 @@ async def test_remove_bg_returns_png(client, monkeypatch):
             return out
 
     monkeypatch.setitem(sys.modules, "rembg", _FakeRembg)
-    monkeypatch.setattr("cadx.api.routers.assets._rembg_sess", None)
+    monkeypatch.setattr("kiara.api.routers.assets._rembg_sess", None)
     r = await client.post(f"/api/assets/{src['id']}/remove-bg")
     assert r.status_code == 200, r.text
     assert r.headers["content-type"] == "image/png"
@@ -173,7 +173,7 @@ def test_prepare_max_edge_override(tmp_path):
 def test_image_part_uses_runtime_defaults(tmp_path):
     """image_part() picks detail/max-edge from RuntimeSettings when not
     given explicitly — explicit args still win."""
-    from cadx.llm.images import image_part
+    from kiara.llm.images import image_part
 
     p = tmp_path / "a.png"
     Image.new("RGB", (64, 64), (1, 2, 3)).save(p)

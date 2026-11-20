@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 from starlette.datastructures import Headers, UploadFile
 
-from cadx.db.session import create_all, session_scope
+from kiara.db.session import create_all, session_scope
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -42,7 +42,7 @@ class _FakePool:
 
 
 async def test_executor_aclose_only_owned_pool() -> None:
-    from cadx.agent.executor_client import QueueExecutor
+    from kiara.agent.executor_client import QueueExecutor
 
     # caller-supplied pool is shared — never closed by the executor
     shared = _FakePool()
@@ -65,7 +65,7 @@ async def test_executor_aclose_only_owned_pool() -> None:
 
 
 async def test_mcp_session_pool_bounded_ttl_and_drop() -> None:
-    from cadx.mcpserver import session as mcp_session
+    from kiara.mcpserver import session as mcp_session
 
     saved_sessions, saved_touched = dict(mcp_session.SESSIONS), dict(mcp_session._SESSION_TOUCHED)
     mcp_session.SESSIONS.clear()
@@ -134,7 +134,7 @@ async def test_mcp_session_pool_bounded_ttl_and_drop() -> None:
 
 
 async def test_mcp_session_aclose_releases_executor_pool() -> None:
-    from cadx.mcpserver.session import McpToolSession
+    from kiara.mcpserver.session import McpToolSession
 
     sess = McpToolSession()
     owned = _FakePool()
@@ -150,8 +150,8 @@ async def test_mcp_session_aclose_releases_executor_pool() -> None:
 
 
 async def test_version_tree_batches_thumbnails() -> None:
-    from cadx.api.routers.versions import _summary, version_tree
-    from cadx.db.models import Artifact, ArtifactKind, Project, Version, VersionKind
+    from kiara.api.routers.versions import _summary, version_tree
+    from kiara.db.models import Artifact, ArtifactKind, Project, Version, VersionKind
 
     pid, part = uuid.uuid4(), uuid.uuid4()
     thumb_v: Version | None = None
@@ -219,7 +219,7 @@ async def test_version_tree_batches_thumbnails() -> None:
 
 
 async def _mk_part(name: str, kind: str, filename: str, caption: str = "") -> None:
-    from cadx.db.models import LibraryPart
+    from kiara.db.models import LibraryPart
 
     async with session_scope() as db:
         db.add(LibraryPart(name=name, kind=kind, filename=filename, caption=caption))
@@ -227,7 +227,7 @@ async def _mk_part(name: str, kind: str, filename: str, caption: str = "") -> No
 
 
 async def test_search_library_sql_filtering() -> None:
-    from cadx.agent.toolspecs import ToolSession
+    from kiara.agent.toolspecs import ToolSession
 
     suffix = uuid.uuid4().hex[:8]
     await _mk_part(f"spacer-{suffix}", "step", "spacer.step", "10mm")
@@ -253,8 +253,8 @@ async def test_search_library_sql_filtering() -> None:
 
 
 async def test_search_library_limit() -> None:
-    from cadx.agent.toolspecs import ToolSession
-    from cadx.db.models import LibraryPart
+    from kiara.agent.toolspecs import ToolSession
+    from kiara.db.models import LibraryPart
 
     marker = uuid.uuid4().hex[:8]
     async with session_scope() as db:
@@ -274,7 +274,7 @@ async def test_search_library_limit() -> None:
 
 
 async def test_llm_client_shared_pool_and_aclose() -> None:
-    from cadx.llm.client import LLMClient
+    from kiara.llm.client import LLMClient
 
     c = LLMClient(base_url="http://localhost:9", api_key="k", model_code="m", model_vision="m")
     c1 = c._get_client()
@@ -287,7 +287,7 @@ async def test_llm_client_shared_pool_and_aclose() -> None:
 
 
 async def test_llm_backoff_cancel_aware() -> None:
-    from cadx.llm.client import LLMClient
+    from kiara.llm.client import LLMClient
 
     async def aborted() -> bool:
         return True
@@ -312,8 +312,8 @@ async def test_llm_backoff_cancel_aware() -> None:
 
 
 async def test_mesh_and_image_clients_share_one_pool() -> None:
-    from cadx.agent.image_client import HttpImageClient
-    from cadx.agent.mesh_client import HttpMeshClient
+    from kiara.agent.image_client import HttpImageClient
+    from kiara.agent.mesh_client import HttpMeshClient
 
     for cls, kwargs in (
         (HttpMeshClient, {"base_url": "http://localhost:9"}),
@@ -332,8 +332,8 @@ async def test_mesh_and_image_clients_share_one_pool() -> None:
 
 
 async def test_emit_throttles_db_writes_and_flush() -> None:
-    from cadx.agent.worker_jobs import make_emit
-    from cadx.db.models import Job, JobType, Project, Version, VersionKind
+    from kiara.agent.worker_jobs import make_emit
+    from kiara.db.models import Job, JobType, Project, Version, VersionKind
 
     async with session_scope() as db:
         p = Project(name="emit-proj")
@@ -376,8 +376,8 @@ async def test_emit_throttles_db_writes_and_flush() -> None:
 
 
 async def test_emit_caps_job_log() -> None:
-    from cadx.agent.worker_jobs import _cap_job_log, make_emit
-    from cadx.db.models import Job, JobType, Project, Version, VersionKind
+    from kiara.agent.worker_jobs import _cap_job_log, make_emit
+    from kiara.db.models import Job, JobType, Project, Version, VersionKind
 
     # unit-level cap: >500 lines keeps the newest with an elision marker
     blob = "".join(f"line {i}\n" for i in range(600))
@@ -418,8 +418,8 @@ async def test_emit_caps_job_log() -> None:
 
 
 async def test_resolve_guide_dir_confines_to_data_root(tmp_path) -> None:
-    from cadx import storage
-    from cadx.agent.worker_jobs import _resolve_guide_dir
+    from kiara import storage
+    from kiara.agent.worker_jobs import _resolve_guide_dir
 
     version = type("V", (), {"project_id": uuid.uuid4(), "id": uuid.uuid4()})()
     canonical = storage.version_dir(version.project_id, version.id) / "guide"
@@ -473,7 +473,7 @@ class _FakeRedis:
 
 
 async def test_chat_turn_alive_uses_zscan_not_zrange() -> None:
-    from cadx.queue import _chat_turn_alive
+    from kiara.queue import _chat_turn_alive
 
     fake = _FakeRedis(members={b"chat:c1:m1": 1.0, b"job:other": 2.0})
     assert await _chat_turn_alive(fake, "c1") is True
@@ -498,8 +498,8 @@ async def test_chat_turn_alive_uses_zscan_not_zrange() -> None:
 
 
 async def test_spawn_params_via_builder() -> None:
-    from cadx.db.models import JobType, Version, VersionKind
-    from cadx.spawn import spawn_params
+    from kiara.db.models import JobType, Version, VersionKind
+    from kiara.spawn import spawn_params
 
     pid, part = uuid.uuid4(), uuid.uuid4()
     async with session_scope() as db:
@@ -530,8 +530,8 @@ async def test_spawn_params_via_builder() -> None:
 
 
 async def test_spawn_optimize_via_builder() -> None:
-    from cadx.db.models import JobType, Version, VersionKind, VersionStatus
-    from cadx.spawn import spawn_optimize
+    from kiara.db.models import JobType, Version, VersionKind, VersionStatus
+    from kiara.spawn import spawn_optimize
 
     pid, part = uuid.uuid4(), uuid.uuid4()
     async with session_scope() as db:
@@ -568,9 +568,9 @@ async def test_spawn_optimize_via_builder() -> None:
 
 
 def test_capability_flags_declared() -> None:
-    from cadx.agent import orchestrator
-    from cadx.agent.steps import critique
-    from cadx.cad.fem.analyze import fem_feedback_lines
+    from kiara.agent import orchestrator
+    from kiara.agent.steps import critique
+    from kiara.cad.fem.analyze import fem_feedback_lines
 
     assert critique.ACCEPTS_PREV_ISSUES is True
     assert fem_feedback_lines.ACCEPTS_LIGHTWEIGHT_REQUESTED is True
@@ -584,11 +584,11 @@ def test_capability_flags_declared() -> None:
 
 
 def test_executor_client_does_not_bind_cad_tasks() -> None:
-    import cadx.agent.executor_client as ec
+    import kiara.agent.executor_client as ec
 
     # the module must not bind cad.tasks symbols at import time — API and
     # worker processes stay OCC-free; InProcessExecutor imports lazily
-    assert "cadx" not in str(vars(ec).get("tasks", ""))
+    assert "kiara" not in str(vars(ec).get("tasks", ""))
     assert not any(k.startswith("run_") and k.endswith("_payload") for k in vars(ec))
 
 
@@ -609,7 +609,7 @@ def _upload(data: bytes, *, filename: str = "f.step", content_length: str | None
 async def test_read_capped_bounds_body() -> None:
     from fastapi import HTTPException
 
-    from cadx.api.routers.assets import _read_capped
+    from kiara.api.routers.assets import _read_capped
 
     # under the cap -> full body
     assert await _read_capped(_upload(b"0123456789"), 10) == b"0123456789"
@@ -635,7 +635,7 @@ async def test_read_capped_bounds_body() -> None:
 async def test_library_read_capped_same_contract() -> None:
     from fastapi import HTTPException
 
-    from cadx.api.routers.library import MAX_LIBRARY_BYTES, _read_capped
+    from kiara.api.routers.library import MAX_LIBRARY_BYTES, _read_capped
 
     assert MAX_LIBRARY_BYTES == 50 * 1024 * 1024
     with pytest.raises(HTTPException) as ei:
@@ -652,7 +652,7 @@ async def test_library_read_capped_same_contract() -> None:
 async def test_stack_restart_allowlist() -> None:
     from fastapi import HTTPException
 
-    from cadx.api.routers.system import _RESTARTABLE_SERVICES, stack_restart
+    from kiara.api.routers.system import _RESTARTABLE_SERVICES, stack_restart
 
     assert {"api", "worker", "cad-executor", "frontend", "mesh-server"} == _RESTARTABLE_SERVICES
 

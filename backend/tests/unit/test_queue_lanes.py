@@ -6,14 +6,14 @@ from __future__ import annotations
 
 import asyncio
 
-from cadx.agent.executor_client import (
+from kiara.agent.executor_client import (
     _LIGHT_FUNCS,
     CAD_FEM_QUEUE,
     CAD_LIGHT_QUEUE,
     CAD_QUEUE,
     QueueExecutor,
 )
-from cadx.queue import CadFemWorkerSettings, CadLightWorkerSettings, CadWorkerSettings
+from kiara.queue import CadFemWorkerSettings, CadLightWorkerSettings, CadWorkerSettings
 
 
 def _names(settings) -> set[str]:
@@ -81,8 +81,8 @@ def test_run_task_polls_status_on_the_enqueue_lane(monkeypatch) -> None:
     queued — never 'lost'. Job defaults to the 'arq:queue' keyspace, so a
     missing _queue_name polled zscore('arq:queue') -> not_found -> the
     60s lost-patience fired while the real cad-lane entry still waited."""
-    from cadx.agent import executor_client
-    from cadx.agent.executor_client import JobStatus
+    from kiara.agent import executor_client
+    from kiara.agent.executor_client import JobStatus
 
     seen: dict[str, str] = {}
 
@@ -119,8 +119,8 @@ def test_run_task_resubmits_once_on_inflight_crash(monkeypatch) -> None:
     """A worker killed mid-flight leaves 'max N retries exceeded' as the
     arq result — the task never executed, so one resubmit is safe. A
     genuine task failure must NOT resubmit."""
-    from cadx.agent import executor_client
-    from cadx.agent.executor_client import JobStatus
+    from kiara.agent import executor_client
+    from kiara.agent.executor_client import JobStatus
 
     attempts: list[str] = []
 

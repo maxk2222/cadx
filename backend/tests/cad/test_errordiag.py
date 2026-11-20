@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cadx.cad.errordiag import diag_block, diagnose
+from kiara.cad.errordiag import diag_block, diagnose
 
 CODE = "line1\nline2\nline3\nline4\nline5\nline6\nline7\n"
 
@@ -149,7 +149,7 @@ def test_bbox_api_misuse_gets_bbox_hint():
     """OCP-style BoundBox attribute guesses must classify as api-bbox with
     the correct build123d API in the hint — observed 5 consecutive repair
     failures (boundingBox/xlen/xmax/xsize/size.x) in one session."""
-    from cadx.cad.errordiag import diagnose
+    from kiara.cad.errordiag import diagnose
 
     for bad in (
         "'Vector' object has no attribute 'x'",
@@ -215,7 +215,7 @@ def test_fem_feedback_lightened_minor_gated_on_request():
     """P9: 'safety factor well above target — could be lightened' is only
     emitted when lightweighting was actually requested — otherwise it is
     phantom feedback that lands in the issue list forever."""
-    from cadx.cad.fem.analyze import FemCaseResult, FemReport, fem_feedback_lines
+    from kiara.cad.fem.analyze import FemCaseResult, FemReport, fem_feedback_lines
 
     rep = FemReport(cases=[FemCaseResult(name="load", safety_factor=40.0)])
     assert fem_feedback_lines(rep, 1.5) == []  # default: not requested
@@ -238,7 +238,7 @@ def test_fem_feedback_degenerate_load_advisory():
     """marine_propeller r25: SF≈1400 means the declared load barely
     stresses the part — the solve verifies nothing and the eval gate
     (sf_max=300) fails it. The improve loop must hear about it."""
-    from cadx.cad.fem.analyze import FemCaseResult, FemReport, fem_feedback_lines
+    from kiara.cad.fem.analyze import FemCaseResult, FemReport, fem_feedback_lines
 
     rep = FemReport(cases=[FemCaseResult(name="thrust", safety_factor=1419.0)])
     lines = fem_feedback_lines(rep, 1.5)

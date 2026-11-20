@@ -16,9 +16,9 @@ from typing import Any
 
 import numpy as np
 
-from cadx.guide import preassembly as pa
-from cadx.guide.assembly_tools import _mate_blocking_root, request_repair
-from cadx.guide.state import (
+from kiara.guide import preassembly as pa
+from kiara.guide.assembly_tools import _mate_blocking_root, request_repair
+from kiara.guide.state import (
     AssemblyInstance,
     AssemblyState,
     GuidePart,

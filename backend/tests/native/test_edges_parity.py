@@ -4,7 +4,7 @@ The kernel must recover a known constant-radius fillet from its tessellation
 (radius from a circle fit on the strip-boundary midpoints) and must stay
 silent on sharp- and flat-edged geometry — false-positive fillet evidence is
 worse than none, since verifyspec consumes it as measured features. Skips
-cleanly when cadx_native or build123d is absent."""
+cleanly when kiara_native or build123d is absent."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ import numpy as np
 import pytest
 
 b123d = pytest.importorskip("build123d")
-cadx_native = pytest.importorskip("cadx_native")
+kiara_native = pytest.importorskip("kiara_native")
 
-from cadx.cad import native  # noqa: E402
+from kiara.cad import native  # noqa: E402
 
 
 def _tess(shape, tol: float = 0.1) -> tuple[np.ndarray, np.ndarray]:

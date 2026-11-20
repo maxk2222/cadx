@@ -1,0 +1,997 @@
+"""Single-solve FEM verification: mesh -> voxel grid -> per-case stress report.
+
+Writes fem/report.json plus pyvista renders (von Mises clip + exaggerated
+deformation) into <out_dir>/fem/. Pure function — used by the fem_analyze
+task and by the TopOpt post-verification.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import dataclasses
+import math
+import re
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import trimesh
+from pydantic import BaseModel, Field, computed_field
+
+from kiara.cad import resources
+from kiara.cad.fem.materials import MaterialProps, resolve_material
+from kiara.cad.fem.regions import (
+    case_reactions,
+    material_cell_classes,
+    material_cell_factors,
+    resolve_case_dofs,
+)
+from kiara.cad.fem.solver import (
+    _D,
+    CaseSolve,
+    FemSolution,
+    _fixed_dofs,
+    assemble,
+    reduce_case,
+    solve_reduced,
+)
+from kiara.cad.fem.voxelize import VoxelDomain, solid_bounds_mm, volume_of_solid, voxelize
+from kiara.llm.schemas import LoadCase
+from kiara.logging import get_logger
+
+log = get_logger(__name__)
+
+
+class FemCaseResult(BaseModel):
+    name: str
+    max_vm_mpa: float = 0.0
+    max_disp_mm: float = 0.0
+    safety_factor: float | None = None
+    compliance_j: float = 0.0
+    converged: bool = True
+    solver: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    # applied resultant force / moment about the constraint centroid —
+    # sanity check the resolved loads did what was requested
+    reactions: dict = Field(default_factory=dict)
+    # per-load resolution records — which mechanisms landed with what
+    # resultant/couple (resolve_case_dofs applied_out; includes
+    # couple_requested/deficit for moment loads)
+    applied: list[dict] = Field(default_factory=list)
+    # per-fixture resolution records — where each support actually landed
+    # (kind/axis/centroid_mm/dofs_pinned); the counterpart of `applied`
+    supports: list[dict] = Field(default_factory=list)
+    # resultant-weighted mean displacement in load direction
+    # (compliance / |F|) — the robust stiffness metric for spread loads,
+    # unlike max_disp_mm it doesn't track a boundary-layer spike
+    work_disp_mm: float | None = None
+    # per-anchor local von Mises peak — "95 MPa at bore B2" beats a bare
+    # global maximum for locating the failure site
+    feature_peaks: list[dict] = Field(default_factory=list)
+    # homogenized-infill estimate: macro von Mises amplified by the cell's
+    # stress-localization factor A(rho) — the member-scale micro stress
+    micro_vm_mpa: float | None = None
+    safety_factor_micro: float | None = None
+    vonmises_png: str | None = None
+    deformed_png: str | None = None
+
+
+class FemReport(BaseModel):
+    material: dict = Field(default_factory=dict)
+    grid: dict = Field(default_factory=dict)  # pitch, dims, elements, dofs
+    cases: list[FemCaseResult] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    # "resolved" verifies the binary export mask; "homogenized" verifies
+    # the intended density field with effective lattice tensors C_H(rho)
+    model: str = "resolved"
+    note: str = (
+        "voxel-FEM estimate (linear elasticity, ~10-20% accuracy) — "
+        "design feedback, not certification"
+    )
+
+    @computed_field  # serialized into report.json / API payloads
+    @property
+    def worst_safety_factor(self) -> float | None:
+        sfs = [c.safety_factor for c in self.cases if c.safety_factor is not None]
+        return min(sfs) if sfs else None
+
+    @computed_field
+    @property
+    def worst_safety_factor_micro(self) -> float | None:
+        sfs = [c.safety_factor_micro for c in self.cases if c.safety_factor_micro is not None]
+        return min(sfs) if sfs else None
+
+
+def _grid_image(domain: VoxelDomain, elem_scalar: np.ndarray, node_vec: np.ndarray):
+    """pyvista ImageData with per-cell scalar + per-node vector arrays."""
+    import pyvista as pv
+
+    grid = pv.ImageData(
+        dimensions=tuple(d + 1 for d in domain.dims),
+        spacing=(domain.pitch,) * 3,
+        origin=tuple(domain.origin),
+    )
+    # cell arrays are (nx,ny,nz) C-order (z fastest); pyvista ImageData
+    # flattens cells x-fastest — reshape+ravel("F") or sections scramble
+    grid.cell_data["vm"] = elem_scalar.reshape(domain.dims).ravel(order="F")
+    grid.cell_data["solid"] = domain.solid.reshape(domain.dims).ravel(order="F").astype(np.uint8)
+    grid.point_data["u"] = node_vec
+    return grid
+
+
+def _part_surface(mesh: trimesh.Trimesh | None, body: Any) -> Any:
+    """Smooth part skin for overlay — the real trimesh surface when the run
+    has one, else the voxel body's extracted surface (still blocky, but
+    confined to the part)."""
+    import pyvista as pv
+
+    faces = getattr(mesh, "faces", None)
+    if mesh is not None and faces is not None and len(faces):
+        try:
+            faces = np.hstack([np.full((len(mesh.faces), 1), 3), mesh.faces]).ravel()
+            # OCC-exported meshes arrive as per-facet triangle soups — weld
+            # coincident points so smooth shading and feature edges work
+            return pv.PolyData(np.asarray(mesh.vertices, dtype=float), faces).clean()
+        except Exception:
+            pass
+    return body.extract_surface(algorithm="dataset_surface")
+
+
+def _render_case(
+    domain: VoxelDomain,
+    sol: FemSolution,
+    case_name: str,
+    out_dir: Path,
+    suffix: str = "",
+    source_mesh: trimesh.Trimesh | None = None,
+) -> tuple[str | None, str | None]:
+    """Render a 2x2 von-Mises sheet + exaggerated deformed shape. Returns filenames.
+
+    The sheet shows iso / top / front views of the per-cell stress field
+    projected onto the smooth part surface, plus a y-mid section view that
+    clips the voxel body so interior hotspots stay visible."""
+    try:
+        import pyvista as pv
+    except Exception:
+        return None, None
+
+    # case names may carry prose ("flange reaction / arm torque") — a bare
+    # slash would silently turn the filename into a missing subdirectory
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(case_name)).strip("_")
+    vm_png = f"vonmises{suffix}_{safe}.png"
+    def_png = f"deformed{suffix}_{safe}.png"
+    try:
+        grid = _grid_image(domain, sol.elem_vm, sol.node_disp)
+        body = grid.threshold(0.5, scalars="solid")
+        vmax = max(float(sol.elem_vm.max()), 1e-9)
+
+        lo = np.asarray(domain.origin, dtype=float)
+        hi = lo + domain.pitch * np.asarray(domain.dims, dtype=float)
+        center = (lo + hi) / 2.0
+        diag = float(np.linalg.norm(hi - lo)) or 1.0
+
+        skin = _part_surface(source_mesh, body)
+        if getattr(skin, "n_faces", 0) < 8000:
+            # smooth coarse analytic surfaces so the overlay isn't faceted
+            with contextlib.suppress(Exception):
+                skin = skin.subdivide(1, subfilter="linear")
+        # paint the per-cell field onto the smooth skin — nearest element
+        # centre gives a continuous overlay instead of blocky voxel faces
+        try:
+            from scipy.spatial import cKDTree
+
+            solid_mask = np.asarray(domain.solid).ravel()
+            centers = domain.element_centers()[solid_mask]
+            vals = np.asarray(sol.elem_vm, dtype=float)[solid_mask]
+            nn = cKDTree(centers).query(np.asarray(skin.points))[1]
+            skin.point_data["vm"] = vals[nn]
+        except Exception:
+            pass
+        has_vm = "vm" in skin.point_data
+        skin_kw: dict[str, Any] = (
+            {"scalars": "vm", "cmap": "turbo", "clim": [0, vmax]}
+            if has_vm
+            else {"color": "#c8ccd4"}
+        )
+        try:
+            edges = skin.extract_feature_edges(30)
+        except Exception:
+            edges = None
+
+        pl: Any = pv.Plotter(off_screen=True, shape=(2, 2), window_size=[1400, 1000])
+        pl.set_background("white")
+
+        def _add_stress_view(show_bar: bool) -> None:
+            # outer views: smooth skin painted with the projected field —
+            # hotspot VOXELS belong to the section view; on thin curved
+            # shells boundary cells poke past the skin and read as floating
+            # debris (observed on the bail handle)
+            pl.add_mesh(
+                skin,
+                opacity=1.0,
+                smooth_shading=True,
+                show_scalar_bar=show_bar and has_vm,
+                scalar_bar_args={"title": "von Mises [MPa]"} if has_vm else None,
+                **skin_kw,
+            )
+            if edges is not None and edges.n_cells:
+                pl.add_mesh(
+                    edges,
+                    color="#222222",
+                    line_width=1.0,
+                    opacity=0.5,
+                    show_scalar_bar=False,
+                )
+
+        pl.subplot(0, 0)
+        _add_stress_view(True)
+        pl.camera_position = "iso"
+        pl.reset_camera()
+        pl.add_text("iso", position="upper_left", font_size=10, color="black")
+        pl.add_text(
+            f"{case_name}: max {sol.max_vm_mpa:.1f} MPa, max disp {sol.max_disp_mm:.2f} mm",
+            position="upper_edge",
+            font_size=10,
+            color="black",
+        )
+
+        pl.subplot(0, 1)
+        _add_stress_view(False)
+        pl.camera.position = (center[0], center[1], center[2] + diag)
+        pl.camera.focal_point = tuple(center)
+        pl.camera.up = (0.0, 1.0, 0.0)
+        pl.reset_camera()
+        pl.camera.parallel_projection = True
+        pl.add_text("top", position="upper_left", font_size=10, color="black")
+
+        pl.subplot(1, 0)
+        _add_stress_view(False)
+        pl.camera.position = (center[0], center[1] + diag, center[2])
+        pl.camera.focal_point = tuple(center)
+        pl.camera.up = (0.0, 0.0, 1.0)
+        pl.reset_camera()
+        pl.camera.parallel_projection = True
+        pl.add_text("front", position="upper_left", font_size=10, color="black")
+
+        pl.subplot(1, 1)
+        # keep the -Y half: from a +Y camera the cut face exposes the interior.
+        # If y=center[1] cuts mostly air, shift the cut plane to the Y slice
+        # with the highest solid voxel count so hollow/ring parts show meat.
+        cut_origin = list(center)
+        y_counts = domain.solid.sum(axis=(0, 2))
+        mid_j = domain.dims[1] // 2
+        if y_counts.size and y_counts[mid_j] < 0.25 * float(y_counts.max()):
+            best_j = int(np.argmax(y_counts))
+            cut_origin[1] = float(domain.origin[1] + (best_j + 0.5) * domain.pitch)
+        section = body.clip(normal="y", origin=tuple(cut_origin))
+        pl.add_mesh(section, scalars="vm", cmap="turbo", clim=[0, vmax], show_scalar_bar=False)
+        with contextlib.suppress(Exception):
+            skin_half = skin.clip(normal="y", origin=tuple(cut_origin))
+            if getattr(skin_half, "n_points", 0):
+                pl.add_mesh(skin_half, color="#c8ccd4", opacity=0.22, show_scalar_bar=False)
+        pl.camera.position = (center[0], center[1] + diag, center[2])
+        pl.camera.focal_point = tuple(center)
+        pl.camera.up = (0.0, 0.0, 1.0)
+        pl.reset_camera()
+        pl.camera.parallel_projection = True
+        pl.add_text("section y-mid", position="upper_left", font_size=10, color="black")
+
+        pl.screenshot(str(out_dir / vm_png))
+        pl.close()
+
+        scale = domain.pitch * min(domain.dims) * 0.15 / max(sol.max_disp_mm, 1e-6)
+        factor = min(scale, domain.pitch * min(domain.dims))
+        # deformed smooth skin: displace the real surface by the nearest
+        # voxel node's solution vector — smooth shape, field-driven motion
+        u_nodes = np.asarray(sol.node_disp, dtype=float).reshape(-1, 3)
+        pl = pv.Plotter(off_screen=True, window_size=[900, 700])
+        pl.set_background("white")
+        pl.add_mesh(skin, color="#b0b8c4", opacity=0.22, show_scalar_bar=False)
+        try:
+            from scipy.spatial import cKDTree
+
+            nn = cKDTree(domain.node_coords()).query(np.asarray(skin.points))[1]
+            skin_w = skin.copy()
+            skin_w.points = skin_w.points + u_nodes[nn] * factor
+            pl.add_mesh(
+                skin_w,
+                opacity=0.85,
+                smooth_shading=True,
+                scalar_bar_args={"title": "von Mises [MPa]"} if has_vm else None,
+                **skin_kw,
+            )
+        except Exception:
+            warped = body.warp_by_vector("u", factor=factor)
+            pl.add_mesh(warped, scalars="vm", cmap="turbo", clim=[0, vmax])
+        pl.add_mesh(body.outline(), color="#888888", line_width=1.0)
+        pl.camera_position = "iso"
+        pl.reset_camera()
+        pl.add_text(
+            f"{case_name}: deformed x{factor:.0f}",
+            position="upper_edge",
+            font_size=10,
+            color="black",
+        )
+        pl.screenshot(str(out_dir / def_png))
+        pl.close()
+    except Exception as e:
+        log.warning("fem.render_failed", case=case_name, error=str(e)[:200])
+        return None, None
+    return vm_png, def_png
+
+
+def _report_skeleton(mat: MaterialProps) -> FemReport:
+    return FemReport(
+        material={
+            "name": mat.name,
+            "elastic_modulus_mpa": mat.elastic_modulus_mpa,
+            "poisson": mat.poisson,
+            "yield_mpa": mat.yield_mpa,
+            "density_g_cm3": mat.density_g_cm3,
+        }
+    )
+
+
+def run_fem(
+    mesh: trimesh.Trimesh,
+    load_cases: list[LoadCase],
+    material_name: str = "",
+    *,
+    material: MaterialProps | None = None,
+    voxel_mm: float = 1.5,
+    max_elements: int = 150_000,
+    out_dir: Path | None = None,
+    anchors: list[dict] | None = None,
+    keep_regions: list | None = None,
+    spsolve_dofs: int = 120_000,
+    mem_budget_mb: float | None = None,
+    pool_workers: int = 0,
+    suffix: str = "",
+    cancelled: Callable[[], bool] | None = None,
+    solver_backend: str = "auto",
+) -> FemReport:
+    """Solve each load case on the voxelized mesh. Always returns a report —
+    per-case failures are captured in case.warnings."""
+    mat = material or resolve_material(material_name)
+    report = _report_skeleton(mat)
+    try:
+        domain = voxelize(mesh, voxel_mm, max_elements)
+    except Exception as e:
+        report.warnings.append(f"voxelization failed: {e}")
+        return report
+    if mem_budget_mb:
+        from kiara.cad.fem.voxelize import estimate_fem_memory_mb
+
+        direct = 3 * domain.node_count <= spsolve_dofs
+        est = estimate_fem_memory_mb(domain, len(load_cases), direct)
+        if direct and est > mem_budget_mb * 0.75:
+            # an uncatchable kernel OOM mid-factorization is worse than a
+            # slow solve — degrade to CG/AMG when the iterative estimate
+            # fits instead of skipping the verification outright
+            est_direct = est
+            est = estimate_fem_memory_mb(domain, len(load_cases), direct=False)
+            if est <= mem_budget_mb * 0.75:
+                report.warnings.append(
+                    f"direct solve predicted ~{est_direct:.0f} MB — exceeds the executor "
+                    f"budget ({mem_budget_mb:.0f} MB); falling back to CG/AMG "
+                    "(raise exec_mem_limit_mb for a direct factorization)"
+                )
+                spsolve_dofs = 0
+                direct = False
+        if est > mem_budget_mb * 0.75:
+            report.warnings.append(
+                f"predicted FEM memory ~{est:.0f} MB exceeds the executor budget "
+                f"({mem_budget_mb:.0f} MB) — solve skipped; raise fem_voxel_mm "
+                "or exec_mem_limit_mb"
+            )
+            return report
+    _solve_cases(
+        domain,
+        mat,
+        load_cases,
+        report,
+        out_dir,
+        anchors,
+        suffix,
+        keep_regions,
+        spsolve_dofs,
+        source_mesh=mesh,
+        pool_workers=pool_workers,
+        mem_budget_mb=mem_budget_mb,
+        cancelled=cancelled,
+        solver_backend=solver_backend,
+    )
+    return report
+
+
+def run_fem_domain(
+    domain: VoxelDomain,
+    solid_mask: np.ndarray,
+    load_cases: list[LoadCase],
+    material_name: str = "",
+    *,
+    material: MaterialProps | None = None,
+    out_dir: Path | None = None,
+    anchors: list[dict] | None = None,
+    keep_regions: list | None = None,
+    spsolve_dofs: int = 120_000,
+    pool_workers: int = 0,
+    mem_budget_mb: float | None = None,
+    suffix: str = "",
+    source_mesh: trimesh.Trimesh | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    solver_backend: str = "auto",
+    fields_out: dict[str, Any] | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
+    micro_amp: np.ndarray | None = None,
+    model: str = "resolved",
+    cg_maxiter: int = 5000,
+) -> FemReport:
+    """Verify a structure defined directly on an existing grid — used for
+    TopOpt post-verification where re-voxelizing the smoothed export mesh
+    would drop thin members.
+
+    `elem_class`/`class_D` switch assembly and stress recovery to the
+    per-class constitutive path (homogenized infill: effective lattice
+    tensors on the interior, the base material's D — aniso already baked —
+    at index 0). `micro_amp` (ncells,) scales the solved von Mises into the
+    micro/member estimate reported as `micro_vm_mpa`/`safety_factor_micro`.
+    `model` lands on `report.model` ("resolved" | "homogenized").
+
+    `fields_out` (optional dict) receives the internal solve fields the
+    caller may reuse without re-assembling: ``solutions`` (per-case
+    FemSolution, aligned to `load_cases`, None for skipped cases), ``edof``,
+    ``active``, ``elem_E``, ``nu``, ``aniso``, ``elem_class`` and
+    ``class_D`` (post zone-merge) — the energy/principal-direction drivers
+    in `fem.infill` consume exactly these."""
+    mat = material or resolve_material(material_name)
+    report = _report_skeleton(mat)
+    report.model = model
+    sub_kw: dict[str, Any] = {}
+    if "coverage" in {f.name for f in dataclasses.fields(VoxelDomain)}:
+        # boundary-cell fill fractions (verify hardening) — copy onto the
+        # sub-domain so coverage-weighted E carries into this solve
+        sub_kw["coverage"] = getattr(domain, "coverage", None)
+    sub = VoxelDomain(
+        origin=domain.origin,
+        pitch=domain.pitch,
+        dims=domain.dims,
+        solid=np.asarray(solid_mask, dtype=bool).reshape(domain.dims),
+        pitch_requested=domain.pitch,
+        **sub_kw,
+    )
+    _solve_cases(
+        sub,
+        mat,
+        load_cases,
+        report,
+        out_dir,
+        anchors,
+        suffix,
+        keep_regions,
+        spsolve_dofs,
+        source_mesh=source_mesh,
+        pool_workers=pool_workers,
+        mem_budget_mb=mem_budget_mb,
+        cancelled=cancelled,
+        solver_backend=solver_backend,
+        fields_out=fields_out,
+        elem_class=elem_class,
+        class_D=class_D,
+        micro_amp=micro_amp,
+        cg_maxiter=cg_maxiter,
+    )
+    return report
+
+
+def _feature_peaks(
+    domain: VoxelDomain, anchors: list[dict] | None, elem_vm: np.ndarray
+) -> list[dict]:
+    """Per-anchor local von Mises maximum — one entry per measured feature
+    so the report can say "92 MPa at bore #2" instead of only a global
+    max. The search sphere is max(dia, 2*pitch) around the anchor's 3D
+    position (mid-plane fill for missing components, same convention as
+    `_anchor_geometry`); only solid cells count."""
+    if not anchors:
+        return []
+    centers = domain.element_centers()
+    lo = np.asarray(domain.origin, dtype=float)
+    hi = lo + domain.pitch * np.asarray(domain.dims, dtype=float)
+    mid = (lo + hi) / 2
+    solid = np.asarray(domain.solid, dtype=bool).ravel()
+    vm = np.asarray(elem_vm, dtype=float).ravel()
+    peaks: list[dict] = []
+    for i, a in enumerate(anchors[:24]):
+        pos = a.get("pos")
+        if isinstance(pos, (list, tuple)) and len(pos) == 3:
+            p = np.array(
+                [float(v) if v is not None else float(mid[j]) for j, v in enumerate(pos)],
+                dtype=float,
+            )
+        else:
+            p = np.array(
+                [
+                    float(a["x"]) if a.get("x") is not None else float(mid[0]),
+                    float(a["y"]) if a.get("y") is not None else float(mid[1]),
+                    float(a["z"]) if a.get("z") is not None else float(mid[2]),
+                ],
+                dtype=float,
+            )
+        dia = float(a.get("dia") or 0.0)
+        radius = max(dia, 2.0 * domain.pitch)
+        sel = solid & (np.sum((centers - p[None, :]) ** 2, axis=1) <= radius * radius)
+        if not sel.any():
+            continue
+        peaks.append(
+            {
+                "index": int(a.get("index") or i + 1),
+                "kind": str(a.get("kind") or ""),
+                "pos": [round(float(v), 2) for v in p],
+                "radius_mm": round(radius, 2),
+                "vm_mpa": round(float(vm[sel].max()), 3),
+            }
+        )
+    return peaks
+
+
+_POOL: dict[str, Any] = {}
+# Outer bound on the whole case-solve pool wait — long enough that a slow
+# legitimate case still wins, short enough that a wedged fork child turns
+# into the serial fallback instead of deadlocking the task.
+_POOL_WAIT_S = 900.0
+
+
+def _solve_case_child(i: int) -> tuple[int, FemSolution]:
+    """Fork-pool worker. Shared inputs live in the module-global ``_POOL`` —
+    populated by the parent before the pool is created, so fork children
+    read K/ctx/F via copy-on-write instead of pickling hundreds of MB per
+    task. Returns (index, solution) so the parent can render in order."""
+    st = _POOL
+    sol = solve_reduced(
+        st["domain"],
+        st["ctx"][i],
+        st["edof"],
+        st["active"],
+        st["F"][i],
+        st["elem_E"],
+        st["poisson"],
+        E_ref=st["E_ref"],
+        aniso=st.get("aniso"),
+        solver_backend=st.get("solver_backend", "auto"),
+        elem_class=st.get("elem_class"),
+        class_D=st.get("class_D"),
+        cg_maxiter=int(st.get("cg_maxiter", 5000)),
+    )
+    return i, sol
+
+
+def _terminate_pool_children(pool: Any) -> None:
+    """Hard-stop pool workers still solving after the wait deadline —
+    ``shutdown(wait=False)`` leaves them burning CPU until the executor
+    process itself exits."""
+    procs = list((getattr(pool, "_processes", None) or {}).values())
+    for p in procs:
+        with contextlib.suppress(Exception):
+            p.terminate()
+    for p in procs:
+        with contextlib.suppress(Exception):
+            p.join(timeout=5.0)
+            if p.is_alive():
+                p.kill()
+
+
+def _solve_cases(  # noqa: C901
+    domain: VoxelDomain,
+    mat: MaterialProps,
+    load_cases: list[LoadCase],
+    report: FemReport,
+    out_dir: Path | None,
+    anchors: list[dict] | None = None,
+    suffix: str = "",
+    keep_regions: list | None = None,
+    spsolve_dofs: int = 120_000,
+    source_mesh: trimesh.Trimesh | None = None,
+    pool_workers: int = 0,
+    mem_budget_mb: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    solver_backend: str = "auto",
+    fields_out: dict[str, Any] | None = None,
+    elem_class: np.ndarray | None = None,
+    class_D: np.ndarray | None = None,
+    micro_amp: np.ndarray | None = None,
+    cg_maxiter: int = 5000,
+) -> None:
+    report.grid = {
+        "pitch_mm": round(domain.pitch, 4),
+        "dims": list(domain.dims),
+        "solid_elements": domain.solid_count,
+        "volume_mm3": round(volume_of_solid(domain), 1),
+        # world-mm bounds of the SOLID cells (not the possibly padded grid)
+        # — eval gates use this as the part's bbox evidence
+        "bbox_min_mm": [round(float(v), 2) for v in solid_bounds_mm(domain)[0]],
+        "bbox_max_mm": [round(float(v), 2) for v in solid_bounds_mm(domain)[1]],
+    }
+
+    if not load_cases:
+        report.warnings.append("no load cases provided")
+        return
+
+    _t0 = time.monotonic()
+    _ph: dict[str, float] = {"prep_s": 0.0, "assemble_s": 0.0, "reduce_s": 0.0, "solve_s": 0.0}
+    elem_E = np.where(domain.solid.ravel(), mat.elastic_modulus_mpa, 0.0)
+    coverage = getattr(domain, "coverage", None)
+    if coverage is not None:
+        # boundary-cell fill fractions scale stiffness before zone factors —
+        # a half-filled surface cell carries half the load path area. The
+        # 5% floor keeps sliver cells (a few percent fill) from producing
+        # near-zero stiffness and an ill-conditioned/singular K while still
+        # making the boundary a soft transition.
+        elem_E = elem_E * np.clip(np.asarray(coverage, dtype=float).ravel(), 0.05, 1.0)
+    if keep_regions:
+        # insert/material zones: keep-regions with `material` override E
+        factors = material_cell_factors(domain, keep_regions, anchors, mat.elastic_modulus_mpa)
+        elem_E = elem_E * factors
+
+    fem_dir = (out_dir / "fem") if out_dir else None
+    if fem_dir:
+        fem_dir.mkdir(parents=True, exist_ok=True)
+
+    # K is identical across load cases (elem_E is fixed — only the BCs and
+    # the load vector differ): assemble once (lazily, on the first solvable
+    # case) and share one reduced system (Kf extraction + factorization)
+    # between cases whose fixed-DOF signature is identical.
+    asm: tuple[Any, np.ndarray, np.ndarray] | None = None  # (K, edof, active)
+    ctx_cache: dict[bytes, CaseSolve] = {}
+    # opt-in FDM layer weakening — None keeps the isotropic hot path identical
+    aniso = (mat.aniso_z, float(mat.aniso_axis)) if mat.aniso_z != 1.0 else None
+
+    # material zones carry their own Poisson ratio: merge them into the
+    # per-class constitutive table appended after the caller's classes —
+    # class 0 stays the base material (with aniso already baked in when
+    # the caller did not supply a table)
+    if keep_regions:
+        zone_cls, zone_Ds = material_cell_classes(domain, keep_regions, anchors)
+        if zone_cls is not None:
+            ec = (
+                np.zeros(domain.cell_count, dtype=np.int64)
+                if elem_class is None
+                else np.asarray(elem_class, dtype=np.int64).ravel().copy()
+            )
+            if class_D is None:
+                k_aniso, a_axis = (1.0, 2) if aniso is None else (aniso[0], int(aniso[1]))
+                cds: list[np.ndarray] = [_D(mat.poisson, float(k_aniso), a_axis)]
+            else:
+                cds = [np.asarray(Dk, dtype=float) for Dk in class_D]
+            for zi, Dz in enumerate(zone_Ds):
+                ec[zone_cls == zi] = len(cds)
+                cds.append(Dz)
+            elem_class = ec
+            class_D = np.stack(cds)
+    if class_D is not None:
+        # whoever built the table baked aniso into class_D[0] — assemble and
+        # the stress recovery must not apply it a second time
+        aniso = None
+
+    # Phase 1 — resolve regions/loads serially (cheap vs solves). Solvable
+    # cases collect (sig, F); the solves themselves can then fan out.
+    results: list[FemCaseResult] = []
+    preps: dict[int, tuple[bytes, np.ndarray]] = {}  # case index -> (sig, F)
+    for i, case in enumerate(load_cases):
+        if cancelled is not None and cancelled():
+            report.warnings.append("cancelled — remaining load cases skipped")
+            break
+        res = FemCaseResult(name=case.name or f"case{i + 1}")
+        results.append(res)
+        applied: list[dict] = []
+        supports: list[dict] = []
+        fixed3, F, warnings = resolve_case_dofs(
+            domain,
+            case,
+            anchors,
+            density_g_cm3=mat.density_g_cm3,
+            applied_out=applied,
+            fixed_out=supports,
+        )
+        res.warnings += warnings
+        res.reactions = case_reactions(domain, fixed3, F, applied)
+        res.applied = applied
+        res.supports = supports
+        if not fixed3.any() or not np.any(F):
+            continue
+        if asm is None:
+            _t_a = time.monotonic()
+            asm = assemble(
+                domain,
+                elem_E,
+                mat.poisson,
+                aniso=aniso,
+                elem_class=elem_class,
+                class_D=class_D,
+            )
+            _ph["assemble_s"] += time.monotonic() - _t_a
+        K, edof, active = asm
+        sig = np.unique(_fixed_dofs(fixed3, domain.node_count)).tobytes()
+        if sig not in ctx_cache:
+            _t_r = time.monotonic()
+            ctx_cache[sig] = reduce_case(
+                domain,
+                K,
+                edof,
+                fixed3,
+                spsolve_dofs=spsolve_dofs,
+                aniso=aniso,
+                solver_backend=solver_backend,
+                active=active,
+            )
+            _ph["reduce_s"] += time.monotonic() - _t_r
+        preps[i] = (sig, F)
+    _ph["prep_s"] = time.monotonic() - _t0
+
+    def _record(res: FemCaseResult, sol: FemSolution) -> None:
+        res.warnings += sol.warnings
+        res.max_vm_mpa = round(sol.max_vm_mpa, 3)
+        res.max_disp_mm = round(sol.max_disp_mm, 4)
+        res.compliance_j = round(sol.compliance_j / 1000.0, 6)  # N*mm -> J
+        res.converged = sol.converged
+        res.solver = sol.solver
+        res.safety_factor = round(mat.yield_mpa / sol.max_vm_mpa, 2) if sol.max_vm_mpa > 0 else None
+        # work-conjugate displacement: resultant-weighted mean |u| along
+        # the load direction — robust for spread loads where a nodal
+        # maximum sits in the application boundary layer
+        mag = float((res.reactions or {}).get("resultant_mag_n") or 0.0)
+        res.work_disp_mm = round(sol.compliance_j / mag, 4) if mag > 1e-9 else None
+        res.feature_peaks = _feature_peaks(domain, anchors, sol.elem_vm)
+        if res.safety_factor is not None and res.safety_factor < 1.0:
+            res.warnings.append(f"safety factor {res.safety_factor} < 1 — likely failure")
+        if micro_amp is not None:
+            # member-scale micro stress: macro VM amplified by the lattice
+            # localization factor A(rho) on each homogenized cell
+            micro = sol.elem_vm * np.asarray(micro_amp, dtype=float).ravel()
+            res.micro_vm_mpa = round(float(micro.max(initial=0.0)), 3)
+            res.safety_factor_micro = (
+                round(mat.yield_mpa / res.micro_vm_mpa, 2) if res.micro_vm_mpa > 0 else None
+            )
+        report.grid["dofs"] = sol.dofs
+        if fem_dir:
+            vm_png, def_png = _render_case(
+                domain, sol, res.name, fem_dir, suffix, source_mesh=source_mesh
+            )
+            res.vonmises_png = vm_png
+            res.deformed_png = def_png
+
+    # Phase 2 — solve. A fork pool shares the assembled system + factored
+    # contexts via copy-on-write (CaseSolve.factor is a SuperLU callable and
+    # not picklable, so _solve_case_child reads it from the module global).
+    # Children each hold one transient solve's worth of memory on top of the
+    # shared COW pages — refuse the pool when the estimate would exceed the
+    # budget, and fall back to serial on any pool failure.
+    _t_solve = time.monotonic()
+    workers = min(resources.pool_size(pool_workers), len(preps))
+    if workers > 1 and asm is not None and mem_budget_mb:
+        from kiara.cad.fem.voxelize import estimate_fem_memory_mb
+
+        est = estimate_fem_memory_mb(
+            domain, len(preps), direct=3 * domain.node_count <= spsolve_dofs
+        )
+        workers = min(workers, max(1, int(mem_budget_mb // max(est, 512))))
+    solved: dict[int, FemSolution] = {}
+    if workers > 1 and asm is not None:
+        K, edof, active = asm
+        try:
+            import multiprocessing as mp
+            from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+            _POOL.clear()
+            _POOL.update(
+                domain=domain,
+                ctx={i: ctx_cache[sig] for i, (sig, _f) in preps.items()},
+                edof=edof,
+                active=active,
+                F={i: f for i, (_s, f) in preps.items()},
+                elem_E=elem_E,
+                poisson=mat.poisson,
+                E_ref=mat.elastic_modulus_mpa,
+                aniso=aniso,
+                solver_backend=solver_backend,
+                elem_class=elem_class,
+                class_D=class_D,
+                cg_maxiter=cg_maxiter,
+            )
+            # fork inside a threaded async process can leave a child wedged on
+            # an inherited lock — a silent hang, not a raised error. Bound the
+            # pool wait and let the serial fallback below re-solve whatever the
+            # pool never returned.
+            pool = ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("fork"))
+            pending: set[Any] = set()
+            try:
+                futures = {pool.submit(_solve_case_child, i): i for i in preps}
+                deadline = time.monotonic() + _POOL_WAIT_S
+                pending = set(futures)
+                while pending:
+                    done, pending = wait(
+                        pending,
+                        timeout=max(1.0, deadline - time.monotonic()),
+                        return_when=FIRST_COMPLETED,
+                    )
+                    if not done:
+                        log.warning("fem.solve_pool_timeout", pending=len(pending))
+                        break
+                    for fut in done:
+                        i, case_sol = fut.result()
+                        solved[i] = case_sol
+            finally:
+                if pending:
+                    _terminate_pool_children(pool)
+                pool.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            log.warning("fem.solve_pool_failed", error=str(e)[:200])
+        finally:
+            _POOL.clear()
+
+    # record in index order: pool results first, then serial fallback for
+    # cases the pool didn't finish — report.cases stays deterministic
+    assert asm is not None or not preps
+    sol_by_i: dict[int, FemSolution] = {}
+    for i in sorted(preps):
+        res = results[i]
+        sol: FemSolution | None = solved.get(i)
+        if sol is None:
+            sig, F = preps[i]
+            assert asm is not None
+            sol = solve_reduced(
+                domain,
+                ctx_cache[sig],
+                asm[1],
+                asm[2],
+                F,
+                elem_E,
+                mat.poisson,
+                E_ref=mat.elastic_modulus_mpa,
+                aniso=aniso,
+                solver_backend=solver_backend,
+                elem_class=elem_class,
+                class_D=class_D,
+                cg_maxiter=cg_maxiter,
+            )
+        _record(res, sol)
+        sol_by_i[i] = sol
+
+    if fields_out is not None and asm is not None:
+        # expose the solve fields in load-case order for downstream drivers
+        # (infill energy/principal-direction computation) — solutions[i] is
+        # None for cases that resolved no system (skipped above)
+        fields_out.update(
+            solutions=[sol_by_i.get(i) for i in range(len(load_cases))],
+            edof=asm[1],
+            active=asm[2],
+            elem_E=elem_E,
+            nu=mat.poisson,
+            aniso=aniso,
+            elem_class=elem_class,
+            class_D=class_D,
+        )
+
+    _ph["solve_s"] = time.monotonic() - _t_solve
+    report.cases.extend(results)
+    report.warnings.append(
+        "boundary resolution is voxel-limited; stresses near load/fix regions are approximate"
+    )
+    log.info(
+        "fem.profile",
+        **{k: round(v, 3) for k, v in _ph.items()},
+        total_s=round(time.monotonic() - _t0, 3),
+        n_cases=len(load_cases),
+        n_solved=len(preps),
+        dofs=report.grid.get("dofs"),
+        nnz=int(asm[0].nnz) if asm is not None else 0,
+        workers=workers if asm is not None else 0,
+    )
+
+
+def report_to_json(report: FemReport, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+
+def default_load_case() -> LoadCase:
+    """Placeholder when no loads were declared: fixed bottom, 100 N on top."""
+    from kiara.llm.schemas import LoadSpec, RegionSpec
+
+    return LoadCase(
+        name="default",
+        fixed=[RegionSpec(kind="face", axis="-z", description="bottom face")],
+        loads=[
+            LoadSpec(
+                region=RegionSpec(kind="face", axis="+z", description="top face"),
+                force_n=[0.0, 0.0, -100.0],
+            )
+        ],
+    )
+
+
+# a safety factor beyond this bound means the declared load barely stresses
+# the part — the solve verifies nothing (matches the evalkit sf_max bound)
+_FEM_DEGENERATE_SF = 300.0
+
+
+def fem_feedback_lines(
+    report: FemReport, sf_min: float, *, lightweight_requested: bool = False
+) -> list[tuple[str, str, str]]:
+    """(severity, text, fix_hint) engineering feedback for the agent's issue list.
+
+    ``sf < 1``/``sf < sf_min`` are majors — the part fails the declared load.
+    ``sf > _FEM_DEGENERATE_SF`` flags a degenerate LOAD CASE: the declared
+    load barely stresses the part, so the solve verifies nothing (a uniform
+    weak surface pressure is the usual signature). An over-built part
+    (``sf > 3*sf_min``) only earns the "could be lightened" advisory when
+    the spec actually asked for lightweighting (``lightweight_requested``) —
+    being too strong is never a defect, and on form-locked tasks the advice
+    is unactionable anyway."""
+    lines: list[tuple[str, str, str]] = []
+    for c in report.cases:
+        sf = c.safety_factor
+        if sf is None:
+            # unsolvable case (empty regions / zero resultant) — without this
+            # line the failure is invisible to the improve loop and the model
+            # keeps iterating blind
+            why = "; ".join(dict.fromkeys(c.warnings)) if c.warnings else "no result"
+            lines.append(
+                (
+                    "major",
+                    f"fem[{c.name}]: no solvable result — {why}; check that the "
+                    "region's hole_index/area actually matches material on the "
+                    "current part",
+                    "re-point the region (hole_index/area) or declare a reachable one",
+                )
+            )
+            continue
+        if sf < 1.0:
+            lines.append(
+                (
+                    "major",
+                    f"fem[{c.name}]: safety factor {sf:.2f} < 1 — part fails under the "
+                    f"declared load (max stress {c.max_vm_mpa:.1f} MPa); add material "
+                    f"near the load/fix regions",
+                    "increase section sizes / add ribs on the load path",
+                )
+            )
+        elif sf < sf_min:
+            lines.append(
+                (
+                    "major",
+                    f"fem[{c.name}]: safety factor {sf:.2f} below target {sf_min:g} — "
+                    f"strengthen the load path (walls, ribs, fillets near mounts)",
+                    "increase section sizes / add ribs on the load path",
+                )
+            )
+        elif sf > _FEM_DEGENERATE_SF:
+            lines.append(
+                (
+                    "minor",
+                    f"fem[{c.name}]: safety factor {sf:.2f} — the declared load barely "
+                    "stresses the part, so this case verifies nothing; declare the "
+                    "realistic worst-case load (peak thrust/torque/impact at rated "
+                    "conditions), not gentle nominal operation",
+                    "raise the load magnitude or concentrate it where service loads act",
+                )
+            )
+        elif lightweight_requested and sf > 3.0 * sf_min:
+            lines.append(
+                (
+                    "minor",
+                    f"fem[{c.name}]: safety factor {sf:.2f} well above target {sf_min:g} — "
+                    f"part could be lightened (thinner walls or topology optimization)",
+                    "informational — only act if lightweighting was requested",
+                )
+            )
+        if not math.isfinite(c.max_disp_mm) or c.max_disp_mm <= 0:
+            continue
+    return lines
+
+
+# declared cross-agent contract: accepts `lightweight_requested` (P9) — the
+# orchestrator reads this flag instead of probing the signature
+fem_feedback_lines.ACCEPTS_LIGHTWEIGHT_REQUESTED = True

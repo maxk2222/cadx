@@ -14,9 +14,9 @@ import pytest
 import trimesh
 from pydantic import ValidationError
 
-from cadx.cad.fem.organic import organic_transform
-from cadx.cad.mesh_ops import OPS_REGISTRY, MeshOpError, apply_ops
-from cadx.llm.schemas import OrganicParams, RegionSpec
+from kiara.cad.fem.organic import organic_transform
+from kiara.cad.mesh_ops import OPS_REGISTRY, MeshOpError, apply_ops
+from kiara.llm.schemas import OrganicParams, RegionSpec
 
 
 def _box(x: float = 60.0, y: float = 30.0, z: float = 15.0) -> trimesh.Trimesh:
@@ -345,7 +345,7 @@ def test_apply_ops_organic_keeps_disjoint_bodies():
 
 def test_run_organic_pipeline(tmp_path: Path) -> None:
     """End-to-end: watertight STL + exports + resample-compatible density npz."""
-    from cadx.cad.engine import run_organic_pipeline
+    from kiara.cad.engine import run_organic_pipeline
 
     src = tmp_path / "b.stl"
     _box().export(str(src))
@@ -378,8 +378,8 @@ def test_organic_resample_preserves_carve(tmp_path: Path) -> None:
     resample's min-member dilation then regrew material into painted carve
     regions, silently undoing the user's brush work.
     """
-    from cadx import storage
-    from cadx.cad.engine import run_organic_pipeline, run_topopt_resample
+    from kiara import storage
+    from kiara.cad.engine import run_organic_pipeline, run_topopt_resample
 
     out_dir = storage.tmp_dir() / f"organic-resample-{id(tmp_path)}"
     out_dir.mkdir(parents=True, exist_ok=True)

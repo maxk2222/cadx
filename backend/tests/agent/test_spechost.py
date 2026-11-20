@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from cadx.agent.spechost import host_body, host_range, host_span, parse_ranges, xy_host_zspan
-from cadx.llm.schemas import Feature, PartSpec
+from kiara.agent.spechost import host_body, host_range, host_span, parse_ranges, xy_host_zspan
+from kiara.llm.schemas import Feature, PartSpec
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
 

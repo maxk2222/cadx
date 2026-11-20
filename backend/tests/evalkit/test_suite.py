@@ -6,8 +6,8 @@ import json
 
 import pytest
 
-from cadx.evalkit.paths import SUITE_DIR
-from cadx.evalkit.suite import (
+from kiara.evalkit.paths import SUITE_DIR
+from kiara.evalkit.suite import (
     ASSET_STAGES,
     CHILD_VERSION_STAGES,
     SAME_VERSION_STAGES,

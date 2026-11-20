@@ -7,9 +7,9 @@ a sewn mesh couldn't already report. These tests pin the fast path.
 
 import trimesh
 
-from cadx.cad.analysis import _FACET_FACE_CAP, analyze
-from cadx.cad.features import extract_features
-from cadx.cad.mesh_ops import mesh_to_solid
+from kiara.cad.analysis import _FACET_FACE_CAP, analyze
+from kiara.cad.features import extract_features
+from kiara.cad.mesh_ops import mesh_to_solid
 
 
 def _faceted_solid():
@@ -43,7 +43,7 @@ def test_faceted_feature_extraction_degrades_to_approximate():
 def test_attached_source_mesh_supplies_mass_props():
     solid = _faceted_solid()
     m = trimesh.creation.icosphere(subdivisions=4, radius=20)
-    solid._cadx_mesh = m  # same attachment the runner performs
+    solid._kiara_mesh = m  # same attachment the runner performs
     a = analyze(solid)
     assert a.volume == round(float(m.volume), 3)
     assert a.surface_area == round(float(m.area), 3)

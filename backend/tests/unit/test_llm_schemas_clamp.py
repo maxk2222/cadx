@@ -2,7 +2,7 @@
 comment must clamp, not fail the whole response (wasted iteration observed
 at PatchResponse.reasoning > 1200 chars)."""
 
-from cadx.llm.schemas import CodeResponse, PatchResponse
+from kiara.llm.schemas import CodeResponse, PatchResponse
 
 
 def test_patch_reasoning_clamped_not_rejected() -> None:

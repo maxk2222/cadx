@@ -9,14 +9,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from cadx.agent.image_client import FakeImageClient
-from cadx.db.session import create_all
+from kiara.agent.image_client import FakeImageClient
+from kiara.db.session import create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -26,7 +26,7 @@ async def client():
 def fake_image_client(monkeypatch):
     """Route POST /projects/{id}/images through the deterministic fake client."""
     fake = FakeImageClient()
-    monkeypatch.setattr("cadx.api.routers.images.make_image_client", lambda **_: fake)
+    monkeypatch.setattr("kiara.api.routers.images.make_image_client", lambda **_: fake)
     return fake
 
 

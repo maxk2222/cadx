@@ -7,13 +7,13 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadx.db.session import create_all, session_scope
+from kiara.db.session import create_all, session_scope
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -63,8 +63,8 @@ async def test_save_version_as_template_and_step(client):
     pid = await _project(client)
 
     # fabricate a finished version with code + a STEP artifact on disk
-    from cadx import storage
-    from cadx.db.models import Artifact, ArtifactKind, Version, VersionKind
+    from kiara import storage
+    from kiara.db.models import Artifact, ArtifactKind, Version, VersionKind
 
     async with session_scope() as db:
         v = Version(
@@ -129,7 +129,7 @@ async def test_generate_accepts_library_part_ids(client):
 
     from sqlmodel import select
 
-    from cadx.db.models import Version
+    from kiara.db.models import Version
 
     async with session_scope() as db:
         row = (

@@ -135,9 +135,9 @@ not certification.
 Dockerfile target adds dev deps on top of `cad-executor`:
 
 ```bash
-docker build --target executor-test -t cadx-executor-test backend
+docker build --target executor-test -t kiara-executor-test backend
 docker run --rm -v "$PWD/backend/tests:/app/tests:ro" -v "$PWD/data:/data" \
-  cadx-executor-test python -m pytest /app/tests/cad -x -q
+  kiara-executor-test python -m pytest /app/tests/cad -x -q
 ```
 
 The sandboxed CAD contract tests (build123d, manifold3d, trimesh, nlopt,

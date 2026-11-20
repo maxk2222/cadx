@@ -5,11 +5,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-cadx_native = pytest.importorskip("cadx_native")
+kiara_native = pytest.importorskip("kiara_native")
 
-from cadx.cad import native  # noqa: E402
-from cadx.cad.fem.solver import _ke_unit, assemble  # noqa: E402
-from cadx.cad.fem.voxelize import VoxelDomain  # noqa: E402
+from kiara.cad import native  # noqa: E402
+from kiara.cad.fem.solver import _ke_unit, assemble  # noqa: E402
+from kiara.cad.fem.voxelize import VoxelDomain  # noqa: E402
 
 
 def _domain(dims=(4, 3, 2), pitch=1.0, fill=0.8, seed=1):
@@ -22,7 +22,7 @@ def _domain(dims=(4, 3, 2), pitch=1.0, fill=0.8, seed=1):
 
 
 def _ij(domain, active):
-    from cadx.cad.fem.solver import domain_edof
+    from kiara.cad.fem.solver import domain_edof
 
     edof = domain_edof(domain)[active]
     return np.repeat(edof, 24, axis=1).ravel(), np.tile(edof, (1, 24)).ravel()
@@ -59,7 +59,7 @@ def test_assemble_parity_class_table():
     rng = np.random.default_rng(3)
     ncls = 2
     elem_class = (rng.random(domain.cell_count) * ncls).astype(np.int64)
-    from cadx.cad.fem.solver import _D, _ke_from_D
+    from kiara.cad.fem.solver import _D, _ke_from_D
 
     class_D = np.stack([_D(0.3), _D(0.45)])
     elem_E = np.where(domain.solid.ravel(), 1e5, 0.0)

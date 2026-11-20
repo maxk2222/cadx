@@ -1,6 +1,6 @@
 """Mesh builders for FEM verification cases.
 
-All builders return trimesh meshes in the CADX frame contract: mm units,
+All builders return trimesh meshes in the KIARA frame contract: mm units,
 part rests on z >= 0 unless stated otherwise. Benchmark geometries whose
 reference values are normalized/unit-free (Cook, NAFEMS LE1/LE10) are built
 in mm at the published proportions — linear-elastic normalized quantities

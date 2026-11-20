@@ -1,0 +1,983 @@
+"""Pydantic request/response schemas for the REST API."""
+
+from __future__ import annotations
+
+import copy
+import uuid
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, create_model
+
+from kiara.db.models import (
+    ArtifactKind,
+    AssetKind,
+    JobStatus,
+    JobType,
+    ProcessType,
+    ProjectSettings,
+    VersionKind,
+    VersionStatus,
+)
+from kiara.llm.schemas import OrganicParams
+from kiara.runtime_config import _SECRET_FIELDS, RuntimeSettings
+
+
+class ProjectCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str = ""
+    settings: ProjectSettings | None = None
+
+
+class ProjectUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    description: str | None = None
+    settings: ProjectSettings | None = None
+
+
+class ProjectOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    description: str
+    settings: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+    version_count: int = 0
+    parts_count: int = 0
+    latest_version_status: VersionStatus | None = None
+    latest_thumbnail_url: str | None = None
+    latest_version_id: uuid.UUID | None = None
+    running_version_id: uuid.UUID | None = None  # set while the latest version is active
+
+
+class AssetUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    caption: str | None = None
+    role_hint: str | None = Field(default=None, max_length=40)  # e.g. "sketch"; "" clears
+
+
+class AssetOut(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    kind: AssetKind
+    filename: str
+    mime: str
+    width: int | None
+    height: int | None
+    caption: str
+    derived_from: uuid.UUID | None = None
+    gen_params: dict[str, Any] | None = None  # provenance for generated images
+    created_at: datetime
+    url: str = ""
+
+
+class RunOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    """Per-run overrides chosen in the GUI options panel.
+
+    Stored on the version (provenance) and merged over project settings in the
+    worker: env defaults < project.settings < version.options.
+    """
+
+    process: ProcessType | None = None
+    material: str | None = Field(default=None, max_length=40)
+    include_fasteners: bool | None = None
+    fem: bool | None = None  # request FEM structural analysis (spec.load_cases)
+    fem_note: str | None = Field(default=None, max_length=200)  # loads/fixtures
+    topopt: bool | None = None  # request topology optimization (gen_mode=topopt)
+    topopt_volfrac: float | None = Field(default=None, ge=0.05, le=0.95)
+    # agent budget overrides (merge over project settings / runtime defaults)
+    max_iterations: int | None = Field(default=None, ge=1, le=200)
+    max_repairs: int | None = Field(default=None, ge=0, le=200)
+    pass_score: int | None = Field(default=None, ge=0, le=100)
+    # provider backend overrides (None -> project settings -> runtime default)
+    llm_backend: Literal["external", "sidecar"] | None = None
+    mesh_backend: Literal["sidecar", "tripo"] | None = None
+    image_backend: Literal["sidecar", "openai"] | None = None
+    mesh_model: str | None = Field(default=None, max_length=80)
+    image_model: str | None = Field(default=None, max_length=80)
+    image_edit_model: str | None = Field(default=None, max_length=80)
+
+
+class PartCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="", max_length=200)
+
+
+class PartUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=200)
+
+
+class PartOut(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    number: int
+    name: str
+    version_count: int = 0
+    thumbnail_url: str | None = None
+    # user-verified master version of this part (null when none accepted)
+    accepted_version_id: uuid.UUID | None = None
+    created_at: datetime
+
+
+class GenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str
+    asset_ids: list[uuid.UUID] = Field(default_factory=list)
+    library_part_ids: list[uuid.UUID] = Field(default_factory=list)
+    part_id: uuid.UUID | None = None  # target part; omitted → new auto-named part
+    part_name: str | None = None  # name a NEW part, or reuse an existing by name
+    mode: Literal["auto", "cad", "mesh", "hybrid", "topopt"] | None = None
+    options: RunOptions | None = None
+
+
+class EditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str
+    asset_ids: list[uuid.UUID] = Field(default_factory=list)
+    library_part_ids: list[uuid.UUID] = Field(default_factory=list)
+    mode: Literal["auto", "cad", "mesh", "hybrid", "topopt"] | None = None
+    regenerate_mesh: bool = False  # hybrid edit: regenerate the organic base mesh
+    options: RunOptions | None = None  # None inherits the parent's options
+
+
+class GuideRequest(BaseModel):
+    """Spawn an anleitungsbuilder run — same entry point the chat tool
+    ``start_guide_builder`` uses (``spawn_guide``)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pdf_asset_id: uuid.UUID
+    cad_asset_ids: list[uuid.UUID] = Field(default_factory=list)
+    prompt: str = ""
+    # False = every needed part must come from the uploads; the parts
+    # mission may only alias/register, never spawn a generation job
+    allow_generation: bool = True
+    # False = degraded-input mode: tool results carry no page/render
+    # images — the agent works from extracted text and geometry alone
+    attach_images: bool = True
+    # user-picked output language (BCP-47 like "de"/"en"); "" = auto-detect
+    # from the manual — a set value locks detect_language
+    language: str = ""
+    # text-variant rewrite applied at the end of the run; "" = ship the
+    # original step text (rewrites remain available post-hoc)
+    audience: Literal["", "beginner", "intermediate", "pro"] = ""
+    # pipeline branch: "cad" = uploads+port solver (default), "blender" =
+    # free Blender-MCP build mission reconstructs everything, "auto" =
+    # blender when no CAD assets were uploaded and Blender is reachable
+    mode: Literal["cad", "blender", "auto"] = "cad"
+
+
+# --------------------------------------------------------------------------- #
+# chat                                                                        #
+# --------------------------------------------------------------------------- #
+
+
+class ChatCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: uuid.UUID | None = None
+    title: str = Field(default="", max_length=200)
+
+
+class ChatUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+
+
+class ChatAttachIn(BaseModel):
+    """Bind a chat to a project — either an existing one (`project_id`) or a
+    freshly created one (`name`/`description`; empty body → 'New project')."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: uuid.UUID | None = None
+    name: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=2000)
+
+
+class ChatOut(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID | None
+    title: str
+    turn_running: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChatListItem(ChatOut):
+    project_name: str | None = None
+
+
+class ChatMessageIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(default="", max_length=20_000)
+    asset_ids: list[uuid.UUID] = Field(default_factory=list, max_length=8)
+
+
+class ChatMessageOut(BaseModel):
+    id: uuid.UUID
+    chat_id: uuid.UUID
+    role: str
+    content: str
+    asset_ids: list[str] = Field(default_factory=list)
+    meta: dict[str, Any] = Field(default_factory=dict)
+    pending: bool = False
+    created_at: datetime
+
+
+class ChatStateOut(BaseModel):
+    """Snapshot for page load / SSE reconnect: chat + full message list."""
+
+    chat: ChatOut
+    messages: list[ChatMessageOut]
+
+
+class LibraryPartOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    kind: str  # step | stl | template
+    filename: str
+    caption: str
+    params: dict[str, Any] | None = None
+    source_version_id: uuid.UUID | None = None
+    created_at: datetime
+    url: str = ""
+
+
+class LibraryPartUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=120)
+    caption: str | None = Field(default=None, max_length=400)
+
+
+class LibraryFromVersion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    """Save an existing version into the reusable library."""
+
+    name: str = Field(min_length=1, max_length=120)
+    caption: str = Field(default="", max_length=400)
+    as_template: bool = False  # True: keep the parametric code; False: copy the STEP
+
+
+class MeshgenRequest(BaseModel):
+    """Image->mesh generation via the mesh sidecar (LLM-free).
+
+    Thin REST surface over `spawn_meshgen` — generation inputs are stored in
+    the version's options so restart replays them verbatim.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    asset_ids: list[uuid.UUID] = Field(min_length=1)
+    subject: str = Field(default="", max_length=500)
+    prompt: str = Field(default="", max_length=500)
+    model: str = Field(default="", max_length=80)
+    seed: int = Field(default=0, ge=0)
+    post: dict[str, Any] = Field(default_factory=dict)
+    part_id: uuid.UUID | None = None  # target part; omitted → new auto-named part
+    part_name: str | None = None  # name a NEW part, or reuse an existing by name
+
+
+class ParamsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    params: dict[str, Any]
+
+
+class EditFeatureRequest(BaseModel):
+    """Verified parametric edit of a recognised feature (M9: through-holes).
+
+    ``feature_id`` is the stable index returned by feature discovery on the
+    parent solid; ``value`` is the new diameter in mm.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    feature_id: int | str
+    parameter: Literal["diameter"] = "diameter"
+    value: float = Field(gt=0)
+
+
+class OptimizeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    """Manual topology-optimization trigger on an existing version.
+
+    `load_cases` / `optimize` follow the LLM contract schemas
+    (kiara.llm.schemas.LoadCase / OptimizeSpec). Empty values fall back to
+    the parent spec's declared loads/optimize settings.
+    """
+
+    load_cases: list[dict[str, Any]] = Field(default_factory=list)
+    optimize: dict[str, Any] = Field(default_factory=dict)
+    material: str = ""
+    stage_timeout_s: float | None = Field(default=None, gt=0, le=172800)
+    # allow optimizing an already-optimized version again (e.g. warm-start
+    # from the stored density, different void/keep regions, or a second pass
+    # over the resampled mesh)
+    allow_reopt: bool = False
+
+
+class TopoptResampleRequest(BaseModel):
+    """Re-extract a stored SIMP density field at a different threshold /
+    min-member — no new SIMP run. Creates an optimize child version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    density_threshold: float = Field(default=0.5, ge=0.2, le=0.9)
+    min_member_mm: float = Field(default=0.0, ge=0.0, le=50.0)
+    load_cases: list[dict[str, Any]] = Field(default_factory=list)
+    keep_regions: list[dict[str, Any]] = Field(default_factory=list)
+    material: str = ""
+
+
+class RefineRequest(BaseModel):
+    """Post-TopOpt feature finishing: re-cut exact bores/threads/inserts at
+    measured anchors and restore keep-region surfaces from the pre-optimization
+    part. Creates a 'refine' child version.
+
+    `features`  explicit selection — each entry matches a FeatureSpec subset
+                ({kind|anchor_index|dia|pos|axis|...}). Empty → deterministic
+                auto-resolution from the spec's declared features + scanned
+                anchors.
+    Empty `load_cases`/`keep_regions`/`material` fall back to the parent's
+    declared values (the re-verify is skipped entirely when no cases exist).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    features: list[dict[str, Any]] = Field(default_factory=list, max_length=40)
+    load_cases: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
+    keep_regions: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+    material: str = Field(default="", max_length=40)
+    voxel_mm: float | None = Field(default=None, ge=0.3, le=8.0)
+    restore_planes: bool | None = None  # None → OptimizeSpec.restore_planes (default on)
+    helical_threads: bool | None = (
+        None  # None → runtime refine_helical_threads; explicit False disables grooves
+    )
+    auto_plane_restore: bool = (
+        False  # auto-detect dominant planar faces on the base mesh and restore them
+    )
+
+
+class OrganicRequest(OrganicParams):
+    """Pseudo-topology-optimization restyle request.
+
+    The parameter set is identical to the `organic` mesh-op args (live
+    preview) and the executor payload, so the previewed structure is the
+    committed child version's structure. Purely aesthetic — the result is
+    NOT structurally optimized or verified (no FEM, no load cases).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# --------------------------------------------------------------------------- #
+# visual mesh editor + structural editor (GUI)                                  #
+# --------------------------------------------------------------------------- #
+
+
+class MeshOpIn(BaseModel):
+    """One recorded mesh transform — validated server-side by OPS_REGISTRY."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    op: str = Field(max_length=40)
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class MeshPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ops: list[MeshOpIn] = Field(default_factory=list, max_length=48)
+    post: dict[str, Any] | None = None  # MeshPostParams overrides (mesh parents)
+
+
+class MeshPreviewOut(BaseModel):
+    ok: bool
+    glb_url: str | None = None
+    stats: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None
+
+
+class MeshEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ops: list[MeshOpIn] = Field(default_factory=list, max_length=48)
+    post: dict[str, Any] | None = None  # MeshPostParams overrides (mesh parents)
+    note: str = Field(default="", max_length=200)
+
+
+class FemRegionRequest(BaseModel):
+    """Region preview / standalone FEM check payload. `load_cases` and
+    `keep_regions` follow the LLM contract (LoadCase / RegionSpec) and may
+    contain painted `points` regions from the GUI."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    load_cases: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
+    keep_regions: list[dict[str, Any]] = Field(default_factory=list, max_length=10)
+    material: str = Field(default="", max_length=40)
+    render_pngs: bool = False  # legacy 2D region renders; the 3D cells overlay is default
+
+
+class FemPreviewOut(BaseModel):
+    ok: bool
+    pitch_mm: float | None = None
+    dims: list[int] = Field(default_factory=list)
+    solid_elements: int = 0
+    cases: list[dict[str, Any]] = Field(default_factory=list)
+    cells: list[dict[str, Any]] = Field(default_factory=list)  # 3D overlay point clouds
+    anchors: list[dict[str, Any]] = Field(default_factory=list)  # resolved anchor table
+    pngs: list[str] = Field(default_factory=list)  # /versions/<vid>/scratch/... URLs
+    error: str | None = None
+
+
+class AnchorsOut(BaseModel):
+    """Detected/declared feature anchors — the table `hole_index` refers to."""
+
+    ok: bool
+    anchors: list[dict[str, Any]] = Field(default_factory=list)
+    error: str | None = None
+
+
+class EditorStateRequest(BaseModel):
+    """Persist GUI editor state (painted regions, ops draft) on the version —
+    stored under options['ui_editor'], stripped before settings merge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ui_editor: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnswerItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None
+    answer: str
+
+
+class AnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answers: list[AnswerItem]
+
+
+class VersionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=200)
+    # set/unset the user-verified master flag — accepting clears every other
+    # version in the same part (one master per part)
+    accepted: bool | None = None
+
+
+class VersionSummary(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    part_id: uuid.UUID
+    parent_id: uuid.UUID | None
+    number: int
+    kind: VersionKind
+    prompt: str
+    name: str = ""
+    status: VersionStatus
+    score: int | None
+    iterations: int
+    error: str | None
+    gen_mode: str = "auto"
+    resolved_mode: str | None = None
+    # non-null while this version is the user-verified master of its part
+    accepted_at: datetime | None = None
+    created_at: datetime
+    thumbnail_url: str | None = None
+    # newest non-terminal job on this version (queued/running/waiting) —
+    # {id, type, status, step, iteration, max_iterations, progress}
+    active_job: dict[str, Any] | None = None
+
+
+class ArtifactOut(BaseModel):
+    id: uuid.UUID
+    kind: ArtifactKind
+    view: str | None
+    path: str
+    size: int
+    url: str
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class VersionDetail(VersionSummary):
+    options: dict[str, Any] = Field(default_factory=dict)
+    spec: dict[str, Any] | None
+    plan: dict[str, Any] | None
+    code: str | None
+    params: dict[str, Any] | None
+    params_schema: list[dict[str, Any]] | None
+    analysis: dict[str, Any] | None
+    critique: dict[str, Any] | None
+    dfm: dict[str, Any] | None
+    bom: list[dict[str, Any]] | None = None
+    issues: list[dict[str, Any]] | None = None
+    mesh: dict[str, Any] | None = None
+    fem: dict[str, Any] | None = None
+    usage: dict[str, Any]
+    asset_ids: list[str]
+    library_part_ids: list[str] = Field(default_factory=list)
+    artifacts: list[ArtifactOut] = Field(default_factory=list)
+
+
+class ParamsDiffEntry(BaseModel):
+    """One differing param between two versions — `a`/`b` are null when the
+    key is absent on that side."""
+
+    key: str
+    a: Any | None = None
+    b: Any | None = None
+
+
+class CompareResult(BaseModel):
+    """GET /versions/{vid}/compare/{other_id} response.
+
+    `shape` is the raw kiara.cad.compare.shape_compare() dict (volume_a/b/
+    delta, bbox_*, solids/faces counts, added/removed_volume+bbox,
+    boolean: "ok"|"failed"|"skipped", note?). `ok` is False on any readable
+    error (load failure or a shape_compare "error" result) — the endpoint
+    never 500s on OCC weirdness.
+    """
+
+    a: str
+    b: str
+    ok: bool
+    diff_summary: str = ""
+    shape: dict[str, Any] | None = None
+    params_diff: list[ParamsDiffEntry] = Field(default_factory=list)
+    error: str | None = None
+
+
+class JobOut(BaseModel):
+    id: uuid.UUID
+    version_id: uuid.UUID
+    type: JobType
+    status: JobStatus
+    step: str | None
+    iteration: int
+    progress: float
+    log: str
+    live: dict[str, Any] | None = None
+    questions: list[dict[str, Any]] | None
+    cancel_requested: bool
+    finish_requested: bool
+    # queue placement for status=queued — position (0-based) + lane depth on
+    # the 'agent' arq queue; None once running/terminal (or unreadable)
+    queue_position: int | None = None
+    queue_depth: int | None = None
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+
+
+class JobListItem(JobOut):
+    """Job row with version/project context — for the global Jobs page."""
+
+    version_number: int
+    version_status: VersionStatus
+    prompt: str = ""
+    project_id: uuid.UUID
+    project_name: str = ""
+    part_id: uuid.UUID | None = None
+    part_name: str = ""
+
+
+class EnqueueResponse(BaseModel):
+    version_id: uuid.UUID
+    job_id: uuid.UUID
+
+
+class CatalogEntry(BaseModel):
+    name: str
+    category: str
+    description: str
+    signature: str = ""
+
+
+# SettingsOut/SettingsUpdate are DERIVED from RuntimeSettings — the runtime
+# config model is the single source of truth for the settings surface; adding
+# a field there automatically exposes it via GET /settings and makes it
+# settable via PUT (bounded by the Field metadata on the model itself). The
+# previous hand-maintained mirror drifted (28 fields missing, e.g.
+# agent_codegen_samples) and blocked eval --variant overrides with 422s.
+# Secrets stay write-only through explicit fields + clear_* flags.
+
+
+def _settings_fields(*, optional: bool) -> dict[str, Any]:
+    """(name -> (annotation, FieldInfo)) for every non-secret runtime field.
+
+    Copying the FieldInfo carries the ge/le/max_length constraints; optional
+    mode rewrites the default to None so an absent key means 'leave as-is'
+    (PATCH semantics via model_fields_set)."""
+    out: dict[str, Any] = {}
+    for name, fi in RuntimeSettings.model_fields.items():
+        if name in _SECRET_FIELDS:
+            continue
+        fi2 = copy.copy(fi)
+        fi2.default = None if optional else ...
+        out[name] = (fi.annotation | None if optional else fi.annotation, fi2)
+    return out
+
+
+SettingsOut = create_model(
+    "SettingsOut",
+    __config__=ConfigDict(extra="ignore"),
+    **_settings_fields(optional=False),
+    **{f"{n}_set": (bool, ...) for n in _SECRET_FIELDS},
+    data_dir=(str, ...),
+    # detected executor resources (cgroup-aware) — read-only, resolved by
+    # cad/resources.py at GET time; the 0=auto fields resolve against it
+    resources_detected=(dict[str, int], Field(default_factory=dict)),
+    # detected context windows per model id — read-only for the UI
+    # (override via llm_context_tokens)
+    llm_detected=(dict[str, int], Field(default_factory=dict)),
+)
+SettingsUpdate = create_model(
+    "SettingsUpdate",
+    __config__=ConfigDict(extra="forbid"),
+    **_settings_fields(optional=True),
+    **{n: (str | None, Field(default=None, max_length=4000)) for n in _SECRET_FIELDS},
+    **{f"clear_{n}": (bool, False) for n in _SECRET_FIELDS},
+    # SettingsOut echo fields — a client may round-trip the GET body on
+    # save; they are declared here only so extra="forbid" still accepts
+    # them (the router ignores them entirely — read-only computed values)
+    **{f"{n}_set": (bool | None, Field(default=None)) for n in _SECRET_FIELDS},
+    data_dir=(str | None, Field(default=None)),
+    resources_detected=(dict[str, int] | None, Field(default=None)),
+    llm_detected=(dict[str, int] | None, Field(default=None)),
+)
+
+
+class MeshModelOut(BaseModel):
+    id: str
+    name: str = ""
+    device: str = ""
+    backend: str = ""
+    kind: Literal["mesh", "image", "llm"] = "mesh"  # adapter family on the sidecar
+    supports_multiview: bool = False
+    max_images: int = 1
+    license_note: str = ""
+    loaded: bool = False
+    available: bool = True
+    last_error: str | None = None
+    default_size: int | None = None
+    max_count: int | None = None
+    supports_edit: bool = False  # accepts an init image (img2img/instruction edit)
+    requires_image: bool = False  # edit-only adapter, no txt2img
+    # model-management fields — all defaulted so older sidecars still parse
+    downloaded: bool = False
+    downloading: bool = False
+    size_gb: float | None = None
+    est_mem_mb: int | None = None
+    supports_vision: bool = False
+    supports_tools: bool = False
+    pinned: bool = False
+    custom: bool = False
+
+
+class QueueJobOut(BaseModel):
+    """One queued/running generation job on the sidecar."""
+
+    id: str = ""
+    kind: str = ""
+    model: str = ""
+    resolved_model: str = ""
+    status: str = ""
+    waited_s: float = 0.0
+    est_mem_mb: int | None = None
+    message: str = ""
+
+
+class QueueResidentOut(BaseModel):
+    """One model resident in sidecar memory."""
+
+    id: str = ""
+    mb: int = 0
+    kind: str = ""
+    pinned: bool = False
+    idle_s: float = 0.0
+
+
+class QueueInfoOut(BaseModel):
+    jobs: list[QueueJobOut] = Field(default_factory=list)
+    free_mb: float | None = None
+    residents: list[QueueResidentOut] = Field(default_factory=list)
+
+
+class DownloadStatusOut(BaseModel):
+    status: Literal["idle", "downloading", "done", "error"] = "idle"
+    bytes_done: int = 0
+    bytes_total: int | None = None
+    error: str | None = None
+
+
+class MeshRegisterIn(BaseModel):
+    """Register a custom model (HuggingFace repo) on the sidecar."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo: str = Field(min_length=1, max_length=300)
+    kind: Literal["llm", "mesh", "image"]
+    backend: str | None = Field(default=None, max_length=60)
+    name: str | None = Field(default=None, max_length=200)
+    vision: bool | None = None
+    tools: bool | None = None
+    est_mem_mb: int | None = Field(default=None, ge=0)
+
+
+# --------------------------------------------------------------------------- #
+# /stats — aggregated generation statistics for the Stats page                  #
+# --------------------------------------------------------------------------- #
+
+
+class NamedCount(BaseModel):
+    name: str
+    count: int
+
+
+class StatsDayBucket(BaseModel):
+    date: str  # YYYY-MM-DD
+    versions: int = 0
+    jobs: int = 0
+    tokens: int = 0  # prompt + completion tokens (from AgentTrace rows)
+    succeeded: int = 0  # jobs that finished this day with status=succeeded
+    failed: int = 0  # jobs that finished this day with status=failed
+    cancelled: int = 0  # jobs that finished this day with status=cancelled
+    score_avg: float | None = None  # avg score of versions created this day
+
+
+class ModelStat(BaseModel):
+    model: str
+    calls: int
+    prompt_tokens: int
+    completion_tokens: int
+    avg_latency_ms: float
+
+
+class StepStat(BaseModel):
+    step: str
+    calls: int
+    tokens: int
+    avg_latency_ms: float | None = None
+    wall_seconds: float = 0.0  # from Job.live step_history durations
+
+
+class JobTypeStat(BaseModel):
+    type: str
+    count: int
+    failed: int
+    avg_duration_s: float | None = None
+    p50_duration_s: float | None = None
+    max_duration_s: float | None = None
+
+
+class ModeStat(BaseModel):
+    """Per resolved_mode quality comparison — which pipeline works best."""
+
+    mode: str
+    versions: int
+    succeeded: int
+    pass_rate: float | None = None
+    avg_score: float | None = None
+    avg_iterations: float | None = None
+    tokens: int = 0
+
+
+class IssueStat(BaseModel):
+    """Version.issues aggregated by source (dims, dfm, lint, features, ...)."""
+
+    source: str
+    major: int = 0
+    minor: int = 0
+    total: int = 0
+
+
+class ProjectStat(BaseModel):
+    id: uuid.UUID
+    name: str
+    versions: int
+    succeeded: int
+    avg_score: float | None = None
+    tokens: int
+    last_activity: datetime | None = None
+
+
+class ScoreStats(BaseModel):
+    avg: float | None = None
+    best: int | None = None
+    pass_rate: float | None = None  # succeeded / terminal versions
+    buckets: list[NamedCount] = Field(default_factory=list)  # <40, 40-59, 60-79, 80-100
+
+
+class MeshStats(BaseModel):
+    generations: int
+    cached: int
+    avg_duration_s: float | None = None
+    models: list[NamedCount] = Field(default_factory=list)
+
+
+class FemStats(BaseModel):
+    versions: int = 0  # versions carrying a fem.cases report
+    avg_worst_sf: float | None = None  # mean of each version's worst safety factor
+
+
+class StatsTotals(BaseModel):
+    projects: int = 0
+    versions: int = 0
+    jobs: int = 0
+    assets: int = 0
+    artifacts: int = 0
+    parts: int = 0
+    library_parts: int = 0
+    artifact_bytes: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    llm_calls: int = 0
+    compute_seconds: float = 0.0  # sum of job wall times
+
+
+class StatsOut(BaseModel):
+    days: int
+    generated_at: datetime
+    totals: StatsTotals
+    versions_by_status: list[NamedCount] = Field(default_factory=list)
+    versions_by_kind: list[NamedCount] = Field(default_factory=list)
+    versions_by_mode_requested: list[NamedCount] = Field(default_factory=list)
+    versions_by_mode_resolved: list[NamedCount] = Field(default_factory=list)
+    jobs_by_status: list[NamedCount] = Field(default_factory=list)
+    job_types: list[JobTypeStat] = Field(default_factory=list)
+    score: ScoreStats = Field(default_factory=ScoreStats)
+    iterations_avg: float | None = None
+    activity: list[StatsDayBucket] = Field(default_factory=list)
+    models: list[ModelStat] = Field(default_factory=list)
+    steps: list[StepStat] = Field(default_factory=list)
+    top_errors: list[NamedCount] = Field(default_factory=list)
+    failed_steps: list[NamedCount] = Field(default_factory=list)
+    mesh: MeshStats = Field(default_factory=lambda: MeshStats(generations=0, cached=0))
+    fem: FemStats = Field(default_factory=FemStats)
+    mode_stats: list[ModeStat] = Field(default_factory=list)
+    issue_sources: list[IssueStat] = Field(default_factory=list)
+    assets_by_kind: list[NamedCount] = Field(default_factory=list)
+    artifacts_by_kind: list[NamedCount] = Field(default_factory=list)
+    projects: list[ProjectStat] = Field(default_factory=list)
+
+
+class ImageGenerateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=4000)
+    negative: str = ""
+    model: str | None = None  # None → runtime image_model default
+    seed: int = 0
+    count: int = Field(default=1, ge=1, le=16)  # clamped by image_max_count
+    width: int = Field(default=768, ge=64, le=4096)  # clamped by image_max_side
+    height: int = Field(default=768, ge=64, le=4096)
+    steps: int | None = Field(default=None, ge=1, le=200)
+    guidance: float | None = Field(default=None, ge=0, le=50)
+    caption: str = ""
+    reference_asset_id: uuid.UUID | None = None  # init image for i2i/edit adapters
+    strength: float | None = Field(default=None, gt=0, le=1)  # img2img denoise
+    mark_sketch: bool = False  # tag results role_hint="sketch" for scribble adapters
+
+
+class MeshHealthOut(BaseModel):
+    ok: bool = False
+    device: str = ""
+    backend: str = ""
+    error: str | None = None
+    models: list[MeshModelOut] = Field(default_factory=list)
+
+
+class UpdateCommitOut(BaseModel):
+    sha: str
+    subject: str = ""
+    date: str = ""
+
+
+class UpdateCheckOut(BaseModel):
+    behind: int | None = None
+    ahead: int | None = None
+    commits: list[UpdateCommitOut] = Field(default_factory=list)
+    branches: list[str] = Field(default_factory=list)
+    current_ref: str = ""
+    target_ref: str = ""
+    current_sha: str = ""
+    target_sha: str | None = None
+    update_available: bool = False
+    dirty: list[str] = Field(default_factory=list)
+    checked_at: str | None = None
+    stale: bool = False
+    refreshing: bool = False
+
+
+class UpdateCheckIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str | None = None
+
+
+class UpdateStartIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ref: str | None = None
+    confirm_jobs: bool = False  # required when generation jobs are active
+
+
+class UpdateStartOut(BaseModel):
+    started: bool = True
+
+
+class SystemVersionGit(BaseModel):
+    sha: str = ""
+    branch: str = ""
+    dirty: int = 0
+    ts: str | None = None
+
+
+class SystemVersionOut(BaseModel):
+    version: str
+    updater_ok: bool = False
+    git: SystemVersionGit | None = None
+
+
+class UpdateStatusOut(BaseModel):
+    state: str = "idle"  # idle|checking|running|rolling-back|done|failed
+    phase: str | None = None
+    error: str | None = None
+    ref: str | None = None
+    prev_sha: str | None = None
+    new_sha: str | None = None
+    active_jobs: int = 0
+    mode: str = ""
+    log: str | None = None
+    log_tail: list[str] = Field(default_factory=list)
+    started_at: str | None = None
+    finished_at: str | None = None
+
+
+class RollbackIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirm: bool = False

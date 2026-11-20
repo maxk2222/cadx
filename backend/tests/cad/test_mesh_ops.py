@@ -7,7 +7,7 @@ import pytest
 import trimesh
 from pydantic import ValidationError
 
-from cadx.cad.mesh_ops import (
+from kiara.cad.mesh_ops import (
     MeshOp,
     MeshOpError,
     MeshPostParams,
@@ -33,7 +33,7 @@ from cadx.cad.mesh_ops import (
     scale_to_spec,
     suggest_up,
 )
-from cadx.llm.schemas import PartSpec
+from kiara.llm.schemas import PartSpec
 
 
 def _box(x=10.0, y=20.0, z=30.0):
@@ -192,7 +192,7 @@ def test_fit_stated_dims_stretches_deficient_axis():
     """Handle case: mesh arrives 120x20x37 vs stated 120x40x30 — the repair
     loop cannot legally fix the envelope, so the baseline fits stated axes
     non-uniformly (y x2, z x0.81) instead of reporting forever."""
-    from cadx.cad.mesh_ops import fit_stated_dims
+    from kiara.cad.mesh_ops import fit_stated_dims
 
     m = _box(120, 20, 37)
     out, fit, issues = fit_stated_dims(m, _spec(x=120, y=40, z=30), [])
@@ -207,7 +207,7 @@ def test_fit_stated_dims_stretches_deficient_axis():
 def test_fit_stated_dims_out_of_bounds_keeps_issue():
     """A generator output 9x off the stated dim cannot be trusted — fitting it
     would produce garbage, so the axis stays reported."""
-    from cadx.cad.mesh_ops import fit_stated_dims
+    from kiara.cad.mesh_ops import fit_stated_dims
 
     m = _box(60, 30, 90)
     # pipeline order: scale_to_spec reports first, fit decides what remains
@@ -220,7 +220,7 @@ def test_fit_stated_dims_out_of_bounds_keeps_issue():
 
 def test_fit_stated_dims_inferred_dims_untouched():
     """Only 'stated' dims are authoritative — inferred dims never force a fit."""
-    from cadx.cad.mesh_ops import fit_stated_dims
+    from kiara.cad.mesh_ops import fit_stated_dims
 
     m = _box(120, 20, 37)
     out, fit, issues = fit_stated_dims(m, _spec(x=120, y=40, z=30, source="inferred"), [])
@@ -289,7 +289,7 @@ def test_flatten_bottom_voxel_grid_bounded():
 
 
 def test_voxel_remesh_refuses_unbounded_grid():
-    from cadx.cad.mesh_ops import _voxel_remesh
+    from kiara.cad.mesh_ops import _voxel_remesh
 
     with pytest.raises(ValueError, match="cells/axis"):
         _voxel_remesh(_box(200, 30, 30), pitch_mm=0.2)
@@ -299,7 +299,7 @@ def test_voxelize_coarsens_pitch_on_dense_subdivide(monkeypatch):
     """trimesh's "subdivide" voxelization refines every edge below pitch —
     a coarse mesh at fine pitch explodes (observed: 33M faces → MemoryError).
     _voxelize must coarsen the pitch until the growth bound fits the cap."""
-    import cadx.cad.mesh_ops as mo
+    import kiara.cad.mesh_ops as mo
 
     seen: list[float] = []
     orig = trimesh.Trimesh.voxelized
@@ -343,7 +343,7 @@ def test_mesh_to_solid_decimates_before_watertight(monkeypatch):
         seen.append(len(mesh.faces))
         return mesh
 
-    monkeypatch.setattr("cadx.cad.mesh_ops._ensure_watertight", spy)
+    monkeypatch.setattr("kiara.cad.mesh_ops._ensure_watertight", spy)
     m = trimesh.creation.icosphere(subdivisions=5)
     import contextlib
 
@@ -404,7 +404,7 @@ def _split_vertex_crack(*, sliver: bool = False) -> trimesh.Trimesh:
 
 
 def test_stitch_hairline_boundary_closes_split_vertex_crack():
-    from cadx.cad.mesh_ops import _stitch_hairline_boundary
+    from kiara.cad.mesh_ops import _stitch_hairline_boundary
 
     m = _split_vertex_crack()
     assert not m.is_watertight
@@ -418,7 +418,7 @@ def test_stitch_hairline_boundary_closes_three_edge_sliver_loop():
     """The bearing-seat regression: a 3-edge loop whose two corners are
     coincident twins — fill_holes' triangulate_quads rejects the ~zero
     area patch, a tolerance weld would mint count-4 edges."""
-    from cadx.cad.mesh_ops import _stitch_hairline_boundary
+    from kiara.cad.mesh_ops import _stitch_hairline_boundary
 
     m = _split_vertex_crack(sliver=True)
     rows = trimesh.grouping.group_rows(m.edges_sorted, require_count=1)
@@ -430,7 +430,7 @@ def test_stitch_hairline_boundary_closes_three_edge_sliver_loop():
 def test_stitch_hairline_boundary_leaves_real_openings():
     """An open cylinder's rim loops have no near-coincident twins — the
     stitch must return the input untouched."""
-    from cadx.cad.mesh_ops import _stitch_hairline_boundary
+    from kiara.cad.mesh_ops import _stitch_hairline_boundary
 
     open_box = _box(10, 10, 10)
     open_box.faces = open_box.faces[:-2]  # one whole side removed
@@ -442,7 +442,7 @@ def test_ensure_watertight_stitches_hairline_before_rebuild(monkeypatch):
     """With fill_holes neutralised (it can patch a small crack into a
     non-manifold band-aid), the stitch rung alone must close the mesh —
     local, before the manifold3d/alpha/voxel fallbacks."""
-    from cadx.cad.mesh_ops import _ensure_watertight
+    from kiara.cad.mesh_ops import _ensure_watertight
 
     monkeypatch.setattr(trimesh.repair, "fill_holes", lambda m: 0)
     out = _ensure_watertight(_split_vertex_crack(sliver=True))
@@ -638,7 +638,7 @@ def test_merge_post_params_ops_replaced_only_when_given():
 
 
 def test_smooth_preserve_keeps_floor_and_envelope():
-    from cadx.cad.mesh_ops import smooth_preserve, surface_roughness_deg
+    from kiara.cad.mesh_ops import smooth_preserve, surface_roughness_deg
 
     m = trimesh.creation.icosphere(subdivisions=3, radius=20)
     flat = flatten_bottom(m, 10.0)
@@ -685,7 +685,7 @@ def test_baseline_mesh_cad_cap_faces():
 
 def test_orient_by_plan_view_flat_box():
     """A flat box standing on edge must be re-laid flat by the plan view."""
-    from cadx.cad.mesh_ops import orient_by_plan_view
+    from kiara.cad.mesh_ops import orient_by_plan_view
 
     mesh = trimesh.creation.box(extents=[100, 30, 8])
     # stand it on edge: the 30 mm side becomes vertical (wrong pose)
@@ -699,7 +699,7 @@ def test_orient_by_plan_view_flat_box():
 
 
 def test_orient_by_plan_view_returns_none_without_match():
-    from cadx.cad.mesh_ops import orient_by_plan_view
+    from kiara.cad.mesh_ops import orient_by_plan_view
 
     mesh = trimesh.creation.icosphere(subdivisions=2, radius=10)
     outline = [[-50, -2], [50, -2], [50, 2], [-50, 2], [-50, -2]]  # sliver
@@ -707,7 +707,7 @@ def test_orient_by_plan_view_returns_none_without_match():
 
 
 def test_clip_to_outline():
-    from cadx.cad.mesh_ops import clip_to_outline
+    from kiara.cad.mesh_ops import clip_to_outline
 
     mesh = trimesh.creation.icosphere(subdivisions=3, radius=20)
     outline = [[-15, -15], [15, -15], [15, 15], [-15, 15], [-15, -15]]
@@ -719,7 +719,7 @@ def test_clip_to_outline():
 
 
 def test_clip_to_outline_bad_outline_returns_input():
-    from cadx.cad.mesh_ops import clip_to_outline
+    from kiara.cad.mesh_ops import clip_to_outline
 
     mesh = trimesh.creation.box(extents=[10, 10, 10])
     assert clip_to_outline(mesh, []) is mesh
@@ -792,7 +792,7 @@ def test_op_drill_holes_explicit():
     assert out.is_watertight
     assert abs(out.volume) < abs(m.volume)
     # the hole must be a real tunnel
-    from cadx.cad.mesh_features import detect_mesh_features
+    from kiara.cad.mesh_features import detect_mesh_features
 
     feats = detect_mesh_features(out, step_mm=0.5)
     tunnels = [h for h in feats.holes if h.kind == "tunnel"]
@@ -863,7 +863,7 @@ def test_op_shell_open_bottom():
 
 
 def test_ensure_watertight_repairs_missing_face():
-    from cadx.cad.mesh_ops import _ensure_watertight
+    from kiara.cad.mesh_ops import _ensure_watertight
 
     m = _box(30, 30, 30)
     m.update_faces(np.arange(len(m.faces)) > 10)  # knock out 11 faces
@@ -887,7 +887,7 @@ def test_boolean_auto_repairs_open_mesh():
 
 def test_mesh_to_solid_repairs_then_converts():
     pytest.importorskip("build123d")
-    from cadx.cad.mesh_ops import mesh_to_solid
+    from kiara.cad.mesh_ops import mesh_to_solid
 
     m = _box(30, 30, 30)
     m.update_faces(np.arange(len(m.faces)) > 8)
@@ -901,7 +901,7 @@ def test_mesh_analysis_counts_disconnected_components():
     hard-coded solid_count=1 hid two-piece grips (grip_mesh score-0 case)."""
     import trimesh
 
-    from cadx.cad.mesh_ops import mesh_analysis
+    from kiara.cad.mesh_ops import mesh_analysis
 
     a = trimesh.creation.box(extents=(10, 10, 10))
     b = trimesh.creation.box(extents=(5, 5, 5))
@@ -934,7 +934,7 @@ def test_ensure_watertight_voxel_cap(monkeypatch):
     """T8.9: the voxel fallback may not explode face count — marching cubes on
     a fine grid can out-face the input by an order of magnitude (OOM-killed
     the eval worker)."""
-    import cadx.cad.mesh_ops as mo
+    import kiara.cad.mesh_ops as mo
 
     _force_voxel_fallback(monkeypatch)
     m = _box(30, 30, 30)
@@ -948,7 +948,7 @@ def test_ensure_watertight_voxel_cap(monkeypatch):
 def test_ensure_watertight_refuses_absurd_grid(monkeypatch):
     """T8.9: an absurd voxel grid must raise instead of allocating a cells^3
     bool matrix."""
-    import cadx.cad.mesh_ops as mo
+    import kiara.cad.mesh_ops as mo
 
     _force_voxel_fallback(monkeypatch)
     m = _box(30, 30, 30)
@@ -1045,7 +1045,7 @@ def test_op_silhouette_carve_trims_overhang():
     """Cylinder carved to a narrower square side silhouette: the visual hull
     removes only material outside the reference — volume drops, the mesh
     stays watertight, and the +y silhouette IoU jumps."""
-    from cadx.cad.silhouette import _iou, mesh_view_mask
+    from kiara.cad.silhouette import _iou, mesh_view_mask
 
     cyl = trimesh.creation.cylinder(radius=10.0, height=30.0, sections=64)
     cyl.apply_translation([0, 0, 15.0])  # rests on XY, z in [0, 30]
@@ -1072,7 +1072,7 @@ def test_op_silhouette_carve_from_mask_pipeline():
     """The orchestration path: reference mask -> mask_to_outline_mm -> op —
     the mm convention (u centred, v bottom-aligned) must land the polygon on
     the mesh's view-plane bbox."""
-    from cadx.cad.silhouette import mask_to_outline_mm
+    from kiara.cad.silhouette import mask_to_outline_mm
 
     cyl = trimesh.creation.cylinder(radius=10.0, height=30.0, sections=64)
     cyl.apply_translation([0, 0, 15.0])
@@ -1156,7 +1156,7 @@ def test_op_radial_profile_auto_fills_waist():
 
 def test_op_radial_profile_auto_from_outline_stations():
     """Stations measured off a silhouette polygon feed the op directly."""
-    from cadx.cad.silhouette import profile_stations_from_outline
+    from kiara.cad.silhouette import profile_stations_from_outline
 
     # waist silhouette: 20 wide at the ends, 12 in the middle, u in [-30, 30]
     outline = [[-30, -10], [0, -6], [30, -10], [30, 10], [0, 6], [-30, 10]]
@@ -1347,7 +1347,7 @@ def test_ensure_watertight_voxel_fallback_preserves_envelope(monkeypatch):
     """The marching-cubes rebuild quantizes the envelope outward (~a pitch
     per side). The pad once absorbed a dim-gate fit loop's scale ops round
     after round — the rebuild must come back on the input bounds."""
-    from cadx.cad import mesh_ops
+    from kiara.cad import mesh_ops
 
     m = _box(103.6, 60.0, 61.8)
     # open it so the ladder must go past fill_holes/manifold into voxels
@@ -1372,7 +1372,7 @@ def test_ensure_watertight_voxel_fallback_preserves_envelope(monkeypatch):
 
 def test_ensure_watertight_voxel_fallback_keeps_center(monkeypatch):
     """The envelope rescale must preserve the part's bbox centre, not shift it."""
-    from cadx.cad import mesh_ops
+    from kiara.cad import mesh_ops
 
     m = _box(20.0, 20.0, 20.0)
     m.apply_translation([50.0, -10.0, 7.0])
@@ -1404,7 +1404,7 @@ def test_solid_body_count_hollow_shell_is_one():
     """Boundary components are not bodies: a closed shell splits into
     outer + inner wall but is ONE solid — the single_valid_solid false
     positive that failed every shell/infill part."""
-    from cadx.cad.mesh_ops import solid_body_count
+    from kiara.cad.mesh_ops import solid_body_count
 
     m = _hollow_shell()
     assert len(m.split(only_watertight=False)) == 2
@@ -1412,7 +1412,7 @@ def test_solid_body_count_hollow_shell_is_one():
 
 
 def test_solid_body_count_two_bodies_still_two():
-    from cadx.cad.mesh_ops import solid_body_count
+    from kiara.cad.mesh_ops import solid_body_count
 
     a = _box(10.0, 10.0, 10.0)
     b = _box(5.0, 5.0, 5.0)
@@ -1423,7 +1423,7 @@ def test_solid_body_count_two_bodies_still_two():
 def test_solid_body_count_floating_body_in_cavity_is_two():
     """A genuinely detached body inside the cavity (positive volume) is a
     second solid — the sign convention does not hide real defects."""
-    from cadx.cad.mesh_ops import solid_body_count
+    from kiara.cad.mesh_ops import solid_body_count
 
     hollow = _hollow_shell(outer=20.0, inner=14.0)
     floater = trimesh.creation.box(extents=[4.0, 4.0, 4.0])
@@ -1442,7 +1442,7 @@ def _flipped_inner_wall(m):
 def test_solid_body_count_counts_parity_not_sign():
     """A cavity wall that lost its negative winding to a normals repair is
     still a wall — nesting parity, not the sign, decides body counting."""
-    from cadx.cad.mesh_ops import solid_body_count
+    from kiara.cad.mesh_ops import solid_body_count
 
     damaged = _flipped_inner_wall(_hollow_shell())
     assert all(p.volume > 0 for p in damaged.split(only_watertight=False))
@@ -1450,7 +1450,7 @@ def test_solid_body_count_counts_parity_not_sign():
 
 
 def test_orient_nested_shells_restores_wall_sign():
-    from cadx.cad.mesh_ops import orient_nested_shells, solid_body_count
+    from kiara.cad.mesh_ops import orient_nested_shells, solid_body_count
 
     damaged = _flipped_inner_wall(_hollow_shell())
     out = orient_nested_shells(damaged)
@@ -1462,7 +1462,7 @@ def test_orient_nested_shells_restores_wall_sign():
 def test_orient_nested_shells_keeps_real_island_positive():
     """An island floating inside the cavity sits at nesting depth 2 — it is
     a real second body and must not be flipped negative."""
-    from cadx.cad.mesh_ops import orient_nested_shells, solid_body_count
+    from kiara.cad.mesh_ops import orient_nested_shells, solid_body_count
 
     hollow = _hollow_shell(outer=20.0, inner=14.0)
     floater = trimesh.creation.box(extents=[4.0, 4.0, 4.0])
@@ -1476,7 +1476,7 @@ def test_orient_nested_shells_keeps_real_island_positive():
 def test_body_groups_keeps_flipped_wall_with_parent():
     """Salvage consumers must not see a +wound cavity wall as a droppable
     second solid — parity groups it with the enclosing body."""
-    from cadx.cad.mesh_ops import _body_groups
+    from kiara.cad.mesh_ops import _body_groups
 
     damaged = _flipped_inner_wall(_hollow_shell())
     groups = _body_groups(list(damaged.split(only_watertight=False)))
@@ -1485,7 +1485,7 @@ def test_body_groups_keeps_flipped_wall_with_parent():
 
 
 def test_clean_preserves_nested_wall_sign():
-    from cadx.cad.mesh_ops import clean, solid_body_count
+    from kiara.cad.mesh_ops import clean, solid_body_count
 
     out = clean(_hollow_shell())
     vols = [float(p.volume) for p in out.split(only_watertight=False)]
@@ -1496,7 +1496,7 @@ def test_clean_preserves_nested_wall_sign():
 def test_ensure_watertight_preserves_nested_shell_sign():
     """The repair ladder's fix_normals flips nested walls — the wrapper must
     restore parity before the mesh reaches boolean/export consumers."""
-    from cadx.cad.mesh_ops import _ensure_watertight, solid_body_count
+    from kiara.cad.mesh_ops import _ensure_watertight, solid_body_count
 
     parts = _hollow_shell().split(only_watertight=False)
     outer = max(parts, key=lambda p: abs(p.volume))
@@ -1535,7 +1535,7 @@ def test_clean_preserves_small_cavity_wall():
 def test_keep_largest_keeps_cavity_wall_with_body():
     """keep_largest on a hollow part must keep the inner wall attached to
     the outer body — dropping it would open the cavity."""
-    from cadx.cad.mesh_ops import OpKeepLargest, _op_keep_largest
+    from kiara.cad.mesh_ops import OpKeepLargest, _op_keep_largest
 
     m = _hollow_shell()
     out = _op_keep_largest(m, OpKeepLargest())

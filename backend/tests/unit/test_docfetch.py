@@ -12,14 +12,14 @@ import uuid
 
 import pytest
 
-from cadx.agent.docfetch import docs_for_error
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.toolspecs import ToolSession
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.docfetch import docs_for_error
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.toolspecs import ToolSession
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.runtime_config import RuntimeSettings
 
 pytest.importorskip("build123d")  # digests introspect the installed package
 

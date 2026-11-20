@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PostgreSQL backup → data/backups/cadx-<ts>.dump (custom pg_dump format) +
+# PostgreSQL backup → data/backups/kiara-<ts>.dump (custom pg_dump format) +
 # sidecar .json metadata. Runs inside the postgres container — safe when the
 # stack or postgres is down (skips with a warning, never fails the caller
 # unless --required).
@@ -27,7 +27,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-say "cadx backup -> $DIR"
+say "kiara backup -> $DIR"
 mkdir -p "$DIR"
 
 # postgres container + credentials — compose env wins, .env seeds them
@@ -39,12 +39,12 @@ if [ -z "$PG_CONTAINER" ]; then
 fi
 # shellcheck disable=SC1091
 [ -f .env ] && set -a && . ./.env && set +a
-POSTGRES_USER="${POSTGRES_USER:-cadx}"
-POSTGRES_DB="${POSTGRES_DB:-cadx}"
+POSTGRES_USER="${POSTGRES_USER:-kiara}"
+POSTGRES_DB="${POSTGRES_DB:-kiara}"
 
 TS=$(date +%Y%m%d-%H%M%S)
-OUT="$DIR/cadx-$TS.dump"
-META="$DIR/cadx-$TS.json"
+OUT="$DIR/kiara-$TS.dump"
+META="$DIR/kiara-$TS.json"
 SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "?")
 BRANCH=$(git branch --show-current 2>/dev/null || echo "?")
 
@@ -74,7 +74,7 @@ EOF
 info "metadata: $META"
 
 if [ "$KEEP" -gt 0 ]; then
-  ls -1t "$DIR"/cadx-*.dump 2>/dev/null | tail -n "+$((KEEP + 1))" | while read -r f; do
+  ls -1t "$DIR"/kiara-*.dump 2>/dev/null | tail -n "+$((KEEP + 1))" | while read -r f; do
     rm -f "$f" "${f%.dump}.json"
     info "rotated out: $(basename "$f")"
   done

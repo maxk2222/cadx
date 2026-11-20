@@ -14,10 +14,10 @@ import pytest
 import trimesh
 from scipy import sparse
 
-from cadx.cad.fem import solver
-from cadx.cad.fem.materials import resolve_material
-from cadx.cad.fem.regions import resolve_case
-from cadx.cad.fem.solver import (
+from kiara.cad.fem import solver
+from kiara.cad.fem.materials import resolve_material
+from kiara.cad.fem.regions import resolve_case
+from kiara.cad.fem.solver import (
     _D,
     CholmodFactor,
     _amg_preconditioner,
@@ -33,8 +33,8 @@ from cadx.cad.fem.solver import (
     solve_reduced,
     solver_tier,
 )
-from cadx.cad.fem.voxelize import voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.voxelize import voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36
@@ -88,9 +88,9 @@ def _reduced_system(dom, fixed: np.ndarray) -> tuple:
 
 
 def test_solver_tier_env(monkeypatch) -> None:
-    monkeypatch.setenv("CADX_FEM_DIRECT_SOLVER", "splu")
+    monkeypatch.setenv("KIARA_FEM_DIRECT_SOLVER", "splu")
     assert solver_tier() == "splu"
-    monkeypatch.setenv("CADX_FEM_DIRECT_SOLVER", "auto")
+    monkeypatch.setenv("KIARA_FEM_DIRECT_SOLVER", "auto")
     assert solver_tier() == ("cholmod" if solver._cholmod_available() else "splu")
     # explicit backend arg overrides the env (topopt's solver_backend knob)
     assert solver_tier("superlu") == "splu"
@@ -118,10 +118,10 @@ def test_cholmod_factor_matches_splu(monkeypatch) -> None:
     Kf, free = _reduced_system(dom, fixed)
     Ff = F[free]
 
-    monkeypatch.setenv("CADX_FEM_DIRECT_SOLVER", "cholmod")
+    monkeypatch.setenv("KIARA_FEM_DIRECT_SOLVER", "cholmod")
     f_chol = factor_symmetric(Kf)
     assert isinstance(f_chol, CholmodFactor)
-    monkeypatch.setenv("CADX_FEM_DIRECT_SOLVER", "splu")
+    monkeypatch.setenv("KIARA_FEM_DIRECT_SOLVER", "splu")
     f_splu = factor_symmetric(Kf)
     assert callable(f_splu) and not isinstance(f_splu, CholmodFactor)
 
@@ -192,7 +192,7 @@ def test_amg_preconditioned_cg_matches_direct(monkeypatch) -> None:
     """spsolve_dofs=0 forces the CG path; the AMG preconditioner must be
     built and the solution must match a direct solve on the same system."""
     pytest.importorskip("pyamg")
-    monkeypatch.setenv("CADX_FEM_CG_PRECONDITIONER", "amg")
+    monkeypatch.setenv("KIARA_FEM_CG_PRECONDITIONER", "amg")
     dom = voxelize(_box_mesh(), 4.0, 150_000)
     fixed, F, _ = resolve_case(dom, _cantilever_case())
     elem_E = np.full(dom.cell_count, E_PLA)

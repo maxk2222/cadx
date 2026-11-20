@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 import trimesh
 
-from cadx.cad.exporters import repair_mesh_file
+from kiara.cad.exporters import repair_mesh_file
 
 
 def _leaky_box(path: Path) -> None:
@@ -32,7 +32,7 @@ def test_repair_mesh_file_preserves_nested_cavity_winding(tmp_path):
     """Regression (infill/topopt bodies gate): an unconditional fix_normals
     flipped the cavity wall to +volume — the gate then counted a hollow
     part as two solids. The wall must stay negative through file repair."""
-    from cadx.cad.mesh_ops import solid_body_count
+    from kiara.cad.mesh_ops import solid_body_count
 
     stl = tmp_path / "hollow.stl"
     outer = trimesh.creation.box([20, 20, 20])
@@ -65,7 +65,7 @@ def test_repair_mesh_file_rejects_drifting_voxel_rebuild(tmp_path, monkeypatch):
     def _inflating(_m: trimesh.Trimesh) -> trimesh.Trimesh:
         return trimesh.creation.box([30, 30, 30])
 
-    monkeypatch.setattr("cadx.cad.mesh_ops._ensure_watertight", _inflating)
+    monkeypatch.setattr("kiara.cad.mesh_ops._ensure_watertight", _inflating)
     assert repair_mesh_file(stl) is False
     m = trimesh.load(str(stl), force="mesh")
     assert max(m.extents) <= 21.0  # original 20mm box, not the 30mm rebuild
@@ -83,7 +83,7 @@ def test_repair_mesh_file_rejects_interior_fill_same_bbox(tmp_path, monkeypatch)
     leaky.export(str(stl))
     monkeypatch.setattr(trimesh.Trimesh, "fill_holes", lambda _m: None)
     monkeypatch.setattr(
-        "cadx.cad.mesh_ops._ensure_watertight",
+        "kiara.cad.mesh_ops._ensure_watertight",
         lambda _m: trimesh.creation.box([20, 20, 20]),  # same bbox, cavity filled
     )
     assert repair_mesh_file(stl) is False
@@ -96,7 +96,7 @@ def test_repair_mesh_file_accepts_faithful_voxel_rebuild(tmp_path, monkeypatch):
     _leaky_box(stl)
     monkeypatch.setattr(trimesh.Trimesh, "fill_holes", lambda _m: None)
     monkeypatch.setattr(
-        "cadx.cad.mesh_ops._ensure_watertight",
+        "kiara.cad.mesh_ops._ensure_watertight",
         lambda _m: trimesh.creation.box([20.5, 20.5, 20.5]),
     )
     assert repair_mesh_file(stl) is True
@@ -109,8 +109,8 @@ def test_alpha_wrap_skipped_on_low_cgroup_headroom(monkeypatch):
     36-face input -> 281k faces, executor OOM-killed mid-eval). Under low
     cgroup headroom the ladder must skip to the bounded voxel rung instead
     of letting the kernel decide."""
-    import cadx.cad.mesh_ops as mo
-    from cadx.cad import mesh_repair_pml, resources
+    import kiara.cad.mesh_ops as mo
+    from kiara.cad import mesh_repair_pml, resources
 
     calls: list[trimesh.Trimesh] = []
     monkeypatch.setattr(mesh_repair_pml, "pm_available", lambda: True)
@@ -132,8 +132,8 @@ def test_export_from_brep_repairs_shipped_meshes(tmp_path, monkeypatch):
     pytest.importorskip("build123d")
     from build123d import Box, export_brep
 
-    import cadx.cad.engine as eng
-    from cadx.cad.engine import export_from_brep
+    import kiara.cad.engine as eng
+    from kiara.cad.engine import export_from_brep
 
     brep = tmp_path / "model.brep"
     export_brep(Box(10, 10, 10), str(brep))
@@ -177,8 +177,8 @@ def test_repair_mesh_file_drops_degenerate_flaps(tmp_path):
 
 def test_run_pipeline_reports_watertight_after_repair(tmp_path):
     pytest.importorskip("build123d")
-    from cadx.cad.engine import run_pipeline
-    from cadx.db.models import ProjectSettings
+    from kiara.cad.engine import run_pipeline
+    from kiara.db.models import ProjectSettings
 
     code = "PARAMS = {}\nfrom build123d import *\nresult = Pos(0, 0, 0) * Box(30, 20, 10)\n"
     res = run_pipeline(

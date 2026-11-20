@@ -9,7 +9,7 @@ import pytest
 
 trimesh = pytest.importorskip("trimesh")
 
-from cadx.cad.fem.voxelize import (  # noqa: E402
+from kiara.cad.fem.voxelize import (  # noqa: E402
     _fill_grid,
     _scanline_contains,
     voxelize,
@@ -76,7 +76,7 @@ def test_scanline_node_grid_offset():
 
 
 def test_env_flag_falls_back_to_contains(monkeypatch):
-    monkeypatch.setenv("CADX_VOXEL_CONTAINS", "1")
+    monkeypatch.setenv("KIARA_VOXEL_CONTAINS", "1")
     mesh = _box(8, 8, 8)
     assert _scanline_contains(mesh, np.zeros(3), (10, 10, 10), 1.0, offset=0.5) is None
     # _fill_grid still works — through the contains() path
@@ -106,9 +106,9 @@ def test_uniform_compliance_beats_and_bounds():
     """The uniform baseline must exceed an optimized field's compliance —
     it's the 'no cleverness' floor the BESO warning is measured against."""
     pytest.importorskip("scipy")
-    from cadx.cad.fem.regions import resolve_case_dofs
-    from cadx.cad.fem.topopt import TopOptParams, uniform_compliance
-    from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+    from kiara.cad.fem.regions import resolve_case_dofs
+    from kiara.cad.fem.topopt import TopOptParams, uniform_compliance
+    from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
     mesh = _box(24, 8, 8, at=(0, 0, 0))
     dom = voxelize(mesh, 2.0, 200_000)

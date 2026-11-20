@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from cadx.llm import client as client_mod
-from cadx.llm.client import LLMClient
+from kiara.llm import client as client_mod
+from kiara.llm.client import LLMClient
 
 
 def _sse(*chunks: dict, usage: dict | None = None) -> bytes:
@@ -194,7 +194,7 @@ def _instant_sleep():
 
 
 def test_looks_degenerate_word_salad():
-    from cadx.llm.client import _looks_degenerate
+    from kiara.llm.client import _looks_degenerate
 
     salad = "_".join(
         ["hunger", "appetite", "thirst", "need", "want", "wish", "aim", "end", "goal", "object"]
@@ -227,7 +227,7 @@ def test_looks_degenerate_word_salad():
 
 
 def test_trim_degenerate_cuts_salad_suffix():
-    from cadx.llm.client import _trim_degenerate
+    from kiara.llm.client import _trim_degenerate
 
     salad = "_" + "_".join(["location", "position", "site", "setting", "layout"] * 20)
     text = "x = 1\ny = 2\n" + salad
@@ -306,7 +306,7 @@ async def test_stream_aborts_on_tool_arg_salad(monkeypatch):
 
 
 def test_looks_degenerate_whitespace_tail():
-    from cadx.llm.client import _looks_degenerate
+    from kiara.llm.client import _looks_degenerate
 
     # the real-eval failure mode: \t\n spam — must NOT be shielded by \n
     # being a structural char
@@ -400,7 +400,7 @@ async def test_stream_hang_aborts_on_idle_deadline(monkeypatch):
     watchdog — the per-line wait_for read deadline must abort it."""
     import asyncio
 
-    from cadx.llm.client import LLMError
+    from kiara.llm.client import LLMError
 
     class StallStream(httpx.AsyncByteStream):
         async def __aiter__(self):

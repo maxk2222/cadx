@@ -12,7 +12,7 @@ coaxial face groups into one port per OPEN end carrying both envelopes.
 import build123d as bd
 import pytest
 
-from cadx.cad.guide_exec import _face_ports
+from kiara.cad.guide_exec import _face_ports
 
 
 def _by_name(ports: list[dict], name: str) -> dict | None:
@@ -118,7 +118,7 @@ def test_extracted_mesh_is_solver_frame(tmp_path) -> None:
     import numpy as np
     import trimesh
 
-    from cadx.cad.guide_exec import _extract_ports_sync
+    from kiara.cad.guide_exec import _extract_ports_sync
 
     tube = bd.Cylinder(radius=11.0, height=70.0)
     step = tmp_path / "model.step"

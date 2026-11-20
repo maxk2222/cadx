@@ -5,14 +5,14 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from cadx.agent.orchestrator import _measured_plan_outline, _measurement_authoritative
-from cadx.agent.steps import measure as measure_step
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx, InputAsset
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import PartSpec
-from cadx.vision.measure import ImageMeasurement
+from kiara.agent.orchestrator import _measured_plan_outline, _measurement_authoritative
+from kiara.agent.steps import measure as measure_step
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx, InputAsset
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import PartSpec
+from kiara.vision.measure import ImageMeasurement
 
 
 def _ctx(prompt: str = "plate 60x40", assets: list | None = None, **kw) -> AgentCtx:

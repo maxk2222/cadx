@@ -32,7 +32,7 @@ a project is bound.
 | `create_project` / `attach_project` / `list_projects` | project binding — available even while unbound |
 | info tools | `list_versions`, `version_details`, `view_render`, `project_settings`, `job_status`, catalog + library lookups, `view_image` |
 
-Spawned jobs are real `Job`/`Version` rows (shared helpers in `cadx/spawn.py`),
+Spawned jobs are real `Job`/`Version` rows (shared helpers in `kiara/spawn.py`),
 so they appear in the version tree, the Jobs page and the job SSE stream
 exactly like GUI-triggered runs. The chat renders them as live cards and — on
 success — attaches the version's contact sheet to the tool result so a vision
@@ -84,4 +84,4 @@ GET  /chats/{id}/events (SSE)      → snapshot + message_delta/tool_*/turn_*
 `chat_max_turns`, `chat_spawn_timeout_s`, `chat_history_messages`,
 `chat_image_max` — all under *Settings → Agent → chat agent*.
 
-The system prompt lives in `backend/cadx/agent/prompts/chat_system.md`.
+The system prompt lives in `backend/kiara/agent/prompts/chat_system.md`.

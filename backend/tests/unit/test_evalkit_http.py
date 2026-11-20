@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from cadx.evalkit.http import DriverCtx, EvalApiError, HttpDriver
-from cadx.evalkit.suite import EvalStage
+from kiara.evalkit.http import DriverCtx, EvalApiError, HttpDriver
+from kiara.evalkit.suite import EvalStage
 
 
 class _FakeApi:

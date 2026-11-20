@@ -8,11 +8,11 @@ import uuid
 
 import pytest
 
-from cadx import storage
-from cadx.db.models import Job, Part, Project, Version, VersionKind, VersionStatus
-from cadx.db.session import async_session, create_all
-from cadx.evalkit.local import LocalCtx, _spawn
-from cadx.evalkit.suite import EvalStage
+from kiara import storage
+from kiara.db.models import Job, Part, Project, Version, VersionKind, VersionStatus
+from kiara.db.session import async_session, create_all
+from kiara.evalkit.local import LocalCtx, _spawn
+from kiara.evalkit.suite import EvalStage
 
 _SPEC_LCS = [{"name": "spec_case", "fixed": [{"kind": "surface"}], "loads": []}]
 _PARAMS_LCS = [{"name": "params_case", "fixed": [{"kind": "surface"}], "loads": []}]
@@ -155,8 +155,8 @@ def _fernet_stored(key: bytes) -> dict:
 def test_seed_secret_key_picks_working_key(tmp_path, monkeypatch):
     from cryptography.fernet import Fernet
 
-    from cadx import config
-    from cadx.evalkit import local, paths
+    from kiara import config
+    from kiara.evalkit import local, paths
 
     good = Fernet.generate_key()
     bad = Fernet.generate_key()
@@ -168,7 +168,7 @@ def test_seed_secret_key_picks_working_key(tmp_path, monkeypatch):
     (root_data / ".settings.key").write_bytes(bad)
     (prev / ".settings.key").write_bytes(good)
     monkeypatch.setenv("DATA_DIR", str(scratch))
-    monkeypatch.setenv("CADX_PREV_DATA_DIR", str(prev))
+    monkeypatch.setenv("KIARA_PREV_DATA_DIR", str(prev))
     config.get_settings.cache_clear()
     monkeypatch.setattr(paths, "REPO_ROOT", tmp_path / "root")
 
@@ -179,8 +179,8 @@ def test_seed_secret_key_picks_working_key(tmp_path, monkeypatch):
 def test_seed_secret_key_no_match_leaves_scratch(tmp_path, monkeypatch):
     from cryptography.fernet import Fernet
 
-    from cadx import config
-    from cadx.evalkit import local, paths
+    from kiara import config
+    from kiara.evalkit import local, paths
 
     good = Fernet.generate_key()
     scratch = tmp_path / "scratch"
@@ -189,7 +189,7 @@ def test_seed_secret_key_no_match_leaves_scratch(tmp_path, monkeypatch):
         d.mkdir(parents=True)
     (prev / ".settings.key").write_bytes(Fernet.generate_key())
     monkeypatch.setenv("DATA_DIR", str(scratch))
-    monkeypatch.setenv("CADX_PREV_DATA_DIR", str(prev))
+    monkeypatch.setenv("KIARA_PREV_DATA_DIR", str(prev))
     config.get_settings.cache_clear()
     monkeypatch.setattr(paths, "REPO_ROOT", tmp_path / "missing")
 
@@ -198,11 +198,11 @@ def test_seed_secret_key_no_match_leaves_scratch(tmp_path, monkeypatch):
 
 
 def test_seed_secret_key_plaintext_noop(tmp_path, monkeypatch):
-    from cadx import config
-    from cadx.evalkit import local
+    from kiara import config
+    from kiara.evalkit import local
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("CADX_PREV_DATA_DIR", raising=False)
+    monkeypatch.delenv("KIARA_PREV_DATA_DIR", raising=False)
     config.get_settings.cache_clear()
 
     local._seed_secret_key({"settings": {"llm_api_key": "plain-key"}})
@@ -213,7 +213,7 @@ async def test_import_parent_canonicalizes_mesh_name(tmp_path):
     """`--from DIR` parents must be discoverable by spawn_fem's
     best_mesh_relpath — which only scans exports/model.stl, not a renamed
     stl_model.stl coming from an evals/results artifacts dir."""
-    from cadx.evalkit.local import import_parent
+    from kiara.evalkit.local import import_parent
 
     src = tmp_path / "src"
     src.mkdir()

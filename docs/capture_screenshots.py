@@ -38,7 +38,7 @@ Selector notes: the wizard advances on a button named "Continue", version
 tabs render with role="tab", and the editor entry points on the version page
 are the actions-panel texts "Edit mesh visually" / "Structural editor (FEM /
 TopOpt)" / "Organic structure". The init script forces English
-(cadx:lang=en) — if the UI language file changes these labels, update
+(kiara:lang=en) — if the UI language file changes these labels, update
 SELECTORS below.
 """
 from __future__ import annotations
@@ -266,7 +266,7 @@ async def new_ctx(pw, size: tuple[int, int, int]):
     ctx = await browser.new_context(viewport={"width": w, "height": h},
                                     device_scale_factor=dsf)
     # English UI + no leftover wizard state
-    await ctx.add_init_script("localStorage.setItem('cadx:lang','en');"
+    await ctx.add_init_script("localStorage.setItem('kiara:lang','en');"
                               "localStorage.removeItem('wizard:draft');")
     return browser, ctx
 
@@ -726,8 +726,8 @@ def main() -> None:
     valid = ["png", "wizard", "tabs", "hero", "wt", "assemble", "install", "all"]
     ap.add_argument("targets", nargs="*", metavar="target",
                     help=f"passes to run ({', '.join(valid)}; default: all)")
-    ap.add_argument("--base", default=os.environ.get("CADX_BASE", "http://localhost:8080"))
-    ap.add_argument("--work-dir", default=tempfile.gettempdir() + "/cadx_capture",
+    ap.add_argument("--base", default=os.environ.get("KIARA_BASE", "http://localhost:8080"))
+    ap.add_argument("--work-dir", default=tempfile.gettempdir() + "/kiara_capture",
                     help="staging dir for frames + assembled gifs")
     ap.add_argument("--list", action="store_true",
                     help="print projects/versions for CONFIG upkeep and exit")
@@ -735,9 +735,9 @@ def main() -> None:
                     help="don't apply DISPLAY_NAMES")
     ap.add_argument("--no-seed", dest="seed", action="store_false",
                     help="don't seed the demo chat (chat shots use /chat index)")
-    ap.add_argument("--pg-container", default="cadx-postgres-1")
-    ap.add_argument("--pg-user", default="cadx")
-    ap.add_argument("--pg-db", default="cadx")
+    ap.add_argument("--pg-container", default="kiara-postgres-1")
+    ap.add_argument("--pg-user", default="kiara")
+    ap.add_argument("--pg-db", default="kiara")
     args = ap.parse_args()
     bad = [t for t in args.targets if t not in valid]
     if bad:

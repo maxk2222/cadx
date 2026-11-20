@@ -1,4 +1,4 @@
-from cadx.cad.allowlist import (
+from kiara.cad.allowlist import (
     apply_params_override,
     check_code,
     mesh_solid_flows_to_result,
@@ -59,7 +59,7 @@ def test_unused_params_suppresses_ambiguous_map_and_dynamic_accesses():
 def test_unused_params_counts_export_only_reference():
     code = (
         'PARAMS = {"thread_pitch": 1.75}\n'
-        'if CADX_DETAIL_MODE == "export":\n'
+        'if KIARA_DETAIL_MODE == "export":\n'
         '    result = helix(PARAMS["thread_pitch"])\n'
         "else:\n"
         "    result = Box(10, 10, 10)\n"
@@ -795,7 +795,7 @@ def test_mesh_solid_augassign_keeps_flow():
 
 
 def test_declared_cad_fallback():
-    from cadx.cad.allowlist import declared_cad_fallback
+    from kiara.cad.allowlist import declared_cad_fallback
 
     code = (
         GOOD

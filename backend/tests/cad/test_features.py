@@ -21,7 +21,7 @@ from build123d import (
     fillet,
 )
 
-from cadx.cad.features import (
+from kiara.cad.features import (
     MeasuredFeatures,
     MeasuredHoleGroup,
     MeasuredPattern,
@@ -31,7 +31,7 @@ from cadx.cad.features import (
     extract_features,
     mesh_features_to_measured,
 )
-from cadx.llm.schemas import Feature
+from kiara.llm.schemas import Feature
 
 
 def _plate(with_chamfer: bool = True, fillet_r: float | None = None):
@@ -321,8 +321,8 @@ def test_extract_coaxial_bore_segments_count_once():
 def test_mesh_slot_scan_does_not_fabricate_through_axis_center(tmp_path):
     """Ray-grid centers are on the Y/Z projection plane for an X-through
     slot; the X coordinate is unobserved, not the full-part bbox midpoint."""
-    from cadx.cad.cadlib.cutouts import slot_cutter
-    from cadx.cad.features import _mesh_through_holes
+    from kiara.cad.cadlib.cutouts import slot_cutter
+    from kiara.cad.features import _mesh_through_holes
 
     foot = Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
     leg = Pos(-28, 0, 25) * Box(4, 40, 50)
@@ -575,8 +575,8 @@ def test_small_hole_dfm_ignores_fillets_and_degenerate():
     """DFM small_hole: a real sub-1mm bore warns; a concave edge fillet and a
     degenerate zero-radius read do not (observed: gear tooth roots produced
     spurious 'hole radius 0.00 mm' warnings)."""
-    from cadx.cad.analysis import analyze
-    from cadx.cad.dfm.fdm import fdm_brep_checks
+    from kiara.cad.analysis import analyze
+    from kiara.cad.dfm.fdm import fdm_brep_checks
 
     with BuildPart() as p:
         Box(40, 40, 10, align=(Align.CENTER, Align.CENTER, Align.MIN))
@@ -640,7 +640,7 @@ def test_mesh_holes_bore_fit_lifts_shadowed_column(tmp_path):
 
     import trimesh
 
-    from cadx.cad.features import _mesh_through_holes
+    from kiara.cad.features import _mesh_through_holes
 
     wall = trimesh.creation.box(extents=[8, 40, 40])
     wall.apply_translation([46, 0, 0])
@@ -663,7 +663,7 @@ def test_inside_fraction_prefers_mesh_contains():
     """The mesh contains() oracle replaces OCC is_inside (~200 ms/pt on curved
     B-Reps). A stub callable proves the vectorised path is taken and controls
     the verdict."""
-    from cadx.cad.features import _inside_fraction
+    from kiara.cad.features import _inside_fraction
 
     part = _plate(with_chamfer=False)
     seen: list[int] = []
@@ -685,7 +685,7 @@ def test_inside_fraction_mesh_real_stl(tmp_path):
     same verdict the OCC path produced, ~4000x cheaper per point."""
     from build123d import export_stl
 
-    from cadx.cad.features import _inside_fraction, _load_watertight_mesh, _mesh_contains_fn
+    from kiara.cad.features import _inside_fraction, _load_watertight_mesh, _mesh_contains_fn
 
     part = _plate(with_chamfer=False)
     stl = tmp_path / "plate.stl"
@@ -702,7 +702,7 @@ def test_extract_features_accepts_preloaded_mesh(tmp_path):
     must yield the same measurements as the from-path load."""
     from build123d import export_stl
 
-    from cadx.cad.features import _load_watertight_mesh
+    from kiara.cad.features import _load_watertight_mesh
 
     part = _plate(with_chamfer=False)
     stl = tmp_path / "plate.stl"
@@ -813,8 +813,8 @@ def test_keyway_seat_in_bore_is_a_groove():
     onto the bore void, not an outer planar face — the stadium end cap is a
     rounded channel end, not an ambiguous neighbour. Regression for the
     marine-propeller miss: verify_spec reported 0 slots on a real keyway."""
-    from cadx.cad.cadlib.cutouts import oblong_slot
-    from cadx.cad.features import _detect_structural_features
+    from kiara.cad.cadlib.cutouts import oblong_slot
+    from kiara.cad.features import _detect_structural_features
 
     with BuildPart() as p:
         Cylinder(radius=15, height=28)
@@ -832,7 +832,7 @@ def test_keyway_seat_in_bore_is_a_groove():
 def test_groove_opening_to_boss_not_counted():
     """Walls ending on a *material-side* cylinder (boss/fillet) are not a
     void opening — the fallback must stay bore-specific."""
-    from cadx.cad.features import _detect_structural_features
+    from kiara.cad.features import _detect_structural_features
 
     # recess between two ribs ending at a boss wall — walls' convex
     # neighbour is the boss cylinder, not a bore void
@@ -854,7 +854,7 @@ def test_is_faceted_solid_only_for_pure_plane():
     tessellation solid skips the scan."""
     from build123d import GeomType
 
-    from cadx.cad.features import _FACET_FACE_CAP, _is_faceted_solid
+    from kiara.cad.features import _FACET_FACE_CAP, _is_faceted_solid
 
     n = _FACET_FACE_CAP + 1
     planes = [_StubFace(GeomType.PLANE) for _ in range(n)]

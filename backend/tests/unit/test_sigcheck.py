@@ -10,15 +10,15 @@ import uuid
 
 import build123d as bd
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.toolspecs import ToolSession
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.cad.allowlist import check_code
-from cadx.cad.sigcheck import check_code_signatures
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.toolspecs import ToolSession
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.cad.allowlist import check_code
+from kiara.cad.sigcheck import check_code_signatures
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.runtime_config import RuntimeSettings
 
 GOOD = "from build123d import *\n\nPARAMS = {}\n\nresult = Box(10, 10, 5)\n"
 
@@ -352,7 +352,7 @@ def test_known_kwargs_stay_clean():
 
 def test_varkw_signature_accepts_any_kwarg():
     """`_bounds` must capture **kwargs — such callables take any keyword."""
-    from cadx.cad.sigcheck import _bounds
+    from kiara.cad.sigcheck import _bounds
 
     def _f(a: int, **kw) -> None: ...
 

@@ -5,14 +5,14 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.orchestrator import run_generation
-from cadx.agent.steps.intake import spec_gaps
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import PartSpec
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.orchestrator import run_generation
+from kiara.agent.steps.intake import spec_gaps
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import PartSpec
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -254,8 +254,8 @@ def _plate90(features) -> PartSpec:
 
 
 def test_normalize_positions_rewrites_contradicting_coord() -> None:
-    from cadx.agent.steps.intake import normalize_feature_positions
-    from cadx.llm.schemas import Feature
+    from kiara.agent.steps.intake import normalize_feature_positions
+    from kiara.llm.schemas import Feature
 
     s = _plate90(
         [
@@ -273,8 +273,8 @@ def test_normalize_positions_rewrites_contradicting_coord() -> None:
 
 
 def test_normalize_positions_keeps_consistent() -> None:
-    from cadx.agent.steps.intake import normalize_feature_positions
-    from cadx.llm.schemas import Feature
+    from kiara.agent.steps.intake import normalize_feature_positions
+    from kiara.llm.schemas import Feature
 
     s = _plate90(
         [
@@ -292,8 +292,8 @@ def test_normalize_positions_keeps_consistent() -> None:
 
 
 def test_normalize_positions_multi_offset_untouched() -> None:
-    from cadx.agent.steps.intake import normalize_feature_positions
-    from cadx.llm.schemas import Feature
+    from kiara.agent.steps.intake import normalize_feature_positions
+    from kiara.llm.schemas import Feature
 
     s = _plate90(
         [
@@ -313,8 +313,8 @@ def test_normalize_positions_multi_offset_untouched() -> None:
 def test_sanitize_feature_kinds_retypes_solid_shaft() -> None:
     """helical_pinion_shaft: 'shaft body … dia 16' was typed hole — the
     verifier then demanded a void the model correctly never built."""
-    from cadx.agent.steps.intake import sanitize_feature_kinds
-    from cadx.llm.schemas import Feature
+    from kiara.agent.steps.intake import sanitize_feature_kinds
+    from kiara.llm.schemas import Feature
 
     s = _plate90(
         [
@@ -334,8 +334,8 @@ def test_sanitize_feature_kinds_retypes_solid_shaft() -> None:
 
 
 def test_sanitize_feature_kinds_keeps_real_holes() -> None:
-    from cadx.agent.steps.intake import sanitize_feature_kinds
-    from cadx.llm.schemas import Feature
+    from kiara.agent.steps.intake import sanitize_feature_kinds
+    from kiara.llm.schemas import Feature
 
     for name, desc in (
         ("bolt hole", "through hole for the shaft, dia 10"),
@@ -350,8 +350,8 @@ def test_sanitize_feature_kinds_keeps_real_holes() -> None:
 
 def test_sanitize_feature_kinds_needs_solid_evidence() -> None:
     """A void type with no solid wording stays — no guessing."""
-    from cadx.agent.steps.intake import sanitize_feature_kinds
-    from cadx.llm.schemas import Feature
+    from kiara.agent.steps.intake import sanitize_feature_kinds
+    from kiara.llm.schemas import Feature
 
     s = _plate90(
         [
@@ -402,7 +402,7 @@ def _handle_spec() -> PartSpec:
 
 
 def test_dim_echo_recovers_misread_height() -> None:
-    from cadx.agent.steps.intake import sanitize_dim_echo
+    from kiara.agent.steps.intake import sanitize_dim_echo
 
     s = _handle_spec()
     notes = sanitize_dim_echo(s, "Bügel ca. 120 x 40 x 30 mm")
@@ -413,7 +413,7 @@ def test_dim_echo_recovers_misread_height() -> None:
 
 
 def test_dim_echo_ignores_consistent_dims() -> None:
-    from cadx.agent.steps.intake import sanitize_dim_echo
+    from kiara.agent.steps.intake import sanitize_dim_echo
 
     s = _handle_spec()
     s.height_z = s.height_z.model_copy(update={"value": 30.0})
@@ -423,7 +423,7 @@ def test_dim_echo_ignores_consistent_dims() -> None:
 def test_dim_echo_needs_the_echo_signature() -> None:
     """A unique large dim is NOT rewritten — features legitimately may not
     span the full envelope."""
-    from cadx.agent.steps.intake import sanitize_dim_echo
+    from kiara.agent.steps.intake import sanitize_dim_echo
 
     s = _handle_spec()
     s.height_z = s.height_z.model_copy(update={"value": 95.0})  # unique, no echo
@@ -433,7 +433,7 @@ def test_dim_echo_needs_the_echo_signature() -> None:
 def test_dim_echo_prefers_unmatched_prompt_value() -> None:
     """'120 x 40 x 90' mis-parsed as z=120: the prompt's own 90 is stronger
     evidence than the features' 30 — the prompt is ground truth."""
-    from cadx.agent.steps.intake import sanitize_dim_echo
+    from kiara.agent.steps.intake import sanitize_dim_echo
 
     s = _handle_spec()
     notes = sanitize_dim_echo(s, "Bügel ca. 120 x 40 x 90 mm")
@@ -444,7 +444,7 @@ def test_dim_echo_prefers_unmatched_prompt_value() -> None:
 def test_dim_echo_no_mm_prompt_uses_feature_extent() -> None:
     """A dim-free prompt gives nothing to check against — the spec's own
     feature extent is the best remaining evidence."""
-    from cadx.agent.steps.intake import sanitize_dim_echo
+    from kiara.agent.steps.intake import sanitize_dim_echo
 
     s = _handle_spec()
     notes = sanitize_dim_echo(s, "ein Griff mit Laschen")
@@ -455,7 +455,7 @@ def test_dim_echo_no_mm_prompt_uses_feature_extent() -> None:
 def test_dim_echo_leaves_ambiguous_contradiction() -> None:
     """Prompt states dims, the suggested extent is none of them and no
     orphan value exists — rewriting would trade a guess for a guess."""
-    from cadx.agent.steps.intake import sanitize_dim_echo
+    from kiara.agent.steps.intake import sanitize_dim_echo
 
     s = _handle_spec()
     # prompt claims 70 for z; the feature extent 30 has no footing, and 70
@@ -488,7 +488,7 @@ def test_dimset_fixes_feature_depth_smear() -> None:
     """Observed E2E (block_sidewall_tap, twice): intake wrote the bore
     depth (20) as height_z for a '40 x 40 x 40' cube — the explicit
     prompt triplet is the stronger statement."""
-    from cadx.agent.steps.intake import sanitize_dimset
+    from kiara.agent.steps.intake import sanitize_dimset
 
     s = _cube_spec()
     notes = sanitize_dimset(s, "Steel cube 40 x 40 x 40, parametric, mm units")
@@ -500,7 +500,7 @@ def test_dimset_never_lowers_z_dim() -> None:
     """'base plate 100 x 80 x 10' inside a 40-tall part: the triplet is a
     feature envelope, not the part — a correct height_z=40 must survive.
     z stays raise-only; only x/y overshoots get corrected."""
-    from cadx.agent.steps.intake import sanitize_dimset
+    from kiara.agent.steps.intake import sanitize_dimset
 
     s = _cube_spec()
     s.length_x = s.length_x.model_copy(update={"value": 100.0})
@@ -516,7 +516,7 @@ def test_dimset_lowers_additive_overstatement_xy() -> None:
     length_x=108 — the model added the protruding flange width to the
     plate. 108 never appears as an envelope value in the prompt, so the
     written triplet wins and verify_spec enforces it loudly."""
-    from cadx.agent.steps.intake import sanitize_dimset
+    from kiara.agent.steps.intake import sanitize_dimset
 
     s = _cube_spec()
     s.length_x = s.length_x.model_copy(update={"value": 108.0, "source": "inferred"})
@@ -533,7 +533,7 @@ def test_dimset_lowers_additive_overstatement_xy() -> None:
 def test_dimset_keeps_large_overstatement() -> None:
     """A dim far above the triplet is a genuinely larger intended
     envelope, not an additive misread — leave it alone."""
-    from cadx.agent.steps.intake import sanitize_dimset
+    from kiara.agent.steps.intake import sanitize_dimset
 
     s = _cube_spec()
     s.length_x = s.length_x.model_copy(update={"value": 160.0, "source": "stated"})
@@ -546,7 +546,7 @@ def test_dimset_keeps_prompt_stated_overstatement() -> None:
     """An overshoot that the prompt itself states as an envelope value
     ('overall 120 long') outranks the plate triplet — the model quoted
     the prompt, not a miscalculation."""
-    from cadx.agent.steps.intake import sanitize_dimset
+    from kiara.agent.steps.intake import sanitize_dimset
 
     s = _cube_spec()
     s.length_x = s.length_x.model_copy(update={"value": 120.0, "source": "stated"})
@@ -559,7 +559,7 @@ def test_dimset_keeps_prompt_stated_overstatement() -> None:
 
 def test_dimset_skips_thread_designation_triplets() -> None:
     """'M10x1.5x100' is a screw designation, not an envelope."""
-    from cadx.agent.steps.intake import sanitize_dimset
+    from kiara.agent.steps.intake import sanitize_dimset
 
     s = _cube_spec()
     s.height_z = s.height_z.model_copy(update={"value": 5.0})
@@ -569,7 +569,7 @@ def test_dimset_skips_thread_designation_triplets() -> None:
 
 def test_dimset_largest_product_triplet_wins() -> None:
     """Multiple triplets: the largest-volume one is the envelope."""
-    from cadx.agent.steps.intake import sanitize_dimset
+    from kiara.agent.steps.intake import sanitize_dimset
 
     s = _cube_spec()
     notes = sanitize_dimset(s, "Part envelope 60 x 40 x 40; boss 8 x 40 x 30")
@@ -581,7 +581,7 @@ def test_dimset_largest_product_triplet_wins() -> None:
 def test_axis_extents_raise_understated_height() -> None:
     """Observed E2E (ball_m8_tap): 'top pole at z=60' vs height_z=25 —
     an explicit prompt coordinate cannot sit outside the envelope."""
-    from cadx.agent.steps.intake import sanitize_prompt_axis_extents
+    from kiara.agent.steps.intake import sanitize_prompt_axis_extents
 
     s = PartSpec(
         name="Ball",
@@ -602,7 +602,7 @@ def test_axis_extents_raise_understated_height() -> None:
 def test_axis_extents_leave_inside_coordinates() -> None:
     """A feature coordinate inside the stated span is a position, not an
     envelope statement — nothing to change."""
-    from cadx.agent.steps.intake import sanitize_prompt_axis_extents
+    from kiara.agent.steps.intake import sanitize_prompt_axis_extents
 
     s = _cube_spec(z=40.0)
     assert sanitize_prompt_axis_extents(s, "block 40 x 40 x 40; blind bore opens at z=20") == []
@@ -610,7 +610,7 @@ def test_axis_extents_leave_inside_coordinates() -> None:
 
 def test_axis_extents_centred_xy_span() -> None:
     """x/y are centred: a coordinate at |x| means half the declared span."""
-    from cadx.agent.steps.intake import sanitize_prompt_axis_extents
+    from kiara.agent.steps.intake import sanitize_prompt_axis_extents
 
     s = _cube_spec(z=40.0)
     s.length_x = s.length_x.model_copy(update={"value": 80.0})
@@ -706,7 +706,7 @@ def test_sanitize_material_fills_from_prompt() -> None:
     """A material named in the prompt must reach spec.material — otherwise
     FEM/topopt silently verify against the default (observed: 'PETG lever'
     solved with PLA properties)."""
-    from cadx.agent.steps.intake import sanitize_material
+    from kiara.agent.steps.intake import sanitize_material
 
     s = _mspec(name="lever", summary="")
     sanitize_material(s, "PETG joint lever, 90x40x14")
@@ -728,8 +728,8 @@ def test_sanitize_material_fills_from_prompt() -> None:
 def test_sanitize_material_resolves_downstream() -> None:
     """Every emitted token must re-resolve in the FEM material table —
     storing display names like 'PA (nylon)' would fall back to PLA."""
-    from cadx.agent.steps.intake import sanitize_material
-    from cadx.cad.fem.materials import resolve_material
+    from kiara.agent.steps.intake import sanitize_material
+    from kiara.cad.fem.materials import resolve_material
 
     for prompt, want in [
         ("PETG bracket", "petg"),
@@ -748,7 +748,7 @@ def test_sanitize_dims_restates_unitless_triplet_length() -> None:
     overhang) while the prompt's '100 x 80 x 10' triplet states the
     envelope — the unitless triplet must re-state length_x=100 so the
     envelope check is real and the flange lands inside the footprint."""
-    from cadx.agent.steps.intake import sanitize_dims
+    from kiara.agent.steps.intake import sanitize_dims
 
     s = _cube_spec()
     s.length_x = s.length_x.model_copy(update={"value": 108.0, "source": "inferred"})
@@ -768,7 +768,7 @@ def test_sanitize_dims_never_restates_z_value_as_length() -> None:
     """'Ø80 x 120 tall' — the largest stated number lives on Z, so it
     must not be re-stated as length_x (that would double the tank's
     length). Ø80 is X evidence but already covered by stated dims."""
-    from cadx.agent.steps.intake import sanitize_dims
+    from kiara.agent.steps.intake import sanitize_dims
 
     s = _cube_spec()
     s.length_x = s.length_x.model_copy(update={"value": 80.0, "source": "inferred"})

@@ -84,14 +84,14 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   pydantic v2 for all JSON; no business logic in routers; `structlog` not `print`.
 - TypeScript strict; functional components; TanStack Query for server state; Tailwind only.
 - Never put LLM/HF secrets in logs/traces or return them via the API — stored
-  runtime secrets are Fernet-encrypted at rest (`cadx/secrets_crypto.py`,
-  `enc:v1:` in DB, key `CADX_SETTINGS_KEY` or `data/.settings.key`).
+  runtime secrets are Fernet-encrypted at rest (`kiara/secrets_crypto.py`,
+  `enc:v1:` in DB, key `KIARA_SETTINGS_KEY` or `data/.settings.key`).
   Never commit `.env*` or `data/.settings.key` — `.env.example` is the only
   tracked env file (docker-compose overrides; the app reads config from the
   DB). Keep secrets out of screenshots/docs.
   Trace messages replace image data with placeholders.
-- Every prompt lives in `backend/cadx/agent/prompts/*.md` — never inline prompt text in Python.
-- All file paths go through `cadx/storage.py`. All DB writes in short transactions.
+- Every prompt lives in `backend/kiara/agent/prompts/*.md` — never inline prompt text in Python.
+- All file paths go through `kiara/storage.py`. All DB writes in short transactions.
 - LLM-generated code must ONLY ever run through `cad/sandbox.py` (AST allow-list + subprocess
   rlimits + import hook) inside the executor environment. Never `exec()` user code in-process.
   With `exec_warm_runner` (default on) the sandbox forks a pre-warmed `cad/zygote.py`
@@ -106,9 +106,9 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   RLIMIT_CPU counts CPU-seconds across threads — scale it via
   `resources.rlimit_cpu_s`; the proc timeout stays the wall-clock deadline.
   Container caps auto-size via `scripts/lib/host_detect.sh` → `.env`
-  (`CADX_EXECUTOR_CPUS/_MEM`, `CADX_WORKER_*`); user keys win.
+  (`KIARA_EXECUTOR_CPUS/_MEM`, `KIARA_WORKER_*`); user keys win.
 - Allowed imports for generated code: build123d, bd_warehouse.*, cadlib, math, numpy,
-  typing, dataclasses. `cadlib` (`cadx/cad/cadlib/`) is the reviewed helper library —
+  typing, dataclasses. `cadlib` (`kiara/cad/cadlib/`) is the reviewed helper library —
   extend it deliberately, never import unlisted modules from it (the runtime guard
   treats its internals like generated code).
 - Data hierarchy: `Project → Part → Version` — every version belongs to one
@@ -123,9 +123,9 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   `groupVersionsByPart` enforce the same order client-side.
 - Standard-part contract: `spec.standard_parts` (StandardPartSpec) is the structured
   catalog intent — `standard_parts.build_standard_part_code` turns it into a
-  sandbox recipe (PARAMS + `CADX_FEATURES` + `CADX_BOM` declarations), never a
+  sandbox recipe (PARAMS + `KIARA_FEATURES` + `KIARA_BOM` declarations), never a
   free-form guess. Threads are level-of-detail split by the executor-injected
-  `CADX_DETAIL_MODE`: "preview" = fast simple body + helix-line render overlay,
+  `KIARA_DETAIL_MODE`: "preview" = fast simple body + helix-line render overlay,
   "export" = real helix (`simple=False`) — the orchestrator re-runs the winning
   candidate in export mode and fails if `thread_count` falls short.
 - Agent robustness pipeline (local-model friendly): `cad/errordiag.py` classifies
@@ -205,11 +205,11 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   the same code path — never treat the workbench mesh as the authoritative
   output.
 - Hybrid mesh booleans: `cad/mesh_boolean.py` is the trusted manifold3d
-  backend (no `cadx` imports — it loads inside the sandbox). `runner_entry`
+  backend (no `kiara` imports — it loads inside the sandbox). `runner_entry`
   injects it via `cadlib.ops.set_boolean_backend()` so `mesh_cut`/`mesh_fuse`/
   `mesh_intersect`/`trim_below` keep OCC first and only rescue on
   None/exception/wreckage. The runner also attaches the source trimesh to the
-  imported solid (`_cadx_mesh` attr) — re-tessellating a sewn solid costs
+  imported solid (`_kiara_mesh` attr) — re-tessellating a sewn solid costs
   minutes, never drop that attachment. `mesh_to_solid` returns a
   `UnifySameDomain`-unified solid; anchor bores measured on the image are
   deterministically re-cut by the runner when generated code missed them.
@@ -231,13 +231,13 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   SF-bearing fields, thread them through `toolloop._METRIC_KEYS` so
   compaction doesn't drop them, and chain fallbacks on `is None` (a solved
   SF of 0.0 is a verdict, not a missing value).
-- Native kernels (`backend/cadx_native`, optional Rust/PyO3): build with
-  `cd backend/cadx_native && uvx maturin develop --release` — **re-run after
+- Native kernels (`backend/kiara_native`, optional Rust/PyO3): build with
+  `cd backend/kiara_native && uvx maturin develop --release` — **re-run after
   every `make sync`** (uv sync removes non-locked packages). The module is
-  strictly additive: `cadx/cad/native.py` is the only import point, every
+  strictly additive: `kiara/cad/native.py` is the only import point, every
   helper returns `None` on missing/failed native and the caller keeps the
-  Python path. Kill switches: `CADX_NATIVE=0` (master), `CADX_NATIVE_GEOM=0`
-  / `CADX_NATIVE_FEM=0` (bisect). Rules for crate changes: NO global thread
+  Python path. Kill switches: `KIARA_NATIVE=0` (master), `KIARA_NATIVE_GEOM=0`
+  / `KIARA_NATIVE_FEM=0` (bisect). Rules for crate changes: NO global thread
   pools (the executor forks sandbox/pool children — `std::thread::scope`
   only), deterministic output per input, trimesh/scipy conventions
   replicated verbatim (parity tests in `tests/native/` gate every swap).
@@ -245,7 +245,7 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   each stage's last `uv sync`.
 - Commits: one per milestone step, descriptive message.
 
-## MCP server (`cadx/mcpserver/`)
+## MCP server (`kiara/mcpserver/`)
 - Exposes the deterministic tool surface to external agents over MCP —
   **strictly LLM-free**. `McpToolSession` runs with `ctx.llm = None`;
   `generate_part`/`edit_version`/`answer_questions`/`enqueue_resume` and every
@@ -256,11 +256,11 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   logic). `MCP_HANDLERS` shadows same-named `_tool_*` methods on MCP
   sessions only (`_mcp_handlers_enabled`).
 - Transports: `kiara mcp` (stdio) and `/mcp` on the API (Streamable HTTP,
-  `CADX_MCP_TOKEN` bearer when configured). Spawn tools default `wait=false`
+  `KIARA_MCP_TOKEN` bearer when configured). Spawn tools default `wait=false`
   on this surface. See `docs/mcp-server.md`.
 
 - Anleitungsbuilder (PDF manual → Unity AR guide, `docs/anleitungsbuilder.md`,
-  master plan `docs/anleitungsbuilder-masterplan.md`): `cadx/guide/` package,
+  master plan `docs/anleitungsbuilder-masterplan.md`): `kiara/guide/` package,
   `JobType.guide`/`VersionKind.guide` (migration `v3l4m5n6o7p8`), `AssetKind.pdf`/
   `cad_glb`. Missions run as bounded `run_session` calls with per-mission tool
   allowlists (`guide/tools.py`); `GuideState` is the atomic blackboard keyed by
@@ -269,7 +269,7 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   `candidate_id`s, never transforms. Heavy CAD work (`extract_ports`,
   `render_assembly`) runs on the `cad-light` executor lane; collisions use
   manifold3d. Unity export converts mm/Z-up RH → m/Y-up LH explicitly
-  (`guide/unity.py`, golden-tested). Guide jobs need `CADX_AGENT_MAX_JOBS ≥ 2`
+  (`guide/unity.py`, golden-tested). Guide jobs need `KIARA_AGENT_MAX_JOBS ≥ 2`
   when generating missing parts.
 
 ## Testing

@@ -14,10 +14,10 @@ from build123d import (
     import_step,
 )
 
-import cadx.cad.exporters as exporters_mod
-from cadx.cad.exporters import export_2d, export_all_3d, quick_stl
-from cadx.cad.render import _load_for_render, _thread_detail_camera, render_available, render_views
-from cadx.cad.sandbox import run_user_code
+import kiara.cad.exporters as exporters_mod
+from kiara.cad.exporters import export_2d, export_all_3d, quick_stl
+from kiara.cad.render import _load_for_render, _thread_detail_camera, render_available, render_views
+from kiara.cad.sandbox import run_user_code
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -81,7 +81,7 @@ def test_render_views(shape, tmp_path):
 
 @pytest.mark.render
 def test_render_views_ghost_disabled(shape, tmp_path, monkeypatch):
-    monkeypatch.setenv("CADX_RENDER_GHOST_OPACITY", "0")
+    monkeypatch.setenv("KIARA_RENDER_GHOST_OPACITY", "0")
     if not render_available():
         pytest.skip("offscreen rendering unavailable")
     stl = quick_stl(shape, tmp_path / "r", name="mesh")
@@ -104,7 +104,7 @@ def test_render_views_ghost_param(shape, tmp_path):
 
 def test_render_quality_modes():
     """Attempt renders: 512px no ghosts; export re-render: full res + xray."""
-    from cadx.cad.engine import _render_quality
+    from kiara.cad.engine import _render_quality
 
     assert _render_quality("preview") == (512, False)
     assert _render_quality("export") == (1024, True)
@@ -166,7 +166,7 @@ def test_load_for_render_welds_facet_soup(tmp_path):
 def test_part_surface_welds_trimesh_soup():
     """FEM overlays build PolyData straight from trimesh arrays — trimesh
     keeps per-facet duplicated vertices, so the weld must happen there."""
-    from cadx.cad.fem.analyze import _part_surface
+    from kiara.cad.fem.analyze import _part_surface
 
     base = trimesh.creation.box()
     soup = trimesh.Trimesh(  # OCC-style: every facet carries its own vertices

@@ -127,7 +127,7 @@ sequenceDiagram
     UI->>API: GET /api/jobs/{id}, version detail, artifacts
 ```
 
-## Code layout (backend/cadx)
+## Code layout (backend/kiara)
 
 - `agent/` — orchestrator state machine, per-step modules (`steps/`),
   tool sessions (`toolloop.py`, `toolspecs.py`, `mesh_tools.py`), mesh/image
@@ -184,11 +184,11 @@ sequenceDiagram
   [mcp-server.md](mcp-server.md)
 - `evalkit/` — the evaluation harness (`kiara eval`): suite loader, http +
   local drivers, gates/metrics, report/baseline/clean — [eval.md](eval.md)
-- `../cadx_native/` — optional Rust/PyO3 kernel (maturin/abi3): BVH mesh
+- `../kiara_native/` — optional Rust/PyO3 kernel (maturin/abi3): BVH mesh
   queries (contains/ray/scanline voxel fill), CSR Hex8 assembly and a
   parallel SpMV for the CG paths. `cad/native.py` is the only import point:
   every helper returns None on miss so the trimesh/SciPy implementations
-  stay the fallback — `CADX_NATIVE=0` (or `_GEOM`/`_FEM`) kills it. The
+  stay the fallback — `KIARA_NATIVE=0` (or `_GEOM`/`_FEM`) kills it. The
   Dockerfile's `rust-builder` stage builds the wheel on the same trixie
   base and installs it after each stage's last `uv sync`; parity tests in
   `tests/native/` gate every callsite swap. Not importable from generated
@@ -238,7 +238,7 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   `Version` carries `part_id` (NOT NULL, FK): children strictly inherit
   `parent.part_id`; a part owns one or more ROOT trees (multiple roots
   arise from restarts and "try again" generations). Resolution lives in
-  one chokepoint — `cadx.parts.resolve_part`, called by
+  one chokepoint — `kiara.parts.resolve_part`, called by
   `spawn_version_job` for every new root: explicit `part_id` is validated
   against the project, `part_name` matches case-insensitively or creates,
   omitted → a new part is auto-created from the prompt (full backward
@@ -360,7 +360,7 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   `ctx.llm = None`; a session tool calling the WebUI's LLM would raise.
   Restart is refused for LLM-generated jobs. Transports: `kiara mcp` (stdio)
   and `/mcp` (Streamable HTTP on the api service; optional
-  `CADX_MCP_TOKEN` bearer). See [mcp-server.md](mcp-server.md).
+  `KIARA_MCP_TOKEN` bearer). See [mcp-server.md](mcp-server.md).
 - **Analytic STEP for mesh paths**: refine/topopt children export STEP via
   `export_analytic_step_isolated` — a spawned subprocess per feature with a
   hard timeout (`analytic_step_timeout_s`), BREP checkpoints between
@@ -373,7 +373,7 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   diff) — partial `ok:false` results when OCC booleans are skipped. Jobs can
   be `answer`ed (clarify), `cancel`ed, `finish`ed (keep best so far) or
   `restart`ed (sibling replay) from REST, chat and MCP.
-- **Optional Rust kernels, Python owns every contract**: `backend/cadx_native`
+- **Optional Rust kernels, Python owns every contract**: `backend/kiara_native`
   accelerates the executor's hottest Python loops (BVH mesh queries that
   dominate `features_s`, CSR Hex8 assembly, parallel SpMV inside CG) while
   trimesh/SciPy/OCC keep defining the results — every native call returns
@@ -383,7 +383,7 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   Threading is scoped-per-call (no global pool) because the executor forks
   sandbox and case-pool children; per-kind kill switches bisect rollouts.
 - **No auth**: single-user local. The only credential-gated surface is the
-  optional `CADX_MCP_TOKEN` bearer on `/mcp`. Do not expose the stack on a
+  optional `KIARA_MCP_TOKEN` bearer on `/mcp`. Do not expose the stack on a
   network.
 
 ## Security notes

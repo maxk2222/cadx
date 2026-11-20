@@ -8,7 +8,7 @@ the mesh-boolean no-op and the OCC frozen-shape / open-wire loft failures)
 
 from __future__ import annotations
 
-from cadx.cad.errordiag import diagnose
+from kiara.cad.errordiag import diagnose
 
 CODE = "line1\nline2\nline3\nline4\nline5\nline6\nline7\n"
 

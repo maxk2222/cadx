@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cadx.cad import codeedits as ce
+from kiara.cad import codeedits as ce
 
 CODE = """PARAMS = {
     "length": 100.0,  # mm overall

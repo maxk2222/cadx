@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cadx.cad.fem.voxelize import VoxelDomain
+from kiara.cad.fem.voxelize import VoxelDomain
 
 
 def find_ccx() -> str | None:
@@ -52,7 +52,7 @@ def write_inp(
     coords = dom.node_coords()[used]
     F3 = F.reshape(-1, 3)
 
-    lines = ["*HEADING", "cadx femverify same-mesh cross-check", "*NODE"]
+    lines = ["*HEADING", "kiara femverify same-mesh cross-check", "*NODE"]
     lines += [f"{i + 1}, {c[0]:.10g}, {c[1]:.10g}, {c[2]:.10g}" for i, c in enumerate(coords)]
     lines.append("*ELEMENT, TYPE=C3D8, ELSET=ALL")
     for e_no, e in enumerate(solid, start=1):

@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from cadx.cad.sandbox import run_user_code
+from kiara.cad.sandbox import run_user_code
 
 CASES = {
     "import_os": "import os\nPARAMS={}\nresult=os\n",

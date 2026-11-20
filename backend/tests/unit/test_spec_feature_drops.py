@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from cadx.agent.specdrops import drop_spec_feature
-from cadx.cad.spec_features import active_feature_rows, dropped_feature_indices
-from cadx.cad.verifyspec import verify_spec
-from cadx.llm.schemas import Dim, Feature, PartSpec
+from kiara.agent.specdrops import drop_spec_feature
+from kiara.cad.spec_features import active_feature_rows, dropped_feature_indices
+from kiara.cad.verifyspec import verify_spec
+from kiara.llm.schemas import Dim, Feature, PartSpec
 
 
 def _spec() -> PartSpec:
@@ -77,8 +77,8 @@ def test_verifyspec_skips_active_checks_but_reports_drops() -> None:
 
 @pytest.mark.asyncio
 async def test_tool_session_drop_updates_submission_audit() -> None:
-    from cadx.agent.toolspecs import ToolSession
-    from cadx.llm.fake import FakeLLM
+    from kiara.agent.toolspecs import ToolSession
+    from kiara.llm.fake import FakeLLM
     from tests.unit.test_session_condense import _ctx
 
     spec = _spec()
@@ -105,7 +105,7 @@ async def test_tool_session_drop_updates_submission_audit() -> None:
 
 
 def test_tool_feature_audit_does_not_require_a_dropped_feature() -> None:
-    from cadx.agent.toolspecs import feature_audit_missing
+    from kiara.agent.toolspecs import feature_audit_missing
 
     spec = _spec()
     drop_spec_feature(spec, 1, "unsupported fillet geometry", iteration=1, session="codegen")

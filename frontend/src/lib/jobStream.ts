@@ -2,7 +2,7 @@
  * Pure event-application logic for the job SSE stream (`useJobEvents`).
  * Extracted so the reconnect/dedupe/cap semantics are testable without a DOM.
  *
- * Server contract (backend/cadx/api/routers/sse.py):
+ * Server contract (backend/kiara/api/routers/sse.py):
  *  - the first `status` event carries the ENTIRE cumulative job log — on every
  *    EventSource auto-reconnect the backlog is replayed and must REPLACE prior
  *    backlog lines, not append;

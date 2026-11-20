@@ -10,10 +10,10 @@ from httpx import ASGITransport, AsyncClient
 from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from cadx import storage
-from cadx.agent.image_assets import persist_generated_images
-from cadx.db.models import AssetKind, Project
-from cadx.db.session import create_all, session_scope
+from kiara import storage
+from kiara.agent.image_assets import persist_generated_images
+from kiara.db.models import AssetKind, Project
+from kiara.db.session import create_all, session_scope
 
 
 def _png(tmp_path, name="g0.png", size=(32, 24)) -> Path:
@@ -83,15 +83,15 @@ async def test_persist_multiple_and_caption_override(db: AsyncSession, tmp_path)
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
 
 
 async def test_generate_images_api(client, monkeypatch):
-    from cadx.agent.image_client import FakeImageClient
-    from cadx.api.routers import images as images_router
+    from kiara.agent.image_client import FakeImageClient
+    from kiara.api.routers import images as images_router
 
     monkeypatch.setattr(images_router, "make_image_client", lambda **kw: FakeImageClient())
     # project
@@ -118,8 +118,8 @@ async def test_generate_images_api(client, monkeypatch):
 
 
 async def test_generate_images_503_without_adapter(client, monkeypatch):
-    from cadx.agent.image_client import FakeImageClient
-    from cadx.api.routers import images as images_router
+    from kiara.agent.image_client import FakeImageClient
+    from kiara.api.routers import images as images_router
 
     class NoModels(FakeImageClient):
         async def models(self):
@@ -133,7 +133,7 @@ async def test_generate_images_503_without_adapter(client, monkeypatch):
 
 
 async def test_generate_images_503_unconfigured(client, monkeypatch):
-    from cadx.api.routers import images as images_router
+    from kiara.api.routers import images as images_router
 
     monkeypatch.setattr(images_router, "make_image_client", lambda **kw: None)
     r = await client.post("/api/projects", json={"name": "imgtest3", "description": ""})
@@ -144,8 +144,8 @@ async def test_generate_images_503_unconfigured(client, monkeypatch):
 
 async def test_generated_image_derivable(client, monkeypatch):
     """generated_image assets can be edited like regular images (derivative)."""
-    from cadx.agent.image_client import FakeImageClient
-    from cadx.api.routers import images as images_router
+    from kiara.agent.image_client import FakeImageClient
+    from kiara.api.routers import images as images_router
 
     monkeypatch.setattr(images_router, "make_image_client", lambda **kw: FakeImageClient())
     r = await client.post("/api/projects", json={"name": "imgtest4", "description": ""})

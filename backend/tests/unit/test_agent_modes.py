@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.mesh_client import FakeMeshClient, MeshHealth, MeshModelInfo
-from cadx.agent.orchestrator import _resolve_mesh_adapter, resolve_mode, run_generation
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx, InputAsset
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import ModelingPlan, PartSpec
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.mesh_client import FakeMeshClient, MeshHealth, MeshModelInfo
+from kiara.agent.orchestrator import _resolve_mesh_adapter, resolve_mode, run_generation
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx, InputAsset
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import ModelingPlan, PartSpec
+from kiara.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
@@ -68,7 +68,7 @@ def _img(seed: int | None = None) -> InputAsset:
     from PIL import Image, ImageDraw
 
     aid = str(uuid.uuid4())
-    p = Path(tempfile.mkdtemp(prefix="cadx-img-")) / f"{aid[:8]}.png"
+    p = Path(tempfile.mkdtemp(prefix="kiara-img-")) / f"{aid[:8]}.png"
     # deterministic subject-on-transparent: the alpha channel doubles as the
     # reference mask — rembg never runs in unit tests and the mask is noise-
     # free. The subject is deliberately TINY (~4-5 px): the _ref_side_mask
@@ -526,7 +526,7 @@ async def test_mesh_refine_regenerate_triggers_new_seed(tmp_path):
             MESH_CRITIQUE,
         ]
     )
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.runtime_config import RuntimeSettings
 
     mesh = FakeMeshClient()
     ctx = _ctx(
@@ -738,7 +738,7 @@ async def test_mesh_repair_skipped_after_two_regressions(tmp_path):
 
 async def test_mesh_tools_disabled_keeps_seed_loop(tmp_path):
     """agent_mesh_tools=False → no sessions, previous behaviour unchanged."""
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.runtime_config import RuntimeSettings
 
     llm = FakeLLM([MESH_SPEC, MESH_PLAN, MESH_ORIENT, MESH_CRITIQUE])
     mesh = FakeMeshClient()
@@ -763,7 +763,7 @@ async def test_mesh_tools_disabled_keeps_seed_loop(tmp_path):
 async def test_mesh_refine_unavailable_falls_back(tmp_path, monkeypatch):
     """Refine returning None (tools stripped mid-job, workbench failed) keeps
     the loop on the plain critique path."""
-    from cadx.agent.steps import mesh_refine
+    from kiara.agent.steps import mesh_refine
 
     async def no_session(*a, **k):
         return None
@@ -787,7 +787,7 @@ async def test_mesh_refine_unavailable_falls_back(tmp_path, monkeypatch):
 async def test_mesh_regen_exhaustion_falls_back_to_cad(monkeypatch, tmp_path):
     """Every refine session rejects the mesh (regenerate) → iterations burn →
     with ≥2 stated dims the outcome must request the CAD fallback."""
-    from cadx.agent.steps import mesh_refine as mesh_refine_step
+    from kiara.agent.steps import mesh_refine as mesh_refine_step
 
     async def always_regen(*a, **kw):
         return mesh_refine_step.RefineResult(regenerate=True, reasoning="flat slab")
@@ -1001,7 +1001,7 @@ async def test_topopt_agent_declines_keeps_base(monkeypatch):
 def test_mesh_source_images_maps_intake_roles():
     """Flat part with a top view: the top view becomes the generator's hero
     (role 'front'), a second view degrades to 'other'."""
-    from cadx.agent.orchestrator import _mesh_source_images
+    from kiara.agent.orchestrator import _mesh_source_images
 
     top = _img()
     iso = _img()
@@ -1026,7 +1026,7 @@ def test_mesh_source_images_blank_intake_roles_use_measurements():
     produced no usable roles, the deterministic measure step's plan-view
     classification must drive the generator mapping (regression: blank roles
     collapsed to front+other x3 -> a standing 'banana' mesh for a flat scale)."""
-    from cadx.agent.orchestrator import _mesh_source_images
+    from kiara.agent.orchestrator import _mesh_source_images
 
     top = _img()
     side = _img()
@@ -1047,7 +1047,7 @@ def test_mesh_source_images_blank_intake_roles_use_measurements():
 def test_mesh_source_images_measured_plan_overrides_intake_side():
     """For flat parts a measured 'top' beats an intake that mislabeled the
     face-up photo as a side elevation."""
-    from cadx.agent.orchestrator import _mesh_source_images
+    from kiara.agent.orchestrator import _mesh_source_images
 
     face = _img()
     side = _img()
@@ -1070,7 +1070,7 @@ def test_mesh_source_images_measured_plan_overrides_intake_side():
 
 def test_intake_repairs_blank_image_roles_positionally():
     """_repair_image_roles binds all-blank asset_ids by image order."""
-    from cadx.agent.steps.intake import _repair_image_roles
+    from kiara.agent.steps.intake import _repair_image_roles
 
     a, b = _img(), _img()
     spec = PartSpec(
@@ -1097,8 +1097,8 @@ def test_intake_repairs_blank_image_roles_positionally():
 
 async def test_generate_mesh_cache_hit_skips_server(tmp_path):
     """Second identical generation is served from the disk cache."""
-    from cadx.agent.orchestrator import _generate_mesh
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.agent.orchestrator import _generate_mesh
+    from kiara.runtime_config import RuntimeSettings
 
     spec = PartSpec(
         name="knob",
@@ -1127,7 +1127,7 @@ async def test_generate_mesh_cache_hit_skips_server(tmp_path):
 def test_mesh_source_images_adds_synth_back_view_for_flat_parts():
     """Flat part with a measured outline and no bottom view gets a synthetic
     filled-silhouette 'back' so the generator anchors the underside."""
-    from cadx.agent.orchestrator import _mesh_source_images
+    from kiara.agent.orchestrator import _mesh_source_images
 
     top = _img()
     spec = PartSpec(
@@ -1154,7 +1154,7 @@ def test_mesh_source_images_adds_synth_back_view_for_flat_parts():
 
 
 def test_mesh_source_images_no_synth_back_when_outline_missing():
-    from cadx.agent.orchestrator import _mesh_source_images
+    from kiara.agent.orchestrator import _mesh_source_images
 
     top = _img()
     spec = PartSpec(
@@ -1171,7 +1171,7 @@ def test_mesh_source_images_no_synth_back_when_outline_missing():
 
 
 async def test_candidate_adapters_prefers_configured_csv():
-    from cadx.agent.orchestrator import _candidate_adapters
+    from kiara.agent.orchestrator import _candidate_adapters
 
     ctx = _ctx(
         runtime_settings=RuntimeSettings(mesh_candidate_adapters="triposg, hunyuan3d, trellis2")
@@ -1180,7 +1180,7 @@ async def test_candidate_adapters_prefers_configured_csv():
 
 
 async def test_candidate_adapters_auto_spreads_over_health():
-    from cadx.agent.orchestrator import _candidate_adapters
+    from kiara.agent.orchestrator import _candidate_adapters
 
     class _Multi(FakeMeshClient):
         async def health(self):
@@ -1202,7 +1202,7 @@ async def test_candidate_adapters_auto_spreads_over_health():
 async def test_candidate_adapters_skips_image_adapters():
     """Image-generation adapters (flux/sdxl) must never become mesh candidates —
     they report available + max_images=0 and would poison candidate screening."""
-    from cadx.agent.orchestrator import _candidate_adapters
+    from kiara.agent.orchestrator import _candidate_adapters
 
     class _Mixed(FakeMeshClient):
         async def health(self):
@@ -1223,8 +1223,8 @@ async def test_candidate_adapters_skips_image_adapters():
 
 
 def test_pick_adapter_skips_image_adapters():
-    from cadx.agent.mesh_client import MeshModelInfo
-    from cadx.agent.model_pick import pick_adapter
+    from kiara.agent.mesh_client import MeshModelInfo
+    from kiara.agent.model_pick import pick_adapter
 
     models = [
         MeshModelInfo(id="flux-schnell-mlx", device="mlx", kind="image", available=True),
@@ -1238,8 +1238,8 @@ def test_pick_adapter_prefers_mlx_over_torch_mps_multiview():
     """B.1: on an MLX host the only multiview adapters are torch-mps builds
     (stall-prone under memory pressure) — auto-pick must choose a native
     single-image adapter instead, capping the images it can use."""
-    from cadx.agent.mesh_client import MeshModelInfo
-    from cadx.agent.model_pick import pick_adapter
+    from kiara.agent.mesh_client import MeshModelInfo
+    from kiara.agent.model_pick import pick_adapter
 
     models = [
         MeshModelInfo(
@@ -1281,7 +1281,7 @@ async def test_generate_mesh_uses_heightfield_for_flat_part():
     candidate wins even without candidate screening — no generator call."""
     import time
 
-    from cadx.agent.orchestrator import _generate_mesh
+    from kiara.agent.orchestrator import _generate_mesh
 
     top = _img()
     spec = PartSpec(
@@ -1320,7 +1320,7 @@ async def test_generate_mesh_hopeless_gate_skips_full_generation(monkeypatch):
     """
     import time
 
-    from cadx.agent.orchestrator import _generate_mesh
+    from kiara.agent.orchestrator import _generate_mesh
 
     spec = PartSpec(
         name="scale",
@@ -1338,7 +1338,7 @@ async def test_generate_mesh_hopeless_gate_skips_full_generation(monkeypatch):
     # the fake blob legitimately scores above the viability bar in its best
     # orientation — force hopeless scores so the test exercises the gate
     # itself instead of depending on fragile geometry scoring
-    import cadx.agent.orchestrator.mesh_pipeline as mp
+    import kiara.agent.orchestrator.mesh_pipeline as mp
 
     # _candidate_seed resolves _score_candidate_mesh inside mesh_pipeline —
     # patching the package re-export would not reach the call site
@@ -1355,7 +1355,7 @@ def test_mesh_source_images_dedupes_near_identical(tmp_path):
     reach the generator — it would waste a view slot on the same pose."""
     from PIL import Image
 
-    from cadx.agent.orchestrator import _mesh_source_images
+    from kiara.agent.orchestrator import _mesh_source_images
 
     a = _img()
     # byte-different but perceptually identical copy of a's image
@@ -1385,8 +1385,8 @@ def test_mesh_source_images_dedupes_near_identical(tmp_path):
 def test_hybrid_missing_mesh_ranks_lower():
     """T4.5: an improve result that dropped load_mesh_solid() must rank below
     any candidate that kept the organic base body — regardless of score."""
-    from cadx.agent.orchestrator import Candidate
-    from cadx.llm.schemas import Critique
+    from kiara.agent.orchestrator import Candidate
+    from kiara.llm.schemas import Critique
 
     good = Candidate(1, None, {}, Critique(score=70, passed=True), [])
     bad = Candidate(2, None, {}, Critique(score=90, passed=True), [], hybrid_missing=True)
@@ -1399,8 +1399,8 @@ def test_wrecked_hybrid_candidate_never_ranks_best():
     while every healthier iteration had dropped it. Contract fidelity must only
     decide BETWEEN viable candidates; a critique-floor wreck with majors can
     never claim best."""
-    from cadx.agent.orchestrator import Candidate
-    from cadx.llm.schemas import Critique, Discrepancy
+    from kiara.agent.orchestrator import Candidate
+    from kiara.llm.schemas import Critique, Discrepancy
 
     def _majors(n: int) -> list[Discrepancy]:
         return [
@@ -1441,8 +1441,8 @@ def test_feature_regression_ranks_lower():
     """Measured feature count is the LAST rank tiebreak now: it still splits
     otherwise-identical candidates, but it no longer outweighs dq/score —
     extra holes drilled through a gusset used to be rewarded (bracket run)."""
-    from cadx.agent.orchestrator import Candidate
-    from cadx.llm.schemas import Critique
+    from kiara.agent.orchestrator import Candidate
+    from kiara.llm.schemas import Critique
 
     with_feats = Candidate(
         1,
@@ -1493,7 +1493,7 @@ async def test_cad_fallback_strips_mesh_plan(monkeypatch, tmp_path):
     cleared, approach rewritten to cad."""
     import json
 
-    from cadx.agent.steps import mesh_refine as mesh_refine_step
+    from kiara.agent.steps import mesh_refine as mesh_refine_step
 
     async def always_regen(*a, **kw):
         return mesh_refine_step.RefineResult(regenerate=True, reasoning="flat slab")
@@ -1573,7 +1573,7 @@ async def test_cad_fallback_strips_mesh_plan(monkeypatch, tmp_path):
 
 def test_cad_fallback_plan_unit():
     """Deterministic plan rewrite: mesh steps dropped, hybrid features kept."""
-    from cadx.agent.steps.plan import cad_fallback_plan
+    from kiara.agent.steps.plan import cad_fallback_plan
 
     plan = ModelingPlan(
         approach="hybrid",  # type: ignore[arg-type]

@@ -11,8 +11,8 @@ from typing import Any
 
 import pytest
 
-from cadx.agent import quickref as qr
-from cadx.agent.toolspecs import INFO_TOOLS, ToolSession
+from kiara.agent import quickref as qr
+from kiara.agent.toolspecs import INFO_TOOLS, ToolSession
 
 
 def test_build123d_topic_core_signatures() -> None:
@@ -90,9 +90,9 @@ def test_tool_schema_registered_in_info_tools() -> None:
 def _ctx(**overrides) -> Any:
     import uuid
 
-    from cadx.agent.types import AgentCtx
-    from cadx.db.models import ProjectSettings
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.agent.types import AgentCtx
+    from kiara.db.models import ProjectSettings
+    from kiara.runtime_config import RuntimeSettings
 
     kw = {
         "llm": None,
@@ -119,8 +119,8 @@ def test_quickref_offered_in_code_edit_info_sessions() -> None:
 
 
 def test_codegen_user_parts_gated_by_setting() -> None:
-    from cadx.agent.steps.codegen import _user_parts
-    from cadx.llm.schemas import PartSpec
+    from kiara.agent.steps.codegen import _user_parts
+    from kiara.llm.schemas import PartSpec
 
     dim = {"value": 60.0, "unit": "mm", "source": "stated"}
     spec = PartSpec.model_validate(

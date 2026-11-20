@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from cadx.cad.patch import apply_edits, apply_patch, diff_summary
-from cadx.llm.schemas import PatchEdit
+from kiara.cad.patch import apply_edits, apply_patch, diff_summary
+from kiara.llm.schemas import PatchEdit
 
 CODE = """from build123d import *
 

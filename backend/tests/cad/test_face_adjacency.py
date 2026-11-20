@@ -17,7 +17,7 @@ from build123d import (
     Rot,
 )
 
-from cadx.cad.features import (
+from kiara.cad.features import (
     MeasuredFeatures,
     MeasuredGroove,
     MeasuredNotch,
@@ -25,7 +25,7 @@ from cadx.cad.features import (
     assign_feature_ids,
     extract_features,
 )
-from cadx.cad.verifyspec import verify_spec
+from kiara.cad.verifyspec import verify_spec
 
 
 def _pocket_part():

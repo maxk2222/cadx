@@ -18,7 +18,7 @@ python3 -m venv .venv && .venv/bin/python -m pip install uv
 make sync                      # backend venv + locked deps
 make sync-fem                  # optional: CHOLMOD/AMG FEM solver tier
                                # (needs SuiteSparse headers, see fem-topopt.md)
-cd backend/cadx_native && uvx maturin develop --release
+cd backend/kiara_native && uvx maturin develop --release
                                # optional: Rust kernel (needs a Rust toolchain);
                                # re-run after every `make sync` — uv removes
                                # non-locked packages
@@ -68,9 +68,9 @@ humans and agents alike. The short version:
 - Backend strings (job log lines, warnings, DFM codes) stay English by design —
   only UI chrome is translated.
 - Never put the LLM API key in DB/logs/traces.
-- Every LLM prompt lives in `backend/cadx/agent/prompts/*.md` — never inline
+- Every LLM prompt lives in `backend/kiara/agent/prompts/*.md` — never inline
   prompt text in Python.
-- All file paths go through `cadx/storage.py`; DB writes use short
+- All file paths go through `kiara/storage.py`; DB writes use short
   transactions.
 - LLM-generated code only ever runs through `cad/sandbox.py` inside the
   executor — never `exec()` in-process. Allowed imports: `build123d`,

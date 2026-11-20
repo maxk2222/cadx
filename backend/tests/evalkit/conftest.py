@@ -10,7 +10,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _stub_enqueue(monkeypatch: pytest.MonkeyPatch):
-    import cadx.api.deps as deps
+    import kiara.api.deps as deps
 
     async def fake_enqueue(func: str, payload: dict[str, Any]) -> str:
         return f"test-arq-{func}"

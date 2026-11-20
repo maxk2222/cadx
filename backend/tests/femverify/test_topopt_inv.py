@@ -21,12 +21,12 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.beso import beso
-from cadx.cad.fem.regions import resolve_case_dofs
-from cadx.cad.fem.solver import assemble, reduce_case, solve_reduced
-from cadx.cad.fem.topopt import RHO_MIN, TopOptParams, _heaviside, simp
-from cadx.cad.fem.voxelize import voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.beso import beso
+from kiara.cad.fem.regions import resolve_case_dofs
+from kiara.cad.fem.solver import assemble, reduce_case, solve_reduced
+from kiara.cad.fem.topopt import RHO_MIN, TopOptParams, _heaviside, simp
+from kiara.cad.fem.voxelize import voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_MPA = 3500.0
 NU = 0.36

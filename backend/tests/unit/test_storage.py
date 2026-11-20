@@ -1,10 +1,10 @@
-"""cadx.storage path-safety: resolve() must reject sibling-prefix escapes."""
+"""kiara.storage path-safety: resolve() must reject sibling-prefix escapes."""
 
 from __future__ import annotations
 
 import pytest
 
-from cadx import storage
+from kiara import storage
 
 
 def test_resolve_inside_data_dir():

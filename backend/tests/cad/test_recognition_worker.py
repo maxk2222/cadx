@@ -19,11 +19,11 @@ pytest.importorskip("build123d")
 
 from build123d import Box, export_brep  # noqa: E402
 
-from cadx.cad import recognition  # noqa: E402
+from kiara.cad import recognition  # noqa: E402
 
 
 def _brep(shape) -> str:
-    td = tempfile.mkdtemp(prefix="cadx-rec-test-")
+    td = tempfile.mkdtemp(prefix="kiara-rec-test-")
     p = Path(td) / "s.brep"
     export_brep(shape, str(p))
     return str(p)

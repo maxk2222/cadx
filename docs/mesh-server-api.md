@@ -1,6 +1,6 @@
 # mesh-server HTTP API
 
-Contract between `cadx` (worker → `agent/mesh_client.py` /
+Contract between `kiara` (worker → `agent/mesh_client.py` /
 `agent/image_client.py`, LLM via `llm/client.py`) and the `mesh_server/`
 sidecar. Both sides keep their own pydantic models — there is
 **no code sharing** between the two projects; this document is the contract.

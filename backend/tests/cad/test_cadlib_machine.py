@@ -10,8 +10,8 @@ import math
 import pytest
 from build123d import Box, Pos, Rot, Sphere
 
-from cadx.cad.cadlib import machine
-from cadx.cad.cadlib.ops import set_detail_mode
+from kiara.cad.cadlib import machine
+from kiara.cad.cadlib.ops import set_detail_mode
 
 
 @pytest.fixture(autouse=True)
@@ -173,7 +173,7 @@ def test_tapped_hole_rejects_drill_at_or_above_major() -> None:
     """drill_dia >= major_d puts the whole groove ridge inside the bore void —
     the helical cutter subtracts nothing and the export ships a smooth hole
     with a phantom thread declaration (block_sidewall_tap drill=9/M8)."""
-    from cadx.cad.cadlib.cutouts import tapped_hole
+    from kiara.cad.cadlib.cutouts import tapped_hole
 
     with pytest.raises(ValueError, match="drill_dia 9.0 must be < major_d"):
         tapped_hole(8.0, 1.25, 20.0, drill_dia=9.0)

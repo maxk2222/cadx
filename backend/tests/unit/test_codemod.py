@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 
-from cadx.cad.codemod import fix_api_misuse
+from kiara.cad.codemod import fix_api_misuse
 
 
 def test_simple_translate_rewrite():

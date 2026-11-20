@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad import mesh_ops
-from cadx.cad import mesh_repair_pml as pml_mod
+from kiara.cad import mesh_ops
+from kiara.cad import mesh_repair_pml as pml_mod
 
 
 def _sphere_open() -> trimesh.Trimesh:

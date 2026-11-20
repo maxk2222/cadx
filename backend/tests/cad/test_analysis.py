@@ -2,8 +2,8 @@ from pathlib import Path
 
 from build123d import import_brep
 
-from cadx.cad.analysis import analyze
-from cadx.cad.sandbox import run_user_code
+from kiara.cad.analysis import analyze
+from kiara.cad.sandbox import run_user_code
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 

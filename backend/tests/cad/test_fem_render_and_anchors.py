@@ -20,9 +20,9 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.anchors3d import merge_anchor_lists, scan_mesh_anchors
-from cadx.cad.fem.voxelize import VoxelDomain, voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.anchors3d import merge_anchor_lists, scan_mesh_anchors
+from kiara.cad.fem.voxelize import VoxelDomain, voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 
 def _bored_mesh() -> trimesh.Trimesh:
@@ -61,7 +61,7 @@ def test_grid_image_solid_respects_fortran_order() -> None:
     C-order flattening pyvista misreads the mask and the section view
     becomes a confetti block spanning the full height."""
     pytest.importorskip("pyvista")
-    from cadx.cad.fem.analyze import _grid_image
+    from kiara.cad.fem.analyze import _grid_image
 
     dims = (10, 8, 6)
     solid = np.zeros(dims, dtype=bool)
@@ -140,7 +140,7 @@ def test_render_regions_bearing_load(tmp_path: Path) -> None:
     """A bearing_n load on a `bore` region writes the preview PNG (when
     offscreen rendering works) and the resolved resultant is > 0."""
     pytest.importorskip("pyvista")
-    from cadx.cad.fem.preview import render_regions, resolve_case_summary
+    from kiara.cad.fem.preview import render_regions, resolve_case_summary
 
     mesh = _bored_mesh()
     dom = voxelize(mesh, 2.0, 150_000)
@@ -174,7 +174,7 @@ def test_render_regions_moment_ring(tmp_path: Path) -> None:
     """A pure `moment_nm` load draws the ring marker (not an arrow) and the
     summary exposes the applied moment split — moments must be VISIBLE."""
     pytest.importorskip("pyvista")
-    from cadx.cad.fem.preview import _load_arrows, render_regions, resolve_case_summary
+    from kiara.cad.fem.preview import _load_arrows, render_regions, resolve_case_summary
 
     mesh = _bored_mesh()
     dom = voxelize(mesh, 2.0, 150_000)

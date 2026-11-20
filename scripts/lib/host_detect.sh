@@ -1,5 +1,5 @@
 # Host/VM resource detection for docker-compose cpu/mem caps.
-# Source this file; host_detect_env writes CADX_* values to stdout and
+# Source this file; host_detect_env writes KIARA_* values to stdout and
 # host_detect_merge_env merges them into a .env file (existing keys win).
 #
 # Detection prefers the Docker VM budget (docker info) over host
@@ -34,7 +34,7 @@ host_detect() {
 }
 
 host_detect_env() {
-  # echoes the CADX_* resource assignments
+  # echoes the KIARA_* resource assignments
   host_detect
   local total=${_host_cpus:-4}
   local mem_mb=$(( ${_host_mem_bytes:-8589934592} / 1048576 ))
@@ -48,8 +48,8 @@ host_detect_env() {
   local worker_mem=$(( mem_mb * 35 / 100 ))
   [ "$worker_mem" -lt 4096 ] && worker_mem=4096
   [ "$worker_mem" -gt 16384 ] && worker_mem=16384
-  printf 'CADX_EXECUTOR_CPUS=%s\nCADX_EXECUTOR_MEM=%sg\n' "$exec_cpus" "$((exec_mem / 1024))"
-  printf 'CADX_WORKER_CPUS=%s\nCADX_WORKER_MEM=%sg\n' "$worker_cpus" "$((worker_mem / 1024))"
+  printf 'KIARA_EXECUTOR_CPUS=%s\nKIARA_EXECUTOR_MEM=%sg\n' "$exec_cpus" "$((exec_mem / 1024))"
+  printf 'KIARA_WORKER_CPUS=%s\nKIARA_WORKER_MEM=%sg\n' "$worker_cpus" "$((worker_mem / 1024))"
 }
 
 host_detect_merge_env() {

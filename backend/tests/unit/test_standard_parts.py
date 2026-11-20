@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from cadx.cad import catalog
-from cadx.cad.allowlist import check_code
-from cadx.cad.partspec import check_standard_part_calls
-from cadx.cad.standard_parts import (
+from kiara.cad import catalog
+from kiara.cad.allowlist import check_code
+from kiara.cad.partspec import check_standard_part_calls
+from kiara.cad.standard_parts import (
     build_standard_part_code,
     expected_thread_count,
     is_standard_only,
     standard_part_bbox,
 )
-from cadx.llm.schemas import Dim, Feature, PartSpec, StandardPartSpec
+from kiara.llm.schemas import Dim, Feature, PartSpec, StandardPartSpec
 
 
 def _dims(length: float, width: float, height: float) -> tuple[Dim, Dim, Dim]:
@@ -52,7 +52,7 @@ def test_m10_catalog_recipe_is_sandbox_code_and_norm_sized() -> None:
     assert expected_thread_count(spec) == 1
     # LoD split: simple body always, real thread ridge only in export mode
     # (swept-helix block; bd simple=False as its fallback lane)
-    assert 'CADX_DETAIL_MODE == "export"' in code
+    assert 'KIARA_DETAIL_MODE == "export"' in code
     assert "simple=True" in code
     assert "'length': 32.0" in code
 
@@ -97,7 +97,7 @@ def test_resolve_class_name_rescues_near_miss_names() -> None:
 
 
 def test_sanitize_standard_part_names_rewrites_spec() -> None:
-    from cadx.agent.steps.intake import sanitize_standard_part_names
+    from kiara.agent.steps.intake import sanitize_standard_part_names
 
     part = StandardPartSpec(
         class_name="HexScrew",
@@ -121,7 +121,7 @@ def test_sanitize_standard_part_names_rewrites_spec() -> None:
 def test_nominal_length_is_not_an_envelope_dim() -> None:
     """'M8x50' put the catalog nominal length into length_x stated while the
     screw stands on Z — the 50 is the under-head nominal, never an extent."""
-    from cadx.agent.steps.intake import sanitize_standard_part_dims
+    from kiara.agent.steps.intake import sanitize_standard_part_dims
 
     part = StandardPartSpec(
         class_name="HexHeadScrew",
@@ -190,13 +190,13 @@ def test_standard_recipe_rejects_machining_helpers_as_parts() -> None:
 async def test_standard_only_spec_uses_validated_recipe_without_llm():
     import uuid
 
-    from cadx.agent.executor_client import InProcessExecutor
-    from cadx.agent.steps import codegen as codegen_step
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.db.models import ProjectSettings
-    from cadx.llm.fake import FakeLLM
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.agent.executor_client import InProcessExecutor
+    from kiara.agent.steps import codegen as codegen_step
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.db.models import ProjectSettings
+    from kiara.llm.fake import FakeLLM
+    from kiara.runtime_config import RuntimeSettings
 
     llm = FakeLLM([])
 
@@ -238,7 +238,7 @@ async def test_standard_only_spec_uses_validated_recipe_without_llm():
     )
     resp = await codegen_step.run(ctx, spec, None, iteration=1)
     assert "SocketHeadCapScrew" in resp.code
-    assert "CADX_DETAIL_MODE" in resp.code
+    assert "KIARA_DETAIL_MODE" in resp.code
     assert resp.expected_bbox == [30.0, 13.0, 13.0]
     assert not llm.calls  # the validated recipe path never consumed the model
 
@@ -522,7 +522,7 @@ def test_full_thread_request_overrides_norm_reach() -> None:
     assert "def calculate_thread_length" in code
     assert "return self.max_thread_length" in code
     assert is_standard_only(spec)
-    from cadx.cad.standard_parts import validate_standard_parts
+    from kiara.cad.standard_parts import validate_standard_parts
 
     thread = validate_standard_parts(spec.standard_parts)[0]["thread"]
     assert thread["length"] == pytest.approx(94.5, abs=0.01)
@@ -537,7 +537,7 @@ def test_numeric_thread_length_emits_clamped_override() -> None:
     checked = check_code(code)
     assert checked.ok, checked.errors
     assert "min(PARAMS[" in code and "self.max_thread_length" in code
-    from cadx.cad.standard_parts import validate_standard_parts
+    from kiara.cad.standard_parts import validate_standard_parts
 
     thread = validate_standard_parts(spec.standard_parts)[0]["thread"]
     assert thread["length"] == pytest.approx(50.0, abs=0.01)
@@ -563,7 +563,7 @@ def test_thread_length_request_rejected_on_non_screw() -> None:
 
 
 def test_same_class_parts_with_distinct_thread_requests_get_own_subclass() -> None:
-    from cadx.cad.standard_parts import validate_standard_parts
+    from kiara.cad.standard_parts import validate_standard_parts
 
     parts = [
         StandardPartSpec(
@@ -594,7 +594,7 @@ def test_same_class_parts_with_distinct_thread_requests_get_own_subclass() -> No
 
 
 def test_resolve_thread_intents_maps_vollgewinde_wording() -> None:
-    from cadx.agent.steps.intake import resolve_thread_intents
+    from kiara.agent.steps.intake import resolve_thread_intents
 
     spec = _m10_100_spec()
     spec.features[1].description = "Vollgewinde über die gesamte Länge"
@@ -612,7 +612,7 @@ def test_resolve_thread_intents_ignores_ambiguous_features() -> None:
     """A thread feature owned by NO part's covers_features must not drive a
     screw-level override once a second screw exists — 'Vollgewinde' would be
     ambiguous between them and is better handled downstream than guessed."""
-    from cadx.agent.steps.intake import resolve_thread_intents
+    from kiara.agent.steps.intake import resolve_thread_intents
 
     spec = _m10_100_spec()
     spec.standard_parts[0].covers_features = ["head"]
@@ -635,7 +635,7 @@ def test_resolve_thread_intents_ignores_ambiguous_features() -> None:
 def test_resolve_thread_intents_uses_intrinsic_attribution() -> None:
     """...but with a single screw, an intrinsically-covered thread feature
     belongs to it even when covers_features forgot to list it."""
-    from cadx.agent.steps.intake import resolve_thread_intents
+    from kiara.agent.steps.intake import resolve_thread_intents
 
     spec = _m10_100_spec()
     spec.standard_parts[0].covers_features = ["head"]
@@ -648,7 +648,7 @@ def test_covered_host_voids_stay_independent() -> None:
     """keep_host_voids: a hole claimed in covers_features (a ThreadedHole
     part covering its pilots) is host geometry — it stays verifiable,
     anchorable and re-cuttable; only genuine catalog anatomy is covered."""
-    from cadx.cad.standard_parts import covered_feature_indices, is_host_void_feature
+    from kiara.cad.standard_parts import covered_feature_indices, is_host_void_feature
 
     spec = PartSpec(
         name="bracket",

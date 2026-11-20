@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from cadx.cad.tasks import _cancelled_scope, _salvage_task_result, _set_existing_relpath
+from kiara.cad.tasks import _cancelled_scope, _salvage_task_result, _set_existing_relpath
 
 
 class _FakeRedis:
@@ -87,7 +87,7 @@ def test_salvage_fem_result_counts_as_usable() -> None:
 def test_existing_relpath_omits_unwritten_partial_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from cadx import storage
+    from kiara import storage
 
     monkeypatch.setattr(storage, "relpath", lambda path: f"relative/{path.name}")
     row = {"stl_relpath": "stale.stl"}

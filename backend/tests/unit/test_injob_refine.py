@@ -14,12 +14,12 @@ import uuid
 import pytest
 from sqlmodel import select
 
-from cadx import storage
-from cadx.agent.orchestrator import RunOutcome
-from cadx.db.models import Artifact, Job, JobType, Project, Version, VersionKind, VersionStatus
-from cadx.db.session import async_session, create_all
-from cadx.llm.schemas import PartSpec
-from cadx.runtime_config import RuntimeSettings, save_runtime_settings
+from kiara import storage
+from kiara.agent.orchestrator import RunOutcome
+from kiara.db.models import Artifact, Job, JobType, Project, Version, VersionKind, VersionStatus
+from kiara.db.session import async_session, create_all
+from kiara.llm.schemas import PartSpec
+from kiara.runtime_config import RuntimeSettings, save_runtime_settings
 
 
 @pytest.fixture(autouse=True)
@@ -121,8 +121,8 @@ async def _refine_children(parent_id: uuid.UUID) -> list[Job]:
 
 
 def _patch(monkeypatch, outcome: RunOutcome) -> list[dict]:
-    import cadx.api.deps as deps
-    from cadx.agent import worker_jobs as wj
+    import kiara.api.deps as deps
+    from kiara.agent import worker_jobs as wj
 
     enqueued: list[dict] = []
 
@@ -140,7 +140,7 @@ def _patch(monkeypatch, outcome: RunOutcome) -> list[dict]:
 
 async def test_topopt_outcome_enqueues_refine_child(monkeypatch):
     """resolved_mode='topopt' + spec hole feature -> refine child spawned."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     enqueued = _patch(monkeypatch, _topopt_outcome(with_hole=True))
     job_id, version_id = await _mk_agent_version()
@@ -161,7 +161,7 @@ async def test_topopt_outcome_enqueues_refine_child(monkeypatch):
 
 async def test_topopt_outcome_without_features_enqueues_nothing(monkeypatch):
     """Guard: empty spec.features AND no topopt anchors -> no useless child."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     enqueued = _patch(monkeypatch, _topopt_outcome(with_hole=False, anchors=[]))
     job_id, version_id = await _mk_agent_version()
@@ -174,7 +174,7 @@ async def test_topopt_outcome_without_features_enqueues_nothing(monkeypatch):
 
 async def test_topopt_outcome_refine_disabled_by_runtime(monkeypatch):
     """topopt_auto_refine=False suppresses the spawn even with features."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     async with async_session() as db:
         await save_runtime_settings(db, RuntimeSettings(topopt_auto_refine=False))
@@ -191,7 +191,7 @@ async def test_topopt_outcome_refine_disabled_by_runtime(monkeypatch):
 
 async def test_non_topopt_outcome_enqueues_nothing(monkeypatch):
     """CAD outcomes never reach the refine hook."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     outcome = RunOutcome(
         status="succeeded",
@@ -211,7 +211,7 @@ async def test_topopt_outcome_with_committed_injob_refine_skips_spawn(monkeypatc
     """Dedup: the agent optimize session already committed a `refine_features`
     run (agent_runs entry with params.refine_of marked chosen) — the
     standalone refine child must NOT be spawned on top of it."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     outcome = _topopt_outcome(with_hole=True)
     outcome.mesh["topopt"]["agent_runs"] = [
@@ -233,7 +233,7 @@ async def test_topopt_outcome_with_committed_injob_refine_skips_spawn(monkeypatc
 async def test_topopt_outcome_with_unchosen_refine_run_still_spawns(monkeypatch):
     """A refine run the agent did NOT choose leaves the committed result
     unrefined — the standalone child still spawns."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     outcome = _topopt_outcome(with_hole=True)
     outcome.mesh["topopt"]["agent_runs"] = [
@@ -251,8 +251,8 @@ async def test_topopt_outcome_with_unchosen_refine_run_still_spawns(monkeypatch)
 async def test_maybe_spawn_refine_skips_committed_injob_refine(monkeypatch):
     """Same dedup on the standalone-optimize path via _maybe_spawn_refine:
     persisted agent_runs on the parent version block the child."""
-    import cadx.api.deps as deps
-    from cadx.agent import worker_jobs as wj
+    import kiara.api.deps as deps
+    from kiara.agent import worker_jobs as wj
 
     enqueued: list[dict] = []
 
@@ -302,8 +302,8 @@ async def test_maybe_spawn_refine_skips_committed_injob_refine(monkeypatch):
 async def test_runtime_flag_alone_triggers_spawn(monkeypatch):
     """`_maybe_spawn_refine` fires on runtime topopt_auto_refine without the
     OptimizeSpec/request flag — anchors alone satisfy the guard."""
-    import cadx.api.deps as deps
-    from cadx.agent import worker_jobs as wj
+    import kiara.api.deps as deps
+    from kiara.agent import worker_jobs as wj
 
     enqueued: list[dict] = []
 
@@ -344,8 +344,8 @@ async def test_runtime_flag_alone_triggers_spawn(monkeypatch):
 
 async def test_maybe_spawn_refine_guard_blocks_featureless(monkeypatch):
     """Explicit flag set but nothing to re-cut -> blocked (info log), no child."""
-    import cadx.api.deps as deps
-    from cadx.agent import worker_jobs as wj
+    import kiara.api.deps as deps
+    from kiara.agent import worker_jobs as wj
 
     enqueued: list[dict] = []
 
@@ -482,11 +482,11 @@ async def _mk_refine_child(
 
 
 def _patch_refine(monkeypatch, report: dict, scanned: list[dict]) -> _FakeRefineExec:
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     fake = _FakeRefineExec(report)
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: fake)
-    monkeypatch.setattr("cadx.cad.fem.anchors3d.scan_mesh_anchors", lambda _path: scanned)
+    monkeypatch.setattr("kiara.cad.fem.anchors3d.scan_mesh_anchors", lambda _path: scanned)
     return fake
 
 
@@ -494,7 +494,7 @@ async def test_refine_job_promotes_version_level_exports(monkeypatch):
     """Child refine writes iterations/1/exports — the job must promote them to
     versions/<vid>/exports/ so API/UI + best_mesh_relpath serve the REFINED
     files instead of the parent's unrefined output."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     report = {
         "applied": list(_REFINE_APPLIED),
@@ -535,7 +535,7 @@ async def test_refine_job_promotes_version_level_exports(monkeypatch):
 async def test_refine_job_missing_tunnel_needs_review(monkeypatch):
     """Applied cut landed in a SIMP void — no tunnel on rescan: major issue +
     needs_review (never a silent success)."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     report = {
         "applied": list(_REFINE_APPLIED),
@@ -563,7 +563,7 @@ async def test_refine_job_missing_tunnel_needs_review(monkeypatch):
 async def test_refine_job_wrong_dia_tunnel_needs_review(monkeypatch):
     """A tunnel at the right spot but >25% off diameter counts as missing —
     the 'giant void' failure mode."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     report = {
         "applied": list(_REFINE_APPLIED),
@@ -590,7 +590,7 @@ async def test_refine_job_wrong_dia_tunnel_needs_review(monkeypatch):
 async def test_refine_job_all_tunnels_present_succeeds(monkeypatch):
     """Every applied feature has a matching tunnel -> clean success, warnings
     still surface as minor issues."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     report = {
         "applied": list(_REFINE_APPLIED),
@@ -618,8 +618,8 @@ async def test_refine_job_all_tunnels_present_succeeds(monkeypatch):
 async def test_maybe_spawn_refine_auto_keep_anchors_flag(monkeypatch):
     """Empty keep_regions + measured topopt anchors -> auto_keep_anchors=True
     reaches the refine task payload; explicit keep_regions suppress it."""
-    import cadx.api.deps as deps
-    from cadx.agent import worker_jobs as wj
+    import kiara.api.deps as deps
+    from kiara.agent import worker_jobs as wj
 
     enqueued: list[dict] = []
 
@@ -692,8 +692,8 @@ async def test_maybe_spawn_refine_auto_keep_anchors_flag(monkeypatch):
 
 def test_refine_payload_forwards_auto_keep_anchors(monkeypatch, tmp_path):
     """run_refine_payload maps the payload flag onto run_refine's kwarg."""
-    import cadx.cad.tasks as tasks
-    from cadx.cad.engine import ExecResult
+    import kiara.cad.tasks as tasks
+    from kiara.cad.engine import ExecResult
 
     captured: dict = {}
 
@@ -703,7 +703,7 @@ def test_refine_payload_forwards_auto_keep_anchors(monkeypatch, tmp_path):
         r.ok = True
         return r
 
-    monkeypatch.setattr("cadx.cad.engine.run_refine", fake_run_refine)
+    monkeypatch.setattr("kiara.cad.engine.run_refine", fake_run_refine)
     mesh = storage.tmp_dir() / "in.stl"
     mesh.write_text("solid m\nendsolid m\n")
     d = tasks.run_refine_payload(
@@ -722,8 +722,8 @@ def test_refine_payload_forwards_auto_keep_anchors(monkeypatch, tmp_path):
 def test_refine_payload_forwards_spec(monkeypatch, tmp_path):
     """The serialized PartSpec must reach run_refine so its canonical
     verify_spec report receives the design intent (dims, features)."""
-    import cadx.cad.tasks as tasks
-    from cadx.cad.engine import ExecResult
+    import kiara.cad.tasks as tasks
+    from kiara.cad.engine import ExecResult
 
     captured: dict = {}
 
@@ -733,7 +733,7 @@ def test_refine_payload_forwards_spec(monkeypatch, tmp_path):
         r.ok = True
         return r
 
-    monkeypatch.setattr("cadx.cad.engine.run_refine", fake_run_refine)
+    monkeypatch.setattr("kiara.cad.engine.run_refine", fake_run_refine)
     mesh = storage.tmp_dir() / "in.stl"
     mesh.write_text("solid m\nendsolid m\n")
     spec = {"name": "p", "length_x": {"value": 100.0, "source": "stated"}, "features": []}
@@ -753,8 +753,8 @@ def test_refine_payload_forwards_spec(monkeypatch, tmp_path):
 def test_optimize_payload_forwards_spec(monkeypatch, tmp_path):
     """run_optimize_payload must forward the serialized PartSpec so the
     topopt pipeline can attach a spec-aware canonical verify_spec report."""
-    import cadx.cad.tasks as tasks
-    from cadx.cad.engine import ExecResult
+    import kiara.cad.tasks as tasks
+    from kiara.cad.engine import ExecResult
 
     captured: dict = {}
 
@@ -788,8 +788,8 @@ def test_run_refine_synthesizes_auto_keep_regions(monkeypatch, tmp_path):
     keep_regions suppress synthesis."""
     import trimesh
 
-    import cadx.cad.engine as engine
-    import cadx.cad.fem.refine as refine_mod
+    import kiara.cad.engine as engine
+    import kiara.cad.fem.refine as refine_mod
 
     captured: dict = {}
 
@@ -839,8 +839,8 @@ def test_helical_threads_schema_tri_state():
     None (runtime default applies downstream); explicit False must survive
     validation (a plain bool field would coerce/reject None and the old
     `or`-chains could never express 'off')."""
-    from cadx.api.schemas import RefineRequest
-    from cadx.llm.schemas import OptimizeSpec
+    from kiara.api.schemas import RefineRequest
+    from kiara.llm.schemas import OptimizeSpec
 
     assert OptimizeSpec().helical_threads is None
     assert OptimizeSpec(helical_threads=False).helical_threads is False
@@ -852,8 +852,8 @@ def test_helical_threads_schema_tri_state():
 def test_refine_payload_forwards_helical_threads_tri_state(monkeypatch, tmp_path):
     """run_refine_payload must not collapse the flag: explicit False and
     omitted (None) are different requests."""
-    import cadx.cad.tasks as tasks
-    from cadx.cad.engine import ExecResult
+    import kiara.cad.tasks as tasks
+    from kiara.cad.engine import ExecResult
 
     captured: dict = {}
 
@@ -863,7 +863,7 @@ def test_refine_payload_forwards_helical_threads_tri_state(monkeypatch, tmp_path
         r.ok = True
         return r
 
-    monkeypatch.setattr("cadx.cad.engine.run_refine", fake_run_refine)
+    monkeypatch.setattr("kiara.cad.engine.run_refine", fake_run_refine)
     mesh = storage.tmp_dir() / "in.stl"
     mesh.write_text("solid m\nendsolid m\n")
     base = {
@@ -886,8 +886,8 @@ def test_run_refine_helical_threads_resolution(monkeypatch, tmp_path):
     RuntimeSettings.refine_helical_threads."""
     import trimesh
 
-    import cadx.cad.engine as engine
-    import cadx.cad.fem.refine as refine_mod
+    import kiara.cad.engine as engine
+    import kiara.cad.fem.refine as refine_mod
 
     captured: dict = {}
 
@@ -925,7 +925,7 @@ def test_lift_chosen_run_metrics_backfills_refine_choice():
     """A committed `refine_features` run ships a sparse flat topopt block —
     the verified metrics live in its agent_runs record. The lift must copy
     them up so eval gates and the UI see the committed design's verdict."""
-    from cadx.agent.worker_jobs import _lift_chosen_run_metrics
+    from kiara.agent.worker_jobs import _lift_chosen_run_metrics
 
     runs = [
         {
@@ -957,7 +957,7 @@ def test_lift_chosen_run_metrics_backfills_refine_choice():
 def test_lift_chosen_run_metrics_respects_existing_verdicts():
     """Fields the chosen result reported itself stay authoritative — the
     lift only fills gaps, and a solved sf_verified of 0.0 is a verdict."""
-    from cadx.agent.worker_jobs import _lift_chosen_run_metrics
+    from kiara.agent.worker_jobs import _lift_chosen_run_metrics
 
     runs = [
         {
@@ -979,7 +979,7 @@ def test_lift_chosen_run_metrics_falls_back_to_refine_parent():
     """A chosen refine run reports only its finishing SF — volfrac and
     load-path evidence live on the run it refined (same topology). The
     lift must chain `params.refine_of` so the flat block inherits them."""
-    from cadx.agent.worker_jobs import _lift_chosen_run_metrics
+    from kiara.agent.worker_jobs import _lift_chosen_run_metrics
 
     runs = [
         {
@@ -1015,7 +1015,7 @@ def test_lift_chosen_run_metrics_falls_back_to_refine_parent():
 
 
 def test_lift_chosen_run_metrics_no_chosen_noop():
-    from cadx.agent.worker_jobs import _lift_chosen_run_metrics
+    from kiara.agent.worker_jobs import _lift_chosen_run_metrics
 
     topopt: dict = {}
     _lift_chosen_run_metrics(topopt, [{"worst_sf": 5.0, "chosen": False}])
@@ -1025,7 +1025,7 @@ def test_lift_chosen_run_metrics_no_chosen_noop():
 def test_refine_topopt_block_child_verify_spec_wins():
     """The executor's canonical report describes the refined artifact —
     it must override the parent's verify_spec, not sit beside it."""
-    from cadx.agent.worker_jobs import _refine_topopt_block
+    from kiara.agent.worker_jobs import _refine_topopt_block
 
     parent_top = {
         "sf_verified": 9.49,
@@ -1044,7 +1044,7 @@ def test_refine_topopt_block_child_verify_spec_wins():
 
 def test_refine_topopt_block_parent_verify_spec_fallback():
     """No child report → the parent's verify_spec stays (better than null)."""
-    from cadx.agent.worker_jobs import _refine_topopt_block
+    from kiara.agent.worker_jobs import _refine_topopt_block
 
     out = _refine_topopt_block(
         {"verify_spec": {"status": "PASS"}, "sf_verified": 5.0},
@@ -1055,7 +1055,7 @@ def test_refine_topopt_block_parent_verify_spec_fallback():
 
 
 def test_verify_spec_issue_only_on_fail_or_unverified():
-    from cadx.agent.worker_jobs import _verify_spec_issue
+    from kiara.agent.worker_jobs import _verify_spec_issue
 
     assert _verify_spec_issue(None) == []
     assert _verify_spec_issue({"status": "PASS"}) == []

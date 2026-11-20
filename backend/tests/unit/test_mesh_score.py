@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from cadx.agent.mesh_score import score_mesh_candidate, support_score
+from kiara.agent.mesh_score import score_mesh_candidate, support_score
 
 
 class _Dim:
@@ -86,7 +86,7 @@ def test_support_score_standing_beats_lying():
 
 
 def test_orientation_decisive_margin():
-    from cadx.agent.orchestrator import _orientation_decisive
+    from kiara.agent.orchestrator import _orientation_decisive
 
     # the knob regression: equal dim violations, Δscore 0.01 — NOT decisive
     assert _orientation_decisive((0, -0.98), (0, -0.99)) is False

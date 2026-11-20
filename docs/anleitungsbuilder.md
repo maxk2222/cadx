@@ -71,7 +71,7 @@ missions in order, each a bounded `run_session` with a mission-scoped
 | Mission | Tools | Output |
 |---|---|---|
 | `doc` | prepare_pdf, page text/images/figures, classify, part names | `state.document` |
-| `steps` | create/update/reorder steps + sub_steps + media | ordered `state.steps` (dual text; `sub_steps` required in cad mode only — blender instances come from `cadx_step` tags) |
+| `steps` | create/update/reorder steps + sub_steps + media | ordered `state.steps` (dual text; `sub_steps` required in cad mode only — blender instances come from `kiara_step` tags) |
 | `parts` | register_uploaded_part, match/alias, generate_missing_part | `state.parts` w/ ports+bbox |
 | `assembly` | find_matching_ports, solve_*_preview, place_instance (candidate_id only), collision/render/validate | `state.assembly` |
 | `review` | validators + `write_review_report` | `state.review` |
@@ -103,8 +103,8 @@ resolved mode persists on `state.guide_mode` so resumes stay consistent.
 The agent models/places/renders with full bpy freedom inside a running
 Blender instance (BlenderMCP addon, JSON/TCP `:9876`). The semantic
 contract is scene tags: every placed object carries
-`obj['cadx_part']='part_id'`, `obj['cadx_step']=N` (0 = initial state),
-`obj['cadx_premount']=True`. `blender_sync_scene` and the scene gate
+`obj['kiara_part']='part_id'`, `obj['kiara_step']=N` (0 = initial state),
+`obj['kiara_premount']=True`. `blender_sync_scene` and the scene gate
 (`blender_check.run_scene_gate`, fires at `review` instead of the cad
 lint's `assembly` gate) read `matrix_world` back deterministically —
 planlint itself is skipped in blender mode: its checks guard the CAD
@@ -139,8 +139,8 @@ verifies physical quality before review.
 exactly). Blender is Z-up like KIARA — `matrix_world` IS the mm transform.
 
 **Networking/files**: worker→`host.docker.internal:9876` (compose sets
-`extra_hosts`; env `CADX_BLENDER_HOST`/`CADX_BLENDER_PORT`). Blender
-writes only host paths — `CADX_DATA_HOST_ROOT` is the host-side absolute
+`extra_hosts`; env `KIARA_BLENDER_HOST`/`KIARA_BLENDER_PORT`). Blender
+writes only host paths — `KIARA_DATA_HOST_ROOT` is the host-side absolute
 path of this repo's `./data` (compose defaults to `${PWD}/data`). Native
 dev-worker: `localhost:9876`, root = `storage.data_root()`. Blender must
 be open with the addon enabled (server auto-starts on .blend load);
@@ -190,15 +190,15 @@ Extra artifacts in blender mode: `guide.blend`, `assembly_blender.glb`,
 ## Files
 
 ```
-backend/cadx/guide/            # the whole pipeline package
-backend/cadx/cad/guide_exec.py # executor tasks (extract_ports, render_assembly)
-backend/cadx/agent/prompts/guide_*.md  # mission system prompts
-backend/cadx/spawn.py          # spawn_guide + generalized enqueue_resume
-backend/cadx/agent/worker_jobs.py      # run_guide_job (agent queue)
+backend/kiara/guide/            # the whole pipeline package
+backend/kiara/cad/guide_exec.py # executor tasks (extract_ports, render_assembly)
+backend/kiara/agent/prompts/guide_*.md  # mission system prompts
+backend/kiara/spawn.py          # spawn_guide + generalized enqueue_resume
+backend/kiara/agent/worker_jobs.py      # run_guide_job (agent queue)
 tests/guide/                   # state/pdf/solver/unity/tools tests
 ```
 
-Requires `CADX_AGENT_MAX_JOBS ≥ 2` when missing-part generation is
+Requires `KIARA_AGENT_MAX_JOBS ≥ 2` when missing-part generation is
 expected (the guide job waits on a child agent job; default is 8).
 
 ## Implementation deviations (vs masterplan v2)

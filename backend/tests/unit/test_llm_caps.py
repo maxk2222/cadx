@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from cadx.llm.capabilities import (
+from kiara.llm.capabilities import (
     ModelCaps,
     caps_from_card,
     estimate_prompt_tokens,
@@ -16,8 +16,8 @@ from cadx.llm.capabilities import (
     prompt_over_budget,
     resolve_max_tokens,
 )
-from cadx.llm.client import LLMClient, LLMError
-from cadx.runtime_config import RuntimeSettings
+from kiara.llm.client import LLMClient, LLMError
+from kiara.runtime_config import RuntimeSettings
 
 
 def _patch_transport(monkeypatch, handler):
@@ -464,7 +464,7 @@ async def test_client_test_reports_context(monkeypatch):
 
 
 def test_summarize_history_digests_dropped():
-    from cadx.agent.chat_worker import _summarize_history
+    from kiara.agent.chat_worker import _summarize_history
 
     msgs = [
         {"role": "user", "content": "first question about the bracket"},
@@ -482,7 +482,7 @@ def test_summarize_history_digests_dropped():
 
 
 def test_summarize_history_boundary_and_short():
-    from cadx.agent.chat_worker import _summarize_history
+    from kiara.agent.chat_worker import _summarize_history
 
     msgs = [
         {"role": "user", "content": "q"},
@@ -500,7 +500,7 @@ def test_summarize_history_boundary_and_short():
 
 
 def test_summarize_for_ctx_collapses_until_fit():
-    from cadx.agent.chat_worker import _summarize_for_ctx
+    from kiara.agent.chat_worker import _summarize_for_ctx
 
     msgs = [{"role": "system", "content": "sys"}] + [
         {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i} " + "x" * 200}

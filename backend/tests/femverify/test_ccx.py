@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.solver import assemble, reduce_case, solve_reduced
-from cadx.cad.fem.voxelize import voxelize
+from kiara.cad.fem.solver import assemble, reduce_case, solve_reduced
+from kiara.cad.fem.voxelize import voxelize
 
 from .xverify import ccx as ccx_mod
 

@@ -2,7 +2,7 @@
 
 The FastAPI backend serves all endpoints under `/api` (nginx proxies `/api/*`
 to `api:8000`; the same prefix carries the SSE job stream). Routers live in
-`backend/cadx/api/routers/`. Interactive docs are available at `/docs` on the
+`backend/kiara/api/routers/`. Interactive docs are available at `/docs` on the
 api service in dev mode.
 
 ## Projects
@@ -172,7 +172,7 @@ GET           /api/artifacts/{id}/file                   artifact downloads (ste
 - Errors are `{"detail": …}` with the usual status codes (`422` validation,
   `404` unknown id, `409` wrong state, `413` payload over the nginx/API cap).
 - The SSE stream emits `step` / `status` / `question` / `snapshot` events; see
-  `backend/cadx/events.py` for the payload shapes.
+  `backend/kiara/events.py` for the payload shapes.
 - The mesh-server sidecar has its own API — documented in
   [mesh-server-api.md](mesh-server-api.md).
 - The MCP Streamable-HTTP endpoint is mounted at `/mcp` on the API — see

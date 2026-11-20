@@ -2,7 +2,7 @@
 
 ## Deployment-Stand
 - Commits auf main (ff): `883302f` settings echo-fix, `13158bf` fem/recognition persistent solver state + native CG + mesh-edge
-- Images gebaut (executor+api+worker), `cadx_native 0.1.0` im Executor verifiziert (cg_solve + feature_edges vorhanden)
+- Images gebaut (executor+api+worker), `kiara_native 0.1.0` im Executor verifiziert (cg_solve + feature_edges vorhanden)
 - Stack: `docker compose up -d cad-executor api worker` — alle Up/healthy
 
 ## Eval-Lauf (sequentiell, driver pid 38639, log evals/eval_native_v2.log)
@@ -12,8 +12,8 @@
 4. marine_propeller_autonomous — queued
 
 ## Statusquellen
-- Jobs: `docker exec cadx-postgres-1 psql -U cadx -d cadx -tc "select j.status, now()::time(0)-j.created_at::time(0), coalesce(p.name,'?') from job j left join version v on j.version_id=v.id left join part pa on v.part_id=pa.id left join project p on pa.project_id=p.id order by j.created_at desc limit N"`
-- Executor-Events: `docker logs cadx-cad-executor-1 --tail N | grep -oE "execute_version|simp|fem|recognition|topopt|cg_diverged|budget_exceeded"`
+- Jobs: `docker exec kiara-postgres-1 psql -U kiara -d kiara -tc "select j.status, now()::time(0)-j.created_at::time(0), coalesce(p.name,'?') from job j left join version v on j.version_id=v.id left join part pa on v.part_id=pa.id left join project p on pa.project_id=p.id order by j.created_at desc limit N"`
+- Executor-Events: `docker logs kiara-cad-executor-1 --tail N | grep -oE "execute_version|simp|fem|recognition|topopt|cg_diverged|budget_exceeded"`
 - Watcher: evals/watch_v2.log (executor events), evals/jobs_v2.log (job transitions) — beide evtl. leer/buggy, direkte Queries sind zuverlässiger
 - DB-Schema `cadagent`, Tabelle `job` (singular), `payload->>'version_id'` join version
 
@@ -47,8 +47,8 @@ Driver-Fix: `&&`-Kette stirbt bei Non-Zero → mit `;` neu gestartet (pid 42722,
 - Dritter: `_bounded_spec_anchor` re-cut coverage — Spec-Anker OHNE depth_mm nie re-cut; Lug-Holes blieben Missing. Re-cut-Eligibility ggf. auf "spec + axis + pos + measured span" erweitern?
 
 ## Frontend + Deploy
-- `cadx-frontend` war 9h stale → `395ffc2` (project page) + `7c76c9c` (ProjectsPage wide + 4/5-col grid) — neu gebaut + deployed.
-- Alle Images aktuell: executor (cadx_native 0.1.0), api (settings echo), worker, frontend.
+- `kiara-frontend` war 9h stale → `395ffc2` (project page) + `7c76c9c` (ProjectsPage wide + 4/5-col grid) — neu gebaut + deployed.
+- Alle Images aktuell: executor (kiara_native 0.1.0), api (settings echo), worker, frontend.
 - Settings-PUT-Bug (`resources_detected: Extra inputs are not permitted`) gefixt: SettingsUpdate deklariert Echo-Felder, Router ignoriert sie — `extra=forbid` bleibt für echte Typos. Test `test_put_accepts_settings_out_echo`.
 
 ## Eval-Fortschritt (driver pid 42722, `;`-Kette)
@@ -68,7 +68,7 @@ Driver-Fix: `&&`-Kette stirbt bei Non-Zero → mit `;` neu gestartet (pid 42722,
 `malloc_consolidate(): unaligned fastbin chunk detected` + `Aborted` in Worker pid=7 direkt nach `topopt.helmholtz_operator` (344k dofs, factor_s=4.5). Supervisor restartete beide Worker; Bracket-Job läuft weiter.
 - Verdachtsfelder: (a) Fork+Native-Interaktion (Rust-Extension im Parent, Fork-Pool erbt Heap-State), (b) Heap-Overflow in cg_solve/feature_edges (PyReadonlyArray slices), (c) altbekannter OCC/trimesh-Crash.
 - `topopt.auto_coarsen dofs=344736 feature_floor_hit=True pitch=1.94` + `helmholtz factor_s=4.5` direkt davor — Kontext: erster echter TopOpt-Iter auf native.
-- Zu prüfen: ob Repro bei Wiederholung; ob Crash korreliert mit native-Pfad (Kill-Switch CADX_NATIVE=0 A/B); ob core/backtrace greifbar.
+- Zu prüfen: ob Repro bei Wiederholung; ob Crash korreliert mit native-Pfad (Kill-Switch KIARA_NATIVE=0 A/B); ob core/backtrace greifbar.
 
 ## Stand für Fortsetzung
 - Eval-Queue läuft (driver pid 42722, `;`-Kette, log eval_native_v2b.log): bracket aktiv (~37min, jobs ~5min-Zyklus, execute_version-loop, kein Crash-Repro seit 22:52), dann arm → prop → tank_retry.
@@ -80,13 +80,13 @@ Driver-Fix: `&&`-Kette stirbt bei Non-Zero → mit `;` neu gestartet (pid 42722,
 - `optimize` Job 906d9700 (version 7822849d, bracket 344k dofs) starb mit dem Worker im malloc-Crash — Row blieb `running`, Executor idle 0.53% CPU, Eval-Treiber wartete ~25min.
 - **Generalisierbare Lücke**: `queue.py` Sweeper re-enqueue't nur stale `queued` rows — `running`-Jobs deren Worker starb werden nicht gereapt (kein Heartbeat/Liveness auf Job-Ebene). arq zählt `j_ongoing=1` ewig.
 - Manuell `failed` gesetzt (UPDATE job) → Treiber fuhr fort. Fix-Kandidat: stale-running-Reaper — Job mit `running` + Worker-Heartbeat-Tot (oder Arq-Result-Key-Fehlen nach Grace) → fail+requeue; alternativ Version-Status-Konsistenzcheck.
-- Crash-Root-Cause offen: `malloc_consolidate` = Heap-Metadaten durch früheren OOB-Write/Double-Free korrumpiert. Verdachte: (a) native cg_solve (rayon+Python-M-Callback, GIL-detached), (b) fork+rayon/BLAS-Thread-Interaction im _POOL, (c) neuer `factor_symmetric`→cholmod-Pfad in helmholtz (war SuperLU), (d) pre-existing OCC/numba. UNBEWIESEN — erstes Heavy-TopOpt auf neuem Image. A/B: CADX_NATIVE=0 bei Repro; Core/Backtrace für nächste Instanz einrichten.
+- Crash-Root-Cause offen: `malloc_consolidate` = Heap-Metadaten durch früheren OOB-Write/Double-Free korrumpiert. Verdachte: (a) native cg_solve (rayon+Python-M-Callback, GIL-detached), (b) fork+rayon/BLAS-Thread-Interaction im _POOL, (c) neuer `factor_symmetric`→cholmod-Pfad in helmholtz (war SuperLU), (d) pre-existing OCC/numba. UNBEWIESEN — erstes Heavy-TopOpt auf neuem Image. A/B: KIARA_NATIVE=0 bei Repro; Core/Backtrace für nächste Instanz einrichten.
 
 ## Fortschritt 00:20
 - bracket eval: optimize-Stage FAILED (zombie-job manuell failed → driver fuhr fort). codegen+fem succeeded.
 - robot_arm_mount_autonomous: RUNNING seit 00:06:44, FEM-Events aktiv.
 - Queue weiter: prop → tank_retry.
-- Offen: (a) malloc-crash Repro/A-B (CADX_NATIVE=0), (b) running-zombie-Reaper (Sweeper deckt nur queued), (c) Tank-Lücken (hole_index-Eskalation, cavity, re-cut ohne depth_mm).
+- Offen: (a) malloc-crash Repro/A-B (KIARA_NATIVE=0), (b) running-zombie-Reaper (Sweeper deckt nur queued), (c) Tank-Lücken (hole_index-Eskalation, cavity, re-cut ohne depth_mm).
 
 ## Robot-Arm-Befund (eval finished, passed=False, 657s)
 - codegen ok (625s, verify_spec PASS 33/0/2), fem-Gate FAILED (24s), topopt/refine skipped.
@@ -147,7 +147,7 @@ optimize lief durch). Nicht deterministisch genug für Python-Pfad-Attribution.
   zu poisonen — Case läuft auf validen Supports oder fällt mit benannten
   freien Modi ehrlich
 - unify vor re-cut: kaputte BRep blockiert Probes — unify_checked rescue
-- malloc_consolidate: 2. Repro auf bracket Helmholtz/344k — A/B CADX_NATIVE=0
+- malloc_consolidate: 2. Repro auf bracket Helmholtz/344k — A/B KIARA_NATIVE=0
   nötig um native vs Python-Pfad zu trennen; stack fehlt (SIGABRT bypassed
   PYTHONFAULTHANDLER auf arq-worker)
 
@@ -164,7 +164,7 @@ optimize lief durch). Nicht deterministisch genug für Python-Pfad-Attribution.
   malloc_consolidate-Crash killte den optimize-Task → kein committables
   Ergebnis → gates topopt/volfrac/envelope_within/watertight
 - Crash ist 2/2 reproduzierbar auf bracket Helmholtz/344k → DETERMINISTISCHER
-  Blocker. Bisect CADX_NATIVE=0 vs =1 nötig (native kernel vs CHOLMOD/numba)
+  Blocker. Bisect KIARA_NATIVE=0 vs =1 nötig (native kernel vs CHOLMOD/numba)
 - arm läuft seit 05:15
 
 ### native_v3 status (05:44) — arm in-flight, gut
@@ -174,7 +174,7 @@ optimize lief durch). Nicht deterministisch genug für Python-Pfad-Attribution.
 - arm: optimize 33min + fem succeeded, exec läuft — bearing/mode lints adoptiert
 - commits auf main vor deployed: b629acf, e4a43a4, 31caf26
 - naechster Schritt: arm/prop beenden → deploy increment → tank+bracket re-run
-  + malloc_consolidate A/B bisect (CADX_NATIVE=0/1)
+  + malloc_consolidate A/B bisect (KIARA_NATIVE=0/1)
 
 ### native_v3 live (05:55) — arm exec läuft (~19min nach optimize+fem ✓)
 - arm macht saubere stage-progression: optimize 44min ✓, fem ✓, exec läuft
@@ -351,24 +351,24 @@ optimize lief durch). Nicht deterministisch genug für Python-Pfad-Attribution.
   disjoint) damit lanes sich nicht gegenseitig löschen; startup-only
   (nie periodisch — live SIMP trägt gleichen marker, nur frisch-gebooteter
   worker kann "ich habe keine tasks" beweisen)
-- 12/12 queue_sweeper tests grün; image cadx-cad-executor rebuilt,
+- 12/12 queue_sweeper tests grün; image kiara-cad-executor rebuilt,
   deploy am nächsten breakpoint (nicht während SIMP in-flight)
 
 ## Deploy/infra findings (tank_feet_v2 run)
 
-- **cadx stack restart left frontend down**: whole `cadx-*` compose project
-  restarted ~18:25Z; `cadx-frontend-1` exited(0) and stayed down (no auto
+- **kiara stack restart left frontend down**: whole `kiara-*` compose project
+  restarted ~18:25Z; `kiara-frontend-1` exited(0) and stayed down (no auto
   restart). Host port 8080 was then grabbed by an unrelated `./target/debug/
   loom-server` (user process — NOT killed). Eval driver defaults to
   `http://localhost:8080` → "api unreachable".
-- **cadx_internal is `internal:true`** → `-p` port-publish silently no-ops on
+- **kiara_internal is `internal:true`** → `-p` port-publish silently no-ops on
   containers attached only to it (docker-proxy never binds; HostConfig shows
   the mapping but NetworkSettings.Ports stays empty). api sits on BOTH
-  cadx_internal + cadx_public; forwarder must attach to cadx_public.
+  kiara_internal + kiara_public; forwarder must attach to kiara_public.
 - **Workaround (non-destructive)**: throwaway `alpine/socat` container on
-  `cadx_public` publishing `127.0.0.1:8090 → cadx-api-1:8000`; eval run with
+  `kiara_public` publishing `127.0.0.1:8090 → kiara-api-1:8000`; eval run with
   `--api-url http://localhost:8090`. `/api/health` → 200. Real fix is to bring
-  `cadx-frontend-1` back (needs 8080 free — loom-server conflict is user's).
+  `kiara-frontend-1` back (needs 8080 free — loom-server conflict is user's).
 - **spec-driven sealed_tank hint (19d35c2)**: `part_family_hint` now extracts
   foot-lug + bolt-hole dims from spec features and injects the REAL values
   (`feet=3, foot_w=18, foot_t=6, foot_h=20, foot_hole_d=6.5`) instead of the
@@ -716,7 +716,7 @@ Tank-Artefakte zeigten 4 Vollhöhen-Radialfins @90° (r35→44.5, z=0-120,
 `sealed_tank(feet=0)`-Code. Nicht Modell-, nicht Render-Artefakt:
 SolidClassifier bestaetigt echtes Volumen im STEP.
 
-Ursache: `cadx/cad/spec_feature_rescue.py` (executor-seitiger Safety-Net
+Ursache: `kiara/cad/spec_feature_rescue.py` (executor-seitiger Safety-Net
 nach jedem Exec) klassifizierte Mount-Features per Substring-Match auf
 name+type+description+position. Feature 0 des Tank-Specs ("cylindrical
 shell…") enthaelt "(foot base)" in der Position → als Lug gezaehlt:
@@ -936,7 +936,7 @@ fuer das queue-pos emit. Regression-Test in test_queue_lanes.py
 monkeypatcht Job und verifiziert _queue_name-Propagation.
 
 Deploy-Pfad: QueueExecutor laeuft WORKER-seitig (worker_jobs.py) ->
-cadx-worker Image rebuilden (Executor-Image unveraendert). Restart
+kiara-worker Image rebuilden (Executor-Image unveraendert). Restart
 erst nach Arm-Ende (in-flight SIMP + arq in_progress-TTL).
 
 Stale-Queue-Hygiene: die 4 toten fem_analyze-Members wurden aus 'cad'
@@ -977,7 +977,7 @@ laesst die Achsrichtung offen; Verbesserung: Ebene explizit benennen
 (yz = X-Flip etc.) — kosmetisch, kein Blocker.
 
 Deploy + Runde 9 (2026-11-10 ~02:0x):
-- cadx-worker neu gebaut (0e69fffd) mit Queue-Lane-Fix 063740a,
+- kiara-worker neu gebaut (0e69fffd) mit Queue-Lane-Fix 063740a,
   recreated — Executor-Image e53e25a0 unveraendert (Fix ist workerseitig).
 - Re-Runs tank + propeller + bracket parallel gestartet; queued Tasks
   reporten jetzt korrekt 'queued' statt false-lost. Stale arq:job/
@@ -1140,7 +1140,7 @@ tank, propeller (codegen budget now 7200s), arm.
 Worker rebuilt with e41eeb0+5d72af9 (fem repair). NOTE: the eval
 driver's default --api-url :8080 was hijacked by an unrelated
 `loom-serv` process — r12 launched with
-`--api-url http://localhost:8090` (cadx-api-fwd).
+`--api-url http://localhost:8090` (kiara-api-fwd).
 Also committed a2aa9cb: evalkit driver fails load-bearing stages
 honestly when no load cases resolve (previously posted
 load_cases=null → pydantic 422, indistinguishable from a real 422).

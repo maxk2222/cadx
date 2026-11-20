@@ -86,16 +86,16 @@ jobs:
         id: pkg
         run: |
           ver="${GITHUB_REF_NAME#v}"
-          asset="cadx-${ver}.tar.gz"
+          asset="kiara-${ver}.tar.gz"
           # git archive ships tracked files only — .env, data/, run/, logs/,
           # venvs, node_modules, dist/ and eval results can never leak in.
-          git archive --format=tar.gz --prefix="cadx-${ver}/" -o "$asset" HEAD
+          git archive --format=tar.gz --prefix="kiara-${ver}/" -o "$asset" HEAD
           sha256sum "$asset" > SHA256SUMS.txt
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
           tar tzf "$asset" | head -5
           tar tzf "$asset" | grep -E '(^|/)\.env($|\.)' | grep -v '\.env\.example$' \
             && { echo "FATAL: .env leaked into tarball"; exit 1; } || true
-          tar tzf "$asset" | grep -E '^cadx-[^/]+/(data|run|logs)/' \
+          tar tzf "$asset" | grep -E '^kiara-[^/]+/(data|run|logs)/' \
             && { echo "FATAL: runtime dirs leaked into tarball"; exit 1; } || true
 
       - name: create pre-release
@@ -106,12 +106,12 @@ jobs:
           notes="docs/release-notes/${ver}.md"
           if [ ! -f "$notes" ]; then
             notes="$(mktemp --suffix=.md)"
-            printf 'CADX %s — see CHANGELOG.md.\n' "$ver" > "$notes"
+            printf 'KIARA %s — see CHANGELOG.md.\n' "$ver" > "$notes"
           fi
           gh release create "$GITHUB_REF_NAME" \
             --prerelease \
             --latest=false \
-            --title "CADX $ver" \
+            --title "KIARA $ver" \
             --notes-file "$notes" \
             "${{ steps.pkg.outputs.asset }}" \
             SHA256SUMS.txt \

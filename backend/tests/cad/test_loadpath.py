@@ -13,9 +13,9 @@ import pytest
 import trimesh
 from scipy import ndimage
 
-from cadx.cad.fem.loadpath import loadpath_field, loadpath_spine_mask
-from cadx.cad.fem.loadpath_cert import loadpath_certificate
-from cadx.cad.fem.voxelize import VoxelDomain, voxelize
+from kiara.cad.fem.loadpath import loadpath_field, loadpath_spine_mask
+from kiara.cad.fem.loadpath_cert import loadpath_certificate
+from kiara.cad.fem.voxelize import VoxelDomain, voxelize
 
 
 def _box_mesh(x: float = 20.0, y: float = 8.0, z: float = 8.0) -> trimesh.Trimesh:

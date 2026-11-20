@@ -16,11 +16,11 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-import cadx.agent.worker_jobs as wj
-from cadx import storage
-from cadx.agent.worker_jobs import make_emit
-from cadx.db.models import Job, JobStatus, JobType, Project, Version, VersionKind
-from cadx.db.session import async_session, create_all
+import kiara.agent.worker_jobs as wj
+from kiara import storage
+from kiara.agent.worker_jobs import make_emit
+from kiara.db.models import Job, JobStatus, JobType, Project, Version, VersionKind
+from kiara.db.session import async_session, create_all
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -218,7 +218,7 @@ def _png_bytes() -> bytes:
 
 @pytest.fixture(scope="module")
 async def client():
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

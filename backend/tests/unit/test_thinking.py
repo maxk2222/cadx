@@ -9,18 +9,18 @@ from typing import Any
 import httpx
 import pytest
 
-import cadx.llm.client as client_mod
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.thinking import step_is_hard, thinking_body, thinking_on
-from cadx.agent.toolloop import run_session
-from cadx.agent.toolspecs import ToolSession
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.client import LLMClient
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import Critique
-from cadx.runtime_config import RuntimeSettings
+import kiara.llm.client as client_mod
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.thinking import step_is_hard, thinking_body, thinking_on
+from kiara.agent.toolloop import run_session
+from kiara.agent.toolspecs import ToolSession
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.client import LLMClient
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import Critique
+from kiara.runtime_config import RuntimeSettings
 
 ON = '{"chat_template_kwargs": {"enable_thinking": true}}'
 OFF = '{"chat_template_kwargs": {"enable_thinking": false}}'

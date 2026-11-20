@@ -47,7 +47,7 @@
 |-----|----------|
 | [Architecture](architecture.md) | Services, request flow, code and data layout, security model |
 | [Agent loop](agent-loop.md) | State machine, tool sessions, step reference, budgets |
-| [Prompts](prompts.md) | Prompt files under `backend/cadx/agent/prompts/` and their conventions |
+| [Prompts](prompts.md) | Prompt files under `backend/kiara/agent/prompts/` and their conventions |
 | [HTTP API](api.md) | Backend REST endpoints grouped by router |
 | [mesh-server API](mesh-server-api.md) | Sidecar contract (mesh/image/llm adapters, chat proxy, model management, queue) |
 | [Evaluation](eval.md) | evalkit: suite cases/stages/gates, http+local drivers, baselines, cleanup |

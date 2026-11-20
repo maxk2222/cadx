@@ -15,13 +15,13 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.engine import (
+from kiara.cad.engine import (
     _auto_warm_density,
     _guide_beso_er,
     _npz_kind,
     _recommend_structure_mode,
 )
-from cadx.cad.fem.extract import drop_island_components
+from kiara.cad.fem.extract import drop_island_components
 
 
 def _sphere(center=(0, 0, 0), r=10.0) -> trimesh.Trimesh:
@@ -324,7 +324,7 @@ def test_recommend_target_none_unchanged() -> None:
 def test_latest_parent_density_prefers_guide_over_infill(tmp_path, monkeypatch) -> None:
     """Infill → SIMP escalation: the parent's binary rho (kind=infill) is not
     a SIMP seed — its persisted guide_density.npz is picked instead."""
-    import cadx.agent.worker_jobs as wj
+    import kiara.agent.worker_jobs as wj
 
     vdir = tmp_path / "v1"
     for it in (1, 2):
@@ -348,7 +348,7 @@ def test_latest_parent_density_prefers_guide_over_infill(tmp_path, monkeypatch) 
 
 def test_latest_parent_density_picks_simp_field(tmp_path, monkeypatch) -> None:
     """A converged simp/beso field on the newest iteration wins outright."""
-    import cadx.agent.worker_jobs as wj
+    import kiara.agent.worker_jobs as wj
 
     vdir = tmp_path / "v2"
     _write_npz(vdir / "1" / "topopt" / "density.npz", density=np.ones(64) * 0.5, kind="simp")
@@ -367,7 +367,7 @@ def test_latest_parent_density_picks_simp_field(tmp_path, monkeypatch) -> None:
 
 
 def test_latest_parent_density_none_when_empty(tmp_path, monkeypatch) -> None:
-    import cadx.agent.worker_jobs as wj
+    import kiara.agent.worker_jobs as wj
 
     vdir = tmp_path / "v3"
     vdir.mkdir()

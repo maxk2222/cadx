@@ -13,7 +13,7 @@
 #   POST /v1/update/rollback -> spawn `update.sh --rollback --yes` (202/409)
 #
 # Env: UPDATE_HOST (default 127.0.0.1) · UPDATE_PORT (default 8766)
-#      CADX_UPDATE_TOKEN or run/updater.token · CADX_UPDATE_SCRIPT (test hook)
+#      KIARA_UPDATE_TOKEN or run/updater.token · KIARA_UPDATE_SCRIPT (test hook)
 import contextlib
 import json
 import os
@@ -37,7 +37,7 @@ TOKEN_FILE = RUN / "updater.token"
 MODE_FILE = RUN / "mode"
 MESH_ENV_FILE = RUN / "mesh-server.env"
 WATCHDOG_FILE = RUN / "watchdog.json"
-UPDATE_SCRIPT = os.environ.get("CADX_UPDATE_SCRIPT") or str(ROOT / "scripts" / "update.sh")
+UPDATE_SCRIPT = os.environ.get("KIARA_UPDATE_SCRIPT") or str(ROOT / "scripts" / "update.sh")
 CHECK_MAX_AGE_S = 6 * 3600
 
 HOST = os.environ.get("UPDATE_HOST") or "127.0.0.1"
@@ -45,10 +45,10 @@ PORT = int(os.environ.get("UPDATE_PORT") or 8766)
 
 # supervisor knobs — generous: GPU builds and docker pulls legitimately take
 # a long time; progress is measured by LOG mtime, not phase boundaries
-WATCHDOG_INTERVAL_S = int(os.environ.get("CADX_WATCHDOG_INTERVAL") or 15)
-UPDATE_STALL_S = float(os.environ.get("CADX_UPDATE_STALL_S") or 1800)  # no log progress
-UPDATE_MAX_S = float(os.environ.get("CADX_UPDATE_MAX_S") or 3 * 3600)  # absolute cap
-CHECK_STALL_S = float(os.environ.get("CADX_CHECK_STALL_S") or 900)  # --check run cap
+WATCHDOG_INTERVAL_S = int(os.environ.get("KIARA_WATCHDOG_INTERVAL") or 15)
+UPDATE_STALL_S = float(os.environ.get("KIARA_UPDATE_STALL_S") or 1800)  # no log progress
+UPDATE_MAX_S = float(os.environ.get("KIARA_UPDATE_MAX_S") or 3 * 3600)  # absolute cap
+CHECK_STALL_S = float(os.environ.get("KIARA_CHECK_STALL_S") or 900)  # --check run cap
 MESH_HEALTH_FAILS = 3  # consecutive /v1/health misses before respawn
 COMPOSE_BAD_TICKS = 3  # consecutive unhealthy/exited!=0 ticks before healing
 HB_STALE_S = 120.0  # worker heartbeat age that counts as "wedged"
@@ -72,7 +72,7 @@ _wd_suppressed = False
 
 
 def _load_token() -> str:
-    tok = os.environ.get("CADX_UPDATE_TOKEN", "").strip()
+    tok = os.environ.get("KIARA_UPDATE_TOKEN", "").strip()
     if tok:
         return tok
     if TOKEN_FILE.exists():
@@ -157,7 +157,7 @@ def _spawn(argv: list[str]) -> bool:
                 cwd=ROOT,
                 stdout=launch,
                 stderr=subprocess.STDOUT,
-                env={**os.environ, "CADX_UPDATE_NONINTERACTIVE": "1"},
+                env={**os.environ, "KIARA_UPDATE_NONINTERACTIVE": "1"},
                 # own process group — the watchdog's killpg must not take the
                 # daemon down with the stalled update
                 start_new_session=True,
@@ -188,7 +188,7 @@ def _maybe_self_reexec() -> None:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "cadx-updater/1"
+    server_version = "kiara-updater/1"
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args) -> None:  # quiet — keep stderr clean

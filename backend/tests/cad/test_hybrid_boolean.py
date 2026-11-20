@@ -4,10 +4,10 @@ import pytest
 import trimesh
 from build123d import export_brep, import_brep
 
-from cadx.cad import mesh_boolean as mb
-from cadx.cad.engine import run_pipeline
-from cadx.cad.mesh_ops import mesh_to_solid
-from cadx.db.models import ProjectSettings
+from kiara.cad import mesh_boolean as mb
+from kiara.cad.engine import run_pipeline
+from kiara.cad.mesh_ops import mesh_to_solid
+from kiara.db.models import ProjectSettings
 
 HYBRID_CODE = """\
 from build123d import *

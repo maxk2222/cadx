@@ -8,8 +8,8 @@ disk hygiene, health semantics. For the update flow itself see `updating.md`.
 ```
 browser ──> frontend :8080 ──> api :8000 ──> postgres :5432 (data volume)
                                   │        └> redis :6379 (AOF, redisdata volume)
-                                  ├─> worker      (arq "cadx" queue — agent jobs)
-                                  └─> cad-executor (arq "cadx-exec" queue — CAD/FEM)
+                                  ├─> worker      (arq "kiara" queue — agent jobs)
+                                  └─> cad-executor (arq "kiara-exec" queue — CAD/FEM)
 host:   mesh-server :8765 (native nohup, supervised)  ·  updater :8766 (watchdog)
 ```
 
@@ -19,13 +19,13 @@ supervisor** — it is the only process that survives a full stack restart.
 
 ## Watchdog (scripts/update_server.py)
 
-Ticks every `CADX_WATCHDOG_INTERVAL` (15s). Fully **suppressed while an
+Ticks every `KIARA_WATCHDOG_INTERVAL` (15s). Fully **suppressed while an
 update/check/rollback is in flight** (`run/update-state.json` state ∈
 running/checking/rolling-back) so it never races `docker compose down`.
 
 - **Stalled update kill**: no output in the update log for
-  `CADX_UPDATE_STALL_S` (30min) — measured by `max(state.mtime, log.mtime)`,
-  never state-mtime alone — or absolute cap `CADX_UPDATE_MAX_S` (3h) →
+  `KIARA_UPDATE_STALL_S` (30min) — measured by `max(state.mtime, log.mtime)`,
+  never state-mtime alone — or absolute cap `KIARA_UPDATE_MAX_S` (3h) →
   `SIGTERM` the process group (`start_new_session`), `SIGKILL` after 15s,
   state → `failed`.
 - **mesh-server respawn**: only when supervised — `run/mesh-server.env`
@@ -73,7 +73,7 @@ it shows as `degraded` + `redis:false` so the sweeper story is observable.
 
 ## Backups
 
-`scripts/backup.sh` (`make backup`) → `data/backups/cadx-<ts>.dump` (pg_dump
+`scripts/backup.sh` (`make backup`) → `data/backups/kiara-<ts>.dump` (pg_dump
 -Fc) + `.json` sidecar (git sha, alembic heads). Keeps newest 10. Skips
 cleanly when postgres is down (`--required` fails the caller). `update.sh`
 runs it automatically before `deps`+`restart` — idempotent across updater
@@ -83,8 +83,8 @@ self-reexec via `run/update-backup.json`.
 needs `pg_restore`:
 
 ```sh
-docker compose exec -T postgres pg_restore -U cadx -d cadx --clean --if-exists \
-  < data/backups/cadx-<ts>.dump        # or: cat dump | docker exec -i …
+docker compose exec -T postgres pg_restore -U kiara -d kiara --clean --if-exists \
+  < data/backups/kiara-<ts>.dump        # or: cat dump | docker exec -i …
 ```
 
 ## Disk hygiene

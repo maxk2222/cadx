@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from build123d import Box, Cylinder, Pos
 
-from cadx.cad.compare import (
+from kiara.cad.compare import (
     align_check,
     diff_summary,
     fit_check,

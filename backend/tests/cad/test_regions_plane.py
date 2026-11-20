@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from cadx.cad.fem.regions import (
+from kiara.cad.fem.regions import (
     _plane_locus,
     region_cell_mask,
     region_node_mask,
     resolve_case_dofs,
 )
-from cadx.cad.fem.voxelize import VoxelDomain
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.voxelize import VoxelDomain
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 PITCH = 2.0
 DIMS = (10, 8, 4)  # cells — nodes x∈{0..20}, y∈{0..16}, z∈{0..8}

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from cadx.agent.image_prompt import (
+from kiara.agent.image_prompt import (
     hero_prompt_parts,
     proportion_hint,
     rest_pose_hint,
     visual_features,
 )
-from cadx.llm.schemas import Feature, PartSpec
+from kiara.llm.schemas import Feature, PartSpec
 
 _DIM = {"value": 80.0, "unit": "mm", "source": "stated"}
 
@@ -80,7 +80,7 @@ def test_visual_features_char_budget():
     """t2i models truncate long prompts (Z-Image: 512 tokens) — the feature
     list must stay within a hard character budget instead of silently
     dropping tail features into the truncated zone."""
-    from cadx.agent.image_prompt import FEATURES_MAX_CHARS
+    from kiara.agent.image_prompt import FEATURES_MAX_CHARS
 
     long_desc = "x" * 200
     spec = PartSpec(

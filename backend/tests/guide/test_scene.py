@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.guide.scene import merged_glb
+from kiara.guide.scene import merged_glb
 
 
 def _mesh(tmp_path, name: str) -> str:

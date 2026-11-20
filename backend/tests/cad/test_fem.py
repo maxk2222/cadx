@@ -10,18 +10,18 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.analyze import FemReport, run_fem, run_fem_domain
-from cadx.cad.fem.extract import _regularize_mask, _surface_mesh, density_to_mesh
-from cadx.cad.fem.regions import (
+from kiara.cad.fem.analyze import FemReport, run_fem, run_fem_domain
+from kiara.cad.fem.extract import _regularize_mask, _surface_mesh, density_to_mesh
+from kiara.cad.fem.regions import (
     empty_region_warnings,
     region_cell_mask,
     region_node_mask,
     resolve_case,
 )
-from cadx.cad.fem.solver import solve
-from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-from cadx.cad.fem.voxelize import VoxelDomain, voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.solver import solve
+from kiara.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+from kiara.cad.fem.voxelize import VoxelDomain, voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36
@@ -80,7 +80,7 @@ def test_voxelize_nonwatertight_stl(tmp_path: Path) -> None:
 def test_snapped_pitch_exact_fit_thin_plate() -> None:
     """The reference case: a 40x40x4 plate at 2.5 mm pitch must not become
     a 5 mm domain — snap to a pitch that fits the thin axis exactly."""
-    from cadx.cad.fem.voxelize import snapped_pitch
+    from kiara.cad.fem.voxelize import snapped_pitch
 
     p, warn = snapped_pitch(
         [40.0, 40.0, 4.0], 2.5, min_cells=2, mesh_volume=6400.0, max_elements=150_000
@@ -96,7 +96,7 @@ def test_snapped_pitch_exact_fit_thin_plate() -> None:
 def test_snapped_pitch_min_cells_raises_resolution() -> None:
     """min_cells floors the thin-axis resolution: a 4 mm plate gets >=3
     cell layers even when 2 would already fit."""
-    from cadx.cad.fem.voxelize import snapped_pitch
+    from kiara.cad.fem.voxelize import snapped_pitch
 
     p, warn = snapped_pitch(
         [40.0, 40.0, 4.0], 2.5, min_cells=3, mesh_volume=6400.0, max_elements=150_000
@@ -108,7 +108,7 @@ def test_snapped_pitch_min_cells_raises_resolution() -> None:
 def test_snapped_pitch_refused_when_it_worsens_overhang() -> None:
     """If snapping the thin axis creates MORE total overhang elsewhere
     (e.g. 9.9 mm -> 4x2.475 = 16.16 cells on x), keep the target pitch."""
-    from cadx.cad.fem.voxelize import snapped_pitch
+    from kiara.cad.fem.voxelize import snapped_pitch
 
     p, warn = snapped_pitch(
         [40.0, 40.0, 9.9], 2.5, min_cells=3, mesh_volume=15840.0, max_elements=150_000
@@ -120,7 +120,7 @@ def test_snapped_pitch_refused_when_it_worsens_overhang() -> None:
 def test_snapped_pitch_refused_on_element_budget() -> None:
     """A very thin large part would explode the grid — refuse with an
     honest warning instead of silently keeping the mismatched domain."""
-    from cadx.cad.fem.voxelize import snapped_pitch
+    from kiara.cad.fem.voxelize import snapped_pitch
 
     p, warn = snapped_pitch(
         [200.0, 200.0, 1.0], 2.5, min_cells=3, mesh_volume=40_000.0, max_elements=150_000
@@ -131,7 +131,7 @@ def test_snapped_pitch_refused_on_element_budget() -> None:
 
 def test_snapped_pitch_span_already_divisible() -> None:
     """No-op when the requested pitch already divides the thin axis."""
-    from cadx.cad.fem.voxelize import snapped_pitch
+    from kiara.cad.fem.voxelize import snapped_pitch
 
     p, warn = snapped_pitch(
         [60.0, 40.0, 6.0], 2.0, min_cells=3, mesh_volume=14_400.0, max_elements=150_000
@@ -515,7 +515,7 @@ def test_resolve_case_fallback_clips_to_anchor_face() -> None:
     assert fb and "+z" in fb[0]
     # the anchor neighbourhood is void, so the patch widens to the surviving
     # +z skin — still on the anchor's declared side, never interior cells
-    from cadx.cad.fem.regions import _region_fallback
+    from kiara.cad.fem.regions import _region_fallback
 
     fb_cells, ax = _region_fallback(dom, region, anchors)
     assert ax == "+z" and fb_cells.any()
@@ -630,7 +630,7 @@ def test_regularize_removes_diagonal_edges() -> None:
 
 
 def test_run_fem_pipeline(tmp_path: Path) -> None:
-    from cadx.cad.engine import run_fem_pipeline
+    from kiara.cad.engine import run_fem_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -649,7 +649,7 @@ def test_run_fem_pipeline(tmp_path: Path) -> None:
 
 
 def test_run_topopt_pipeline(tmp_path: Path) -> None:
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -682,7 +682,7 @@ def test_run_topopt_pipeline(tmp_path: Path) -> None:
 
 def test_run_topopt_pipeline_retries_on_low_sf(tmp_path: Path) -> None:
     """sf_export below target → automatic retry at volfrac +0.1."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -700,7 +700,7 @@ def test_run_topopt_pipeline_retries_on_low_sf(tmp_path: Path) -> None:
 
 
 def test_run_fem_pipeline_preview_only(tmp_path: Path) -> None:
-    from cadx.cad.engine import run_fem_pipeline
+    from kiara.cad.engine import run_fem_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -724,7 +724,7 @@ def test_run_fem_pipeline_preview_only(tmp_path: Path) -> None:
 def test_run_fem_pipeline_preview_cells_no_pngs(tmp_path: Path) -> None:
     """GUI region check: render_pngs=False skips renders but still returns
     the resolved cell clouds for the 3D overlay."""
-    from cadx.cad.engine import run_fem_pipeline
+    from kiara.cad.engine import run_fem_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -817,8 +817,8 @@ def test_run_topopt_pipeline_void_regions_survive_extraction(tmp_path: Path) -> 
     """Declared void_regions must stay empty in the extracted mask — even under
     min-member thickening (audit fix: void_cells was never passed to
     density_to_mesh)."""
-    from cadx.cad.engine import run_topopt_pipeline
-    from cadx.cad.fem.regions import region_cell_mask
+    from kiara.cad.engine import run_topopt_pipeline
+    from kiara.cad.fem.regions import region_cell_mask
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -839,7 +839,7 @@ def test_run_topopt_pipeline_void_regions_survive_extraction(tmp_path: Path) -> 
     assert res.ok, res.error
     npz = np.load(tmp_path / "o" / "topopt" / "density.npz")
     domain_mask = np.asarray(npz["mask"], dtype=bool)
-    from cadx.cad.fem.voxelize import voxelize
+    from kiara.cad.fem.voxelize import voxelize
 
     dom = voxelize(trimesh.load_mesh(str(src)), 3.0, 500_000)
     void = region_cell_mask(dom, RegionSpec(kind="box", center=[0.0, 0.0, 0.0], diameter_mm=16.0))
@@ -853,7 +853,7 @@ def test_run_topopt_pipeline_void_regions_survive_extraction(tmp_path: Path) -> 
 def test_simp_oc_warns_on_mma_only_options(tmp_path: Path) -> None:
     """solver=oc with stress/displacement limits warns instead of silently
     ignoring them (audit risk item)."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -923,7 +923,7 @@ def test_load_region_covering_most_of_part_warns() -> None:
     stress — resolve_case_dofs must warn so the agent can narrow the region
     (observed: an unbounded `area +z` region on the thin bail-handle shell
     covered ~70% of all cells). Uniform pressure/g-loads stay silent."""
-    from cadx.cad.fem.regions import resolve_case_dofs
+    from kiara.cad.fem.regions import resolve_case_dofs
 
     dom = voxelize(_box_mesh(), 3.0, 150_000)
     case = LoadCase(
@@ -952,7 +952,7 @@ def test_render_regions_writes_case_png(tmp_path: Path) -> None:
     """preview render writes regions_<case>.png when offscreen rendering is
     available and returns [] when it isn't — the test passes either way, so
     assert only that returned files exist."""
-    from cadx.cad.fem.preview import render_regions
+    from kiara.cad.fem.preview import render_regions
 
     dom = voxelize(_box_mesh(), 3.0, 150_000)
     case = LoadCase(
@@ -978,7 +978,7 @@ def test_feedback_lines_report_unsolvable_case() -> None:
     """A case whose loads resolve to zero force yields safety_factor=None —
     fem_feedback_lines must still surface it (with the region warnings) or the
     improve loop iterates blind on an unverifiable part."""
-    from cadx.cad.fem.analyze import FemCaseResult, fem_feedback_lines
+    from kiara.cad.fem.analyze import FemCaseResult, fem_feedback_lines
 
     rep = FemReport(
         cases=[
@@ -1002,7 +1002,7 @@ def test_feedback_lines_report_unsolvable_case() -> None:
 def test_bearing_zero_force_warning_names_anchor_position() -> None:
     """The zero-force bearing warning must carry the resolved anchor
     coordinates — 'check bore/direction' alone leaves the model guessing."""
-    from cadx.cad.fem.regions import resolve_case_dofs
+    from kiara.cad.fem.regions import resolve_case_dofs
 
     dom = voxelize(_box_mesh(), 3.0, 150_000)
     case = LoadCase(
@@ -1029,7 +1029,7 @@ def test_cg_watchdog_aborts_divergent_system() -> None:
     before maxiter — same converged=False verdict, minutes sooner."""
     from scipy import sparse
 
-    from cadx.cad.fem.solver import _cg_watchdog
+    from kiara.cad.fem.solver import _cg_watchdog
 
     n = 400
     diag = np.full(n, 2.0)
@@ -1049,7 +1049,7 @@ def test_cg_watchdog_converges_well_conditioned() -> None:
     divergence, never on legitimate iteration counts."""
     from scipy import sparse
 
-    from cadx.cad.fem.solver import _cg_watchdog
+    from kiara.cad.fem.solver import _cg_watchdog
 
     n = 300
     rng = np.random.default_rng(1)
@@ -1091,7 +1091,7 @@ def test_run_fem_pool_matches_serial(tmp_path: Path) -> None:
 def test_anchor_entry_warnings_flags_empty_entry() -> None:
     """A misresolved fastener anchor (the z=85 face-leak shape) warns;
     a valid entry on real material is silent."""
-    from cadx.cad.fem.regions import anchor_entry_warnings
+    from kiara.cad.fem.regions import anchor_entry_warnings
 
     dom = voxelize(_box_mesh(), 2.0, 150_000)  # z in [0,12], all solid
     good = {
@@ -1147,7 +1147,7 @@ def _sealed_tank_mesh() -> trimesh.Trimesh:
 
 
 def test_cavity_region_selects_only_inner_skin() -> None:
-    from cadx.cad.fem.regions import anchor_entry_warnings  # noqa: F401
+    from kiara.cad.fem.regions import anchor_entry_warnings  # noqa: F401
 
     dom = voxelize(_sealed_tank_mesh(), 1.0, 300_000)
     cells = region_cell_mask(dom, RegionSpec(kind="cavity"))
@@ -1187,7 +1187,7 @@ def test_cavity_pressure_self_equilibrates() -> None:
             )
         ],
     )
-    from cadx.cad.fem.regions import resolve_case_dofs
+    from kiara.cad.fem.regions import resolve_case_dofs
 
     applied: list[dict] = []
     _fixed, F, w = resolve_case_dofs(dom, case, applied_out=applied)

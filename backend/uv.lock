@@ -272,7 +272,7 @@ wheels = [
 ]
 
 [[package]]
-name = "cadx"
+name = "kiara"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

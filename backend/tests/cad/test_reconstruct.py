@@ -1,6 +1,6 @@
 """Reconstruction core tests — synthetic meshes, real sandbox exec (no LLM).
 
-The emitted code runs through ``cadx.cad.sandbox.run_user_code`` — the same
+The emitted code runs through ``kiara.cad.sandbox.run_user_code`` — the same
 subprocess path the executor uses — and the exported B-Rep is checked for a
 watertight solid with a bbox matching the input mesh.
 """
@@ -12,15 +12,15 @@ import pytest
 import trimesh
 from build123d import import_brep
 
-from cadx.cad.reconstruct import (
+from kiara.cad.reconstruct import (
     _bore_axis_consistent,
     chamfer_mm,
     classify_part,
     reconstruct_mesh,
     snap_grid,
 )
-from cadx.cad.sandbox import run_user_code
-from cadx.llm.schemas import Dim, Feature, PartSpec
+from kiara.cad.sandbox import run_user_code
+from kiara.llm.schemas import Dim, Feature, PartSpec
 
 try:
     import pyransac3d  # noqa: F401

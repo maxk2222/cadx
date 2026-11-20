@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from cadx.agent.quality import det_quality
+from kiara.agent.quality import det_quality
 
 
 def _checks(*statuses: str) -> dict:

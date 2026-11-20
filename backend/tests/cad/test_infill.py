@@ -15,7 +15,7 @@ import pytest
 import trimesh
 from scipy import ndimage
 
-from cadx.cad.fem.infill import (
+from kiara.cad.fem.infill import (
     InfillParams,
     _skin_mask,
     combine_stress_frames,
@@ -28,10 +28,10 @@ from cadx.cad.fem.infill import (
     strut_occupancy,
     target_density,
 )
-from cadx.cad.fem.regions import resolve_case_dofs
-from cadx.cad.fem.solver import _D, assemble, reduce_case, solve_reduced
-from cadx.cad.fem.voxelize import VoxelDomain, voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.regions import resolve_case_dofs
+from kiara.cad.fem.solver import _D, assemble, reduce_case, solve_reduced
+from kiara.cad.fem.voxelize import VoxelDomain, voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36
@@ -530,7 +530,7 @@ def test_infill_density_to_mesh_watertight(solved_cantilever) -> None:
     """The (rho, mask) pair feeds the unchanged extraction path: threshold
     0.5, watertight mesh, bounds inside the design domain."""
     pytest.importorskip("skimage")
-    from cadx.cad.fem.extract import density_to_mesh
+    from kiara.cad.fem.extract import density_to_mesh
 
     dom, _case, sol, edof, active, elem_E = solved_cantilever
     w = element_strain_energy(dom, sol.u, edof, active, elem_E, NU)
@@ -560,7 +560,7 @@ def test_infill_density_to_mesh_watertight(solved_cantilever) -> None:
 def test_infill_mask_verifies_under_fem(solved_cantilever) -> None:
     """run_fem_domain on the lattice mask — the same call the TopOpt
     post-verification uses — must solve and report a safety factor."""
-    from cadx.cad.fem.analyze import run_fem_domain
+    from kiara.cad.fem.analyze import run_fem_domain
 
     dom, case, sol, edof, active, elem_E = solved_cantilever
     w = element_strain_energy(dom, sol.u, edof, active, elem_E, NU)

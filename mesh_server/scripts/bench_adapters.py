@@ -30,7 +30,7 @@ Usage (in-process, recommended — exercises the real Registry/adapter path):
     uv run python scripts/bench_adapters.py --adapters triposg,hunyuan3d-2.1-mlx \
         --only flat_plate --seeds 2
 
-The KIARA backend reads the report via `cadx.agent.model_pick.load_bench`
+The KIARA backend reads the report via `kiara.agent.model_pick.load_bench`
 and ranks adapters per part class.
 """
 

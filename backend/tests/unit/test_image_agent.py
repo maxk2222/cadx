@@ -6,15 +6,15 @@ import uuid
 
 from sqlmodel import select
 
-from cadx.agent.image_client import FakeImageClient
-from cadx.agent.orchestrator import _autogen_hero_image
-from cadx.agent.toolspecs import ToolSession
-from cadx.agent.types import AgentCtx, InputAsset
-from cadx.db.models import Asset, AssetKind, Project, ProjectSettings
-from cadx.db.session import create_all, session_scope
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import ModelingPlan, PartSpec
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.image_client import FakeImageClient
+from kiara.agent.orchestrator import _autogen_hero_image
+from kiara.agent.toolspecs import ToolSession
+from kiara.agent.types import AgentCtx, InputAsset
+from kiara.db.models import Asset, AssetKind, Project, ProjectSettings
+from kiara.db.session import create_all, session_scope
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import ModelingPlan, PartSpec
+from kiara.runtime_config import RuntimeSettings
 
 
 class _Exec:
@@ -104,7 +104,7 @@ async def test_hero_autogen_skips_when_images_exist():
     ctx = _ctx(gen_mode="mesh", image=FakeImageClient(), image_available=True)
     from pathlib import Path
 
-    from cadx.agent.types import InputAsset
+    from kiara.agent.types import InputAsset
 
     ctx.assets.append(InputAsset(asset_id="x", kind="image", path=Path("/tmp/x.png")))
     await _autogen_hero_image(ctx, _spec(), _plan())

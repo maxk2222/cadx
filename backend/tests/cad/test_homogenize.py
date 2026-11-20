@@ -11,15 +11,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cadx.cad.fem.homogenize import (
+from kiara.cad.fem.homogenize import (
     _unit_cell_domain,
     homogenize_cell,
     infill_homog_elems,
     lattice_table,
 )
-from cadx.cad.fem.infill import strut_occupancy
-from cadx.cad.fem.solver import _D
-from cadx.cad.fem.voxelize import VoxelDomain
+from kiara.cad.fem.infill import strut_occupancy
+from kiara.cad.fem.solver import _D
+from kiara.cad.fem.voxelize import VoxelDomain
 
 NU = 0.36
 

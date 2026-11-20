@@ -21,13 +21,13 @@ from build123d import (
     fillet,
 )
 
-import cadx.cad.recognition as recognition
-from cadx.cad.features import (
+import kiara.cad.recognition as recognition
+from kiara.cad.features import (
     MeasuredFeatures,
     compare_features,
     extract_features,
 )
-from cadx.llm.schemas import Feature
+from kiara.llm.schemas import Feature
 
 requires_quiddity = pytest.mark.skipif(
     recognition.quiddity is None, reason="quiddity not installed"

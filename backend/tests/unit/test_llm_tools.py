@@ -5,8 +5,8 @@ from __future__ import annotations
 import httpx
 from pydantic import BaseModel
 
-from cadx.llm.client import LLMClient
-from cadx.llm.tools import (
+from kiara.llm.client import LLMClient
+from kiara.llm.tools import (
     _StreamToolAcc,
     parse_content_tool_call,
     parse_tool_calls,

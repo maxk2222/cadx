@@ -15,8 +15,8 @@ from typing import Any
 
 import numpy as np
 
-from cadx.guide import solver
-from cadx.guide.state import (
+from kiara.guide import solver
+from kiara.guide.state import (
     AssemblyInstance,
     AssemblyState,
     GuidePart,
@@ -121,7 +121,7 @@ def test_flagged_instances_includes_boundary_root(monkeypatch: Any) -> None:
     """Repairing the inside link itself re-derives the same route under
     the same chain root — the flagged set must carry the premount root
     upstream of the inside link, not just the leaf."""
-    import cadx.guide.assembly_tools as at
+    import kiara.guide.assembly_tools as at
 
     s = _sess([_part("host"), _part("adapt"), _part("elbow"), _part("pipe")])
     asm = s.state.assembly

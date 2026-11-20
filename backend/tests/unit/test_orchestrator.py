@@ -4,7 +4,7 @@ import pytest
 def test_build_issues_solids_gate():
     """Disconnected solids are a major deterministic issue regardless of
     what the critique model scored."""
-    from cadx.agent.orchestrator import build_issues
+    from kiara.agent.orchestrator import build_issues
 
     issues = build_issues(None, [], [], None, {"solid_count": 3})
     assert issues[0]["source"] == "solids"
@@ -16,8 +16,8 @@ def test_build_issues_solids_gate():
 
 
 def test_params_vs_spec_only_checks_parametric_cad_envelopes():
-    from cadx.agent.orchestrator import _params_vs_spec
-    from cadx.llm.schemas import PartSpec
+    from kiara.agent.orchestrator import _params_vs_spec
+    from kiara.llm.schemas import PartSpec
 
     spec = PartSpec(
         name="mesh-backed knob",
@@ -37,8 +37,8 @@ def test_params_vs_spec_only_checks_parametric_cad_envelopes():
 
 
 def test_best_candidate_keeps_its_own_issue_list():
-    from cadx.agent.orchestrator import Candidate, _select_best_candidate
-    from cadx.llm.schemas import Critique
+    from kiara.agent.orchestrator import Candidate, _select_best_candidate
+    from kiara.llm.schemas import Critique
 
     old = Candidate(1, None, {}, Critique(score=40, passed=False), [])
     current = Candidate(2, None, {}, Critique(score=80, passed=True), [])
@@ -57,13 +57,13 @@ def test_copy_best_artifacts_uses_art_dir(tmp_path):
     LAST write, which may be a worse attempt (stale-score bug)."""
     import uuid
 
-    from cadx import storage
-    from cadx.agent.executor_client import InProcessExecutor
-    from cadx.agent.orchestrator import _copy_best_artifacts
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.db.models import ProjectSettings
-    from cadx.llm.fake import FakeLLM
+    from kiara import storage
+    from kiara.agent.executor_client import InProcessExecutor
+    from kiara.agent.orchestrator import _copy_best_artifacts
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.db.models import ProjectSettings
+    from kiara.llm.fake import FakeLLM
 
     async def emit(*a, **kw):
         pass
@@ -112,12 +112,12 @@ async def test_process_mesh_warns_on_ops_version_drift():
     MESH_OPS_VERSION — the worker must surface it, not silently replay."""
     import uuid
 
-    from cadx.agent.orchestrator import _process_mesh
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.cad.mesh_ops import MESH_OPS_VERSION, MeshPostParams
-    from cadx.db.models import ProjectSettings
-    from cadx.llm.fake import FakeLLM
+    from kiara.agent.orchestrator import _process_mesh
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.cad.mesh_ops import MESH_OPS_VERSION, MeshPostParams
+    from kiara.db.models import ProjectSettings
+    from kiara.llm.fake import FakeLLM
 
     class DriftedExecutor:
         async def process_mesh(self, payload):
@@ -159,13 +159,13 @@ async def test_clip_rejected_when_it_shrinks_below_stated_dims():
     improved, so the clip used to be kept; now a dim regression rejects it."""
     import uuid
 
-    from cadx.agent.orchestrator import _clip_mesh_to_measured
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.cad.mesh_ops import MeshPostParams
-    from cadx.db.models import ProjectSettings
-    from cadx.llm.fake import FakeLLM
-    from cadx.llm.schemas import Dim, PartSpec
+    from kiara.agent.orchestrator import _clip_mesh_to_measured
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.cad.mesh_ops import MeshPostParams
+    from kiara.db.models import ProjectSettings
+    from kiara.llm.fake import FakeLLM
+    from kiara.llm.schemas import Dim, PartSpec
 
     async def emit(*a, **kw):
         pass
@@ -233,9 +233,9 @@ def test_orientation_ranking_support_picks_standing():
     import numpy as np
     import trimesh
 
-    from cadx import storage
-    from cadx.agent.orchestrator import _orientation_ranking
-    from cadx.llm.schemas import Dim, PartSpec
+    from kiara import storage
+    from kiara.agent.orchestrator import _orientation_ranking
+    from kiara.llm.schemas import Dim, PartSpec
 
     skirt = trimesh.creation.cylinder(radius=18.0, height=8.0, sections=48)
     skirt.apply_translation([0, 0, 4.0])
@@ -349,12 +349,12 @@ async def _drive_cad(
     import uuid as _uuid
     from pathlib import Path
 
-    from cadx.agent.orchestrator import RunOutcome, _run_cad
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.db.models import ProjectSettings
-    from cadx.llm.schemas import ModelingPlan, PartSpec
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.agent.orchestrator import RunOutcome, _run_cad
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.db.models import ProjectSettings
+    from kiara.llm.schemas import ModelingPlan, PartSpec
+    from kiara.runtime_config import RuntimeSettings
 
     async def emit(step, it, msg, **_f):
         emitted.append((step, it, msg))
@@ -413,7 +413,7 @@ async def test_stall_progress_via_dq_not_score():
     """F1: critique score pinned at 0 used to stall-abort at iteration 2 —
     but a rising verify_spec pass count (dq) is progress and must keep the
     loop going until the pass lands."""
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
 
     box_code = _box_code()
     llm = FakeLLM(
@@ -448,7 +448,7 @@ async def test_stall_progress_via_dq_not_score():
 async def test_stall_triggers_one_fresh_codegen_then_finalize():
     """A truly flat run gets exactly ONE fresh-codegen escape (force_fresh
     skips the improve path once), then finalises on the next stall."""
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
 
     box_code = _box_code()
     code_resp = {"reasoning": "v", "params": [], "expected_bbox": [40, 20, 10], "code": box_code}
@@ -476,8 +476,8 @@ def test_regression_critique_fires_on_collapse():
     """Iter-6 handle: improve rebuilt a 30x20x6 plate (~10% volume) where the
     best candidate had the full mesh body — the vision critique just restated
     the obvious at full reasoning cost. Synthesize the verdict instead."""
-    from cadx.agent.orchestrator import Candidate, _regression_critique
-    from cadx.llm.schemas import CodeResponse
+    from kiara.agent.orchestrator import Candidate, _regression_critique
+    from kiara.llm.schemas import CodeResponse
 
     best = Candidate(
         1,
@@ -494,8 +494,8 @@ def test_regression_critique_fires_on_collapse():
 
 
 def test_regression_critique_ignores_normal_candidates():
-    from cadx.agent.orchestrator import Candidate, _regression_critique
-    from cadx.llm.schemas import CodeResponse
+    from kiara.agent.orchestrator import Candidate, _regression_critique
+    from kiara.llm.schemas import CodeResponse
 
     best = Candidate(
         1,
@@ -514,8 +514,8 @@ def test_gate_generated_images_drops_bad_hero(tmp_path):
     """A persisted generated hero from an earlier version must not feed the
     mesh generator when its silhouette contradicts the spec — selection-time
     gate (creation-time verify only covers THIS job's images)."""
-    from cadx.agent.orchestrator import _gate_generated_images
-    from cadx.agent.types import InputAsset
+    from kiara.agent.orchestrator import _gate_generated_images
+    from kiara.agent.types import InputAsset
 
     def _png(w: int, h: int):
         from PIL import Image
@@ -532,7 +532,7 @@ def test_gate_generated_images_drops_bad_hero(tmp_path):
     def _dim(v):
         return {"value": v, "unit": "mm", "source": "stated"}
 
-    from cadx.llm.schemas import PartSpec
+    from kiara.llm.schemas import PartSpec
 
     spec = PartSpec(
         name="t",
@@ -565,8 +565,8 @@ def test_gate_generated_images_drops_major_verdict(tmp_path):
     """A generated image whose vision verdict is `major` (certified wrong
     part) must not condition the mesh generator — the drop falls through to
     the concept bootstrap, like the aspect gate."""
-    from cadx.agent.orchestrator import _gate_generated_images
-    from cadx.agent.types import InputAsset
+    from kiara.agent.orchestrator import _gate_generated_images
+    from kiara.agent.types import InputAsset
 
     p = tmp_path / "hero.png"
     from PIL import Image
@@ -576,7 +576,7 @@ def test_gate_generated_images_drops_major_verdict(tmp_path):
     def _dim(v):
         return {"value": v, "unit": "mm", "source": "stated"}
 
-    from cadx.llm.schemas import PartSpec
+    from kiara.llm.schemas import PartSpec
 
     spec = PartSpec(
         name="t",
@@ -630,7 +630,7 @@ async def test_cad_fallback_marker_resolves_honest_cad():
     parametric replacement for the mesh body — not a contract violation, so
     no hybrid major issue; when that candidate wins the outcome reports
     mode "cad" instead of claiming a hybrid part."""
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
 
     fb_code = _box_code() + 'cad_fallback = "mesh booleans collapsed the organic body"\n'
     llm = FakeLLM(
@@ -658,7 +658,7 @@ async def test_cad_fallback_marker_resolves_honest_cad():
 async def test_hybrid_missing_without_marker_stays_major():
     """Same overwrite-without-declaration code in hybrid mode keeps the
     hybrid contract violation as a major issue."""
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
 
     llm = FakeLLM(
         [
@@ -692,7 +692,7 @@ async def test_hybrid_missing_without_marker_stays_major():
 
 
 def _spec_two_bores():
-    from cadx.llm.schemas import PartSpec
+    from kiara.llm.schemas import PartSpec
 
     return PartSpec.model_validate(
         {
@@ -725,7 +725,7 @@ def _anchor_finding(idx, source, *, actual="missing", severity="major"):
 def test_build_issues_mesh_only_anchor_downgraded():
     """A mesh-scan-only anchor demanding a hole the spec never declared must
     not appear as a major — the spec's declared feature set wins."""
-    from cadx.agent.orchestrator import build_issues
+    from kiara.agent.orchestrator import build_issues
 
     findings = [
         _anchor_finding(1, "spec+mesh"),
@@ -743,8 +743,8 @@ def test_build_issues_drops_contradicted_mesh_only_demand():
     """Direct contradiction: a critique/spec-side issue already demands the
     extra hole NOT exist — the mesh-only 'cut a third hole' demand is
     dropped, not merely softened."""
-    from cadx.agent.orchestrator import build_issues
-    from cadx.llm.schemas import Critique, Discrepancy
+    from kiara.agent.orchestrator import build_issues
+    from kiara.llm.schemas import Critique, Discrepancy
 
     critique = Critique(
         score=50,
@@ -769,7 +769,7 @@ def test_build_issues_drops_contradicted_mesh_only_demand():
 def test_build_issues_no_spec_keeps_mesh_findings():
     """Without a spec there is no authoritative declaration to conflict
     with — mesh-only anchor findings keep their original severity."""
-    from cadx.agent.orchestrator import build_issues
+    from kiara.agent.orchestrator import build_issues
 
     findings = [_anchor_finding(3, "mesh_scan")]
     issues = build_issues(None, [], findings, None, {"solid_count": 1})
@@ -780,7 +780,7 @@ def test_build_issues_no_spec_keeps_mesh_findings():
 def test_annotate_anchor_sources():
     """The `hole <index>` finding text maps back to the anchor's source so
     the conflict pass can see mesh-only provenance."""
-    from cadx.agent.orchestrator import _annotate_anchor_sources
+    from kiara.agent.orchestrator import _annotate_anchor_sources
 
     anchors = {
         "holes": [
@@ -806,9 +806,9 @@ def test_annotate_anchor_sources():
 def test_gate_generated_images_logs_drop_once(tmp_path, monkeypatch):
     """B24: the gate runs per selection pass (hero list, combined list) —
     a dropped asset must be logged once per job, not once per pass."""
-    import cadx.agent.orchestrator as orch
-    import cadx.agent.orchestrator.mesh_pipeline as mp
-    from cadx.agent.types import InputAsset
+    import kiara.agent.orchestrator as orch
+    import kiara.agent.orchestrator.mesh_pipeline as mp
+    from kiara.agent.types import InputAsset
 
     events: list = []
 
@@ -840,7 +840,7 @@ def test_gate_generated_images_logs_drop_once(tmp_path, monkeypatch):
     def _dim(v):
         return {"value": v, "unit": "mm", "source": "stated"}
 
-    from cadx.llm.schemas import PartSpec
+    from kiara.llm.schemas import PartSpec
 
     spec = PartSpec(
         name="t",
@@ -878,7 +878,7 @@ async def test_issue_fingerprint_flags_artifacts_and_skips_improve():
     on the persisted list (honesty) but never fed to the patcher. When
     every remaining issue is an artifact the loop converges instead of
     burning another improve round."""
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
 
     box_code = _box_code()
     llm = FakeLLM(
@@ -919,7 +919,7 @@ async def test_issue_fingerprint_flags_artifacts_and_skips_improve():
 async def test_issue_fingerprint_resets_when_issue_changes():
     """A different issue text restarting the streak must NOT flag — the
     fingerprint gate only fires on a genuinely repeated finding."""
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
 
     box_code = _box_code()
 
@@ -961,7 +961,7 @@ async def test_issue_fingerprint_keeps_deterministic_findings_actionable():
     (dead PARAM) was flagged after iteration 2 while verify_spec kept
     gating on it — the patcher never saw the blocker again and the run
     burned its remaining iterations on advisory issues."""
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
 
     box_code = _box_code()
     broken_span = {
@@ -1008,8 +1008,8 @@ async def test_infra_exec_error_skips_repair(monkeypatch):
     """Executor-side failures (schema skew, sandbox outage) are not code
     bugs — the repair loop must not spend an LLM call on them, and the
     fabricated issue is recorded as source 'infra'."""
-    import cadx.agent.orchestrator as orch
-    from cadx.llm.fake import FakeLLM
+    import kiara.agent.orchestrator as orch
+    from kiara.llm.fake import FakeLLM
 
     monkeypatch.setattr(
         orch,
@@ -1055,8 +1055,8 @@ async def test_infra_exec_error_skips_repair(monkeypatch):
 def test_merge_features_appends_only_new_pairs():
     """P1: retry extraction merges into the spec's existing features —
     the old wholesale replace dropped entries intake got right."""
-    from cadx.agent.orchestrator import _merge_features
-    from cadx.llm.schemas import Feature
+    from kiara.agent.orchestrator import _merge_features
+    from kiara.llm.schemas import Feature
 
     old = [
         Feature(name="base plate", type="plate"),
@@ -1081,8 +1081,8 @@ def test_merge_features_appends_only_new_pairs():
 def test_hybrid_prefers_cad_guard():
     """The stated-dimension/optimize guard: mesh-only rescue is only honest
     for organic (image-driven) requests."""
-    from cadx.agent.orchestrator import _hybrid_prefers_cad
-    from cadx.llm.schemas import PartSpec
+    from kiara.agent.orchestrator import _hybrid_prefers_cad
+    from kiara.llm.schemas import PartSpec
 
     dim_spec = PartSpec.model_validate(_SPEC)  # 3 stated dims
     assert _hybrid_prefers_cad(dim_spec)
@@ -1121,14 +1121,14 @@ async def _drive_hybrid_approach(monkeypatch, spec):
     import time
     import uuid as _uuid
 
-    import cadx.agent.orchestrator as orc
-    from cadx.agent.orchestrator import RunOutcome, _run_approach
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.db.models import ProjectSettings
-    from cadx.llm.fake import FakeLLM
-    from cadx.llm.schemas import ModelingPlan
-    from cadx.runtime_config import RuntimeSettings
+    import kiara.agent.orchestrator as orc
+    from kiara.agent.orchestrator import RunOutcome, _run_approach
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.db.models import ProjectSettings
+    from kiara.llm.fake import FakeLLM
+    from kiara.llm.schemas import ModelingPlan
+    from kiara.runtime_config import RuntimeSettings
 
     async def emit(step, it, msg, **_f):
         pass
@@ -1192,7 +1192,7 @@ async def _drive_hybrid_approach(monkeypatch, spec):
 async def test_hybrid_failure_falls_back_to_cad_for_dimensioned_spec(monkeypatch):
     """N1: forced-hybrid conversion failure on a spec with stated dims must
     take the CAD fallback — a lattice that won't sew is not the answer."""
-    from cadx.llm.schemas import PartSpec
+    from kiara.llm.schemas import PartSpec
 
     outcome, calls = await _drive_hybrid_approach(monkeypatch, PartSpec.model_validate(_SPEC))
     assert calls == ["cad"]
@@ -1205,7 +1205,7 @@ async def test_hybrid_failure_falls_back_to_cad_for_dimensioned_spec(monkeypatch
 async def test_hybrid_failure_keeps_mesh_rescue_for_organic(monkeypatch):
     """Organic (image-driven) requests keep the mesh-only rescue — there is
     no parametric spec to rebuild from."""
-    from cadx.llm.schemas import PartSpec
+    from kiara.llm.schemas import PartSpec
 
     organic = PartSpec.model_validate(
         {
@@ -1229,7 +1229,7 @@ async def test_export_repair_rescues_failed_thread_rebuild():
     failed (observed: m8 plate — `edges() >> Axis.Z` kept the helical groove
     edges and the fillet died). One bounded improve pass must get a chance to
     repair the code before the run is declared failed."""
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
 
     box_code = _box_code()
     spec = {
@@ -1276,7 +1276,7 @@ async def test_export_repair_rescues_failed_thread_rebuild():
 async def test_export_repair_still_fails_honestly_when_unfixable():
     """If the repair pass cannot produce export-detail geometry, the run must
     still fail — preview geometry must never ship as the 'real thread' export."""
-    from cadx.llm.fake import FakeLLM
+    from kiara.llm.fake import FakeLLM
 
     box_code = _box_code()
     spec = {
@@ -1313,7 +1313,7 @@ def test_topopt_headline_sf_prefers_verified_realization():
     """The post-topopt verdict must follow sf_verified — a part whose printed
     realization erodes to 0.4 is failing even when the voxel mask solved a
     comfortable 7.95 (gate on sf_verified, never the mask alone)."""
-    from cadx.agent.orchestrator import _topopt_headline_sf
+    from kiara.agent.orchestrator import _topopt_headline_sf
 
     fem = {"cases": [{"safety_factor": 7.95}, {"safety_factor": 16.0}]}
     top = {"sf_verified": 0.4, "sf_export": 6.6, "sf_mask": 7.95}
@@ -1335,7 +1335,7 @@ def test_wants_optimize_forced_mode_wins_over_prompt_hints():
     the pipeline; gen_mode=topopt is the request channel."""
     from types import SimpleNamespace
 
-    from cadx.agent.orchestrator import _prompt_hints_optimize, _wants_optimize
+    from kiara.agent.orchestrator import _prompt_hints_optimize, _wants_optimize
 
     ctx = SimpleNamespace(gen_mode="cad", topopt_requested=False)
     hints = _prompt_hints_optimize("bracket — input for topology optimization, 50 N load")
@@ -1391,7 +1391,7 @@ class TestLoadHintRegex:
         ],
     )
     def test_fires_on_load_vocabulary(self, prompt):
-        from cadx.agent.orchestrator import _LOAD_HINT_RE
+        from kiara.agent.orchestrator import _LOAD_HINT_RE
 
         assert _LOAD_HINT_RE.search(prompt)
 
@@ -1404,6 +1404,6 @@ class TestLoadHintRegex:
         ],
     )
     def test_silent_on_decorative(self, prompt):
-        from cadx.agent.orchestrator import _LOAD_HINT_RE
+        from kiara.agent.orchestrator import _LOAD_HINT_RE
 
         assert not _LOAD_HINT_RE.search(prompt)

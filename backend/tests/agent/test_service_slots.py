@@ -6,11 +6,11 @@ import asyncio
 
 import pytest
 
-from cadx.agent.image_client import make_image_client
-from cadx.agent.mesh_client import make_mesh_client
-from cadx.agent.service_slots import io_slot, local_llm_slot
-from cadx.llm.client import LLMClient, LLMResponse, make_llm
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.image_client import make_image_client
+from kiara.agent.mesh_client import make_mesh_client
+from kiara.agent.service_slots import io_slot, local_llm_slot
+from kiara.llm.client import LLMClient, LLMResponse, make_llm
+from kiara.runtime_config import RuntimeSettings
 
 
 def _runtime(**kw) -> RuntimeSettings:

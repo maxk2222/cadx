@@ -103,7 +103,7 @@ resolved.
 ## Gates
 
 Per-stage declarative checks in the suite JSON, evaluated in
-`cadx.evalkit.gates`:
+`kiara.evalkit.gates`:
 
 - **outcome gates** — `status`, `score`, `bbox` (`match`/`within`,
   `tol_mm`), feature gates (`holes`/`tunnel`/`slot`/`countersink`/

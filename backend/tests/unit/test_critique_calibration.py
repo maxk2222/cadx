@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import uuid
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.steps import critique as critique_step
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import Feature, PartSpec
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.steps import critique as critique_step
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import Feature, PartSpec
 
 
 def _ctx(llm: FakeLLM, prompt: str = "x", **kw) -> AgentCtx:
@@ -352,8 +352,8 @@ async def test_verify_question_duplicates_do_not_saturate_score():
 
 def test_normalize_score_vq_weighting():
     """Direct unit check of the ceiling formula."""
-    from cadx.agent.steps.critique import normalize_score
-    from cadx.llm.schemas import Critique, Discrepancy
+    from kiara.agent.steps.critique import normalize_score
+    from kiara.llm.schemas import Critique, Discrepancy
 
     def disc(src: str) -> Discrepancy:
         return Discrepancy(what=src, severity="major", source=src)  # type: ignore[arg-type]
@@ -462,7 +462,7 @@ async def test_facet_dia_real_error_kept():
 def test_reference_sheet_attached_for_mesh_reuse(tmp_path):
     """Hybrid reuse: the stored parent solid's contact sheet is shown to the
     critic so 'unchanged vs reference' questions are answerable."""
-    from cadx.agent.steps.critique import _parts
+    from kiara.agent.steps.critique import _parts
 
     sheet = tmp_path / "ref_sheet.png"
     sheet.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)  # exists() is the gate
@@ -478,7 +478,7 @@ def test_reference_sheet_attached_for_mesh_reuse(tmp_path):
 
 def test_reference_sheet_not_attached_for_plain_cad(tmp_path):
     """Pure CAD runs keep the reference block out of the prompt."""
-    from cadx.agent.steps.critique import _parts
+    from kiara.agent.steps.critique import _parts
 
     sheet = tmp_path / "ref_sheet.png"
     sheet.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
@@ -518,8 +518,8 @@ def test_missing_verdict_refuted_by_plate_presence():
     """'The vertical leg is missing entirely' on a correct L-bracket: an
     ok plate_check naming the leg proves the footprint is material —
     'missing' flips to 'wrong' and the repeating discrepancy demotes."""
-    from cadx.agent.steps.critique import _verify_missing_verdicts
-    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+    from kiara.agent.steps.critique import _verify_missing_verdicts
+    from kiara.llm.schemas import Critique, Discrepancy, FeatureVerdict
 
     c = Critique(
         score=30,
@@ -544,8 +544,8 @@ def test_missing_verdict_refuted_by_plate_presence():
 def test_missing_verdict_plate_presence_needs_name_overlap():
     """An ok plate named differently does NOT refute 'leg missing' —
     name overlap, not 'some plate exists'."""
-    from cadx.agent.steps.critique import _verify_missing_verdicts
-    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+    from kiara.agent.steps.critique import _verify_missing_verdicts
+    from kiara.llm.schemas import Critique, Discrepancy, FeatureVerdict
 
     c = Critique(
         score=30,
@@ -561,8 +561,8 @@ def test_missing_verdict_plate_presence_needs_name_overlap():
 def test_missing_verdict_refuted_by_envelope():
     """Declared leg height 50 vs measured bbox z=50 — material achieving
     that extent exists, so 'missing' cannot stand."""
-    from cadx.agent.steps.critique import _verify_missing_verdicts
-    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+    from kiara.agent.steps.critique import _verify_missing_verdicts
+    from kiara.llm.schemas import Critique, Discrepancy, FeatureVerdict
 
     c = Critique(
         score=30,
@@ -578,8 +578,8 @@ def test_missing_verdict_refuted_by_envelope():
 
 def test_missing_verdict_stays_when_extent_off():
     """No numeric agreement — 'missing' is never refuted on a guess."""
-    from cadx.agent.steps.critique import _verify_missing_verdicts
-    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+    from kiara.agent.steps.critique import _verify_missing_verdicts
+    from kiara.llm.schemas import Critique, Discrepancy, FeatureVerdict
 
     c = Critique(
         score=30,
@@ -598,8 +598,8 @@ def test_missing_major_downgraded_when_volume_consistent():
     """Measured 21.5 cm^3 vs declared foot+leg 22 cm^3 — the structure
     demonstrably exists; the 'missing' major is a misread (minor) while
     the verdict itself is NOT flipped."""
-    from cadx.agent.steps.critique import _verify_missing_verdicts
-    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+    from kiara.agent.steps.critique import _verify_missing_verdicts
+    from kiara.llm.schemas import Critique, Discrepancy, FeatureVerdict
 
     c = Critique(
         score=30,
@@ -617,8 +617,8 @@ def test_missing_major_downgraded_when_volume_consistent():
 
 def test_missing_major_kept_when_volume_off():
     """A part way off the declared plate volume keeps its major."""
-    from cadx.agent.steps.critique import _verify_missing_verdicts
-    from cadx.llm.schemas import Critique, Discrepancy, FeatureVerdict
+    from kiara.agent.steps.critique import _verify_missing_verdicts
+    from kiara.llm.schemas import Critique, Discrepancy, FeatureVerdict
 
     c = Critique(
         score=30,
@@ -704,7 +704,7 @@ async def test_prev_issue_repeat_kept_when_still_asserted():
 def test_prev_issues_block_absent_without_prev():
     """No prev_issues -> no PREVIOUS ITERATION ISSUES block (APC prefix
     stays stable across first iterations)."""
-    from cadx.agent.steps.critique import _parts
+    from kiara.agent.steps.critique import _parts
 
     ctx = _ctx(FakeLLM([]), prompt="box")
     parts = _parts(ctx, _spec(), None, {}, [], [], None, None, [])

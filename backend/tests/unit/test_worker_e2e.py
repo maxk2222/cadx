@@ -12,10 +12,10 @@ from pathlib import Path
 import pytest
 from sqlmodel import select
 
-import cadx.agent.worker_jobs as wj
-from cadx import storage
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.db.models import (
+import kiara.agent.worker_jobs as wj
+from kiara import storage
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.db.models import (
     Artifact,
     Job,
     JobStatus,
@@ -25,8 +25,8 @@ from cadx.db.models import (
     VersionKind,
     VersionStatus,
 )
-from cadx.db.session import async_session, create_all
-from cadx.llm.fake import FakeLLM
+from kiara.db.session import async_session, create_all
+from kiara.llm.fake import FakeLLM
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -157,7 +157,7 @@ async def test_run_agent_job_waiting_then_resume(_db, monkeypatch):
         assert j.resume_state["spec"]
 
     # --- resume: answers unblock the spec and the original job is consumed ---
-    from cadx.spawn import SpawnError, enqueue_resume
+    from kiara.spawn import SpawnError, enqueue_resume
 
     async def _enqueue(_name: str, _args: dict) -> None:
         pass

@@ -7,16 +7,16 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadx.agent.context import user_block
-from cadx.agent.worker_jobs import _merge_settings
-from cadx.db.models import ProjectSettings, Version, VersionStatus
-from cadx.db.session import create_all, session_scope
+from kiara.agent.context import user_block
+from kiara.agent.worker_jobs import _merge_settings
+from kiara.db.models import ProjectSettings, Version, VersionStatus
+from kiara.db.session import create_all, session_scope
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

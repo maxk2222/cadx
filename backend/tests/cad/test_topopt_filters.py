@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.topopt import (
+from kiara.cad.fem.topopt import (
     TopOptParams,
     _am_backward,
     _am_forward,
@@ -17,8 +17,8 @@ from cadx.cad.fem.topopt import (
     passive_solid_mask,
     simp,
 )
-from cadx.cad.fem.voxelize import voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.voxelize import voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36
@@ -95,7 +95,7 @@ def test_simp_self_supporting_no_floating_islands():
     mesh = _block()
     dom = voxelize(mesh, 1.5, 200_000)
     case = _case({"kind": "face", "axis": "-x"}, [0, 0, -40])
-    from cadx.cad.fem.regions import resolve_case
+    from kiara.cad.fem.regions import resolve_case
 
     fixed, F, _ = resolve_case(dom, case, [])
     passive = passive_solid_mask(dom, [], [fixed], [])
@@ -138,7 +138,7 @@ def test_simp_heaviside_converges_crisp():
     mesh = _block()
     dom = voxelize(mesh, 1.5, 200_000)
     case = _case({"kind": "face", "axis": "-x"}, [0, 0, -30])
-    from cadx.cad.fem.regions import resolve_case
+    from kiara.cad.fem.regions import resolve_case
 
     fixed, F, _ = resolve_case(dom, case, [])
     passive = passive_solid_mask(dom, [], [fixed], [])
@@ -163,7 +163,7 @@ def test_simp_ij_cache_consistent():
     mesh = _block()
     dom = voxelize(mesh, 2.0, 200_000)
     case = _case({"kind": "face", "axis": "-x"}, [0, 0, -20])
-    from cadx.cad.fem.regions import resolve_case
+    from kiara.cad.fem.regions import resolve_case
 
     fixed, F, _ = resolve_case(dom, case, [])
     passive = passive_solid_mask(dom, [], [fixed], [])
@@ -181,7 +181,7 @@ def test_simp_ij_cache_consistent():
 
 def test_upsample_density_alignment():
     """Coarse→fine upsampling must place material at matching world coords."""
-    from cadx.cad.engine import _upsample_density
+    from kiara.cad.engine import _upsample_density
 
     mesh = _block(w=16.0, h=8.0)
     dom_f = voxelize(mesh, 1.0, 400_000)
@@ -199,7 +199,7 @@ def test_upsample_density_alignment():
 
 def test_simp_warmstart_converges_faster():
     """Warm-started SIMP reaches the same volfrac in fewer iterations."""
-    from cadx.cad.fem.regions import resolve_case
+    from kiara.cad.fem.regions import resolve_case
 
     mesh = _block()
     dom = voxelize(mesh, 2.0, 200_000)

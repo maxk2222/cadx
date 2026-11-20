@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from cadx.evalkit.http import HttpDriver
+from kiara.evalkit.http import HttpDriver
 
 
 @pytest.fixture
@@ -70,8 +70,8 @@ async def test_optimize_body_forwards_allow_reopt(driver, monkeypatch):
     """escalate/simp_warm regression: the local driver forwards
     options.allow_reopt but the http body dropped it — a reopt stage
     after a successful optimize hits the 409 already-optimized gate."""
-    from cadx.evalkit.http import DriverCtx
-    from cadx.evalkit.suite import EvalStage
+    from kiara.evalkit.http import DriverCtx
+    from kiara.evalkit.suite import EvalStage
 
     async def _no_fallback(s, c):
         return None, None
@@ -93,8 +93,8 @@ async def test_optimize_body_forwards_allow_reopt(driver, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_optimize_body_defaults_allow_reopt_false(driver, monkeypatch):
-    from cadx.evalkit.http import DriverCtx
-    from cadx.evalkit.suite import EvalStage
+    from kiara.evalkit.http import DriverCtx
+    from kiara.evalkit.suite import EvalStage
 
     async def _no_fallback(s, c):
         return None, None
@@ -108,8 +108,8 @@ async def test_optimize_body_defaults_allow_reopt_false(driver, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_optimize_dispatch_passes_remaining_stage_timeout(driver, monkeypatch):
-    from cadx.evalkit.http import DriverCtx
-    from cadx.evalkit.suite import EvalStage
+    from kiara.evalkit.http import DriverCtx
+    from kiara.evalkit.suite import EvalStage
 
     async def _no_fallback(s, c):
         return None, None
@@ -173,8 +173,8 @@ async def test_existing_project_same_settings_no_patch(driver, monkeypatch):
 async def test_optimize_body_merges_stage_keep_regions(driver, monkeypatch):
     """Stage-level keep_regions follow the resample/refine convention —
     the driver merges them into the OptimizeSpec the endpoint forwards."""
-    from cadx.evalkit.http import DriverCtx
-    from cadx.evalkit.suite import EvalStage
+    from kiara.evalkit.http import DriverCtx
+    from kiara.evalkit.suite import EvalStage
 
     async def _no_fallback(s, c):
         return None, None
@@ -208,7 +208,7 @@ async def test_req_retries_transient_5xx(driver, monkeypatch):
     driver._client = httpx.AsyncClient(
         transport=httpx.MockTransport(handle), base_url="http://testserver", timeout=5.0
     )
-    import cadx.evalkit.http as http_mod
+    import kiara.evalkit.http as http_mod
 
     async def fast_sleep(_s):
         return None
@@ -231,7 +231,7 @@ async def test_req_no_retry_on_post_or_4xx(driver):
     driver._client = httpx.AsyncClient(
         transport=httpx.MockTransport(handle), base_url="http://testserver", timeout=5.0
     )
-    from cadx.evalkit.http import EvalApiError
+    from kiara.evalkit.http import EvalApiError
 
     with pytest.raises(EvalApiError) as exc:
         await driver._req("POST", "/projects")

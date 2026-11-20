@@ -1,4 +1,4 @@
-"""Tests for cadx.vision.measure — deterministic plan-view measurement."""
+"""Tests for kiara.vision.measure — deterministic plan-view measurement."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-from cadx.vision.measure import measure_plan_view
+from kiara.vision.measure import measure_plan_view
 
 
 def _synth(path, *, angle: float = 0.0, hole_ys=None) -> None:

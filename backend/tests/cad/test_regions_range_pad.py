@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cadx.cad.fem.regions import (
+from kiara.cad.fem.regions import (
     _cylinder_cells,
     _pad_range_band,
     _range_clip,
@@ -21,8 +21,8 @@ from cadx.cad.fem.regions import (
     region_cell_mask,
     resolve_case_dofs,
 )
-from cadx.cad.fem.voxelize import VoxelDomain
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.voxelize import VoxelDomain
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 PITCH = 2.0
 DIMS = (10, 10, 10)  # cell centres at odd mm: 1,3,...,19

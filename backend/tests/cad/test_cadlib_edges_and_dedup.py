@@ -20,8 +20,8 @@ from build123d import (
     export_stl,
 )
 
-from cadx.cad import inspect_tools
-from cadx.cad.cadlib import (
+from kiara.cad import inspect_tools
+from kiara.cad.cadlib import (
     concave_edges,
     convex_edges,
     edges_at,
@@ -29,8 +29,8 @@ from cadx.cad.cadlib import (
     safe_chamfer,
     safe_fillet,
 )
-from cadx.cad.features import extract_features
-from cadx.cad.verifyspec import _spec_axis, verify_spec
+from kiara.cad.features import extract_features
+from kiara.cad.verifyspec import _spec_axis, verify_spec
 
 
 def _l_bracket():

@@ -10,10 +10,10 @@ import uuid
 from types import SimpleNamespace
 from typing import Any
 
-from cadx.agent.steps.optimize import _budget_exceeded, _make_suggest_fn, _SessionOps
-from cadx.agent.toolloop import _metrics_hint
-from cadx.db.models import JobStatus, JobType
-from cadx.spawn import _job_summary
+from kiara.agent.steps.optimize import _budget_exceeded, _make_suggest_fn, _SessionOps
+from kiara.agent.toolloop import _metrics_hint
+from kiara.db.models import JobStatus, JobType
+from kiara.spawn import _job_summary
 
 
 class _E:

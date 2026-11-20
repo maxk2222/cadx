@@ -6,13 +6,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from cadx.agent.context import request_block
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.orchestrator import run_generation
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
+from kiara.agent.context import request_block
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.orchestrator import run_generation
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 

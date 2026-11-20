@@ -30,10 +30,10 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.regions import region_cell_mask
-from cadx.cad.fem.voxelize import voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
-from cadx.runtime_config import RuntimeSettings
+from kiara.cad.fem.regions import region_cell_mask
+from kiara.cad.fem.voxelize import voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.runtime_config import RuntimeSettings
 
 VOXEL_MM = 1.5  # 24 mm cube -> 16^3 voxel domain — small enough for a fast SIMP
 
@@ -86,7 +86,7 @@ def _cantilever_case() -> dict[str, Any]:
 
 
 def _run(src: Path, out_dir: Path, rt: RuntimeSettings, spec: dict | None = None, **opt: Any):
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     return run_topopt_pipeline(
         mesh_path=src,
@@ -158,8 +158,8 @@ def test_auto_keep_flag_off_disables_manual_keeps(tmp_path: Path) -> None:
     normals, not just the outer skin — so a ring-disjoint check no longer
     works once the anchor hole is real; checking the passive mask is a pure
     fix+load expansion asserts the same thing directly.)"""
-    from cadx.cad.fem.regions import region_node_mask, resolve_case_dofs
-    from cadx.cad.fem.topopt import passive_solid_mask
+    from kiara.cad.fem.regions import region_node_mask, resolve_case_dofs
+    from kiara.cad.fem.topopt import passive_solid_mask
 
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
@@ -255,7 +255,7 @@ def test_export_mesh_all_writes_step(tmp_path: Path) -> None:
     failure degrades to step=None, never raises."""
     from build123d import import_step
 
-    from cadx.cad.exporters import export_mesh_all
+    from kiara.cad.exporters import export_mesh_all
 
     res = export_mesh_all(_box_mesh(), tmp_path / "e", name="m", try_step=True)
     assert res["stl"] == "m.stl" and res["3mf"] == "m.3mf" and res["glb"] == "m.glb"
@@ -272,7 +272,7 @@ def test_export_mesh_all_writes_step(tmp_path: Path) -> None:
 
 def test_export_mesh_all_try_step_off(tmp_path: Path) -> None:
     """try_step=False keeps the old contract — step key present but None."""
-    from cadx.cad.exporters import export_mesh_all
+    from kiara.cad.exporters import export_mesh_all
 
     res = export_mesh_all(_box_mesh(), tmp_path / "e", name="m", try_step=False)
     assert res["step"] is None
@@ -282,8 +282,8 @@ def test_export_mesh_all_try_step_off(tmp_path: Path) -> None:
 def test_fem_renders_are_pass_indexed(monkeypatch, tmp_path: Path) -> None:
     """T6: a forced volfrac retry must re-run FEM verification under '_p2'
     suffixes instead of overwriting the pass-1 renders."""
-    import cadx.cad.fem.analyze as analyze_mod
-    from cadx.cad.engine import run_topopt_pipeline
+    import kiara.cad.fem.analyze as analyze_mod
+    from kiara.cad.engine import run_topopt_pipeline
 
     suffixes: list[str] = []
     real = analyze_mod.run_fem_domain
@@ -338,7 +338,7 @@ def test_unresolved_fixed_region_is_a_hard_error(tmp_path: Path) -> None:
     """T8: the spec's 'bore #2' fixed region cannot resolve when the geometry
     only contains one scanned bore — the run must refuse instead of
     optimizing a part clamped at the wrong place."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     case = LoadCase(
         name="op",
@@ -398,7 +398,7 @@ def test_multires_reports_iterations_total(tmp_path: Path) -> None:
 def test_staged_volfrac_continuation_preserves_export_sf(tmp_path: Path) -> None:
     """The plateau-held schedule should avoid the old order-of-magnitude
     SF collapse; it remains an opt-in when its topology basin is weaker."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     mesh = trimesh.creation.box(extents=[60.0, 40.0, 6.0])
     mesh.apply_translation([0.0, 0.0, 3.0])
@@ -473,8 +473,8 @@ def test_sf_gap_divergence_triggers_thick_member_retry(monkeypatch, tmp_path: Pa
     export solve the smoothed printed mesh). A >3x gap must retry at the
     SAME volfrac with a thicker min-member floor — more volume is the wrong
     cure — and the retry record must not be shadowed by a second warning."""
-    import cadx.cad.fem.analyze as analyze_mod
-    from cadx.cad.engine import run_topopt_pipeline
+    import kiara.cad.fem.analyze as analyze_mod
+    from kiara.cad.engine import run_topopt_pipeline
 
     real = analyze_mod.run_fem_domain
 
@@ -536,8 +536,8 @@ def test_infill_degenerate_to_solid_warns(
     hint. infill.py flags the degeneration in its meta (core_cells==0 means
     no room for a shell+core split at all); the pipeline must surface
     an actionable warning either way."""
-    import cadx.cad.fem.infill as infill_mod
-    from cadx.cad.engine import run_infill_pipeline
+    import kiara.cad.fem.infill as infill_mod
+    from kiara.cad.engine import run_infill_pipeline
 
     real = infill_mod.infill_field
 
@@ -569,7 +569,7 @@ def test_infill_degenerate_to_solid_warns(
 def test_thick_infill_export_preserves_nested_lattice_shells(tmp_path: Path) -> None:
     """A substantial negative-volume inner shell is the gyroid cavity, not a
     marching-cubes sliver; preserve it while counting physical export bodies."""
-    from cadx.cad.engine import run_infill_pipeline
+    from kiara.cad.engine import run_infill_pipeline
 
     mesh = trimesh.creation.box(extents=[60.0, 40.0, 24.0])
     mesh.apply_translation([0.0, 0.0, 12.0])
@@ -611,7 +611,7 @@ def test_thick_infill_export_preserves_nested_lattice_shells(tmp_path: Path) -> 
 def test_infill_target_fraction_calibrates_full_and_guided_stl(tmp_path: Path) -> None:
     """Full and Guided target_volume_fraction refers to exported STL mass,
     not only the coarse guide or pre-extraction occupancy estimate."""
-    from cadx.cad.engine import run_infill_pipeline
+    from kiara.cad.engine import run_infill_pipeline
 
     mesh = trimesh.creation.box(extents=[60.0, 40.0, 24.0])
     mesh.apply_translation([0.0, 0.0, 12.0])
@@ -652,7 +652,7 @@ def test_infill_target_fraction_calibrates_full_and_guided_stl(tmp_path: Path) -
 def test_infill_target_below_shell_floor_is_reported_infeasible(tmp_path: Path) -> None:
     """Do not silently return a shell whose material floor is far above the
     requested full-infill fraction."""
-    from cadx.cad.engine import run_infill_pipeline
+    from kiara.cad.engine import run_infill_pipeline
 
     mesh = trimesh.creation.box(extents=[60.0, 40.0, 24.0])
     mesh.apply_translation([0.0, 0.0, 12.0])
@@ -683,7 +683,7 @@ def test_topopt_smoothed_export_is_clipped_to_spec_envelope(
 ) -> None:
     """Surface smoothing may grow beyond a thin stated envelope; clip the
     print/export candidate before FEM and the final conformance report."""
-    import cadx.cad.engine as engine_mod
+    import kiara.cad.engine as engine_mod
 
     real_smooth = engine_mod.smooth_preserve
 
@@ -713,8 +713,8 @@ def test_topopt_smoothed_export_is_clipped_to_spec_envelope(
 def test_infill_smoothed_export_is_clipped_to_spec_envelope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import cadx.cad.engine as engine_mod
-    from cadx.cad.engine import run_infill_pipeline
+    import kiara.cad.engine as engine_mod
+    from kiara.cad.engine import run_infill_pipeline
 
     real_smooth = engine_mod.smooth_preserve
 
@@ -752,8 +752,8 @@ def test_infill_smoothed_export_is_clipped_to_spec_envelope(
 def test_infill_export_body_count_stays_unknown_when_revoxelization_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import cadx.cad.fem.analyze as analyze_mod
-    from cadx.cad.engine import run_infill_pipeline
+    import kiara.cad.fem.analyze as analyze_mod
+    from kiara.cad.engine import run_infill_pipeline
 
     real_solve = analyze_mod.run_fem_domain
 
@@ -791,8 +791,8 @@ def test_infill_export_divergence_gets_one_crisp_retry(
 ) -> None:
     """A >3x mask/export SF gap retries once with crisp extraction; the
     final verification must describe the selected retry candidate."""
-    import cadx.cad.fem.analyze as analyze_mod
-    from cadx.cad.engine import run_infill_pipeline
+    import kiara.cad.fem.analyze as analyze_mod
+    from kiara.cad.engine import run_infill_pipeline
 
     real = analyze_mod.run_fem_domain
 
@@ -843,7 +843,7 @@ def test_spec_dims_snap_design_pitch_and_domain(tmp_path: Path) -> None:
     25% thicker than the 4 mm export the envelope clip produced. The
     spec-aware snap must land the thin axis on an integer cell count and
     report ~zero per-axis overshoot."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     plate = trimesh.creation.box(extents=[40.0, 40.0, 4.0])
     plate.apply_translation([0.0, 0.0, 2.0])
@@ -881,7 +881,7 @@ def test_spec_dims_snap_design_pitch_and_domain(tmp_path: Path) -> None:
 
 def test_spec_dims_snap_keeps_requested_pitch_when_it_fits(tmp_path: Path) -> None:
     """Dims already divisible by the requested pitch stay untouched."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     mesh = trimesh.creation.box(extents=[60.0, 40.0, 6.0])
     mesh.apply_translation([0.0, 0.0, 3.0])
@@ -914,7 +914,7 @@ def test_pitch_feature_warn_flags_coarsened_grid():
     must surface a warning + structured field the optimize agent can read."""
     from types import SimpleNamespace
 
-    from cadx.cad.engine import _pitch_feature_warn
+    from kiara.cad.engine import _pitch_feature_warn
 
     res = SimpleNamespace(topopt={})
     domain = SimpleNamespace(pitch=2.9)

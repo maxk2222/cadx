@@ -1,8 +1,8 @@
 # TopOpt Audit 2026-10 — Defect-Class Review (benchmark: webcae audit)
 
-**Scope:** `backend/cadx/cad/fem/topopt.py`, `solver.py`, `extract.py`, `analyze.py`,
-`regions.py`, `loads.py`, `backend/cadx/cad/engine.py` (`run_topopt_pipeline`
-L.981–1465, `run_topopt_resample` L.1468–1648), `backend/cadx/llm/schemas.py`
+**Scope:** `backend/kiara/cad/fem/topopt.py`, `solver.py`, `extract.py`, `analyze.py`,
+`regions.py`, `loads.py`, `backend/kiara/cad/engine.py` (`run_topopt_pipeline`
+L.981–1465, `run_topopt_resample` L.1468–1648), `backend/kiara/llm/schemas.py`
 (`OptimizeSpec` L.274), plus `agent/steps/optimize.py`, `agent/toolspecs.py`,
 `cad/fem/voxelize.py` as context. Branch `dev`, READ-ONLY — verified code
 findings only, no speculation.

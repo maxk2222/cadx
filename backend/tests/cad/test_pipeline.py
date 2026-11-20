@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from cadx.cad.engine import run_pipeline
-from cadx.db.models import ProjectSettings
+from kiara.cad.engine import run_pipeline
+from kiara.db.models import ProjectSettings
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 

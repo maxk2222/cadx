@@ -15,11 +15,11 @@ import pytest
 import trimesh
 from scipy.sparse import linalg as spla
 
-from cadx.cad.fem.regions import resolve_case_dofs
-from cadx.cad.fem.solver import assemble, factor_symmetric, reduce_case, solve
-from cadx.cad.fem.topopt import E_MIN_FRAC, RHO_MIN, TopOptParams, simp
-from cadx.cad.fem.voxelize import voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.regions import resolve_case_dofs
+from kiara.cad.fem.solver import assemble, factor_symmetric, reduce_case, solve
+from kiara.cad.fem.topopt import E_MIN_FRAC, RHO_MIN, TopOptParams, simp
+from kiara.cad.fem.voxelize import voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36
@@ -104,7 +104,7 @@ def test_reduce_case_caches_per_signature() -> None:
     assert not np.array_equal(ctx_a.free, ctx_b.free)
     assert np.array_equal(ctx_a.free, ctx_a2.free)
     # case A's free set must NOT exclude case B's fixture DOFs
-    from cadx.cad.fem.solver import _fixed_dofs
+    from kiara.cad.fem.solver import _fixed_dofs
 
     fixed_b_dofs = np.unique(_fixed_dofs(fixed_b, dom.node_count))
     assert np.isin(fixed_b_dofs, ctx_a.free).any()

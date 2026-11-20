@@ -1,13 +1,13 @@
-"""Tests for cadx.agent.anchors — image/mesh hole reconciliation."""
+"""Tests for kiara.agent.anchors — image/mesh hole reconciliation."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-from cadx.agent.anchors import Anchor, _spec_anchors, _type_anchors, build_anchors
-from cadx.agent.spechost import host_body, host_range, host_span, parse_ranges
-from cadx.llm.schemas import Dim, Feature, FeatureCenter, PartSpec, StandardPartSpec
+from kiara.agent.anchors import Anchor, _spec_anchors, _type_anchors, build_anchors
+from kiara.agent.spechost import host_body, host_range, host_span, parse_ranges
+from kiara.llm.schemas import Dim, Feature, FeatureCenter, PartSpec, StandardPartSpec
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "specs"
 

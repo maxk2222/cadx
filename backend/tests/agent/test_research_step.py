@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from cadx.agent.steps import research
-from cadx.agent.steps.intake import _sanitize_spec, research_block
-from cadx.llm.schemas import PartSpec, ResearchBrief, ResearchFact
+from kiara.agent.steps import research
+from kiara.agent.steps.intake import _sanitize_spec, research_block
+from kiara.llm.schemas import PartSpec, ResearchBrief, ResearchFact
 
 
 def test_needs_research_matches_product_and_norm_tokens():
@@ -119,7 +119,7 @@ def test_researched_notes_survive_load_case_resanitize():
     """The orchestrator re-runs sanitize_load_cases on the recovery path —
     the _MAX_ASSUMPTION_NOTES trim must not cut the pipeline-side sourced
     notes that _sanitize_spec tail-appends."""
-    from cadx.agent.steps.intake import _MAX_ASSUMPTION_NOTES, sanitize_load_cases
+    from kiara.agent.steps.intake import _MAX_ASSUMPTION_NOTES, sanitize_load_cases
 
     spec = PartSpec(
         name="mount",
@@ -149,7 +149,7 @@ def test_stated_dim_from_feature_spacing_downgraded():
     """Observed on the NEMA-17 eval: the model lifted 'two Ø4.5 holes about
     30 mm apart' into length_x=30 stated — verify_spec then enforced the
     guess and honestly FAILED a correct 48 mm part."""
-    from cadx.agent.steps.intake import sanitize_stated_dims
+    from kiara.agent.steps.intake import sanitize_stated_dims
 
     spec = PartSpec(
         name="nema mount",
@@ -168,7 +168,7 @@ def test_stated_dim_from_feature_spacing_downgraded():
 
 
 def test_stated_dim_kept_when_prompt_states_envelope():
-    from cadx.agent.steps.intake import sanitize_stated_dims
+    from kiara.agent.steps.intake import sanitize_stated_dims
 
     spec = PartSpec(
         name="plate",
@@ -185,7 +185,7 @@ def test_stated_dim_kept_when_prompt_states_envelope():
 
 
 def test_stated_dim_kept_from_triplet_and_diameter():
-    from cadx.agent.steps.intake import sanitize_stated_dims
+    from kiara.agent.steps.intake import sanitize_stated_dims
 
     spec = PartSpec(
         name="rotor",
@@ -210,7 +210,7 @@ def test_stated_dim_kept_despite_feature_overreach_when_envelope_evidenced():
     UNVERIFIED and let the 108 mm part ship silently. When the stated
     value is the prompt's own L x W x H triplet member, keep it: the
     feature is the offender and verify_spec must fail loudly."""
-    from cadx.agent.steps.intake import sanitize_stated_dims
+    from kiara.agent.steps.intake import sanitize_stated_dims
 
     spec = PartSpec(
         name="arm mount",
@@ -235,7 +235,7 @@ def test_stated_dim_kept_despite_feature_overreach_when_envelope_evidenced():
 
 
 def test_stated_dim_untouched_without_prompt():
-    from cadx.agent.steps.intake import sanitize_stated_dims
+    from kiara.agent.steps.intake import sanitize_stated_dims
 
     spec = PartSpec(
         name="legacy",
@@ -251,7 +251,7 @@ def test_sanitize_dims_no_restate_from_feature_spacing():
     """The recovery path re-runs sanitize_dims after _sanitize_spec — its
     'largest mm = overall size' heuristic must not resurrect the '30 mm
     apart' spacing as a stated envelope (the second half of the NEMA bug)."""
-    from cadx.agent.steps.intake import sanitize_dims, sanitize_stated_dims
+    from kiara.agent.steps.intake import sanitize_dims, sanitize_stated_dims
 
     prompt = (
         "motor mount for a NEMA 17 stepper, two dia 4.5 mm through-holes "
@@ -272,7 +272,7 @@ def test_sanitize_dims_no_restate_from_feature_spacing():
 
 
 def test_sanitize_dims_still_restates_true_envelope():
-    from cadx.agent.steps.intake import sanitize_dims
+    from kiara.agent.steps.intake import sanitize_dims
 
     spec = PartSpec(
         name="lever",
@@ -286,7 +286,7 @@ def test_sanitize_dims_still_restates_true_envelope():
 
 
 def _feat(name, pos, count=1, dia=None, depth=None, ftype="hole"):
-    from cadx.llm.schemas import Feature
+    from kiara.llm.schemas import Feature
 
     dims = {}
     if dia is not None:
@@ -308,7 +308,7 @@ def test_dedup_merges_rephrased_duplicate_features():
     """Observed spec: the 4xM3 pattern and the 2xM4 foot holes each declared
     twice under different phrasing — spec_features then honestly failed
     against the 3 measured groups."""
-    from cadx.agent.steps.intake import dedup_spec_features
+    from kiara.agent.steps.intake import dedup_spec_features
 
     spec = PartSpec(
         name="nema",
@@ -356,7 +356,7 @@ def test_dedup_merges_rephrased_duplicate_features():
 
 
 def test_dedup_keeps_distinct_patterns():
-    from cadx.agent.steps.intake import dedup_spec_features
+    from kiara.agent.steps.intake import dedup_spec_features
 
     spec = PartSpec(
         name="two patterns",
@@ -373,7 +373,7 @@ def test_dedup_keeps_distinct_patterns():
 
 
 def test_dedup_keeps_different_count_or_dia():
-    from cadx.agent.steps.intake import dedup_spec_features
+    from kiara.agent.steps.intake import dedup_spec_features
 
     spec = PartSpec(
         name="mixed",
@@ -394,7 +394,7 @@ def test_stated_dim_wrong_axis_downgraded():
     """'~20 mm deep' is a real stated value — but assigned to X while the
     spec's own features declare x=±15.5 (need ≥31). The part built x=48
     correctly; the stated dim is a wrong-axis assignment, not an envelope."""
-    from cadx.agent.steps.intake import sanitize_stated_dims
+    from kiara.agent.steps.intake import sanitize_stated_dims
 
     spec = PartSpec(
         name="nema",
@@ -418,7 +418,7 @@ def test_stated_dim_wrong_axis_downgraded():
 
 
 def test_stated_dim_kept_when_features_fit():
-    from cadx.agent.steps.intake import sanitize_stated_dims
+    from kiara.agent.steps.intake import sanitize_stated_dims
 
     spec = PartSpec(
         name="ok",
@@ -437,7 +437,7 @@ def test_dedup_keeps_enumerated_instances_without_coords():
     """Tank run: 'foot lug 1/2/3' + 'foot bolt hole 1/2/3' — real placed
     instances with unparseable position text (empty shared axes) were
     collapsed to one feature each by the empty-all() bug."""
-    from cadx.agent.steps.intake import dedup_spec_features
+    from kiara.agent.steps.intake import dedup_spec_features
 
     spec = PartSpec(
         name="tank",
@@ -458,7 +458,7 @@ def test_dedup_keeps_enumerated_instances_without_coords():
 
 
 def test_dedup_still_merges_redeclared_pattern_without_coords():
-    from cadx.agent.steps.intake import dedup_spec_features
+    from kiara.agent.steps.intake import dedup_spec_features
 
     spec = PartSpec(
         name="nema",

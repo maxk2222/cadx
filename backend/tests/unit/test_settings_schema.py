@@ -12,15 +12,15 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
-from cadx.api.schemas import SettingsOut, SettingsUpdate
-from cadx.db.session import create_all
-from cadx.runtime_config import _SECRET_FIELDS, RuntimeSettings
+from kiara.api.schemas import SettingsOut, SettingsUpdate
+from kiara.db.session import create_all
+from kiara.runtime_config import _SECRET_FIELDS, RuntimeSettings
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

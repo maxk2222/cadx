@@ -3,7 +3,7 @@
 `native.cg` must reproduce `scipy.sparse.linalg.cg` within float noise and
 must surface watchdog divergence the same way `_cg_watchdog` does — the
 solver treats diverged systems as unusable, never as results. Skips cleanly
-when cadx_native is absent."""
+when kiara_native is absent."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ import pytest
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
-cadx_native = pytest.importorskip("cadx_native")
+kiara_native = pytest.importorskip("kiara_native")
 
-from cadx.cad import native  # noqa: E402
+from kiara.cad import native  # noqa: E402
 
 
 def _spd(n: int = 400, seed: int = 7) -> sp.csr_matrix:

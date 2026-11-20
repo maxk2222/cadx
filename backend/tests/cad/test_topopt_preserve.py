@@ -14,9 +14,9 @@ import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
 
-from cadx.cad.fem.extract import density_to_mesh
-from cadx.cad.fem.voxelize import VoxelDomain
-from cadx.cad.mesh_ops import smooth_preserve
+from kiara.cad.fem.extract import density_to_mesh
+from kiara.cad.fem.voxelize import VoxelDomain
+from kiara.cad.mesh_ops import smooth_preserve
 
 
 def _pin_frame(

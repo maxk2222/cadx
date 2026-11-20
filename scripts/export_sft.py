@@ -2,7 +2,7 @@
 """Harvest verified KIARA eval runs into SFT pairs (axolotl messages JSONL).
 
 Reads per-run `result.json` summaries under the eval output root
-(`$CADX_EVAL_OUT` / `--root`, default <repo>/evals/results), follows each
+(`$KIARA_EVAL_OUT` / `--root`, default <repo>/evals/results), follows each
 stage's `version_id` into `data/projects/<pid>/versions/<vid>/` (or the
 scratch run dir's `data/` subtree for `--local` runs) and harvests:
 
@@ -408,7 +408,7 @@ def _row_is_clean(messages: list[dict], meta: dict) -> bool:
 
 
 def _default_root() -> Path:
-    env = os.environ.get("CADX_EVAL_OUT")
+    env = os.environ.get("KIARA_EVAL_OUT")
     if env:
         return Path(env)
     for cand in ("evals/results", "data/eval_out", "backend/data/eval_out"):
@@ -628,7 +628,7 @@ def main() -> int:
         "--root",
         type=Path,
         default=None,
-        help="eval output root (default: $CADX_EVAL_OUT or <repo>/evals/results)",
+        help="eval output root (default: $KIARA_EVAL_OUT or <repo>/evals/results)",
     )
     ap.add_argument(
         "--projects-root",

@@ -19,10 +19,10 @@ code defaults < saved runtime settings < project settings < per-version options
 ```
 
 The tables below list the code defaults (`RuntimeSettings` in
-`backend/cadx/runtime_config.py`). Only non-default values are persisted in
+`backend/kiara/runtime_config.py`). Only non-default values are persisted in
 the database. Secret values (`llm_api_key`, `tripo_api_key`, `image_api_key`,
 `hf_token`) are stored Fernet-encrypted (`enc:v1:` prefix); the key comes
-from the `CADX_SETTINGS_KEY` env var or an auto-generated
+from the `KIARA_SETTINGS_KEY` env var or an auto-generated
 `{DATA_DIR}/.settings.key` file (mode 0600).
 
 ## LLM provider
@@ -208,7 +208,7 @@ subprocess path (the zygote serializes all runs anyway). Auto = min(4, cpus − 
 | `analytic_step_timeout_s` | `240` | wall-clock budget for the isolated per-feature analytic-STEP subprocess; on timeout the faceted STEP ships |
 | `exec_warm_runner` | `true` | pre-warmed zygote fork per sandbox run — identical isolation, cold-subprocess fallback on failure |
 
-Detection lives in `cadx/cad/resources.py` and is cgroup-aware: `cpus:` in
+Detection lives in `kiara/cad/resources.py` and is cgroup-aware: `cpus:` in
 docker-compose is a CFS quota (`cpu.max`), not a cpuset — affinity alone
 would report the whole host. `detect_cpus()` = min(affinity, quota);
 `detect_mem_mb()` = cgroup memory limit else physical RAM. The executor
@@ -218,10 +218,10 @@ thread budget because it counts CPU-seconds across all threads.
 
 `start.sh` additionally auto-sizes the compose container caps via
 `scripts/lib/host_detect.sh` (docker VM budget on Desktop, host resources
-on native dockerd) into `.env`: `CADX_EXECUTOR_CPUS`/`CADX_EXECUTOR_MEM`,
-`CADX_WORKER_CPUS`/`CADX_WORKER_MEM`, `CADX_EXECUTOR_PIDS` — existing keys
+on native dockerd) into `.env`: `KIARA_EXECUTOR_CPUS`/`KIARA_EXECUTOR_MEM`,
+`KIARA_WORKER_CPUS`/`KIARA_WORKER_MEM`, `KIARA_EXECUTOR_PIDS` — existing keys
 win, so pinning a value in `.env` is a permanent override. The cad queue's
-`max_jobs` scales as `max(2, detected_cpus // 4)`; pin `CADX_CAD_MAX_JOBS`
+`max_jobs` scales as `max(2, detected_cpus // 4)`; pin `KIARA_CAD_MAX_JOBS`
 to override.
 
 ## Project settings and per-run options
@@ -244,14 +244,14 @@ version options win over project settings, which win over runtime defaults.
 
 ## Environment variables
 
-### Backend (`backend/cadx/config.py`)
+### Backend (`backend/kiara/config.py`)
 
 Infrastructure-only bootstrap settings; everything else lives in the DB.
 
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `DATA_DIR` | `./data` | projects, library, models, caches |
-| `DATABASE_URL` | `postgresql://cadx:cadx@localhost:5432/cadx` | set by compose |
+| `DATABASE_URL` | `postgresql://kiara:kiara@localhost:5432/kiara` | set by compose |
 | `REDIS_URL` | `redis://localhost:6379/0` | set by compose |
 | `LOG_LEVEL` | `INFO` | structlog level |
 | `AGENT_JOB_TIMEOUT_S` | `14400` | arq outer cap for one agent job |
@@ -259,10 +259,10 @@ Infrastructure-only bootstrap settings; everything else lives in the DB.
 | `MESH_MODEL` | — | seeds `mesh_model` once |
 | `MESH_IMAGE_MODEL` | — | seeds `image_model` once |
 | `HF_TOKEN` | — | seeds `hf_token` once |
-| `CADX_SETTINGS_KEY` | — | Fernet key encrypting stored secrets; default: auto-generated `{DATA_DIR}/.settings.key` (0600) |
+| `KIARA_SETTINGS_KEY` | — | Fernet key encrypting stored secrets; default: auto-generated `{DATA_DIR}/.settings.key` (0600) |
 | `U2NET_HOME` | `~/.u2net` (`/data/rembg` on compose) | rembg model cache |
-| `CADX_MCP_TOKEN` | — | optional bearer token gating the `/mcp` HTTP endpoint |
-| `CADX_NATIVE` | `1` | `0` disables the optional `cadx_native` Rust kernels entirely (import blocked); `CADX_NATIVE_GEOM` / `CADX_NATIVE_FEM` bisect the mesh-query and FEM halves independently |
+| `KIARA_MCP_TOKEN` | — | optional bearer token gating the `/mcp` HTTP endpoint |
+| `KIARA_NATIVE` | `1` | `0` disables the optional `kiara_native` Rust kernels entirely (import blocked); `KIARA_NATIVE_GEOM` / `KIARA_NATIVE_FEM` bisect the mesh-query and FEM halves independently |
 
 ### mesh-server (`mesh_server/meshserver/config.py`)
 

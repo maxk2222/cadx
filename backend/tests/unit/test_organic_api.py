@@ -12,14 +12,14 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadx.db.models import Job, JobType, Project, Version, VersionKind, VersionStatus
-from cadx.db.session import async_session, create_all
+from kiara.db.models import Job, JobType, Project, Version, VersionKind, VersionStatus
+from kiara.db.session import async_session, create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -106,7 +106,7 @@ async def test_organic_enqueue_payload(client, monkeypatch):
         return "fake"
 
     # spawn.py resolves deps.enqueue lazily at call time — patch the source
-    import cadx.api.deps as deps
+    import kiara.api.deps as deps
 
     monkeypatch.setattr(deps, "enqueue", fake_enqueue)
     parent = await _mk_parent()

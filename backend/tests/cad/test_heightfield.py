@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cadx.cad.heightfield import build_heightfield_mesh, heightfield_candidate
+from kiara.cad.heightfield import build_heightfield_mesh, heightfield_candidate
 
 
 class _Dim:

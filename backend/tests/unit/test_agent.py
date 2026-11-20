@@ -8,14 +8,14 @@ from pathlib import Path
 
 import pytest
 
-from cadx import storage
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.orchestrator import build_feedback, compare_dims, run_generation
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx, ParentContext
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import PartSpec
+from kiara import storage
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.orchestrator import build_feedback, compare_dims, run_generation
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx, ParentContext
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import PartSpec
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -105,7 +105,7 @@ def test_compare_dims_mismatch_and_swap():
 
 def test_build_feedback_includes_major_and_dims():
     crit_json = dict(FAIL_CRITIQUE)
-    from cadx.llm.schemas import Critique
+    from kiara.llm.schemas import Critique
 
     fb = build_feedback(Critique(**crit_json), ["length/X: spec 40 vs 41"], None)
     assert "length/X" in fb
@@ -326,7 +326,7 @@ async def test_edit_mode_includes_parent_code():
 
 
 def test_issue_source_rollup_counts_actionable_sources():
-    from cadx.agent.orchestrator import _issue_source_rollup
+    from kiara.agent.orchestrator import _issue_source_rollup
 
     issues = [
         {"source": "critique", "what": "a"},

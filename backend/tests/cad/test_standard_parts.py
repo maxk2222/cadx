@@ -8,14 +8,14 @@ import pytest
 from build123d import Axis, Plane, import_brep, import_step
 from PIL import Image
 
-from cadx.cad import catalog
-from cadx.cad.allowlist import check_code
-from cadx.cad.exporters import export_all_3d, quick_stl
-from cadx.cad.partspec import check_standard_part_calls
-from cadx.cad.render import render_available, render_views
-from cadx.cad.sandbox import run_user_code
-from cadx.cad.standard_parts import build_standard_part_code
-from cadx.llm.schemas import StandardPartSpec
+from kiara.cad import catalog
+from kiara.cad.allowlist import check_code
+from kiara.cad.exporters import export_all_3d, quick_stl
+from kiara.cad.partspec import check_standard_part_calls
+from kiara.cad.render import render_available, render_views
+from kiara.cad.sandbox import run_user_code
+from kiara.cad.standard_parts import build_standard_part_code
+from kiara.llm.schemas import StandardPartSpec
 
 
 def _m10_code() -> str:
@@ -150,8 +150,8 @@ def test_screw_recipe_emits_swept_thread_with_bd_fallback():
     per-turn compound (simple=False) when the sweep fails."""
     code = _m10_code()
     assert "simple=True" in code
-    assert "from cadlib.threads import helical_thread as _cadx_thread_solid" in code
-    assert "_thr__standard_part_0 = _cadx_thread_solid(" in code
+    assert "from cadlib.threads import helical_thread as _kiara_thread_solid" in code
+    assert "_thr__standard_part_0 = _kiara_thread_solid(" in code
     assert "except Exception:" in code
     assert "simple=False" in code  # fallback lane
 
@@ -167,8 +167,8 @@ def test_nut_and_setscrew_stay_on_per_turn_lane():
         ),
     ):
         code = build_standard_part_code([spec])
-        assert "_cadx_thread_solid" not in code, spec.class_name
-        assert 'simple=(CADX_DETAIL_MODE == "preview")' in code, spec.class_name
+        assert "_kiara_thread_solid" not in code, spec.class_name
+        assert 'simple=(KIARA_DETAIL_MODE == "preview")' in code, spec.class_name
 
 
 def test_swept_screw_thread_sits_flush_at_tip(tmp_path):
@@ -198,8 +198,8 @@ def test_fallback_lane_still_counts_the_thread(tmp_path):
     screw simple=False — that object itself satisfies the thread_count
     scan, so the gate sees a real thread either way."""
     code = _m10_code().replace(
-        "from cadlib.threads import helical_thread as _cadx_thread_solid",
-        "def _cadx_thread_solid(*a, **k):\n    raise RuntimeError('sweep broke')",
+        "from cadlib.threads import helical_thread as _kiara_thread_solid",
+        "def _kiara_thread_solid(*a, **k):\n    raise RuntimeError('sweep broke')",
     )
     out = run_user_code(
         code,
@@ -224,7 +224,7 @@ def test_thread_feature_start_is_in_final_part_frame():
     Rot(180) rendered its thread 120 mm BELOW the part. start/position_mm
     must be transformed with the placement."""
     code = _m10_full_thread_code()
-    match = re.search(r"CADX_FEATURES = (\[.*\])\n", code)
+    match = re.search(r"KIARA_FEATURES = (\[.*\])\n", code)
     assert match is not None
     features = ast.literal_eval(match.group(1))
     thread = next(f for f in features if f.get("kind") == "thread")

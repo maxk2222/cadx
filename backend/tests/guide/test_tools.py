@@ -4,9 +4,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from cadx.guide import tools as gtools
-from cadx.guide.session import SESSION_SCHEMAS, GuideToolSession
-from cadx.guide.state import GuideState
+from kiara.guide import tools as gtools
+from kiara.guide.session import SESSION_SCHEMAS, GuideToolSession
+from kiara.guide.state import GuideState
 
 
 def test_every_mission_tool_has_schema_and_dispatch() -> None:
@@ -47,7 +47,7 @@ def test_place_instance_rejects_unknown_candidate() -> None:
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
     state = GuideState()
-    from cadx.guide.state import GuidePart, GuideStep
+    from kiara.guide.state import GuidePart, GuideStep
 
     state.parts.append(GuidePart(id="a", name="A", mesh_path="/tmp/a.glb"))
     state.steps.append(GuideStep(number=1, text="t", display_text="d"))
@@ -60,7 +60,7 @@ def test_place_instance_rejects_unknown_candidate() -> None:
         guide_assets=[],
         executor=None,
     )
-    from cadx.guide.assembly_tools import place_instance
+    from kiara.guide.assembly_tools import place_instance
 
     res = pytest.importorskip("asyncio").run(
         place_instance(sess, {"part_id": "a", "candidate_id": "invented", "step": 1})
@@ -72,8 +72,8 @@ def test_place_instance_rejects_unknown_candidate() -> None:
 def test_detect_language_respects_lock() -> None:
     """A wizard-pinned output language must survive doc-mission
     autodetect — only document.language records the manual's language."""
-    from cadx.guide.doc_tools import detect_language
-    from cadx.guide.state import DocumentIndex
+    from kiara.guide.doc_tools import detect_language
+    from kiara.guide.state import DocumentIndex
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -106,7 +106,7 @@ def test_detect_language_respects_lock() -> None:
 
 
 def test_done_guard_blocks_incomplete_steps() -> None:
-    from cadx.guide.step_tools import HANDLERS  # noqa: F401 — registers guard
+    from kiara.guide.step_tools import HANDLERS  # noqa: F401 — registers guard
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -127,8 +127,8 @@ def test_match_required_suggests_renamed_fittings() -> None:
     """Manuals rename the same fitting between parts list and step text —
     match_required_parts must suggest registered candidates (category+size),
     never silently mark them missing."""
-    from cadx.guide import part_tools
-    from cadx.guide.state import DocumentIndex, GuidePart
+    from kiara.guide import part_tools
+    from kiara.guide.state import DocumentIndex, GuidePart
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -200,8 +200,8 @@ def test_resolve_required_uses_canonical_chain() -> None:
     missing."""
     import asyncio
 
-    from cadx.guide import part_tools
-    from cadx.guide.state import DocumentIndex, GuidePart
+    from kiara.guide import part_tools
+    from kiara.guide.state import DocumentIndex, GuidePart
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -248,8 +248,8 @@ def test_rename_required_name_rewrites_plan() -> None:
     required_parts and sub_step part fields — durable, no binding bypass."""
     import asyncio
 
-    from cadx.guide import part_tools
-    from cadx.guide.state import DocumentIndex, GuidePart, GuideStep, GuideSubStep
+    from kiara.guide import part_tools
+    from kiara.guide.state import DocumentIndex, GuidePart, GuideStep, GuideSubStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -341,8 +341,8 @@ def test_ask_user_dedupes_and_caps_per_mission() -> None:
 def test_same_part_placed_twice_creates_instances() -> None:
     """Left/right sides and repeated fittings: one registered part must be
     placeable multiple times — each placement is its own instance."""
-    from cadx.guide.assembly_tools import _completeness_issues, place_instance
-    from cadx.guide.state import DocumentIndex, GuidePart, GuideStep
+    from kiara.guide.assembly_tools import _completeness_issues, place_instance
+    from kiara.guide.state import DocumentIndex, GuidePart, GuideStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -382,7 +382,7 @@ def test_same_part_placed_twice_creates_instances() -> None:
     assert ids == ["adapter#1", "adapter#2"]
     assert _completeness_issues(sess) == []
     # and removing only step 2 leaves step 1's instance untouched
-    from cadx.guide.assembly_tools import reset_step
+    from kiara.guide.assembly_tools import reset_step
 
     asyncio.run(reset_step(sess, {"step": 2}))
     assert [i.instance_id for i in state.assembly.instances] == ["adapter#1"]
@@ -393,8 +393,8 @@ def test_preassembly_places_deterministically() -> None:
     env fallback, then the mating part attached onto its port."""
     import asyncio
 
-    from cadx.guide.preassembly import run_preassembly
-    from cadx.guide.state import GuidePart, GuideStep, GuideSubStep, PortInfo
+    from kiara.guide.preassembly import run_preassembly
+    from kiara.guide.state import GuidePart, GuideStep, GuideSubStep, PortInfo
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -459,8 +459,8 @@ def test_emit_assembly_artifacts_merges_glb(tmp_path) -> None:
     import numpy as np
     import trimesh
 
-    from cadx.guide.guide_runner import _emit_assembly_artifacts
-    from cadx.guide.state import AssemblyInstance, GuidePart
+    from kiara.guide.guide_runner import _emit_assembly_artifacts
+    from kiara.guide.state import AssemblyInstance, GuidePart
 
     mesh = tmp_path / "part.glb"
     trimesh.creation.box(extents=(10, 10, 10)).export(str(mesh))
@@ -473,7 +473,7 @@ def test_emit_assembly_artifacts_merges_glb(tmp_path) -> None:
             part_id="cube", instance_id="cube#1", placed_in_step=1, transform=t.tolist()
         )
     )
-    from cadx import storage
+    from kiara import storage
 
     arts = asyncio.run(
         _emit_assembly_artifacts(state, storage.data_root() / "tmp_test_emit", executor=None)
@@ -489,8 +489,8 @@ def test_emit_assembly_artifacts_merges_glb(tmp_path) -> None:
 def test_emit_assembly_artifacts_empty(tmp_path) -> None:
     import asyncio
 
-    from cadx import storage
-    from cadx.guide.guide_runner import _emit_assembly_artifacts
+    from kiara import storage
+    from kiara.guide.guide_runner import _emit_assembly_artifacts
 
     assert asyncio.run(
         _emit_assembly_artifacts(GuideState(), storage.data_root() / "tmp_test_emit2", executor=None)
@@ -504,8 +504,8 @@ def test_preassembly_pairs_symmetric_targets_1to1() -> None:
 
     import numpy as np
 
-    from cadx.guide.preassembly import _pick_target_instance
-    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState
+    from kiara.guide.preassembly import _pick_target_instance
+    from kiara.guide.state import AssemblyInstance, GuidePart, GuideState
 
     state = GuideState()
     state.parts.append(GuidePart(id="adapter", name="Adapter"))
@@ -536,8 +536,8 @@ def test_free_placement_spreads_beside() -> None:
     """No-hint env placement lays parts out in a row — never a tower."""
     import numpy as np
 
-    from cadx.guide.solver import solve_free_placement
-    from cadx.guide.state import GuidePart
+    from kiara.guide.solver import solve_free_placement
+    from kiara.guide.state import GuidePart
 
     p = GuidePart(id="p", name="P", bbox_min=[0, 0, 0], bbox_max=[10, 10, 10])
     placed = [{"bbox_min_world": [0, 0, 0], "bbox_max_world": [10, 10, 10]}]
@@ -551,8 +551,8 @@ def test_add_arrow_resolves_forgiving_ids() -> None:
     error streak on resolvable ids killed live annotate runs."""
     import asyncio
 
-    from cadx.guide.annotate_tools import add_arrow
-    from cadx.guide.state import AssemblyInstance, GuidePart, GuideStep
+    from kiara.guide.annotate_tools import add_arrow
+    from kiara.guide.state import AssemblyInstance, GuidePart, GuideStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -581,8 +581,8 @@ def test_add_text_defaults_and_explicit_position() -> None:
     explicit position passes through; no anchor at all → assembly top."""
     import asyncio
 
-    from cadx.guide.annotate_tools import add_text
-    from cadx.guide.state import AssemblyInstance, GuidePart, GuideStep
+    from kiara.guide.annotate_tools import add_text
+    from kiara.guide.state import AssemblyInstance, GuidePart, GuideStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -631,9 +631,9 @@ def test_resolve_asset_rescues_hallucinated_uuid() -> None:
     """The LLM passed a stale/invented asset UUID 5x in a row and the
     parts mission died on error_streak — the resolver must fall back to
     an unambiguous filename token overlap from part_id+name."""
-    from cadx.guide.part_tools import _resolve_asset
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import GuideState
+    from kiara.guide.part_tools import _resolve_asset
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import GuideState
 
     assets = [
         {"id": "aaa-1", "filename": "Casing.glb", "kind": "cad", "path": "/x/Casing.glb"},
@@ -670,7 +670,7 @@ def test_resolve_asset_rescues_hallucinated_uuid() -> None:
 async def test_image_lookup_circuit_breaker() -> None:
     """Repeated invalid figure/page lookups short-circuit after the cap —
     the missing-part eval run burned its whole review mission on these."""
-    from cadx.guide.session import _IMAGE_FAIL_CAP
+    from kiara.guide.session import _IMAGE_FAIL_CAP
 
     sess = GuideToolSession(
         MagicMock(), mission="review", state=GuideState(), state_dir="/tmp/x",
@@ -695,7 +695,7 @@ def test_resolve_name_digraph_fold() -> None:
     umlaut/punctuation part names — the blocker pattern from eval run 2."""
     from types import SimpleNamespace
 
-    from cadx.guide.state import GuidePart
+    from kiara.guide.state import GuidePart
 
     state = GuideState()
     state.parts = [
@@ -703,7 +703,7 @@ def test_resolve_name_digraph_fold() -> None:
         GuidePart(id="pipe_l70", name="Rohr DN22 l=70mm"),
     ]
     sess = SimpleNamespace(state=state, _aliases_store={})
-    from cadx.guide.assembly_tools import _resolve_name
+    from kiara.guide.assembly_tools import _resolve_name
 
     assert _resolve_name(sess, "Waermepumpe") == "casing"
     assert _resolve_name(sess, "Wärmepumpe Gehäuse") == "casing"
@@ -716,8 +716,8 @@ async def test_solve_attachment_empty_ports_names_fix() -> None:
     get_part_features, not just echo empty lists."""
     from types import SimpleNamespace
 
-    from cadx.guide.assembly_tools import solve_attachment_preview
-    from cadx.guide.state import AssemblyInstance, GuidePart
+    from kiara.guide.assembly_tools import solve_attachment_preview
+    from kiara.guide.state import AssemblyInstance, GuidePart
 
     state = GuideState()
     state.parts = [
@@ -751,9 +751,9 @@ def test_register_duplicate_part_id_upserts_quantity() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.part_tools import register_uploaded_part
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import GuidePart, GuideState
+    from kiara.guide.part_tools import register_uploaded_part
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import GuidePart, GuideState
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -779,9 +779,9 @@ def test_register_duplicate_asset_auto_aliases() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.part_tools import register_uploaded_part
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import GuidePart, GuideState
+    from kiara.guide.part_tools import register_uploaded_part
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import GuidePart, GuideState
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -799,7 +799,7 @@ def test_register_duplicate_asset_auto_aliases() -> None:
     )
     assert r["ok"] and r["aliased_to"] == "pipe_l70" and "Rohr 70mm" in r["aliases_added"], r
     assert len(state.parts) == 1  # no duplicate part row
-    from cadx.guide.part_tools import _norm
+    from kiara.guide.part_tools import _norm
 
     assert sess._aliases_store.get(_norm("Rohr 70mm")) == "pipe_l70"
 
@@ -810,9 +810,9 @@ def test_place_instance_respects_quantity() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.assembly_tools import place_instance
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import GuidePart, GuideState, GuideStep
+    from kiara.guide.assembly_tools import place_instance
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import GuidePart, GuideState, GuideStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -852,9 +852,9 @@ def test_place_instance_premount_lives_outside_kit_bound() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.assembly_tools import place_instance
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
+    from kiara.guide.assembly_tools import place_instance
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -914,9 +914,9 @@ def test_place_instance_rejects_candidate_on_wrong_target() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.assembly_tools import place_instance
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
+    from kiara.guide.assembly_tools import place_instance
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -972,9 +972,9 @@ def test_place_instance_skips_target_check_for_env_targets() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.assembly_tools import place_instance
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import GuidePart, GuideState, GuideStep
+    from kiara.guide.assembly_tools import place_instance
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import GuidePart, GuideState, GuideStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -1014,9 +1014,9 @@ def test_alias_part_rejects_contradictory_size_and_category() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.part_tools import alias_part
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import GuidePart, GuideState
+    from kiara.guide.part_tools import alias_part
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import GuidePart, GuideState
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -1051,9 +1051,9 @@ def test_place_instance_rejects_buried_candidate() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.assembly_tools import place_instance
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
+    from kiara.guide.assembly_tools import place_instance
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -1127,9 +1127,9 @@ def test_create_step_rejects_duplicate_title() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import GuideState, GuideStep
-    from cadx.guide.step_tools import create_step
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import GuideState, GuideStep
+    from kiara.guide.step_tools import create_step
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -1167,9 +1167,9 @@ def test_place_instance_rejects_swallowing_candidate() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.assembly_tools import place_instance
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
+    from kiara.guide.assembly_tools import place_instance
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import AssemblyInstance, GuidePart, GuideState, GuideStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -1231,16 +1231,16 @@ def test_create_steps_upserts_existing_numbers() -> None:
     import asyncio
     from unittest.mock import MagicMock
 
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import GuideState, GuideStep
-    from cadx.guide.step_tools import create_steps
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import GuideState, GuideStep
+    from kiara.guide.step_tools import create_steps
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
     state = GuideState()
     st = GuideStep(number=1, title="Adapter links", text="old", display_text="old")
     st.sub_steps.append(
-        __import__("cadx.guide.state", fromlist=["GuideSubStep"]).GuideSubStep(
+        __import__("kiara.guide.state", fromlist=["GuideSubStep"]).GuideSubStep(
             action="fasten", part="Adapter", target="Gehäuse"
         )
     )
@@ -1285,8 +1285,8 @@ def test_generate_missing_part_rejects_premounted() -> None:
     generated — the guard must fire on the label, not just the name."""
     import asyncio
 
-    from cadx.guide.part_tools import generate_missing_part
-    from cadx.guide.state import GuidePart
+    from kiara.guide.part_tools import generate_missing_part
+    from kiara.guide.state import GuidePart
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -1356,7 +1356,7 @@ def test_write_streak_breaker() -> None:
     re-escalates to an honest error at 12 so a truly stuck model aborts."""
     import asyncio
 
-    from cadx.guide.state import GuideStep, GuideSubStep
+    from kiara.guide.state import GuideStep, GuideSubStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -1414,7 +1414,7 @@ def test_write_streak_counts_successes_only() -> None:
     errors belong to the error-class breaker."""
     import asyncio
 
-    from cadx.guide.state import GuideStep, GuideSubStep
+    from kiara.guide.state import GuideStep, GuideSubStep
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -1480,7 +1480,7 @@ def test_tool_log_seq_monotonic_across_reopens() -> None:
     from pathlib import Path
     from types import SimpleNamespace
 
-    from cadx.guide.guide_runner import _persist_tool_log
+    from kiara.guide.guide_runner import _persist_tool_log
 
     res = SimpleNamespace(tool_log=[{"name": "x", "args": {}, "result": {"ok": True}}])
     with tempfile.TemporaryDirectory() as td:
@@ -1502,10 +1502,10 @@ def test_lint_cycles_persisted(tmp_path) -> None:
     texts + owning missions, including the clean converging cycle."""
     from types import SimpleNamespace
 
-    from cadx.guide.guide_runner import _plan_lint_reopen
+    from kiara.guide.guide_runner import _plan_lint_reopen
 
     # blocker plan: step 1 targets a part that is first placed in step 3
-    from cadx.guide.state import GuidePart, GuideStep, GuideSubStep
+    from kiara.guide.state import GuidePart, GuideStep, GuideSubStep
 
     state = GuideState(output_dir=str(tmp_path))
     state.missions_done = ["doc", "steps", "parts"]
@@ -1551,7 +1551,7 @@ def test_alias_discriminativity_gate() -> None:
     same-kind parts is a silent guess — every later 'anschlussrohr'
     reference then binds the l500 even when the manual means the l70.
     The gate demands the alias carry the target's discriminator."""
-    from cadx.guide.part_tools import _name_part_conflict
+    from kiara.guide.part_tools import _name_part_conflict
 
     sibs = [
         ("pipe_l500", "Rohr DN22, l = 500 mm", "Pipe_l500_mm.glb"),
@@ -1588,7 +1588,7 @@ def test_alias_discriminativity_gate() -> None:
 
 
 def test_sig_compound_rohr_is_pipe() -> None:
-    from cadx.guide.part_tools import _sig
+    from kiara.guide.part_tools import _sig
 
     assert _sig("Anschlussrohr")[0] == "pipe"
     assert _sig("Anschlussrohre")[0] == "pipe"
@@ -1604,8 +1604,8 @@ def test_match_required_hints_generic_names_to_context() -> None:
     geometry, or a qualified alias."""
     import asyncio
 
-    from cadx.guide.part_tools import match_required_parts
-    from cadx.guide.state import DocumentIndex, GuidePart
+    from kiara.guide.part_tools import match_required_parts
+    from kiara.guide.state import DocumentIndex, GuidePart
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)
@@ -1638,9 +1638,9 @@ def test_declared_mates_audits_orient_substep_leg() -> None:
     or the dangling socket passes as a clean single mate."""
     from unittest.mock import MagicMock
 
-    from cadx.guide.assembly_tools import _declared_mates
-    from cadx.guide.session import GuideToolSession
-    from cadx.guide.state import (
+    from kiara.guide.assembly_tools import _declared_mates
+    from kiara.guide.session import GuideToolSession
+    from kiara.guide.state import (
         AssemblyInstance,
         GuidePart,
         GuideState,
@@ -1698,7 +1698,7 @@ def test_page_image_refetch_is_refused(tmp_path) -> None:
     model burn the mission budget in a get_page_image cycle."""
     from unittest.mock import MagicMock
 
-    from cadx.guide.state import DocumentIndex, GuideState, PageSummary
+    from kiara.guide.state import DocumentIndex, GuideState, PageSummary
 
     img = tmp_path / "p1.png"
     img.write_bytes(b"\x89PNG fake")
@@ -1729,7 +1729,7 @@ def test_page_image_refetch_is_refused(tmp_path) -> None:
 def test_figure_image_refetch_is_refused(tmp_path) -> None:
     from unittest.mock import MagicMock
 
-    from cadx.guide.state import DocumentIndex, GuideState, PageSummary
+    from kiara.guide.state import DocumentIndex, GuideState, PageSummary
 
     img = tmp_path / "fig.png"
     img.write_bytes(b"\x89PNG fig")
@@ -1761,12 +1761,12 @@ def test_error_suggestions_exclude_consumed_ports() -> None:
     agent into the exact dead end it just escaped (observed: a consumed
     cyl_0 re-suggested 3x on tube_dn22_70#1 until the dead-pair gate fired).
     """
-    from cadx.guide.assembly_tools import (
+    from kiara.guide.assembly_tools import (
         _add_alternative_pairs,
         _consumed_ports,
         _no_cand_err,
     )
-    from cadx.guide.state import AssemblyInstance, GuidePart, PortInfo
+    from kiara.guide.state import AssemblyInstance, GuidePart, PortInfo
 
     ctx = MagicMock()
     ctx.runtime_settings = MagicMock(guide_image_budget=4)

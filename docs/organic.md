@@ -11,7 +11,7 @@ apply to create a child version of kind `organic`.
 
 ## How it works
 
-`backend/cadx/cad/fem/organic.py` voxelizes the source mesh into the same
+`backend/kiara/cad/fem/organic.py` voxelizes the source mesh into the same
 `VoxelDomain` used by FEM/TopOpt, builds a synthetic **density field** inside
 the design space, and reuses `density_to_mesh` (`cad/fem/extract.py`) for
 extraction — so the output is watertight, connectivity-pruned and respects

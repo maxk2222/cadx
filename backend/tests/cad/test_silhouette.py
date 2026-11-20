@@ -9,7 +9,7 @@ import pytest
 import trimesh
 from PIL import Image, ImageDraw
 
-from cadx.cad.silhouette import (
+from kiara.cad.silhouette import (
     _norm_mask,
     load_mask,
     mesh_silhouette_iou,
@@ -50,7 +50,7 @@ def test_reference_mask_from_alpha(tmp_path):
 
 def test_reference_mask_opaque_without_rembg(tmp_path, monkeypatch):
     """Opaque image without alpha returns None when no rembg model cached."""
-    import cadx.cad.silhouette as sil
+    import kiara.cad.silhouette as sil
 
     monkeypatch.setattr(sil, "_rembg_cached", lambda: False)
     img = Image.new("RGB", (64, 64), (200, 30, 30))
@@ -132,7 +132,7 @@ def _diagonal_band_mask(deg: float = 30.0, L: int = 700, W: int = 200) -> np.nda
 def test_mask_to_outline_mm_deskews_diagonal_subject():
     """A diagonally-photographed band must yield the same outline aspect as
     the upright band — the deskew normalises photo orientation."""
-    from cadx.cad.silhouette import mask_to_outline_mm
+    from kiara.cad.silhouette import mask_to_outline_mm
 
     up = mask_to_outline_mm(_diagonal_band_mask(0), 130.0, 32.0)
     dg = mask_to_outline_mm(_diagonal_band_mask(30), 130.0, 32.0)
@@ -144,7 +144,7 @@ def test_mask_to_outline_mm_deskews_diagonal_subject():
 def test_profile_stations_deskewed_read_true_radius():
     """Regression: diagonal mask previously produced radius_mm ~half the
     true band half-height (Ø32 read as ~Ø16) — deskew restores it."""
-    from cadx.cad.silhouette import mask_to_outline_mm, profile_stations_from_outline
+    from kiara.cad.silhouette import mask_to_outline_mm, profile_stations_from_outline
 
     # band W=200 scaled to extent_v=32 -> true radius = 16 mm
     out = mask_to_outline_mm(_diagonal_band_mask(25), 130.0, 32.0)
@@ -157,7 +157,7 @@ def test_profile_stations_deskewed_read_true_radius():
 def test_profile_stations_square_mask_not_deskewed():
     """A disc/square mask has no dominant axis — deskew must leave it alone
     (PCA axis is meaningless there)."""
-    from cadx.cad.silhouette import _deskew_mask, _mask_crop
+    from kiara.cad.silhouette import _deskew_mask, _mask_crop
 
     m = _mask_crop(_circle_mask())
     assert m is not None

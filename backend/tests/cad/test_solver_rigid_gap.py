@@ -12,8 +12,8 @@ from __future__ import annotations
 import numpy as np
 import trimesh
 
-from cadx.cad.fem.solver import assemble, reduce_case, solve_reduced
-from cadx.cad.fem.voxelize import VoxelDomain, voxelize
+from kiara.cad.fem.solver import assemble, reduce_case, solve_reduced
+from kiara.cad.fem.voxelize import VoxelDomain, voxelize
 
 E_PLA = 3500.0
 NU = 0.36

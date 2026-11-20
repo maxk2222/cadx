@@ -86,10 +86,10 @@ multi-pipeline selection, non-GLB CAD passthrough.
   payloads MUST include `"job_id"` (also drives the deterministic arq dedup
   key, `deps.py:52-75`).
 - **Queues**: agent worker `AgentWorkerSettings` (`queue.py:430`),
-  `max_jobs=8` (`CADX_AGENT_MAX_JOBS`), `job_timeout=
+  `max_jobs=8` (`KIARA_AGENT_MAX_JOBS`), `job_timeout=
   agent_job_timeout_s=14400` (4h). A guide job waiting on a child
   `generate` job does NOT deadlock (8 slots) — but **document
-  `CADX_AGENT_MAX_JOBS≥2`** as a hard requirement.
+  `KIARA_AGENT_MAX_JOBS≥2`** as a hard requirement.
 - **Executor dispatch**: `QueueExecutor._run_task(func, payload, timeout_s)`
   (`agent/executor_client.py:317`); func names in `_LIGHT_FUNCS`
   (`executor_client.py:41`) route to `cad-light` (2 slots), else `cad`.
@@ -129,7 +129,7 @@ multi-pipeline selection, non-GLB CAD passthrough.
 - **Prompts**: `read_prompt(name)` / `system_prompt(name)`
   (`agent/context.py:23-28`) load `agent/prompts/*.md`. AGENTS rule: prompts
   NEVER inline in Python.
-- **Storage**: all paths via `cadx/storage.py` — `project_dir`,
+- **Storage**: all paths via `kiara/storage.py` — `project_dir`,
   `asset_path`, `version_dir` (`storage.py:53-69`), `resolve`/`relpath`.
 - **`emit`** callback signature (worker_jobs.py): `await emit(step_name,
   progress_int_or_float, label, sub_label=…)`; job progress surface is
@@ -152,7 +152,7 @@ multi-pipeline selection, non-GLB CAD passthrough.
 
 ---
 
-## 4. Data model — `backend/cadx/guide/state.py`
+## 4. Data model — `backend/kiara/guide/state.py`
 
 Port KIARA `state/models.py` field-for-field where noted; pydantic v2.
 
@@ -294,7 +294,7 @@ Then in `db/models.py`: `JobType.guide`, `VersionKind.guide`,
   `image/*,.pdf,.step,.stp,.stl,.glb,.gltf,.dxf`; `AssetManager` accept
   list likewise (grep `accept=`).
 
-### 5.3 `spawn_guide` — `cadx/spawn.py`
+### 5.3 `spawn_guide` — `kiara/spawn.py`
 
 ```python
 async def spawn_guide(db, project, pdf_asset_id, cad_asset_ids, chat_id) -> tuple[Version, Job]
@@ -620,7 +620,7 @@ smoke check).
              "objects":[{"prefab_name","type","transform_unity"}],
              "arrows":[...]}],
    "models":[{"part_id","prefab_name","file":"<name>.glb"}],
-   "source":{"pdf":"<asset>","generated_by":"cadx-anleitungsbuilder"}}
+   "source":{"pdf":"<asset>","generated_by":"kiara-anleitungsbuilder"}}
   ```
   Export dir `guide_dir/export/`: `unity_guide.json`, part GLBs, per-step
   renders, media crops. `validate_unity_guide()` — every referenced file

@@ -1,7 +1,7 @@
 # mesh-server
 
 Local image→3D mesh generation sidecar for KIARA. The backend
-(`backend/cadx/agent/mesh_client.py`) talks to it over HTTP — like an
+(`backend/kiara/agent/mesh_client.py`) talks to it over HTTP — like an
 Ollama-style service — so the cad-executor stays sandboxed and the heavy model
 runtime lives in its own uv project/venv.
 
@@ -25,8 +25,8 @@ docker stack reaching a native sidecar).
 Check status:
 
 ```bash
-cadx mesh-health          # or: curl http://localhost:8765/v1/health
-cadx mesh-gen photo.png -o out.glb
+kiara mesh-health          # or: curl http://localhost:8765/v1/health
+kiara mesh-gen photo.png -o out.glb
 ```
 
 ## Adapters / models

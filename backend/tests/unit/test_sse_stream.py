@@ -1,4 +1,4 @@
-"""SSE job stream (cadx.api.routers.sse): the subscribe-gap fix.
+"""SSE job stream (kiara.api.routers.sse): the subscribe-gap fix.
 
 Redis pub/sub has no backlog — a terminal event published between the
 snapshot read and the subscribe used to be lost, pinning the EventSource
@@ -13,7 +13,7 @@ import uuid
 
 import pytest
 
-from cadx.db.session import create_all, session_scope
+from kiara.db.session import create_all, session_scope
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -59,12 +59,12 @@ class _FakeClient:
 
 def _patch_subscribe(monkeypatch: pytest.MonkeyPatch, ps: _FakePubSub) -> _FakeClient:
     client = _FakeClient(ps)
-    monkeypatch.setattr("cadx.events.subscribe", lambda job_id: (client, ps))
+    monkeypatch.setattr("kiara.events.subscribe", lambda job_id: (client, ps))
     return client
 
 
 async def _mk_running_job() -> str:
-    from cadx.db.models import Job, JobStatus, JobType, Project, Version, VersionKind
+    from kiara.db.models import Job, JobStatus, JobType, Project, Version, VersionKind
 
     async with session_scope() as db:
         p = Project(name="sse-proj")
@@ -80,7 +80,7 @@ async def _mk_running_job() -> str:
 
 
 async def _set_status(jid: str, status) -> None:
-    from cadx.db.models import Job
+    from kiara.db.models import Job
 
     async with session_scope() as db:
         j = await db.get(Job, uuid.UUID(jid))
@@ -93,8 +93,8 @@ async def test_sse_terminal_during_gap_closes_stream(monkeypatch):
     """Regression: the terminal publish lands in the old snapshot→subscribe
     gap (simulated by flipping the row inside subscribe()). With subscribe
     FIRST the snapshot must already see the final state and close."""
-    from cadx.api.routers import sse
-    from cadx.db.models import JobStatus
+    from kiara.api.routers import sse
+    from kiara.db.models import JobStatus
 
     jid = await _mk_running_job()
 
@@ -122,8 +122,8 @@ async def test_sse_terminal_during_gap_closes_stream(monkeypatch):
 async def test_sse_keepalive_repoll_detects_terminal(monkeypatch):
     """Job goes terminal while subscribed but the pub/sub 'done' is dropped —
     the keepalive DB re-check still emits status+end and closes."""
-    from cadx.api.routers import sse
-    from cadx.db.models import JobStatus
+    from kiara.api.routers import sse
+    from kiara.db.models import JobStatus
 
     jid = await _mk_running_job()
     ps = _FakePubSub()
@@ -149,7 +149,7 @@ async def test_sse_keepalive_repoll_detects_terminal(monkeypatch):
 
 async def test_sse_pubsub_done_still_closes(monkeypatch):
     """Happy path unchanged: a live 'done' event ends the stream."""
-    from cadx.api.routers import sse
+    from kiara.api.routers import sse
 
     jid = await _mk_running_job()
     ps = _FakePubSub()
@@ -171,7 +171,7 @@ async def test_sse_bad_job_id_404():
     """Non-UUID job ids 404 cleanly instead of raising ValueError -> 500."""
     from httpx import ASGITransport, AsyncClient
 
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         r = await c.get("/api/jobs/not-a-uuid/events")

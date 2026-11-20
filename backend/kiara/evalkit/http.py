@@ -1,0 +1,710 @@
+"""HTTP driver — durable eval runs through the public REST API.
+
+Every dispatched stage spawns real Version/Job rows under the case's fixed
+``eval:*`` project (production spawn path — identical to GUI runs), then
+harvests the result via ``GET /versions/{id}``, ``GET /jobs/{id}`` and the
+``/jobs/{id}/trace`` endpoint. Nothing bypasses the API.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import time
+import uuid
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from kiara.evalkit.models import StageOutcome
+from kiara.evalkit.suite import ASSET_STAGES, EvalStage
+from kiara.logging import get_logger
+
+log = get_logger(__name__)
+
+_TERMINAL = {"succeeded", "failed", "cancelled"}
+
+# idempotent methods whose replay cannot double-enqueue work — POST is
+# deliberately absent (a retry could spawn a second job)
+_IDEMPOTENT = {"GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+# transient gateway codes while a container restarts — bounded retries let a
+# long-running eval survive `docker compose up -d api` mid-stage
+_5XX_MAX_RETRIES = 5
+
+
+class EvalApiError(RuntimeError):
+    def __init__(self, message: str, *, status: int = 0) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+class DriverCtx:
+    """Per-run state shared across stage dispatches."""
+
+    def __init__(self) -> None:
+        self.project_id: str | None = None
+        self.project_name: str = ""
+        self.parent_version_id: str | None = None  # resolved parent for next stage
+        self.stage_assets: dict[str, list[str]] = {}  # stage id -> produced asset ids
+        self.case_assets: list[str] = []  # case-level uploaded asset ids
+        self.out_dir: Path | None = None
+
+
+class HttpDriver:
+    def __init__(self, base_url: str = "http://localhost:8080", *, verbose: bool = False) -> None:
+        self.base = base_url.rstrip("/")
+        self.api = f"{self.base}/api"
+        self.verbose = verbose
+        self._client = httpx.AsyncClient(timeout=60.0)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    # -- low-level -----------------------------------------------------------
+
+    async def _req(self, method: str, path: str, **kw: Any) -> Any:
+        delay = 1.0
+        for attempt in range(_5XX_MAX_RETRIES + 1):
+            try:
+                r = await self._client.request(method, f"{self.api}{path}", **kw)
+            except httpx.RequestError:
+                # transport hiccup (dropped keep-alive, ReadError mid-body,
+                # connect reset) — safe to retry only for idempotent verbs;
+                # a POST retry could double-spawn versions/jobs
+                if method in _IDEMPOTENT and attempt < _5XX_MAX_RETRIES:
+                    log.warning(
+                        "eval.http.transient_transport",
+                        method=method,
+                        path=path,
+                        retry=attempt + 1,
+                    )
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 16.0)
+                    continue
+                raise
+            if r.status_code < 400:
+                return r.json() if r.content else None
+            if r.status_code >= 500 and method in _IDEMPOTENT and attempt < _5XX_MAX_RETRIES:
+                log.warning(
+                    "eval.http.transient_status",
+                    method=method,
+                    path=path,
+                    status=r.status_code,
+                    retry=attempt + 1,
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 16.0)
+                continue
+            raise EvalApiError(
+                f"{method} {path}: {r.status_code} {r.text[:300]}", status=r.status_code
+            )
+        raise EvalApiError(f"{method} {path}: unreachable")
+
+    async def _get(self, path: str, **kw: Any) -> Any:
+        return await self._req("GET", path, **kw)
+
+    async def _post(self, path: str, **kw: Any) -> Any:
+        return await self._req("POST", path, **kw)
+
+    # -- high-level ----------------------------------------------------------
+
+    async def find_or_create_project(self, name: str, settings: dict[str, Any]) -> dict[str, Any]:
+        for p in await self._get("/projects"):
+            if p.get("name") == name:
+                # re-runs must honour the case's declared settings — a stored
+                # project keeps its first-run settings otherwise (api_v8
+                # helical kept min_wall_mm=0.8 and failed the gate despite
+                # the case pinning 0.1)
+                merged = {**(p.get("settings") or {}), **settings}
+                if merged != (p.get("settings") or {}):
+                    with contextlib.suppress(Exception):
+                        p = await self._req(
+                            "PATCH", f"/projects/{p['id']}", json={"settings": merged}
+                        )
+                return p
+        body = {"name": name, "description": "evalkit benchmark project", "settings": settings}
+        return await self._post("/projects", json=body)
+
+    async def upload_assets(self, project_id: str, paths: list[Path]) -> list[dict[str, Any]]:
+        """Upload files, reusing same-named project assets from earlier runs —
+        eval projects are durable, re-uploading identical inputs every run
+        would pile up duplicates on the project page."""
+        if not paths:
+            return []
+        existing = await self._get(f"/projects/{project_id}/assets")
+        by_name: dict[str, dict[str, Any]] = {}
+        for a in existing or []:
+            by_name.setdefault(str(a.get("filename")), a)
+        out: list[dict[str, Any]] = [a for p in paths if (a := by_name.get(p.name))]
+        todo = [p for p in paths if p.name not in by_name]
+        if todo:
+            files = [("files", (p.name, p.read_bytes(), "application/octet-stream")) for p in todo]
+            out.extend(await self._post(f"/projects/{project_id}/assets", files=files))
+        return out
+
+    async def version(self, vid: str) -> dict[str, Any]:
+        return await self._get(f"/versions/{vid}")
+
+    async def _wait_version_settled(self, vid: str, timeout_s: float = 300.0) -> None:
+        """Poll until the version leaves a non-terminal status.
+
+        Spawn endpoints gate on editability (succeeded/needs_review); a
+        version in queued/running/waiting_for_input is still finalising after
+        its job row already read terminal. On timeout the caller proceeds —
+        the spawn POST then reports the authoritative gate error."""
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout_s:
+            try:
+                status = str((await self.version(vid)).get("status"))
+            except (EvalApiError, httpx.RequestError):
+                status = "running"  # unknown ≠ settled — keep waiting
+            if status not in ("queued", "running", "waiting_for_input"):
+                return
+            await asyncio.sleep(2.0)
+
+    async def job(self, job_id: str) -> dict[str, Any]:
+        return await self._get(f"/jobs/{job_id}")
+
+    async def trace(self, job_id: str, limit: int = 5000) -> list[dict[str, Any]]:
+        try:
+            return await self._get(f"/jobs/{job_id}/trace", params={"limit": limit})
+        except EvalApiError as e:
+            log.warning("eval.trace_failed", job_id=job_id, error=str(e)[:120])
+            return []
+
+    async def wait_job(self, job_id: str, timeout_s: float) -> dict[str, Any]:
+        """Poll until terminal; on timeout cancel and return the last state.
+
+        Transient transport errors (dropped keep-alive, one-off connect
+        failure) retry — a single socket hiccup must not fail a stage that
+        polls for tens of minutes."""
+        t0 = time.monotonic()
+        delay = 1.0
+        transient = 0
+        while time.monotonic() - t0 < timeout_s:
+            try:
+                j = await self.job(job_id)
+                transient = 0
+            except httpx.RequestError:
+                transient += 1
+                if transient >= 10:
+                    raise
+                await asyncio.sleep(2.0)
+                continue
+            status = str(j.get("status"))
+            if status in _TERMINAL:
+                return j
+            if status == "waiting_for_input":
+                # clarification should be off for eval runs; don't hang on it
+                await self._post(f"/jobs/{job_id}/cancel")
+                j["status"] = "cancelled"
+                j["error"] = "cancelled: job waited for user input during eval"
+                return j
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.4, 10.0)
+        import contextlib
+
+        with contextlib.suppress(EvalApiError):
+            await self._post(f"/jobs/{job_id}/cancel")
+        j = await self.job(job_id)
+        j["status"] = "timeout"
+        j["error"] = f"eval timeout after {timeout_s}s"
+        return j
+
+    async def download_artifact(
+        self, url: str, dest_dir: Path, name: str | None = None
+    ) -> Path | None:
+        try:
+            r = await self._client.get(url if url.startswith("http") else f"{self.base}{url}")
+            if r.status_code >= 400:
+                return None
+            await asyncio.to_thread(dest_dir.mkdir, parents=True, exist_ok=True)
+            name = name or url.rstrip("/").rsplit("/", 1)[-1].split("?")[0] or uuid.uuid4().hex[:8]
+            dest = dest_dir / name
+            await asyncio.to_thread(dest.write_bytes, r.content)
+            return dest
+        except Exception:
+            return None
+
+    async def settings_get(self) -> dict[str, Any]:
+        return await self._get("/settings")
+
+    async def settings_put(self, updates: dict[str, Any]) -> dict[str, Any]:
+        return await self._req("PUT", "/settings", json=updates)
+
+    async def health(self, *, retries: int = 4) -> bool:
+        """Single dropped request must not abort a case — the api may be busy
+        draining orphan jobs when a case starts."""
+        for attempt in range(retries):
+            try:
+                r = await self._client.get(f"{self.base}/api/health")
+                if r.status_code == 200:
+                    return True
+            except Exception:
+                pass
+            if attempt < retries - 1:
+                await asyncio.sleep(2.0 * (attempt + 1))
+        return False
+
+    # -- dispatch ------------------------------------------------------------
+
+    async def _parent_fallback_lcs(
+        self, stage: EvalStage, ctx: DriverCtx
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
+        """Resolve parent-derived load cases for ``use_parent_fallbacks``
+        stages — mirrors the job-layer cascade (resample/refine read parent
+        params then spec; fem/optimize read spec only — worker_jobs.py)."""
+        if stage.load_cases or not stage.use_parent_fallbacks or not ctx.parent_version_id:
+            return None, None
+        t = stage.type
+        if t not in ("fem", "optimize", "resample", "refine"):
+            return None, None
+        try:
+            detail = await self.version(ctx.parent_version_id)
+        except EvalApiError:
+            return None, None
+        spec_lcs = [
+            dict(c)
+            for c in ((detail.get("spec") or {}).get("load_cases") or [])
+            if isinstance(c, dict)
+        ]
+        params_lcs = [
+            dict(c)
+            for c in ((detail.get("params") or {}).get("load_cases") or [])
+            if isinstance(c, dict)
+        ]
+        if t in ("resample", "refine"):
+            if params_lcs:
+                return params_lcs, "parent_params"
+            if spec_lcs:
+                return spec_lcs, "parent_spec"
+        elif spec_lcs:
+            return spec_lcs, "parent_spec"
+        return None, None
+
+    async def _spawn_body(  # noqa: C901
+        self, stage: EvalStage, ctx: DriverCtx
+    ) -> tuple[str, dict[str, Any], dict[str, Any]]:
+        """(path, json body, meta) for a stage type — meta carries the
+        provenance the driver injected (``load_cases_source``) so the
+        outcome's extras can tell stage-declared cases from
+        parent-derived ones."""
+        t = stage.type
+        pid = ctx.project_id
+        parent = ctx.parent_version_id
+        asset_ids = list(ctx.case_assets)
+        if stage.assets_from:
+            asset_ids += ctx.stage_assets.get(stage.assets_from, [])
+        meta: dict[str, Any] = {}
+        lcs, lcs_src = await self._parent_fallback_lcs(stage, ctx)
+        if lcs is None:
+            lcs = stage.load_cases or None
+        elif lcs_src:
+            meta["load_cases_source"] = lcs_src
+
+        if t == "generate":
+            body: dict[str, Any] = {"prompt": stage.prompt, "asset_ids": asset_ids}
+            if stage.mode:
+                body["mode"] = stage.mode
+            if stage.options:
+                body["options"] = stage.options
+            return f"/projects/{pid}/generate", body, meta
+        if t == "edit":
+            body = {"prompt": stage.prompt, "asset_ids": asset_ids}
+            if stage.mode:
+                body["mode"] = stage.mode
+            if stage.options:
+                body["options"] = stage.options
+            return f"/versions/{parent}/edit", body, meta
+        if t == "params":
+            return f"/versions/{parent}/params", {"params": stage.params or {}}, meta
+        if t == "edit_feature":
+            return f"/versions/{parent}/edit-feature", dict(stage.feature or {}), meta
+        if t == "optimize":
+            # stage-level keep_regions follow the resample/refine/fem
+            # convention — merge them into the OptimizeSpec block the
+            # endpoint actually forwards (keeps declared inside `optimize`
+            # pass through unchanged)
+            body_opt = dict(stage.optimize or {})
+            if stage.keep_regions:
+                body_opt["keep_regions"] = [
+                    *(body_opt.get("keep_regions") or []),
+                    *stage.keep_regions,
+                ]
+            return (
+                f"/versions/{parent}/optimize",
+                {
+                    "load_cases": lcs,
+                    "optimize": body_opt,
+                    "material": stage.material,
+                    # the local driver forwards this — dropping it here made a
+                    # reopt stage (e.g. simp warm-start after a successful
+                    # infill) hit the 409 already-optimized gate
+                    "allow_reopt": bool(stage.options.get("allow_reopt")),
+                },
+                meta,
+            )
+        if t == "resample":
+            body = {"load_cases": lcs, "material": stage.material}
+            if stage.keep_regions:
+                body["keep_regions"] = stage.keep_regions
+            body.update(stage.resample or {})
+            return f"/versions/{parent}/topopt-resample", body, meta
+        if t == "refine":
+            body = {
+                "features": stage.features,
+                "load_cases": lcs,
+                "keep_regions": stage.keep_regions,
+                "material": stage.material,
+            }
+            if stage.voxel_mm is not None:
+                body["voxel_mm"] = stage.voxel_mm
+            if stage.restore_planes is not None:
+                body["restore_planes"] = stage.restore_planes
+            return f"/versions/{parent}/refine", body, meta
+        if t == "organic":
+            return f"/versions/{parent}/organic", dict(stage.organic or {}), meta
+        if t == "reexport":
+            return f"/versions/{parent}/reexport", dict(stage.options or {}), meta
+        if t == "fem":
+            return (
+                f"/versions/{parent}/fem",
+                {
+                    "load_cases": lcs,
+                    "keep_regions": stage.keep_regions,
+                    "material": stage.material,
+                },
+                meta,
+            )
+        if t == "mesh_edit":
+            body = {"ops": stage.ops, "note": stage.prompt or f"eval {stage.id}"}
+            if stage.post:
+                body["post"] = stage.post
+            return f"/versions/{parent}/mesh-edit", body, meta
+        if t == "meshgen":
+            ids = asset_ids or self._ref_assets(stage, ctx)
+            return (
+                f"/projects/{pid}/meshgen",
+                {
+                    "asset_ids": ids,
+                    "subject": stage.subject or stage.prompt,
+                    "model": stage.model,
+                    "seed": stage.seed,
+                    "post": stage.post or {},
+                    "prompt": stage.prompt,
+                },
+                meta,
+            )
+        raise EvalApiError(f"no spawn route for stage type {t}")
+
+    @staticmethod
+    def _ref_assets(stage: EvalStage, ctx: DriverCtx) -> list[str]:
+        if stage.reference and stage.reference != "prev-asset":
+            return [stage.reference]
+        for ids in reversed(list(ctx.stage_assets.values())):
+            if ids:
+                return ids
+        return []
+
+    async def wait_guide(self, job_id: str, timeout_s: float, stage: EvalStage) -> dict[str, Any]:
+        """wait_job variant that answers parked clarification rounds — the
+        guide pipeline legitimately parks on ask_user (premounted-adapter
+        positioning, …). Canned ``stage.answers`` are resent positionally on
+        every park; the job follows resume ids (answer spawns a NEW job row).
+        Bounded by ``stage.max_resumes`` — exhausting the budget cancels."""
+        t0 = time.monotonic()
+        delay = 1.0
+        transient = 0
+        resumes = 0
+        jid = job_id
+        while time.monotonic() - t0 < timeout_s:
+            try:
+                j = await self.job(jid)
+                transient = 0
+            except httpx.RequestError:
+                transient += 1
+                if transient >= 10:
+                    raise
+                await asyncio.sleep(2.0)
+                continue
+            status = str(j.get("status"))
+            if status in _TERMINAL:
+                return j
+            if status == "waiting_for_input":
+                if not stage.answers or resumes >= stage.max_resumes:
+                    await self._post(f"/jobs/{jid}/cancel")
+                    j["status"] = "cancelled"
+                    j["error"] = "cancelled: guide parked for input — " + (
+                        "no canned answers declared" if not stage.answers else "max_resumes hit"
+                    )
+                    return j
+                questions = [q for q in (j.get("questions") or []) if isinstance(q, dict)]
+                answers = [
+                    {"id": str(q.get("id") or f"q{i + 1}"), "answer": a}
+                    for i, (q, a) in enumerate(zip(questions, stage.answers, strict=False))
+                ] or [{"answer": a} for a in stage.answers]
+                enq = await self._post(f"/jobs/{jid}/answer", json={"answers": answers})
+                jid = str(enq.get("job_id") or jid)
+                resumes += 1
+                await asyncio.sleep(delay)
+                continue
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.4, 10.0)
+        import contextlib
+
+        with contextlib.suppress(EvalApiError):
+            await self._post(f"/jobs/{jid}/cancel")
+        j = await self.job(jid)
+        j["status"] = "timeout"
+        j["error"] = f"eval timeout after {timeout_s}s"
+        return j
+
+    async def dispatch(self, stage: EvalStage, ctx: DriverCtx) -> StageOutcome:
+        t0 = time.monotonic()
+        if stage.type in ASSET_STAGES:
+            return await self._dispatch_image(stage, ctx, t0)
+        if stage.type == "guide":
+            return await self._dispatch_guide(stage, ctx, t0)
+
+        path, body, meta = await self._spawn_body(stage, ctx)
+        if ctx.parent_version_id is None and "/versions/" in path:
+            # upstream stage produced no version — don't POST to /versions/None/…
+            return StageOutcome(
+                status="failed",
+                wall_s=time.monotonic() - t0,
+                error=f"stage {stage.type} needs a parent version — none available",
+            )
+        if (
+            stage.type in ("fem", "optimize", "resample", "refine")
+            and body.get("load_cases") is None
+        ):
+            # these endpoints require a non-null load_cases list — posting
+            # None only earns a pydantic 422. Fail honestly instead: the
+            # stage declared none and the parent fallback cascade found none.
+            return StageOutcome(
+                status="failed",
+                wall_s=time.monotonic() - t0,
+                error=(
+                    f"stage {stage.type} needs load cases — stage declares none "
+                    "and parent spec/params carry none"
+                ),
+            )
+        if ctx.parent_version_id and f"/versions/{ctx.parent_version_id}/" in path:
+            # the parent job's terminal state races its version's status flip
+            # (exports/status writes lag the job row commit) — a same-version
+            # or child spawn POSTed in that window is 422'd by the
+            # editability gate. Wait until the parent settles; whatever state
+            # remains after the budget is the POST's real error to surface.
+            await self._wait_version_settled(ctx.parent_version_id)
+        wait_timeout_s = stage.timeout_s
+        if stage.type == "optimize":
+            remaining_s = max(0.1, stage.timeout_s - (time.monotonic() - t0))
+            body["stage_timeout_s"] = remaining_s
+            wait_timeout_s = remaining_s
+        if self.verbose:
+            log.info("eval.http.spawn", stage=stage.id, path=path)
+        enq = await self._post(path, json=body)
+        vid, jid = str(enq.get("version_id")), str(enq.get("job_id"))
+
+        if stage.type == "optimize":
+            wait_timeout_s = max(0.0, stage.timeout_s - (time.monotonic() - t0))
+        job = await self.wait_job(jid, wait_timeout_s)
+        wall = time.monotonic() - t0
+        detail = await self.version(vid)
+        records = await self.trace(jid)
+
+        artifact_files: list[str] = []
+        if ctx.out_dir:
+            adir = ctx.out_dir / "artifacts" / stage.id
+            rows = [
+                a
+                for a in (detail.get("artifacts") or [])
+                if a.get("kind") in ("stl", "glb", "3mf", "obj", "step")
+            ]
+            # the version's committed mesh pointer first — artifact rows are
+            # registered during intermediate runs, so row order is not
+            # authoritative (mirrors the local driver's _mesh_artifact_files)
+            stl_rel = (detail.get("mesh") or {}).get("stl_relpath")
+            rows.sort(key=lambda a: 0 if stl_rel and a.get("path") == stl_rel else 1)
+            for a in rows:
+                # every artifact url ends in /file — name by kind + basename
+                # of the storage path or downloads overwrite each other
+                fname = f"{a.get('kind')}_{Path(str(a.get('path') or 'f')).name}"
+                p = await self.download_artifact(str(a.get("url") or ""), adir, fname)
+                if p:
+                    artifact_files.append(str(p))
+
+        status = str(job.get("status") or detail.get("status") or "failed")
+        if status == "queued":
+            status = "running"
+        out = StageOutcome(
+            status=status,
+            version_id=vid,
+            job_id=jid,
+            score=detail.get("score"),
+            iterations=int(detail.get("iterations") or 0),
+            resolved_mode=detail.get("resolved_mode"),
+            analysis=detail.get("analysis"),
+            features=(detail.get("mesh") or {}).get("features")
+            if isinstance(detail.get("mesh"), dict)
+            else None,
+            spec=detail.get("spec"),
+            plan=detail.get("plan"),
+            code=detail.get("code"),
+            fem=detail.get("fem"),
+            mesh=detail.get("mesh"),
+            issues=detail.get("issues") or [],
+            dfm=detail.get("dfm"),
+            critique=detail.get("critique"),
+            usage=detail.get("usage") or {},
+            artifacts={
+                f"{a.get('kind')}|{a.get('view') or ''}": a.get("path")
+                for a in detail.get("artifacts") or []
+            },
+            artifact_files=artifact_files,
+            trace_records=records if isinstance(records, list) else [],
+            live=job.get("live"),
+            asset_ids=[str(x) for x in detail.get("asset_ids") or []],
+            wall_s=wall,
+            error=job.get("error") or detail.get("error"),
+        )
+        if meta.get("load_cases_source"):
+            out.extras["load_cases_source"] = meta["load_cases_source"]
+        # advance the chain: child-version stages produce a new parent,
+        # same-version stages (fem/reexport) keep it
+        if stage.type in ("fem", "reexport"):
+            pass
+        else:
+            ctx.parent_version_id = vid
+        return out
+
+    async def _dispatch_image(self, stage: EvalStage, ctx: DriverCtx, t0: float) -> StageOutcome:
+        body: dict[str, Any] = {
+            "prompt": stage.image_prompt,
+            "negative": stage.negative,
+            "seed": stage.seed,
+            "count": stage.count,
+            "width": stage.width,
+            "height": stage.height,
+            "caption": f"eval {stage.id}",
+        }
+        if stage.model:
+            body["model"] = stage.model
+        if stage.steps is not None:
+            body["steps"] = stage.steps
+        if stage.guidance is not None:
+            body["guidance"] = stage.guidance
+        ref = self._ref_assets(stage, ctx)
+        if stage.type == "imageedit" or stage.reference:
+            if ref:
+                body["reference_asset_id"] = ref[0]
+            if stage.strength is not None:
+                body["strength"] = stage.strength
+
+        assets = await self._post(f"/projects/{ctx.project_id}/images", json=body)
+        ids = [str(a.get("id")) for a in assets or []]
+        ctx.stage_assets[stage.id] = ids
+        return StageOutcome(
+            status="succeeded" if ids else "failed",
+            asset_ids=ids,
+            wall_s=time.monotonic() - t0,
+            error=None if ids else "image stage returned no assets",
+        )
+
+    async def _dispatch_guide(self, stage: EvalStage, ctx: DriverCtx, t0: float) -> StageOutcome:
+        """Guide stage: upload the instruction pdf + cad parts as project
+        assets (kind sniffed by extension in the assets router), then spawn
+        via ``POST /projects/{id}/guide`` — the same ``spawn_guide`` entry
+        the chat tool uses."""
+        from kiara.evalkit.paths import REPO_ROOT
+
+        def _resolve(rel: str) -> Path | None:
+            p = (REPO_ROOT / rel).resolve()
+            return p if p.exists() else None
+
+        pdf_path = _resolve(stage.pdf)
+        if pdf_path is None:
+            return StageOutcome(
+                status="failed",
+                wall_s=time.monotonic() - t0,
+                error=f"guide pdf not found: {stage.pdf}",
+            )
+        cad_paths = [p for p in (_resolve(c) for c in stage.cad_parts) if p is not None]
+        missing = [c for c in stage.cad_parts if _resolve(c) is None]
+        if missing:
+            log.warning("eval.guide.cad_missing", stage=stage.id, paths=missing)
+
+        uploads = await self.upload_assets(ctx.project_id, [pdf_path, *cad_paths])
+        by_name = {str(a.get("filename")): str(a.get("id")) for a in uploads or []}
+        pdf_id = by_name.get(pdf_path.name)
+        if pdf_id is None:
+            return StageOutcome(
+                status="failed",
+                wall_s=time.monotonic() - t0,
+                error="pdf upload did not return an asset id",
+            )
+        cad_ids = [by_name[p.name] for p in cad_paths if p.name in by_name]
+        enq = await self._post(
+            f"/projects/{ctx.project_id}/guide",
+            json={
+                "pdf_asset_id": pdf_id,
+                "cad_asset_ids": cad_ids,
+                "prompt": stage.prompt,
+                "allow_generation": stage.allow_generation,
+                "attach_images": stage.attach_images,
+                "mode": stage.guide_mode,
+            },
+        )
+        vid, jid = str(enq.get("version_id")), str(enq.get("job_id"))
+        job = await self.wait_guide(jid, stage.timeout_s, stage)
+        wall = time.monotonic() - t0
+        detail = await self.version(vid)
+        records = await self.trace(jid)
+
+        artifact_files: list[str] = []
+        guide_doc: dict[str, Any] | None = None
+        if ctx.out_dir:
+            adir = ctx.out_dir / "artifacts" / stage.id
+            for a in detail.get("artifacts") or []:
+                if a.get("kind") not in ("unity_guide", "render", "pdf"):
+                    continue
+                fname = f"{a.get('kind')}_{Path(str(a.get('path') or 'f')).name}"
+                p = await self.download_artifact(str(a.get("url") or ""), adir, fname)
+                if p:
+                    artifact_files.append(str(p))
+                    if a.get("kind") == "unity_guide" and guide_doc is None:
+                        import json as _json
+
+                        try:
+                            guide_doc = _json.loads(
+                                await asyncio.to_thread(Path(p).read_text, encoding="utf-8")
+                            )
+                        except Exception:
+                            guide_doc = None
+
+        status = str(job.get("status") or detail.get("status") or "failed")
+        if status == "queued":
+            status = "running"
+        out = StageOutcome(
+            status=status,
+            version_id=vid,
+            job_id=jid,
+            score=detail.get("score"),
+            issues=detail.get("issues") or [],
+            usage=detail.get("usage") or {},
+            artifacts={
+                f"{a.get('kind')}|{a.get('view') or ''}": a.get("path")
+                for a in detail.get("artifacts") or []
+            },
+            artifact_files=artifact_files,
+            trace_records=records if isinstance(records, list) else [],
+            live=job.get("live"),
+            asset_ids=[str(x) for x in detail.get("asset_ids") or []],
+            wall_s=wall,
+            error=job.get("error") or detail.get("error"),
+        )
+        if guide_doc is not None:
+            out.extras["guide"] = guide_doc
+        ctx.parent_version_id = vid
+        return out

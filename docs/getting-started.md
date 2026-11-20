@@ -179,8 +179,8 @@ cd backend
 
 ## Upgrading from `cadagent`
 
-The system was renamed to **KIARA** (package `cadx`, CLI `kiara`, compose project
-`cadx`). Existing installs that still use `cadagent_*` docker volumes can keep
+The system was renamed to **KIARA** (package `kiara`, CLI `kiara`, compose project
+`kiara`). Existing installs that still use `cadagent_*` docker volumes can keep
 the old credentials via `POSTGRES_USER=cadagent POSTGRES_PASSWORD=cadagent
 POSTGRES_DB=cadagent` in `.env` (docker-compose overrides only).
 

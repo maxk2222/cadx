@@ -30,18 +30,18 @@ import numpy as np
 import pytest
 import trimesh
 
-import cadx.cad.fem.topopt as topopt_mod
-from cadx.cad.fem.regions import resolve_case
-from cadx.cad.fem.topopt import (
+import kiara.cad.fem.topopt as topopt_mod
+from kiara.cad.fem.regions import resolve_case
+from kiara.cad.fem.topopt import (
     TopOptParams,
     _same_flip_run,
     _span_compliance_improvement,
     _windowed_compliance_improvement,
     simp,
 )
-from cadx.cad.fem.voxelize import VoxelDomain, voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
-from cadx.runtime_config import RuntimeSettings
+from kiara.cad.fem.voxelize import VoxelDomain, voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.runtime_config import RuntimeSettings
 
 E_PLA = 3500.0
 NU = 0.36
@@ -426,7 +426,7 @@ def test_limit_cycle_still_improving_runs_on() -> None:
 
 
 def test_export_degeneracy_thresholds() -> None:
-    from cadx.cad.engine import _export_degeneracy, _realization_case_details, _sf_basis
+    from kiara.cad.engine import _export_degeneracy, _realization_case_details, _sf_basis
 
     # sane numbers -> valid, silent
     valid, warns = _export_degeneracy(0.01 * 100.0, 20.0, 100.0, 50.0)
@@ -508,7 +508,7 @@ def test_pipeline_emits_status_and_meets_safety_factor(tmp_path: Path) -> None:
     """res.topopt carries the run status and the verification block reports
     meets_safety_factor against the requested floor — decoupled from the
     measurement-validity flag."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh(24.0, 24.0, 24.0).export(str(src))
@@ -548,7 +548,7 @@ def test_pipeline_emits_status_and_meets_safety_factor(tmp_path: Path) -> None:
 def test_fem_preview_carries_cell_metrics(tmp_path: Path) -> None:
     """preview_only resolution emits n_fixed/n_load/n_keep cells per case and
     the passive union as passive_fraction == min_feasible_volfrac."""
-    from cadx.cad.engine import run_fem_pipeline
+    from kiara.cad.engine import run_fem_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh(24.0, 24.0, 24.0).export(str(src))
@@ -582,8 +582,8 @@ def test_fem_preview_carries_cell_metrics(tmp_path: Path) -> None:
 
 def _opt_session(**kw: Any):
     """ToolSession for the optimize kind with canned executor callbacks."""
-    from cadx.agent.toolspecs import ToolSession
-    from cadx.llm.fake import FakeLLM
+    from kiara.agent.toolspecs import ToolSession
+    from kiara.llm.fake import FakeLLM
     from tests.unit.test_session_condense import _ctx
 
     return ToolSession(_ctx(FakeLLM([{"content": "x"}])), kind="optimize", **kw)
@@ -696,7 +696,7 @@ def test_pipeline_refuses_floor_above_target(tmp_path: Path) -> None:
     """keep_regions covering the whole part make the requested volfrac
     unreachable — the pipeline refuses before any SIMP iteration instead
     of burning a run (the eval's 0.62-floor vs 0.40-target case)."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh(24.0, 24.0, 24.0).export(str(src))
@@ -725,7 +725,7 @@ def test_pipeline_refuses_floor_above_target(tmp_path: Path) -> None:
 def test_pipeline_warns_high_floor_when_feasible(tmp_path: Path) -> None:
     """A floor that still fits under the target is feasible — the run
     proceeds (no preflight refuse) and exposes the floor metrics."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh(24.0, 24.0, 24.0).export(str(src))
@@ -753,7 +753,7 @@ def test_grow_preflight_uses_design_domain_volume(
 ) -> None:
     """grow_mm enlarges the volume denominator; the passive-floor preflight
     must use the same design domain as SIMP rather than the input mesh."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     def quarter_passive(domain, extra, fixed, loads):
         del extra, fixed, loads
@@ -856,8 +856,8 @@ def test_early_loadpath_cert_skips_fem_on_disconnected_export(
     The min-cut certificate proves the path broken before any FEM solve —
     _verify_export_structure must return load_path_ok=False with an empty
     report instead of burning the realization sweep on a doomed part."""
-    from cadx.cad.engine import _verify_export_structure
-    from cadx.cad.fem.materials import resolve_material
+    from kiara.cad.engine import _verify_export_structure
+    from kiara.cad.fem.materials import resolve_material
 
     a = trimesh.creation.box(extents=[10.0, 10.0, 10.0])
     a.apply_translation([-8.0, 0.0, 5.0])
@@ -907,8 +907,8 @@ def test_realization_detail_records_per_case_audit(tmp_path: Path) -> None:
     realization — the guided-infill failure showed eroded=0.27 with no
     audit trail. The detail map must carry per-case sf/disp/warnings for
     every solved realization."""
-    from cadx.cad.engine import _verify_export_structure
-    from cadx.cad.fem.materials import resolve_material
+    from kiara.cad.engine import _verify_export_structure
+    from kiara.cad.fem.materials import resolve_material
 
     candidate = _box_mesh(24.0, 12.0, 12.0)
     s = RuntimeSettings(fem_spsolve_dofs=60_000)
@@ -938,8 +938,8 @@ def test_realization_detail_records_per_case_audit(tmp_path: Path) -> None:
 def test_early_loadpath_cert_runs_fem_on_connected_export(tmp_path: Path) -> None:
     """A connected single body passes the certificate and the nominal solve
     still runs — the early check must not disable verification wholesale."""
-    from cadx.cad.engine import _verify_export_structure
-    from cadx.cad.fem.materials import resolve_material
+    from kiara.cad.engine import _verify_export_structure
+    from kiara.cad.fem.materials import resolve_material
 
     candidate = _box_mesh(24.0, 12.0, 12.0)
     s = RuntimeSettings(fem_loadpath_cert=True, fem_spsolve_dofs=60_000)
@@ -983,9 +983,9 @@ def test_export_verification_stops_between_realizations(
     expected_solves: int,
     expected_phase: str,
 ) -> None:
-    from cadx.cad.engine import _verify_export_structure
-    from cadx.cad.fem.analyze import FemCaseResult, FemReport
-    from cadx.cad.fem.materials import resolve_material
+    from kiara.cad.engine import _verify_export_structure
+    from kiara.cad.fem.analyze import FemCaseResult, FemReport
+    from kiara.cad.fem.materials import resolve_material
 
     candidate = _box_mesh(24.0, 12.0, 12.0)
     report = FemReport(cases=[FemCaseResult(name="tip", safety_factor=10.0, compliance_j=1.0)])
@@ -1006,8 +1006,8 @@ def test_export_verification_stops_between_realizations(
         # serial path: realizations solve one at a time between cancel
         # checks — the parallel path (native fem on) submits the pair
         # atomically and is covered by its own parametrize cases
-        monkeypatch.setenv("CADX_NATIVE_FEM", "0")
-    monkeypatch.setattr("cadx.cad.fem.analyze.run_fem_domain", run_fem_domain)
+        monkeypatch.setenv("KIARA_NATIVE_FEM", "0")
+    monkeypatch.setattr("kiara.cad.fem.analyze.run_fem_domain", run_fem_domain)
     info = _verify_export_structure(
         candidate_mesh=candidate,
         cases=[_cantilever()],
@@ -1036,7 +1036,7 @@ def test_export_verification_stops_between_realizations(
 
 
 def test_feature_floor_pitch_helper() -> None:
-    from cadx.cad.engine import _feature_floor_pitch
+    from kiara.cad.engine import _feature_floor_pitch
 
     assert _feature_floor_pitch(None) is None
     assert _feature_floor_pitch([]) is None
@@ -1047,7 +1047,7 @@ def test_feature_floor_pitch_helper() -> None:
 def test_snap_pitch_under_floor_clamps_round_down_overshoot() -> None:
     """snapped_pitch can round the thin-axis cell count DOWN and land above
     the floor — the clamp must return a pitch <= floor either way."""
-    from cadx.cad.engine import _snap_pitch_under_floor
+    from kiara.cad.engine import _snap_pitch_under_floor
 
     # span_min 7.2 / floor 3.0 -> n=round(2.4)=2 -> p_snap 3.6 > floor
     p, _warn = _snap_pitch_under_floor(
@@ -1059,7 +1059,7 @@ def test_snap_pitch_under_floor_clamps_round_down_overshoot() -> None:
 def test_topopt_pipeline_clamps_pitch_to_feature_floor(tmp_path: Path) -> None:
     """A requested coarse pitch must be clamped to min_anchor_dia/3.5 so
     anchored bores still span ~3.5 cells on the design grid."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh(24.0, 24.0, 24.0).export(str(src))
@@ -1090,7 +1090,7 @@ def test_topopt_coarsen_holds_feature_floor_over_dof_cap(tmp_path: Path) -> None
     """The DOF cap must NOT coarsen past the feature floor — the grid holds
     at min_dia/3.5 and reports feature_floor_hit instead of silently
     under-resolving the anchored bore (the mount kept-base regression)."""
-    from cadx.cad.engine import run_topopt_pipeline
+    from kiara.cad.engine import run_topopt_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh(24.0, 12.0, 12.0).export(str(src))
@@ -1123,7 +1123,7 @@ def test_topopt_coarsen_holds_feature_floor_over_dof_cap(tmp_path: Path) -> None
 def test_infill_pipeline_clamps_pitch_to_feature_floor(tmp_path: Path) -> None:
     """run_infill_pipeline shares the same snapped_pitch exposure — the same
     floor clamp must apply there (no coarsen loop, single solve)."""
-    from cadx.cad.engine import run_infill_pipeline
+    from kiara.cad.engine import run_infill_pipeline
 
     src = tmp_path / "b.stl"
     _box_mesh(24.0, 24.0, 24.0).export(str(src))
@@ -1185,7 +1185,7 @@ def test_mechanism_explosion_flags_load_path_cut() -> None:
     """A 200x compliance jump over the recent window is a mechanism — the
     signature observed on the autonomous mount run (560 -> 120307 mJ with a
     near-singular solver warning). The helper returns the baseline."""
-    from cadx.cad.fem.topopt import _mechanism_explosion
+    from kiara.cad.fem.topopt import _mechanism_explosion
 
     history = [{"compliance_mj": 560.0} for _ in range(10)] + [{"compliance_mj": 120_307.0}]
     assert _mechanism_explosion(history, 120_307.0) == pytest.approx(560.0)
@@ -1194,7 +1194,7 @@ def test_mechanism_explosion_flags_load_path_cut() -> None:
 def test_mechanism_explosion_ignores_stage_transitions() -> None:
     """Volfrac stage transitions produce ~2x jumps — far below the factor;
     they must NOT trigger the mechanism break."""
-    from cadx.cad.fem.topopt import _MECH_FACTOR, _mechanism_explosion
+    from kiara.cad.fem.topopt import _MECH_FACTOR, _mechanism_explosion
 
     history = [{"compliance_mj": 343.0} for _ in range(10)] + [{"compliance_mj": 630.0}]
     assert _mechanism_explosion(history, 630.0) is None
@@ -1206,7 +1206,7 @@ def test_mechanism_explosion_ignores_stage_transitions() -> None:
 def test_mechanism_explosion_ignores_normal_and_degenerate_baselines() -> None:
     """A decaying run never fires; a ~0 baseline is degenerate in itself and
     must not amplify noise into a mechanism verdict."""
-    from cadx.cad.fem.topopt import _mechanism_explosion
+    from kiara.cad.fem.topopt import _mechanism_explosion
 
     ramp = [{"compliance_mj": 700.0 - i * 20.0} for i in range(10)] + [{"compliance_mj": 480.0}]
     assert _mechanism_explosion(ramp, 480.0) is None
@@ -1216,7 +1216,7 @@ def test_mechanism_explosion_ignores_normal_and_degenerate_baselines() -> None:
 
 
 def test_mechanism_guard_stops_catastrophic_single_spike() -> None:
-    from cadx.cad.fem.topopt import _mechanism_guard
+    from kiara.cad.fem.topopt import _mechanism_guard
 
     history = [{"compliance_mj": 500.0} for _ in range(10)] + [{"compliance_mj": 120_307.0}]
     streak, base, stop = _mechanism_guard(history, 120_307.0, 10, 0)
@@ -1226,7 +1226,7 @@ def test_mechanism_guard_stops_catastrophic_single_spike() -> None:
 
 
 def test_mechanism_guard_tolerates_recoverable_and_moderate_spikes() -> None:
-    from cadx.cad.fem.topopt import _mechanism_guard
+    from kiara.cad.fem.topopt import _mechanism_guard
 
     history = [{"compliance_mj": 350.0} for _ in range(10)] + [{"compliance_mj": 900.0}]
     streak, base, stop = _mechanism_guard(history, 900.0, 20, 0)
@@ -1249,7 +1249,7 @@ def test_mechanism_guard_tolerates_recoverable_and_moderate_spikes() -> None:
 
 
 def test_beso_guard_tolerates_two_spikes_before_recovery() -> None:
-    from cadx.cad.fem.topopt import _mechanism_guard
+    from kiara.cad.fem.topopt import _mechanism_guard
 
     history = [{"compliance_mj": 10.0} for _ in range(10)]
     streak = 0
@@ -1402,7 +1402,7 @@ def test_regression_guard_fires_on_degraded_plateau():
     """The r3 failure shape: best at 1435, freeze at 2076 (within 1.5x —
     silent), then a jump to 3078 sustained — the guard fires and the
     caller restores the stage-best design."""
-    from cadx.cad.fem.topopt import _regression_guard
+    from kiara.cad.fem.topopt import _regression_guard
 
     hist = _hist([2000.0, 1700.0, 1435.0] + [2076.0] * 10)
     # best_it=2 (iter 3), now at iter 13 — stall 10 < _REG_STALL → silent
@@ -1418,7 +1418,7 @@ def test_regression_guard_fires_on_degraded_plateau():
 def test_regression_guard_ignores_healthy_run():
     """Compliance near/under the best never trips it — minimization
     jitter around the optimum is not a regression."""
-    from cadx.cad.fem.topopt import _regression_guard
+    from kiara.cad.fem.topopt import _regression_guard
 
     hist = _hist([1000.0, 800.0, 640.0] + [645.0, 642.0, 641.0] * 4)
     assert _regression_guard(hist, 15, 640.0, 3) is False

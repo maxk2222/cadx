@@ -27,7 +27,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-say "cadx prune — days=$DAYS$([ "$DRY" = 1 ] && echo ' (dry-run)')"
+say "kiara prune — days=$DAYS$([ "$DRY" = 1 ] && echo ' (dry-run)')"
 
 MB() { du -sm "$1" 2>/dev/null | awk '{print $1+0}'; }
 FREE0=$(disk_free_mb . 2>/dev/null || echo 0)

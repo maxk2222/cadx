@@ -20,7 +20,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-say "stopping cadx"
+say "stopping kiara"
 
 # drop the supervision contract FIRST — the updater watchdog would otherwise
 # respawn the mesh-server between our env check and the actual SIGTERM

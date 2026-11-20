@@ -8,15 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.toolloop import _optimize_run_row, run_session, tools_enabled
-from cadx.agent.toolspecs import ToolSession
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx, InputAsset
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import Dim, PartSpec, PatchResponse
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.toolloop import _optimize_run_row, run_session, tools_enabled
+from kiara.agent.toolspecs import ToolSession
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx, InputAsset
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import Dim, PartSpec, PatchResponse
+from kiara.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -184,7 +184,7 @@ async def test_info_session_final_answer():
     )
     llm.tools_mode = "auto"
     ctx = _ctx(llm)
-    from cadx.llm.schemas import Critique
+    from kiara.llm.schemas import Critique
 
     session = ToolSession(ctx, kind="info")
     res = await run_session(
@@ -259,7 +259,7 @@ async def test_unlisted_tool_call_rejected():
     )
     llm.tools_mode = "auto"
     ctx = _ctx(llm)
-    from cadx.llm.schemas import Critique
+    from kiara.llm.schemas import Critique
 
     session = ToolSession(ctx, kind="inspect", code=BOX_CODE)
     res = await run_session(
@@ -319,7 +319,7 @@ async def test_grace_turn_rescues_schema_answer():
     )
     llm.tools_mode = "auto"
     ctx = _ctx(llm)
-    from cadx.llm.schemas import Critique
+    from kiara.llm.schemas import Critique
 
     session = ToolSession(ctx, kind="info")
     res = await run_session(
@@ -340,8 +340,8 @@ async def test_grace_turn_rescues_schema_answer():
 
 async def test_library_tools_search_and_attach():
     """search_library / library_part / attach_library_part on the user library."""
-    from cadx.db.models import LibraryPart
-    from cadx.db.session import create_all, session_scope
+    from kiara.db.models import LibraryPart
+    from kiara.db.session import create_all, session_scope
 
     await create_all()
     async with session_scope() as db:
@@ -409,8 +409,8 @@ async def test_library_tools_search_and_attach():
 
 async def test_library_attach_via_session():
     """An info session can pick a library part mid-conversation."""
-    from cadx.db.models import LibraryPart
-    from cadx.db.session import create_all, session_scope
+    from kiara.db.models import LibraryPart
+    from kiara.db.session import create_all, session_scope
 
     await create_all()
     part = LibraryPart(
@@ -455,8 +455,8 @@ async def test_inspect_session_cannot_attach():
 def test_result_messages_with_images():
     """`_images` in a tool result becomes a user message with image parts —
     OpenAI tool messages can't carry images."""
-    from cadx.agent.toolloop import _result_messages
-    from cadx.llm.tools import _mk_call
+    from kiara.agent.toolloop import _result_messages
+    from kiara.llm.tools import _mk_call
 
     img = FIXTURES / "images" / "knob.png"
     tc = _mk_call("call_1", "mesh_preview", "{}")
@@ -476,8 +476,8 @@ def test_result_messages_with_images():
 
 def test_result_messages_missing_image_skipped(tmp_path):
     """A missing image file must not break the message chain."""
-    from cadx.agent.toolloop import _result_messages
-    from cadx.llm.tools import _mk_call
+    from kiara.agent.toolloop import _result_messages
+    from kiara.llm.tools import _mk_call
 
     tc = _mk_call("call_2", "mesh_preview", "{}")
     res = {"ok": True, "_images": [str(tmp_path / "gone.png")]}
@@ -499,8 +499,8 @@ def _png_bytes(color=(10, 20, 30, 255)) -> bytes:
 def test_result_messages_dedupes_identical_images(tmp_path):
     """The session's _sent_image_hashes stubs byte-identical re-renders —
     the first send goes out as an image, the repeat as a text stub."""
-    from cadx.agent.toolloop import _result_messages
-    from cadx.llm.tools import _mk_call
+    from kiara.agent.toolloop import _result_messages
+    from kiara.llm.tools import _mk_call
 
     raw = _png_bytes()
     img_a = tmp_path / "a.png"
@@ -532,8 +532,8 @@ def test_result_messages_dedupes_identical_images(tmp_path):
 
 def test_result_messages_sends_distinct_images(tmp_path):
     """Different file bytes are never deduped — both go out as images."""
-    from cadx.agent.toolloop import _result_messages
-    from cadx.llm.tools import _mk_call
+    from kiara.agent.toolloop import _result_messages
+    from kiara.llm.tools import _mk_call
 
     img_a = tmp_path / "a.png"
     img_b = tmp_path / "b.png"
@@ -603,7 +603,7 @@ async def test_session_dedupes_repeat_render(tmp_path):
 
 def test_msg_budget_counts():
     """_msg_budget totals text chars, image parts and base64 payload bytes."""
-    from cadx.agent.toolloop import _msg_budget
+    from kiara.agent.toolloop import _msg_budget
 
     msgs = [
         {"role": "system", "content": "sys prompt"},
@@ -643,8 +643,8 @@ async def test_llm_call_budget_event_recorded():
 def _mesh_wb(ctx: AgentCtx, tmp_path: Path, **kw):
     import trimesh
 
-    from cadx.agent.mesh_tools import MeshWorkbench
-    from cadx.cad.mesh_ops import MeshPostParams
+    from kiara.agent.mesh_tools import MeshWorkbench
+    from kiara.cad.mesh_ops import MeshPostParams
 
     raw = tmp_path / "raw.glb"
     trimesh.creation.box([10, 10, 10]).export(str(raw), file_type="glb")
@@ -730,7 +730,7 @@ async def test_mesh_session_preview(tmp_path, monkeypatch):
 
     async def fake_process(payload):
         captured.append(payload)
-        from cadx import storage
+        from kiara import storage
 
         png = storage.data_root() / "prev_iso.png"
         png.write_bytes((FIXTURES / "images" / "knob.png").read_bytes())
@@ -780,7 +780,7 @@ async def test_mesh_session_regenerate_rejected_in_other_kinds():
 
 async def test_view_image_tool_returns_image():
     """view_image resolves an image asset and returns it via _images."""
-    from cadx.agent.types import InputAsset
+    from kiara.agent.types import InputAsset
 
     ctx = _ctx(FakeLLM([]))
     asset = InputAsset(
@@ -804,7 +804,7 @@ async def test_view_image_tool_returns_image():
 
 
 async def test_view_image_unknown_and_missing(tmp_path):
-    from cadx.agent.types import InputAsset
+    from kiara.agent.types import InputAsset
 
     ctx = _ctx(FakeLLM([]))
     ctx.assets.append(
@@ -824,7 +824,7 @@ async def test_view_image_unknown_and_missing(tmp_path):
 
 async def test_render_model_returns_contact_sheet():
     """render_model executes the buffer and attaches the render via _images."""
-    from cadx import storage
+    from kiara import storage
 
     llm = FakeLLM([_call("render_model"), _call("done")])
     llm.tools_mode = "auto"
@@ -1051,7 +1051,7 @@ async def test_optimize_done_minus1_allowed_when_decline_guard_says_impossible()
 
 async def test_optimize_budget_drops_tools():
     """Exhausted budgets remove the tools from the schema."""
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.runtime_config import RuntimeSettings
 
     async def top_fn(a):
         return _TOP_RES
@@ -1082,7 +1082,7 @@ async def test_optimize_struct_budget_wallclock():
     async def top_fn(a):
         return _TOP_RES
 
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.runtime_config import RuntimeSettings
 
     ctx = _ctx(FakeLLM([]))
     ctx.runtime_settings = RuntimeSettings(
@@ -1104,7 +1104,7 @@ async def test_optimize_struct_budget_unlimited_when_zero():
     async def top_fn(a):
         return _TOP_RES
 
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.runtime_config import RuntimeSettings
 
     ctx = _ctx(FakeLLM([]))
     ctx.runtime_settings = RuntimeSettings(agent_struct_budget_s=0)
@@ -1278,7 +1278,7 @@ async def test_fem_compact_surfaces_moment_deficit():
 
 async def test_mesh_session_measure_section_overlay(tmp_path):
     """New inspect tools: measure vs spec/anchors, section + overlay images."""
-    from cadx.llm.schemas import Dim, PartSpec
+    from kiara.llm.schemas import Dim, PartSpec
 
     spec = PartSpec(
         name="t",
@@ -1335,8 +1335,8 @@ async def test_mesh_session_new_ops_via_tools(tmp_path):
 async def test_mesh_regen_edit_swaps_baseline(tmp_path):
     """mesh_regen_edit: image-edit → mesh regen → new baseline, ops dropped,
     new_mesh_rel surfaced for the caller to reprocess."""
-    from cadx.agent.image_client import FakeImageClient
-    from cadx.agent.mesh_client import FakeMeshClient
+    from kiara.agent.image_client import FakeImageClient
+    from kiara.agent.mesh_client import FakeMeshClient
 
     ctx = _ctx(FakeLLM([]))
     ctx.mesh = FakeMeshClient()
@@ -1370,7 +1370,7 @@ async def test_mesh_regen_edit_swaps_baseline(tmp_path):
 
 
 async def test_mesh_regen_edit_fails_cleanly_without_image_port(tmp_path):
-    from cadx.agent.mesh_client import FakeMeshClient
+    from kiara.agent.mesh_client import FakeMeshClient
 
     ctx = _ctx(FakeLLM([]))
     ctx.mesh = FakeMeshClient()
@@ -1382,8 +1382,8 @@ async def test_mesh_regen_edit_fails_cleanly_without_image_port(tmp_path):
 
 async def test_mesh_regen_edit_fails_cleanly_without_source(tmp_path):
     """No conditioning image (e.g. text-only gen) → clean error, not crash."""
-    from cadx.agent.image_client import FakeImageClient
-    from cadx.agent.mesh_client import FakeMeshClient
+    from kiara.agent.image_client import FakeImageClient
+    from kiara.agent.mesh_client import FakeMeshClient
 
     ctx = _ctx(FakeLLM([]))
     ctx.mesh = FakeMeshClient()
@@ -1448,7 +1448,7 @@ async def test_optimize_refine_features_gated_without_fn():
 async def test_improve_feature_only_uses_light_call_budget(monkeypatch):
     """Issues that are only feature findings / lint minors get the reduced
     improve call budget — they mostly apply bound snippets, not explore."""
-    from cadx.agent.steps import improve
+    from kiara.agent.steps import improve
 
     llm = FakeLLM([])
     llm.tools_mode = "auto"
@@ -1495,7 +1495,7 @@ def test_concept_image_schema_types():
     """strength/mark_sketch must be typed number/boolean — as strings a
     schema-obedient model sends 'false' which bool()s to True (silent
     mis-tag of every edit as a sketch)."""
-    from cadx.agent.toolspecs import CONCEPT_IMAGE_TOOLS
+    from kiara.agent.toolspecs import CONCEPT_IMAGE_TOOLS
 
     props = CONCEPT_IMAGE_TOOLS[0]["function"]["parameters"]["properties"]
     assert props["strength"]["type"] == "number"
@@ -1516,7 +1516,7 @@ async def test_concept_image_mark_sketch_string_false():
     session.image_left = 1
     import unittest.mock as mock
 
-    with mock.patch("cadx.agent.concept_image.generate_concept_images", fake_gen):
+    with mock.patch("kiara.agent.concept_image.generate_concept_images", fake_gen):
         await session._tool_generate_concept_image({"prompt": "p", "mark_sketch": "false"})
     assert captured["mark_sketch"] is False
 
@@ -1598,7 +1598,7 @@ async def test_build_done_rejects_feature_stub():
 
 
 async def test_feature_audit_missing_helper():
-    from cadx.agent.toolspecs import feature_audit_missing
+    from kiara.agent.toolspecs import feature_audit_missing
 
     assert feature_audit_missing(STUB_CODE, _FEATS)  # nothing built
     assert feature_audit_missing(REAL_CODE, _FEATS) == []  # ops present
@@ -1613,8 +1613,8 @@ async def test_fem_fn_warns_on_unreachable_sf_target():
     import itertools
     from unittest.mock import AsyncMock, MagicMock
 
-    from cadx.agent.steps.optimize import _make_fem_fn, _SessionOps
-    from cadx.llm.schemas import Dim, OptimizeSpec
+    from kiara.agent.steps.optimize import _make_fem_fn, _SessionOps
+    from kiara.llm.schemas import Dim, OptimizeSpec
 
     ctx = _ctx(FakeLLM([]))
     ctx.executor = MagicMock()
@@ -1654,8 +1654,8 @@ async def test_fem_fn_no_warning_when_target_reachable():
     import itertools
     from unittest.mock import AsyncMock, MagicMock
 
-    from cadx.agent.steps.optimize import _make_fem_fn, _SessionOps
-    from cadx.llm.schemas import Dim, OptimizeSpec
+    from kiara.agent.steps.optimize import _make_fem_fn, _SessionOps
+    from kiara.llm.schemas import Dim, OptimizeSpec
 
     ctx = _ctx(FakeLLM([]))
     ctx.executor = MagicMock()
@@ -1754,7 +1754,7 @@ async def test_exhausted_build_session_rescues_last_good():
     """P6: a build session that verified a buffer, then grew a post-verify
     block and hit the call cap submits the last VERIFIED-GOOD buffer —
     not the possibly-broken head."""
-    from cadx.agent.steps import codegen as codegen_step
+    from kiara.agent.steps import codegen as codegen_step
 
     llm = FakeLLM(
         [

@@ -1,4 +1,4 @@
-name: cadx
+name: kiara
 
 # bounded container logs — the default json-file driver has no rotation and
 # grows forever on a long-running local-production stack
@@ -15,8 +15,8 @@ x-logging: &log-default
 # Big numpy/OCC allocations use mmap (>=128KB) and are unaffected — this is
 # about the interpreter churn around them.
 x-malloc: &malloc-env
-  MALLOC_ARENA_MAX: ${CADX_MALLOC_ARENAS:-2}
-  MALLOC_TRIM_THRESHOLD_: ${CADX_MALLOC_TRIM:-131072}
+  MALLOC_ARENA_MAX: ${KIARA_MALLOC_ARENAS:-2}
+  MALLOC_TRIM_THRESHOLD_: ${KIARA_MALLOC_TRIM:-131072}
 
 services:
   postgres:
@@ -24,16 +24,16 @@ services:
     restart: unless-stopped
     logging: *log-default
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-cadx}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadx}
-      POSTGRES_DB: ${POSTGRES_DB:-cadx}
+      POSTGRES_USER: ${POSTGRES_USER:-kiara}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kiara}
+      POSTGRES_DB: ${POSTGRES_DB:-kiara}
     # local-production sizing: defaults assume shared hosts (shared_buffers
     # 128MB + work_mem×200 conns). This DB serves 3 processes — a fraction
     # is plenty and still leaves planner headroom.
     command: >
       postgres
-      -c shared_buffers=${CADX_PG_SHARED_BUFFERS:-48MB}
-      -c work_mem=${CADX_PG_WORK_MEM:-8MB}
+      -c shared_buffers=${KIARA_PG_SHARED_BUFFERS:-48MB}
+      -c work_mem=${KIARA_PG_WORK_MEM:-8MB}
       -c maintenance_work_mem=48MB
       -c max_connections=50
       -c effective_cache_size=256MB
@@ -41,7 +41,7 @@ services:
       - pgdata:/var/lib/postgresql/data
     networks: [internal]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cadx} -d ${POSTGRES_DB:-cadx}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kiara} -d ${POSTGRES_DB:-kiara}"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -72,7 +72,7 @@ services:
     logging: *log-default
     environment:
       <<: *malloc-env
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kiara}:${POSTGRES_PASSWORD:-kiara}@postgres:5432/${POSTGRES_DB:-kiara}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
       # bootstrap seed only — used once to create the DB runtime row when it
@@ -83,8 +83,8 @@ services:
       MESH_API_KEY: ${MESH_API_KEY:-}
       # host-side updater daemon (scripts/update_server.py) — lets the GUI
       # trigger a full-stack update the api container can't perform itself
-      CADX_UPDATE_URL: ${CADX_UPDATE_URL:-http://host.docker.internal:8766}
-      CADX_UPDATE_TOKEN: ${CADX_UPDATE_TOKEN:-}
+      KIARA_UPDATE_URL: ${KIARA_UPDATE_URL:-http://host.docker.internal:8766}
+      KIARA_UPDATE_TOKEN: ${KIARA_UPDATE_TOKEN:-}
       # keep the rembg u2net model (~170 MB, first bg-removal call) on the
       # data volume so container recreates don't re-download it
       U2NET_HOME: /data/rembg
@@ -115,7 +115,7 @@ services:
     logging: *log-default
     environment:
       <<: *malloc-env
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kiara}:${POSTGRES_PASSWORD:-kiara}@postgres:5432/${POSTGRES_DB:-kiara}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
       # bootstrap seed only — see api service; change it in the Settings UI
@@ -124,16 +124,16 @@ services:
       # agent jobs are mostly I/O-bound (LLM streaming, executor polls) —
       # external providers must not be serialized by a low job cap; local
       # sidecar backends stay capped via per-service io_slots in the clients.
-      CADX_AGENT_MAX_JOBS: ${CADX_AGENT_MAX_JOBS:-8}
+      KIARA_AGENT_MAX_JOBS: ${KIARA_AGENT_MAX_JOBS:-8}
       # guide blender-mode bridge — Blender runs on the HOST with the
       # BlenderMCP addon (socket :9876); files travel through the
       # host-mounted ./data dir, so the worker needs the host-side
       # absolute path of that same dir
-      CADX_BLENDER_HOST: ${CADX_BLENDER_HOST:-host.docker.internal}
-      CADX_BLENDER_PORT: ${CADX_BLENDER_PORT:-9876}
+      KIARA_BLENDER_HOST: ${KIARA_BLENDER_HOST:-host.docker.internal}
+      KIARA_BLENDER_PORT: ${KIARA_BLENDER_PORT:-9876}
       # ${PWD} resolves to the compose invocation dir = repo root →
       # ./data's host path with zero config; override if invoked elsewhere
-      CADX_DATA_HOST_ROOT: ${CADX_DATA_HOST_ROOT:-${PWD}/data}
+      KIARA_DATA_HOST_ROOT: ${KIARA_DATA_HOST_ROOT:-${PWD}/data}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -148,8 +148,8 @@ services:
     # uncapped worker grew to ~12GB during mesh evals and took the whole
     # Docker VM down — cap below VM total so an OOM kills one container,
     # not the stack (eval runs additionally carry an RLIMIT_DATA guard)
-    mem_limit: ${CADX_WORKER_MEM:-12g}
-    cpus: ${CADX_WORKER_CPUS:-4}
+    mem_limit: ${KIARA_WORKER_MEM:-12g}
+    cpus: ${KIARA_WORKER_CPUS:-4}
 
   cad-executor:
     build:
@@ -159,7 +159,7 @@ services:
     logging: *log-default
     environment:
       <<: *malloc-env
-      DATABASE_URL: postgresql://${POSTGRES_USER:-cadx}:${POSTGRES_PASSWORD:-cadx}@postgres:5432/${POSTGRES_DB:-cadx}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kiara}:${POSTGRES_PASSWORD:-kiara}@postgres:5432/${POSTGRES_DB:-kiara}
       REDIS_URL: redis://redis:6379/0
       DATA_DIR: /data
       PYVISTA_OFF_SCREEN: "true"
@@ -175,8 +175,8 @@ services:
       # 1 = serial cad tasks: a resubmitted optimize after a caller-side
       # timeout must queue behind the still-running original, never run a
       # second SIMP concurrently — two runs OOM-killed the 12g container
-      # (rc=137, eval r5). Raise only with matching CADX_EXECUTOR_MEM.
-      CADX_CAD_MAX_JOBS: ${CADX_CAD_MAX_JOBS:-1}
+      # (rc=137, eval r5). Raise only with matching KIARA_EXECUTOR_MEM.
+      KIARA_CAD_MAX_JOBS: ${KIARA_CAD_MAX_JOBS:-1}
     volumes:
       - ./data:/data
     depends_on:
@@ -191,11 +191,11 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-    pids_limit: ${CADX_EXECUTOR_PIDS:-512}
+    pids_limit: ${KIARA_EXECUTOR_PIDS:-512}
     # headroom for STL->B-rep sewing + pyvista renders on capped meshes —
     # 6g was hit by the uncapped watertight ladder (283k-face input, rc=137)
-    mem_limit: ${CADX_EXECUTOR_MEM:-8g}
-    cpus: ${CADX_EXECUTOR_CPUS:-4}
+    mem_limit: ${KIARA_EXECUTOR_MEM:-8g}
+    cpus: ${KIARA_EXECUTOR_CPUS:-4}
 
   # GPU mesh generator — only on CUDA hosts; on macOS run it natively instead
   # (make mesh-server). Enable with: docker compose --profile gpu up -d

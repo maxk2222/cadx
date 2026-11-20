@@ -7,8 +7,8 @@ import json
 import httpx
 import pytest
 
-from cadx.llm.client import LLMClient
-from cadx.runtime_config import RuntimeSettings
+from kiara.llm.client import LLMClient
+from kiara.runtime_config import RuntimeSettings
 
 
 def _patch_transport(monkeypatch, handler):

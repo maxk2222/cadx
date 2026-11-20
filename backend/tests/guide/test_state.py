@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from cadx.guide.state import (
+from kiara.guide.state import (
     AssemblyInstance,
     DocumentIndex,
     GuidePart,

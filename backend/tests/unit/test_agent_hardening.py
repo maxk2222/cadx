@@ -7,19 +7,19 @@ import uuid
 
 import pytest
 
-import cadx.agent.worker_jobs as wj
-from cadx.agent.orchestrator import (
+import kiara.agent.worker_jobs as wj
+from kiara.agent.orchestrator import (
     adaptive_max_iterations,
     stated_dim_count,
 )
-from cadx.agent.steps.critique import normalize_score
-from cadx.agent.worker_jobs import (
+from kiara.agent.steps.critique import normalize_score
+from kiara.agent.worker_jobs import (
     DbTrace,
     make_emit,
 )
-from cadx.db.models import Job, JobStatus, JobType, Project, Version, VersionKind, VersionStatus
-from cadx.db.session import async_session, create_all
-from cadx.llm.schemas import Critique, Discrepancy, Feature, FeatureVerdict, PartSpec
+from kiara.db.models import Job, JobStatus, JobType, Project, Version, VersionKind, VersionStatus
+from kiara.db.session import async_session, create_all
+from kiara.llm.schemas import Critique, Discrepancy, Feature, FeatureVerdict, PartSpec
 
 SPEC = {
     "name": "block",
@@ -231,7 +231,7 @@ def test_critique_schema_requires_actionable_fields():
 
 
 def test_flat_bottom_cue_detection():
-    from cadx.agent.orchestrator import _spec_wants_flat_bottom
+    from kiara.agent.orchestrator import _spec_wants_flat_bottom
 
     def spec(summary: str) -> PartSpec:
         return PartSpec(**{**SPEC, "summary": summary})
@@ -244,8 +244,8 @@ def test_flat_bottom_cue_detection():
 
 
 def test_flat_back_ops_appends_smooth_preserve():
-    from cadx.agent.orchestrator import _flat_back_ops
-    from cadx.cad.mesh_ops import MeshPostParams
+    from kiara.agent.orchestrator import _flat_back_ops
+    from kiara.cad.mesh_ops import MeshPostParams
 
     ops = _flat_back_ops(MeshPostParams(), bow_mm=5.0, smooth_iters=10)
     assert [o["op"] for o in ops] == ["flatten_bottom", "smooth_preserve"]
@@ -300,7 +300,7 @@ def test_verify_missing_verdict_refuted_by_measurement():
     """Firesteel E2E: the critic claimed 'tube missing' while the bore was
     measured — a refuted 'missing' must downgrade to 'wrong', and the
     discrepancy repeating the claim loses its major severity."""
-    from cadx.agent.steps.critique import _verify_missing_verdicts
+    from kiara.agent.steps.critique import _verify_missing_verdicts
 
     spec = PartSpec(
         **{
@@ -336,7 +336,7 @@ def test_verify_missing_verdict_refuted_by_measurement():
 
 
 def test_verify_missing_verdict_untouched_when_absent():
-    from cadx.agent.steps.critique import _verify_missing_verdicts
+    from kiara.agent.steps.critique import _verify_missing_verdicts
 
     spec = PartSpec(**{**SPEC, "features": [{"name": "mount", "type": "hole", "count": 2}]})
     c = Critique(
@@ -354,7 +354,7 @@ def test_verify_missing_verdict_untouched_when_absent():
 def test_verify_wrong_verdict_refuted_when_dims_match():
     """D.1: 'wrong' is refuted only when spec dims match the measurement —
     Ø AND axis. A wrong-diameter or wrong-axis verdict stands."""
-    from cadx.agent.steps.critique import _verify_wrong_verdicts
+    from kiara.agent.steps.critique import _verify_wrong_verdicts
 
     spec = PartSpec(
         **{
@@ -443,7 +443,7 @@ def test_fit_ops_plate_too_thick_scales_z():
 
     A slice would keep only the top crust of the fat mesh — z-scale preserves
     the shape (relief gets shallower, which matches a thin scale)."""
-    from cadx.agent.orchestrator import _fit_ops_to_stated
+    from kiara.agent.orchestrator import _fit_ops_to_stated
 
     ops, _note = _fit_ops_to_stated(_stated_spec(), [119.0, 73.0, 27.0])
     assert [o.op for o in ops] == ["scale"]
@@ -453,7 +453,7 @@ def test_fit_ops_plate_too_thick_scales_z():
 
 
 def test_fit_ops_exact_dims_no_ops():
-    from cadx.agent.orchestrator import _fit_ops_to_stated
+    from kiara.agent.orchestrator import _fit_ops_to_stated
 
     ops, _ = _fit_ops_to_stated(_stated_spec(), [119.0, 38.0, 8.0])
     assert ops == []
@@ -461,14 +461,14 @@ def test_fit_ops_exact_dims_no_ops():
 
 def test_fit_ops_extreme_factor_rejects():
     """10x off is the wrong object, not a proportion error."""
-    from cadx.agent.orchestrator import _fit_ops_to_stated
+    from kiara.agent.orchestrator import _fit_ops_to_stated
 
     ops, _ = _fit_ops_to_stated(_stated_spec(), [1190.0, 73.0, 27.0])
     assert ops == []
 
 
 def test_fit_ops_thin_mesh_scales_up():
-    from cadx.agent.orchestrator import _fit_ops_to_stated
+    from kiara.agent.orchestrator import _fit_ops_to_stated
 
     ops, _ = _fit_ops_to_stated(_stated_spec(), [119.0, 38.0, 5.0])
     assert [o.op for o in ops] == ["scale"]
@@ -480,7 +480,7 @@ def test_fit_ops_thin_mesh_scales_up():
 
 
 def _grip_spec():
-    from cadx.llm.schemas import Feature, PartSpec
+    from kiara.llm.schemas import Feature, PartSpec
 
     return PartSpec(
         **{
@@ -511,7 +511,7 @@ def _exec_res(tunnels=()):
 
 
 def test_spec_drill_ops_drills_missing_centered_bore():
-    from cadx.agent.orchestrator import _spec_drill_ops
+    from kiara.agent.orchestrator import _spec_drill_ops
 
     ops = _spec_drill_ops(_grip_spec(), _exec_res())
     assert [o.op for o in ops] == ["drill_holes"]
@@ -523,7 +523,7 @@ def test_spec_drill_ops_drills_missing_centered_bore():
 
 def test_spec_drill_ops_recognizes_british_centred():
     """Intake often emits "centred" — same deterministic drill must fire."""
-    from cadx.agent.orchestrator import _spec_drill_ops
+    from kiara.agent.orchestrator import _spec_drill_ops
 
     spec = _grip_spec()
     spec.features[0].position = "centred on X axis, full length"
@@ -533,7 +533,7 @@ def test_spec_drill_ops_recognizes_british_centred():
 
 
 def test_spec_drill_ops_skips_covered_and_positioned():
-    from cadx.agent.orchestrator import _spec_drill_ops
+    from kiara.agent.orchestrator import _spec_drill_ops
 
     covered = _exec_res([{"kind": "tunnel", "axis": "x", "dia": 22.0}])
     assert _spec_drill_ops(_grip_spec(), covered) == []
@@ -546,7 +546,7 @@ def test_spec_drill_ops_skips_covered_and_positioned():
 
 def test_fit_ops_blocky_part_scales_z():
     """Non-plate parts (height not smallest stated) get Z scaled, not sliced."""
-    from cadx.agent.orchestrator import _fit_ops_to_stated
+    from kiara.agent.orchestrator import _fit_ops_to_stated
 
     spec = _stated_spec(x=30.0, y=30.0, z=40.0)
     ops, _ = _fit_ops_to_stated(spec, [30.0, 30.0, 90.0])
@@ -558,7 +558,7 @@ def test_fit_ops_inflated_mesh_strong_z_squash():
     """Live case: 119x73.9x52.1 blob vs 119x38x8 spec — hunyuan3d-2mv inflates
     flat parts ~6x; fz=0.153 must still fit (degenerate-volume guard catches
     crusts downstream)."""
-    from cadx.agent.orchestrator import _fit_ops_to_stated
+    from kiara.agent.orchestrator import _fit_ops_to_stated
 
     ops, _note = _fit_ops_to_stated(_stated_spec(), [119.0, 73.92, 52.12])
     assert [o.op for o in ops] == ["scale"]
@@ -568,7 +568,7 @@ def test_fit_ops_inflated_mesh_strong_z_squash():
 
 def test_fit_ops_z_extreme_still_rejects():
     """fz below 0.12 (8x+ off) is the wrong object even for a flat part."""
-    from cadx.agent.orchestrator import _fit_ops_to_stated
+    from kiara.agent.orchestrator import _fit_ops_to_stated
 
     ops, _ = _fit_ops_to_stated(_stated_spec(), [119.0, 38.0, 80.0])
     assert ops == []
@@ -580,8 +580,8 @@ async def test_fit_mesh_accepts_low_fill_open_frame(monkeypatch):
     volume to the PRE-OP volume, not to the envelope, or real parts die."""
     import itertools
 
-    from cadx.agent import orchestrator as orch
-    from cadx.agent.orchestrator import MeshPostParams
+    from kiara.agent import orchestrator as orch
+    from kiara.agent.orchestrator import MeshPostParams
 
     async def fake_process(ctx, it, mesh_rel, spec, post, **kw):
         return {
@@ -591,7 +591,7 @@ async def test_fit_mesh_accepts_low_fill_open_frame(monkeypatch):
 
     # _fit_mesh_to_stated resolves _process_mesh inside mesh_pipeline —
     # patching the package re-export would not reach the call site
-    import cadx.agent.orchestrator.mesh_pipeline as mp
+    import kiara.agent.orchestrator.mesh_pipeline as mp
 
     monkeypatch.setattr(mp, "_process_mesh", fake_process)
     ctx = type("C", (), {"mesh_info": {}, "emit": staticmethod(lambda *a, **k: None)})()
@@ -623,8 +623,8 @@ async def test_fit_mesh_rejects_volume_collapse(monkeypatch):
     """Ops that collapse the body to a sliver are still rejected."""
     import itertools
 
-    from cadx.agent import orchestrator as orch
-    from cadx.agent.orchestrator import MeshPostParams
+    from kiara.agent import orchestrator as orch
+    from kiara.agent.orchestrator import MeshPostParams
 
     async def fake_process(ctx, it, mesh_rel, spec, post, **kw):
         return {
@@ -632,7 +632,7 @@ async def test_fit_mesh_rejects_volume_collapse(monkeypatch):
             "analysis": {"bbox_size": [120.0, 40.0, 30.0], "volume": 3000.0},
         }
 
-    import cadx.agent.orchestrator.mesh_pipeline as mp
+    import kiara.agent.orchestrator.mesh_pipeline as mp
 
     monkeypatch.setattr(mp, "_process_mesh", fake_process)
     ctx = type("C", (), {"mesh_info": {}})()
@@ -703,7 +703,7 @@ async def test_executor_startup_does_not_reap_agent_jobs(monkeypatch):
     whenever the cad-executor container was rebuilt mid-run."""
     import arq.connections
 
-    from cadx.queue import AgentWorkerSettings, CadWorkerSettings, agent_startup, cad_startup
+    from kiara.queue import AgentWorkerSettings, CadWorkerSettings, agent_startup, cad_startup
 
     assert AgentWorkerSettings.on_startup is agent_startup
     assert CadWorkerSettings.on_startup is cad_startup
@@ -735,7 +735,7 @@ async def test_cad_tasks_offload_blocking_payloads(monkeypatch, tmp_path):
     import asyncio
     import time
 
-    import cadx.cad.tasks as tasks
+    import kiara.cad.tasks as tasks
 
     def slow(*args: object, **kw: object) -> dict:
         time.sleep(0.15)
@@ -773,7 +773,7 @@ def test_mesh_payload_subprocess_surfaces_child_failure(tmp_path):
     worker down with it (regression: accumulated in-process RSS tripped the
     container cgroup, SIGKILLing worker + orphaning the job; zombie arq retries
     then killed the next worker too)."""
-    import cadx.cad.tasks as tasks
+    import kiara.cad.tasks as tasks
 
     d = tasks._run_mesh_payload_subprocess({"project_id": "x", "mode": "final"}, tmp_path)
     assert d["ok"] is False
@@ -782,10 +782,10 @@ def test_mesh_payload_subprocess_surfaces_child_failure(tmp_path):
 
 def test_export_lost_holes_detects_dropped_bore():
     """The export-probe gate: every preview hole group must survive the
-    export-detail rebuild. A `CADX_DETAIL_MODE` fork whose export branch cuts
+    export-detail rebuild. A `KIARA_DETAIL_MODE` fork whose export branch cuts
     nothing (the observed robot-arm failure: unnamed tapped_hole placed below
     the part) must surface as a lost hole group, not ship silently."""
-    from cadx.agent.orchestrator import _export_lost_holes
+    from kiara.agent.orchestrator import _export_lost_holes
 
     preview = [
         {"diameter": 8.5, "axis": "+z", "count": 4},

@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
-import cadx.evalkit.runner as runner
-from cadx.evalkit.models import StageOutcome
-from cadx.evalkit.runner import run_case
-from cadx.evalkit.suite import EvalCase, EvalStage
+import kiara.evalkit.runner as runner
+from kiara.evalkit.models import StageOutcome
+from kiara.evalkit.runner import run_case
+from kiara.evalkit.suite import EvalCase, EvalStage
 
 
 def _stage(id_: str = "gen", gates: list[dict[str, Any]] | None = None) -> EvalStage:
@@ -28,7 +28,7 @@ def _case(stages: list[EvalStage]) -> EvalCase:
 
 def _http_stub(monkeypatch: pytest.MonkeyPatch, tmp_path, dispatch):
     """Run run_case against a stubbed HttpDriver; RESULTS_DIR -> tmp_path."""
-    import cadx.evalkit.http as http
+    import kiara.evalkit.http as http
 
     dispatched: list[str] = []
 
@@ -127,7 +127,7 @@ async def test_dispatch_exception_is_stage_failure_not_runner_failure(monkeypatc
 
 
 async def test_setup_exception_marks_run_failed(monkeypatch, tmp_path):
-    import cadx.evalkit.http as http
+    import kiara.evalkit.http as http
 
     class BrokenDriver:
         def __init__(self, *_a, **_kw):
@@ -190,7 +190,7 @@ async def test_no_fail_fast_runs_all_stages(monkeypatch, tmp_path):
 
 
 async def test_api_unreachable_marks_failed(monkeypatch, tmp_path):
-    import cadx.evalkit.http as http
+    import kiara.evalkit.http as http
 
     class DeadDriver:
         def __init__(self, *_a, **_kw):

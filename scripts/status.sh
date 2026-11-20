@@ -54,7 +54,7 @@ proc_status() { # name -> "RUN pid etime" | "DEAD pid" | "-"
 render() {
   local now
   now=$(date '+%Y-%m-%d %H:%M:%S')
-  say "cadx status — $now"
+  say "kiara status — $now"
   info "tier: $(gpu_detect_tier)   model: $(gpu_default_model)"
 
   say "native processes"

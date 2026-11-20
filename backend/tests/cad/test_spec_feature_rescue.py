@@ -7,8 +7,8 @@ from __future__ import annotations
 import pytest
 from build123d import Box
 
-from cadx.cad import cadlib, mesh_boolean
-from cadx.cad import spec_feature_rescue as sfr
+from kiara.cad import cadlib, mesh_boolean
+from kiara.cad import spec_feature_rescue as sfr
 
 
 def _tank_spec() -> dict:

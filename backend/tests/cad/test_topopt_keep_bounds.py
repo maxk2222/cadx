@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from cadx.cad.fem.refine import _anchor_keep_prism
-from cadx.cad.fem.regions import (
+from kiara.cad.fem.refine import _anchor_keep_prism
+from kiara.cad.fem.regions import (
     _axial_void_run,
     interface_regions,
     keep_element_mask,
 )
-from cadx.cad.fem.voxelize import VoxelDomain
+from kiara.cad.fem.voxelize import VoxelDomain
 
 
 def _block(dims: tuple[int, int, int] = (20, 20, 30), pitch: float = 2.0) -> VoxelDomain:

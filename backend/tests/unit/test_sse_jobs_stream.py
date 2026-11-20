@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from cadx.db.session import create_all, session_scope
+from kiara.db.session import create_all, session_scope
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -60,12 +60,12 @@ class _FakeClient:
 
 def _patch_subscribe_jobs(monkeypatch: pytest.MonkeyPatch, ps: _FakePubSub) -> _FakeClient:
     client = _FakeClient(ps)
-    monkeypatch.setattr("cadx.events.subscribe_jobs", lambda: (client, ps))
+    monkeypatch.setattr("kiara.events.subscribe_jobs", lambda: (client, ps))
     return client
 
 
 async def _mk_job(status) -> str:
-    from cadx.db.models import Job, JobType, Project, Version, VersionKind
+    from kiara.db.models import Job, JobType, Project, Version, VersionKind
 
     async with session_scope() as db:
         p = Project(name="lifecycle-proj")
@@ -81,7 +81,7 @@ async def _mk_job(status) -> str:
 
 
 async def _set_status(jid: str, status) -> None:
-    from cadx.db.models import Job
+    from kiara.db.models import Job
 
     async with session_scope() as db:
         j = await db.get(Job, uuid.UUID(jid))
@@ -99,11 +99,11 @@ async def test_job_insert_and_status_change_publish(monkeypatch):
     """The model listener is the only publish site: inserting a row emits
     `queued`, a status assignment emits the transition, and touching any
     other column emits nothing."""
-    from cadx.db.models import Job, JobStatus
+    from kiara.db.models import Job, JobStatus
 
     published: list[dict] = []
     monkeypatch.setattr(
-        "cadx.events.publish_lifecycle_sync",
+        "kiara.events.publish_lifecycle_sync",
         lambda job_id, version_id, status, job_type: published.append(
             {"job_id": job_id, "status": status, "job_type": job_type}
         ),
@@ -129,8 +129,8 @@ async def test_jobs_stream_snapshot_then_lifecycle(monkeypatch):
     """Subscribe-first, snapshot second: the first frame is the active list,
     a queued lifecycle message re-emits the refreshed list, and a terminal
     transition lost on the wire is repaired by the keepalive re-check."""
-    from cadx.api.routers import sse
-    from cadx.db.models import JobStatus
+    from kiara.api.routers import sse
+    from kiara.db.models import JobStatus
 
     jid = await _mk_job(JobStatus.running)
     ps = _FakePubSub()
@@ -176,7 +176,7 @@ async def test_jobs_stream_snapshot_then_lifecycle(monkeypatch):
 async def test_jobs_events_route_registered_before_job_id():
     """`/jobs/events` must win over `/jobs/{job_id}` — 'events' is not a
     UUID, so a reversed registration 404s the whole stream."""
-    from cadx.api.routers import jobs
+    from kiara.api.routers import jobs
 
     paths = [r.path for r in jobs.router.routes]
     assert paths.index("/jobs/events") < paths.index("/jobs/{job_id}")

@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from build123d import Align, Box, Cylinder, Pos, Solid
 
-from cadx.cad import inspect_tools
-from cadx.cad.sandbox import run_user_code
+from kiara.cad import inspect_tools
+from kiara.cad.sandbox import run_user_code
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 

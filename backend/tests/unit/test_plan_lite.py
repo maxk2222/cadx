@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 import uuid
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.steps import plan as plan_step
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import Dim, PartSpec
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.steps import plan as plan_step
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import Dim, PartSpec
+from kiara.runtime_config import RuntimeSettings
 
 PLAN_JSON = {
     "approach": "cad",
@@ -97,7 +97,7 @@ async def test_plan_lite_still_validates_schema():
     FakeLLM returns unparseable text and the step must raise."""
     import pytest
 
-    from cadx.llm.structured import LLMFormatError
+    from kiara.llm.structured import LLMFormatError
 
     llm = FakeLLM([{"content": "not json at all"}])
     ctx = _ctx(llm, agent_plan_mode="lite")

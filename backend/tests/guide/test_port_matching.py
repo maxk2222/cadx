@@ -7,8 +7,8 @@ socket sees) and ``depth`` (seat distance, 500 = through-bore, 0 = solid).
 
 import numpy as np
 
-from cadx.guide import solver
-from cadx.guide.state import GuidePart, PortInfo
+from kiara.guide import solver
+from kiara.guide.state import GuidePart, PortInfo
 
 THROUGH = 500.0
 

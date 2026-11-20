@@ -1,0 +1,3851 @@
+"""Tool schemas and the session executor for LLM tool-calling sessions.
+
+Each step gets a `ToolSession` holding the mutable state the tools act on
+(a code buffer for edit sessions, a read-only listing for inspection, a
+`MeshWorkbench` for mesh sessions, or nothing for info-only steps).
+`session.execute(name, args)` dispatches a tool call and returns a
+JSON-serialisable dict — errors are results, never exceptions, so the model
+can self-correct.
+
+Tool sets per step:
+  edit    repair/improve — read/search/replace/insert/set_param + info + library + check + verify/render + done
+  codegen fresh code — info + library + check_snippet + submit_code
+  build   staged codegen — read/edit buffer + add_block/checkpoint/rollback + verify/render + done
+  info    intake/plan — catalog/cadlib lookups + library search/attach (final answer = content JSON)
+  inspect critique — read-only code view + catalog/library lookups (no attach)
+  mesh    mesh_refine — mesh inspect/preview + transform ops + undo/reset + done/regenerate
+  optimize structural — analyze_fem + topopt_run probes + done(run_index)
+`view_image` (re-view an uploaded reference image) is offered in every kind.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import inspect
+import io
+import json
+import re
+import time
+import tokenize
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal
+
+from kiara import storage
+from kiara.agent.types import IMAGE_INPUT_KINDS, AgentCtx, InputAsset
+from kiara.cad import catalog, codeedits
+from kiara.cad.allowlist import check_code
+from kiara.cad.partspec import check_standard_part_calls
+from kiara.llm.schemas import StandardPartSpec
+from kiara.logging import get_logger
+
+log = get_logger(__name__)
+
+VerifyFn = Callable[[str], Awaitable[dict[str, Any]]]
+StructFn = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
+SpecDropFn = Callable[[int, str], dict[str, Any]]
+
+_DONE_TOOLS = ("done", "submit_code", "regenerate")
+
+
+def _fn(name: str, desc: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": desc,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            },
+        },
+    }
+
+
+def _s(desc: str) -> dict[str, Any]:
+    return {"type": "string", "description": desc}
+
+
+def _i(desc: str) -> dict[str, Any]:
+    return {"type": "integer", "description": desc}
+
+
+def _verify_spec_compact(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Compact canonical conformance verdict for a tool response — the model
+    sees the status plus the names of any FAILing checks, not the full tier
+    detail (which persists on the version's verify_spec report)."""
+    if not isinstance(report, dict) or not report.get("status"):
+        return None
+    out: dict[str, Any] = {"status": report["status"]}
+    failing = [c["name"] for c in report.get("checks") or [] if c.get("status") == "FAIL"]
+    if failing:
+        out["failing"] = failing[:6]
+    return out
+
+
+def _hole_groups_compact(features: dict[str, Any] | None) -> list[dict[str, Any]] | None:
+    """Compact hole-group rows from measured features — id/axis/diameter/
+    count, enough for the model to compare against spec-declared bores."""
+    groups = (features or {}).get("hole_groups") or []
+    if not groups:
+        return None
+    out = []
+    for g in groups[:12]:
+        if not isinstance(g, dict):
+            continue
+        out.append(
+            {
+                "id": g.get("id"),
+                "axis": g.get("axis"),
+                "diameter": g.get("diameter"),
+                "count": g.get("count") or len(g.get("centers") or []),
+            }
+        )
+    return out or None
+
+
+def _recut_compact(features: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Post-extraction re-cut summary (applied/skipped/verify_misses) stored
+    under features.refine — surfaces bore-preservation failures compactly."""
+    rep = (features or {}).get("refine")
+    if not isinstance(rep, dict):
+        return None
+    return {
+        "applied": len(rep.get("applied") or []),
+        "skipped": [str(s.get("name") or s) for s in (rep.get("skipped") or [])[:6]],
+        "verify_misses": rep.get("verify_misses"),
+    }
+
+
+def _optimize_run_qualifies(run: dict[str, Any]) -> bool:
+    """A topopt/infill run that satisfies the done() contract: connected,
+    verified, feature-complete and meeting the target SF. Per the optimize
+    prompt, done(-1) — keep the base — is only legitimate when NO such run
+    exists; discarding a valid optimized result after running it wastes the
+    whole stage budget."""
+    res = run.get("res") or {}
+    top = res.get("topopt") or {}
+    ver = top.get("verification") or {}
+    recut = top.get("recut") or (res.get("features") or {}).get("refine") or {}
+    return (
+        top.get("n_bodies_export") == 1
+        and top.get("load_path_ok") is not False
+        and bool(ver.get("valid"))
+        and ver.get("meets_safety_factor") is True
+        and not (recut.get("verify_misses") or [])
+    )
+
+
+def _warning_window(warnings: list[str] | None, n: int = 10) -> list[str]:
+    """Validity-critical warnings (degenerate solves, disconnected bodies,
+    sf divergence) are appended LAST by the topopt pipeline — a plain
+    head-window loses exactly them on noisy runs. Keep the first entries for
+    context and always preserve the tail."""
+    w = list(warnings or [])
+    if len(w) <= n:
+        return w
+    return [*w[: n - 3], "…", *w[-3:]]
+
+
+# --------------------------------------------------------------------------- #
+# tool schemas
+# --------------------------------------------------------------------------- #
+
+CODE_READ_TOOLS = [
+    _fn(
+        "read_lines",
+        "Read a line range of the current code file (1-based, inclusive). "
+        "Returns numbered lines. Keep ranges small and targeted.",
+        {"start": _i("first line, >= 1"), "end": _i("last line, inclusive")},
+        ["start", "end"],
+    ),
+    _fn(
+        "search_code",
+        "Find lines matching a literal string (or regex when regex=true). "
+        "Returns matching line numbers with context — use it to locate the "
+        "code you need before reading a range.",
+        {
+            "pattern": _s("literal text or regex to find"),
+            "context": _i("context lines around each hit (default 2)"),
+            "regex": {"type": "boolean", "description": "treat pattern as regex"},
+        },
+        ["pattern"],
+    ),
+]
+
+CODE_EDIT_TOOLS = [
+    _fn(
+        "replace_lines",
+        "Replace lines start..end (1-based inclusive) of the current code with "
+        "new text. Applies immediately; line numbers shift afterwards.",
+        {
+            "start": _i("first line to replace"),
+            "end": _i("last line to replace, inclusive"),
+            "code": _s("replacement text"),
+        },
+        ["start", "end", "code"],
+    ),
+    _fn(
+        "insert_after",
+        "Insert text after the given 1-based line (0 = top of file).",
+        {"line": _i("line number"), "code": _s("text to insert")},
+        ["line", "code"],
+    ),
+    _fn(
+        "insert_before",
+        "Insert text before the given 1-based line.",
+        {"line": _i("line number"), "code": _s("text to insert")},
+        ["line", "code"],
+    ),
+    _fn(
+        "find_replace",
+        "Replace an exact verbatim code block — `find` must occur exactly "
+        "ONCE in the file (include enough surrounding lines to be unique).",
+        {"find": _s("verbatim text to find"), "replace": _s("replacement text")},
+        ["find", "replace"],
+    ),
+    _fn(
+        "set_param",
+        "Set one entry of the top-level PARAMS dict (name -> new literal "
+        "value). Prefer this over editing the line manually for pure value "
+        "changes.",
+        {
+            "name": _s("PARAMS key"),
+            "value": {
+                "type": ["string", "number", "boolean"],
+                "description": "new literal value",
+            },
+        },
+        ["name", "value"],
+    ),
+]
+
+INFO_TOOLS = [
+    _fn(
+        "search_catalog",
+        "Search the bd_warehouse standard-parts catalog by name, type or size "
+        "string (e.g. 'countersunk screw', 'M4', 'iso4762'). Returns matching "
+        "classes with valid type/size tables.",
+        {"query": _s("search text")},
+        ["query"],
+    ),
+    _fn(
+        "lookup_part",
+        "Instantiate a catalog part and get its real published dimensions "
+        "(clearance/tap hole diameters, head dims, …). Use exact catalog "
+        "type/size strings — invalid values return an error listing valid ones.",
+        {
+            "class_name": _s("catalog class, e.g. CounterSunkScrew"),
+            "fastener_type": _s("norm type string, e.g. iso10642"),
+            "size": _s("size string, e.g. M4-0.7"),
+            "length": {"type": "number", "description": "part length in mm"},
+            "parameters": {
+                "type": "object",
+                "maxProperties": 20,
+                "additionalProperties": {"type": ["string", "number", "integer", "boolean"]},
+            },
+            "simple": {"type": "boolean", "description": "use lightweight geometry when true"},
+        },
+        ["class_name"],
+    ),
+    _fn(
+        "create_standard_part",
+        "Validate a registered bd_warehouse part against its norm table and return "
+        "a sandbox-ready parametric code recipe plus measured catalog dimensions. "
+        "Use this for actual standard components, not just hole dimensions. Preview "
+        "uses a lightweight visible thread cue; final exports build real threads.",
+        {
+            "class_name": _s("exact registered bd_warehouse class"),
+            "fastener_type": _s("norm type such as iso10642 or iso4762"),
+            "size": _s("exact catalog size such as M10-1.5"),
+            "length_mm": {"type": "number", "description": "nominal component length in mm"},
+            "parameters": {
+                "type": "object",
+                "maxProperties": 20,
+                "additionalProperties": {"type": ["string", "number", "integer", "boolean"]},
+            },
+            "quantity": _i("number of instances"),
+            "position_mm": {
+                "type": "array",
+                "items": {"type": "number"},
+                "minItems": 3,
+                "maxItems": 3,
+            },
+            "placements_mm": {
+                "type": "array",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 3,
+                    "maxItems": 3,
+                },
+                "maxItems": 100,
+            },
+            "axis": {"type": "string", "enum": ["+x", "-x", "+y", "-y", "+z", "-z"]},
+            "threaded": {"type": "boolean"},
+            "covers_features": {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": 20,
+            },
+            "name": _s("optional assembly/BOM label"),
+        },
+        ["class_name"],
+    ),
+    _fn(
+        "cadlib_lookup",
+        "Show the signature and docstring of a cadlib helper function (e.g. "
+        "hole_grid, snap_fit_cantilever) — prefer these helpers over "
+        "hand-rolled geometry.",
+        {"name": _s("cadlib function name")},
+        ["name"],
+    ),
+    _fn(
+        "quickref",
+        "Runtime-introspected API signature digest of the INSTALLED CAD "
+        "packages — the ground truth for method names, parameter order and "
+        "valid enum/size strings (beats memory and the prose reference docs "
+        "when they disagree). Topics: 'build123d' (core ops + enums), "
+        "'cadlib' (all reviewed helpers), 'bd_warehouse' (standard parts with "
+        "type/size tables), or a dotted path like 'build123d.extrude', "
+        "'bd_warehouse.fastener.CounterSunkScrew', 'cadlib.hole_grid'.",
+        {"topic": _s("topic name or dotted path to an object")},
+        ["topic"],
+    ),
+]
+
+WEB_TOOLS = [
+    _fn(
+        "web_search",
+        "Search the public web for product/norm specifications (datasheets, "
+        "mounting patterns, socket dims, thread sizes). Free failover "
+        "backends — returns [{title, url, snippet, backend}].",
+        {"query": _s("search query, e.g. 'Intel i7-14700K socket TDP datasheet'")},
+        ["query"],
+    ),
+    _fn(
+        "fetch_url",
+        "Fetch a web page's readable text (nav/scripts stripped, capped). "
+        "Use for datasheet/spec pages found via web_search.",
+        {"url": _s("http(s) URL from a search result")},
+        ["url"],
+    ),
+]
+
+# web research rides the shared info surface — intake's research session,
+# codegen's late questions and edit re-queries all see the same two tools
+INFO_TOOLS = [*INFO_TOOLS, *WEB_TOOLS]
+
+IMAGE_TOOLS = [
+    _fn(
+        "view_image",
+        "Re-view an uploaded reference image at full detail. The context "
+        "labels them 'Image N (asset <id>)' — pass that asset_id. Use when "
+        "the initial image context was capped or you need a closer look at "
+        "one specific view.",
+        {"asset_id": _s("asset id from the image labels")},
+        ["asset_id"],
+    ),
+]
+
+CONCEPT_IMAGE_TOOLS = [
+    _fn(
+        "generate_concept_image",
+        "Generate a design-concept image with the LOCAL image model "
+        "(FLUX/SDXL/Qwen on the mesh server) and view it. Plain call = "
+        "text-to-image for ideating shapes, proportions or style. Pass "
+        "reference_asset_id (an existing image/generated_image asset id) for "
+        "img2img variations or instruction edits ('make it matte black', "
+        "'add cooling fins') — 'strength' controls how much of the reference "
+        "is kept (low = close, high = strong change). With mark_sketch the "
+        "result is tagged as a sketch so *-scribble mesh adapters use it as "
+        "the conditioning drawing. The image is stored as a project asset "
+        "(kind=generated_image) and may serve as a reference for "
+        "image-to-3D generation. Limited calls per session.",
+        {
+            "prompt": _s("what to render — subject, view, style; or the edit instruction"),
+            "count": _i("number of variants, 1 or 2 (default 1)"),
+            "seed": _i("optional seed for reproducibility"),
+            "reference_asset_id": _s("optional id of an existing image asset to vary or edit"),
+            "strength": {
+                "type": "number",
+                "description": "img2img denoise strength 0..1 (only with reference_asset_id)",
+            },
+            "mark_sketch": {
+                "type": "boolean",
+                "description": "tag result as a sketch/scribble for sketch-conditioned "
+                "mesh adapters",
+            },
+        },
+        ["prompt"],
+    ),
+]
+
+LIBRARY_TOOLS = [
+    _fn(
+        "search_library",
+        "Search the user's reusable part library — uploaded STEP/STL bodies "
+        "and saved parametric code templates — by name, caption or filename. "
+        "Returns matching parts with their ids.",
+        {
+            "query": _s("search text"),
+            "kind": _s("optional filter: step | stl | template"),
+        },
+        ["query"],
+    ),
+    _fn(
+        "library_part",
+        "Show one library part in detail: templates return their complete "
+        "parametric code + PARAMS, file parts their filename and how to load "
+        "them via load_reference().",
+        {"part_id": _s("library part id from search_library")},
+        ["part_id"],
+    ),
+    _fn(
+        "attach_library_part",
+        "Select a library part for this generation: file parts (STEP/STL) "
+        "become reference bodies loadable via load_reference(part_id) in the "
+        "generated code; template parts attach their parametric code for you "
+        "to adapt.",
+        {"part_id": _s("library part id from search_library")},
+        ["part_id"],
+    ),
+]
+
+# inspect sessions may search/inspect but never attach
+LIBRARY_INFO_TOOLS = LIBRARY_TOOLS[:2]
+
+CHECK_TOOLS = [
+    _fn(
+        "check_code",
+        "Run the static contract check on the CURRENT code (imports, PARAMS "
+        "dict, result assignment, standard-part call validity). Returns errors "
+        "without executing.",
+        {},
+        [],
+    ),
+]
+
+CHECK_SNIPPET_TOOLS = [
+    _fn(
+        "check_snippet",
+        "Run the static contract check on a code string BEFORE submitting it.",
+        {"code": _s("complete code file to check")},
+        ["code"],
+    ),
+]
+
+SPEC_FEATURE_TOOLS = [
+    _fn(
+        "drop_spec_feature",
+        "Withdraw ONE declared spec feature you cannot construct, using its "
+        "zero-based index from spec.features and a concrete reason (minimum 12 "
+        "characters). The feature remains in the audit record; never use this "
+        "to bypass a prompt-required feature or an Evalkit geometry gate.",
+        {
+            "feature_index": _i("zero-based position in spec.features"),
+            "reason": {
+                "type": "string",
+                "minLength": 12,
+                "maxLength": 500,
+                "description": "specific technical reason this declared feature cannot be built",
+            },
+        },
+        ["feature_index", "reason"],
+    )
+]
+
+VERIFY_TOOLS = [
+    _fn(
+        "verify",
+        "Execute the CURRENT code in the CAD sandbox and return the outcome: "
+        "error diagnosis on failure, measured geometry (bbox, holes, "
+        "fillets…) on success. Limited calls — use once, after your edits, "
+        "before done.",
+        {},
+        [],
+    ),
+]
+
+# offered once the sandbox budget is spent — the description itself steers
+# the model to done, and a call still gets an actionable handler error
+# ---------------------------------------------------------------------------
+# submission feature audit — deterministic gate against "exploration stubs":
+# a submission that builds NONE of the spec's declared features (observed
+# twice live: `load_mesh_solid() + prints + result = mesh`) would otherwise
+# be accepted, burn a critique round and get patched by improve instead of
+# ever being built. submit_code/done reject it with the missing feature
+# names so the session keeps building.
+
+_FEATURE_OP_RE = re.compile(
+    r"Cylinder\(|Cone\(|Hole\(|CounterSink|CounterBore|Box\(|Sphere\(|"
+    r"extrude\(|loft\(|sweep\(|revolve\(|fillet\(|chamfer\(|"
+    r"mesh_cut\(|mesh_fuse\(|mesh_intersect\(|trim_below\(|"
+    r"\+\s*Pos\(|-\s*Pos\(|"
+    r"\.union\(|\.cut\(|\.fuse\(|\.difference\(|"
+    r"\w+\s*[-+]=\s*\w+|\w+\s*[-+]\s*=\s*\w+\s*[-+]\s*\w+",
+    re.IGNORECASE,
+)
+
+# feature types that describe the base body itself, not an addable feature
+_AUDIT_BASE_TYPES = {
+    "arch",
+    "arched bar",
+    "body",
+    "shell",
+    "frame",
+    "housing",
+    "enclosure",
+    "base",
+    "blank",
+    "bar",
+    "bail",
+    "handle",
+    "grip",
+    "knob",
+    "disc",
+    "gear",
+}
+
+
+def feature_audit_missing(code: str, features: list[dict[str, Any]]) -> list[str]:
+    """Declared features the code cannot possibly produce.
+
+    Only fires when ≥2 addable features are declared and the code shows no
+    boolean/feature op at all — partial builds stay the critique's job."""
+    feats = [f for f in features if str(f.get("type") or "").lower() not in _AUDIT_BASE_TYPES]
+    if len(feats) < 2 or _FEATURE_OP_RE.search(code or ""):
+        return []
+    return [str(f.get("name") or f.get("type") or "feature") for f in feats[:6]]
+
+
+_VERIFY_SPENT_TOOLS = [
+    _fn(
+        "verify",
+        "SANDBOX BUDGET SPENT — do not call this tool; finish with done.",
+        {},
+        [],
+    ),
+]
+
+RENDER_TOOLS = [
+    _fn(
+        "render_model",
+        "Execute the CURRENT code and LOOK at the result — returns the "
+        "measured analysis plus the labeled contact-sheet render as an "
+        "image. Shares the sandbox-execution budget with verify; use it "
+        "when you need to SEE the geometry, not just its numbers.",
+        {},
+        [],
+    ),
+]
+
+# verified parametric feature edits (M9): offered in "edit" sessions only
+# when the executor exposes edit_feature — dry-run only, the session's code
+# submit remains the way geometry actually changes
+FEATURE_EDIT_TOOLS = [
+    _fn(
+        "list_editable_features",
+        "List recognised hole features on the LAST VERIFIED solid of this "
+        "session: feature_id, kind, diameter, axis/opening/depth, and whether "
+        "the hole is editable (plain through-holes only — countersunk, "
+        "counterbored or spotfaced bores are reported but flagged "
+        "non-editable). Requires a successful verify() first.",
+        {},
+        [],
+    ),
+    _fn(
+        "edit_feature",
+        "DRY-RUN CHECK ONLY — tests whether a recognised through-hole can be "
+        "resized to a new diameter on the last verified solid (volume "
+        "annulus, envelope, sibling holes, re-recognition gate). Commits "
+        "nothing — bake an accepted resize into the code buffer afterwards.",
+        {
+            "feature_id": _i("feature_id from list_editable_features"),
+            "diameter": {
+                "type": "number",
+                "description": "new bore diameter in mm, e.g. 8.0",
+            },
+        },
+        ["feature_id", "diameter"],
+    ),
+]
+
+DONE_TOOLS = [
+    _fn(
+        "done",
+        "Finish the session: the current buffer becomes the result. Call only "
+        "after your edits are applied and (ideally) verified.",
+        {
+            "reasoning": _s("short summary of what you changed"),
+            "expected_bbox": {
+                "type": "array",
+                "items": {"type": "number"},
+                "description": "[L, W, H] in mm of the expected result",
+            },
+        },
+        [],
+    ),
+]
+
+# staged-build session tools (build kind): the buffer grows feature-by-feature
+BUILD_TOOLS = [
+    _fn(
+        "add_block",
+        "Append ONE feature's code as a named block at the end of the file "
+        "(base body, holes, fillets, …). The block is marked `## block: "
+        "<name>` so verify errors map back to it. Names must be unique — "
+        "to change an existing block use the edit tools, do not re-add it.",
+        {
+            "name": _s("short unique block name, e.g. 'base', 'mounting_holes'"),
+            "code": _s(
+                "python code for this one feature — may use variables defined by earlier blocks"
+            ),
+        },
+        ["name", "code"],
+    ),
+    _fn(
+        "checkpoint",
+        "Save the current buffer under a name so `rollback(name)` can restore "
+        "it later. Call after a stage verifies clean — limited checkpoints "
+        "per session.",
+        {"name": _s("unique checkpoint name, e.g. 'base_ok'")},
+        ["name"],
+    ),
+    _fn(
+        "rollback",
+        "Restore the buffer to a named checkpoint — the cheap way out of a "
+        "failed stage instead of undoing many edits by hand. Counts as an "
+        "edit (the buffer changes).",
+        {"name": _s("checkpoint name from an earlier checkpoint() call")},
+        ["name"],
+    ),
+]
+
+_MACHINE_OPS = ("drill", "tap", "cbore", "csk", "spotface", "pocket", "boss")
+
+BUILD_MACHINE_TOOLS = [
+    _fn(
+        "describe_faces",
+        "List the faces of the LAST VERIFIED part (index, kind, area, center, "
+        "normal) — the deterministic inventory for targeting machining ops. "
+        "Indices match machine_feature's face index. Run verify() first so "
+        "the listing reflects the current body.",
+        {},
+        [],
+    ),
+    _fn(
+        "machine_feature",
+        "Apply a standard machining operation ON a named face — no Pos/Rot "
+        "math: the face resolves semantically, the pick point projects onto "
+        "the skin (works on planes, cylinders, spheres, slopes) and cadlib "
+        "builds the canonical cutter. The call lands as a `## block:` in the "
+        "buffer and is auto-verified. 'fläche x, innengewinde M8 orthogonal, "
+        "tiefe 25' = machine_feature(face='left', op='tap', "
+        "dims={major_d:8, pitch:1.25, depth:25}).",
+        {
+            "face": {
+                "description": "face descriptor: word (top/bottom/front/back/"
+                "left/right), signed axis ('+z','-x',…), describe_faces index, "
+                "surface kind ('planar','cylindrical','spherical','largest'), "
+                "or an [x,y,z] pick point (nearest face, machined AT that point)",
+            },
+            "op": {
+                "type": "string",
+                "enum": list(_MACHINE_OPS),
+                "description": "drill|tap|cbore|csk|spotface|pocket|boss",
+            },
+            "at": {
+                "description": "optional [u,v] tangent-mm offsets on the face "
+                "(re-projected onto curved skin) or an [x,y,z] pick point",
+            },
+            "axis": {
+                "description": "optional approach-axis override ('+z','-x' or "
+                "[x,y,z]) — default is the face normal (orthogonal to face)",
+            },
+            "on": _s("variable holding the part to machine (default 'result')"),
+            "dims": {
+                "type": "object",
+                "description": "op parameters in mm: dia, depth (blind — omit "
+                "for through), major_d, pitch, hand, drill_dia, cbore_dia, "
+                "cbore_depth, csk_dia, csk_angle, width, length, entry_chamfer",
+            },
+        },
+        ["face", "op", "dims"],
+    ),
+]
+
+_BLOCK_RE = re.compile(r"^## block:\s*(\S+)", re.M)
+_IDENT_RE = re.compile(r"^[A-Za-z_]\w*$")
+_NAME_SANITIZE_RE = re.compile(r"[^\w-]+")
+_MAX_CHECKPOINTS = 8
+
+# --------------------------------------------------------------------------- #
+# structural session tools (optimize step)                                    #
+# --------------------------------------------------------------------------- #
+
+_AXIS = {"type": "string", "enum": ["x", "y", "z"], "description": "cartesian axis"}
+_SIGNED_AXIS = {
+    "type": "string",
+    "enum": ["+x", "-x", "+y", "-y", "+z", "-z"],
+    "description": "signed axis",
+}
+_VEC3 = {
+    "type": "array",
+    "items": {"type": "number"},
+    "minItems": 3,
+    "maxItems": 3,
+    "description": "[x, y, z] in mm",
+}
+
+_REGION_SCHEMA = {
+    "type": "object",
+    "description": "geometric region: surface (part skin facing axis, follows "
+    "curves — the right choice on organic shapes), area (XY sub-area via "
+    "polygon/x_range/y_range/center+diameter_mm, optionally restricted to the "
+    "surface facing axis), rim (outer radial band of width margin_mm following "
+    "the part silhouette around axis — the gear/sprocket tooth ring; "
+    "diameter_mm+inner_diameter_mm give an exact annulus), border (band of "
+    "width margin_mm at the bbox outer edges along the axes named in axis — "
+    "letters or signed, default 'xy'), hole/anchor (measured feature anchor "
+    "via hole_index — any axis; use list_anchors first; loads/constraints "
+    "apply on the bore wall and a keep ring of margin_mm is auto-protected. "
+    "MUST bind via hole_index OR an axis+center hint — an unbound hole "
+    "region resolves to 0 cells and degenerates the solve), "
+    "bore (the bore WALL of an anchor — same binding rule — for "
+    "bearing/preload loads), face "
+    "(legacy surface alias), cylinder (around an axis — needs "
+    "axis+diameter_mm; inner_diameter_mm for a hollow ring), box "
+    "(center+diameter_mm edge), plane (NODE-EXACT locus for fixtures — AND "
+    "over axis letters: '+x'/'-x' = that extreme plane, 'x' = both, 'xy' = "
+    "edge lines where x- AND y-conditions hold, 'xyz' = corner points; "
+    "center[i] replaces letter i's extreme with an interior mm coordinate — "
+    "{'axis':'x','center':[0]} = the x=0 symmetry cut; x/y/z_range clip the "
+    "free axes; margin_mm ignored — exactness is the contract. Use for clamp "
+    "planes, symmetry cuts, knife-edge supports AND loads on an exact END "
+    "FACE (tip face, 'the +X end' — surface/face envelopes also catch stepped "
+    "shoulders of that silhouette); for loads on a contiguous skin prefer "
+    "surface/face/area) or all (whole part — never in fixed regions)",
+    "properties": {
+        "kind": {
+            "type": "string",
+            "enum": [
+                "face",
+                "surface",
+                "area",
+                "cylinder",
+                "rim",
+                "border",
+                "box",
+                "hole",
+                "anchor",
+                "bore",
+                "plane",
+                "all",
+            ],
+        },
+        "axis": _s(
+            "axis, e.g. -z — face normal or cylinder/rim axis; border/plane "
+            "also accept letter sets like 'x'/'xy'/'xyz'/'+x-y' (border: OR "
+            "band both sides each; plane: AND intersection — 'xy' = edges)"
+        ),
+        "center": {
+            **_VEC3,
+            "description": "optional mm hint, e.g. hole position; plane: "
+            "center[i] replaces the i-th axis letter's extreme — "
+            "{'axis':'x','center':[0]} = interior x=0 plane",
+        },
+        "diameter_mm": {"type": "number", "description": "cylinder diameter / box edge"},
+        "inner_diameter_mm": {
+            "type": "number",
+            "description": "cylinder/area/rim: inner diameter in mm for a hollow ring/annulus",
+        },
+        "margin_mm": {"type": "number", "description": "selection depth, default 2"},
+        "polygon": {
+            "type": "array",
+            "items": {"type": "array", "items": {"type": "number"}},
+            "description": "area: XY polygon vertices in mm",
+        },
+        "x_range": {
+            "type": "array",
+            "items": {"type": "number"},
+            "description": "area: [min, max] mm in X",
+        },
+        "y_range": {
+            "type": "array",
+            "items": {"type": "number"},
+            "description": "area: [min, max] mm in Y",
+        },
+        "z_range": {
+            "type": "array",
+            "items": {"type": "number"},
+            "description": "area/surface/rim/border/cylinder: [min, max] mm in Z",
+        },
+        "hole_index": {
+            "type": "integer",
+            "description": "hole/anchor/bore: 1-based index into the anchor table "
+            "(call list_anchors to see it)",
+        },
+        "fix_mode": {
+            "type": "string",
+            "enum": ["all", "normal", "bearing"],
+            "description": "fixed regions only: 'all' = encastre (default); "
+            "'normal' = pin only the axis DOF — roller/sliding/symmetry; "
+            "on plane regions it pins the named letters' DOFs — "
+            "'x' = ux (symmetry cut), 'xy' = ux+uy (knife edge), "
+            "'xyz' = point support; "
+            "'bearing' = hole/anchor/bore only: pin both DOFs normal to the "
+            "bore axis — a collar that may still slide along the axis "
+            "(use 'all' for a bolted seat, never 'normal' on a hole)",
+        },
+        "material": _s(
+            "keep regions only: override material inside the region "
+            "(e.g. 'aluminum' for a threaded insert)"
+        ),
+        "seal_openings_mm": {
+            "type": "number",
+            "description": "cavity regions only: virtually seal openings up to "
+            "this diameter before the flood-fill — REQUIRED for a pressure "
+            "region inside a vessel with an open neck/nozzle (an open vessel "
+            "cannot hold pressure; the inner skin only resolves when the "
+            "opening is treated as capped, e.g. a hydro test). Set it to the "
+            "largest opening Ø in mm; omit for truly sealed pockets",
+        },
+        "description": _s("label, e.g. 'M4 bore'"),
+    },
+}
+
+_LOAD_SCHEMA = {
+    "type": "object",
+    "description": "one load on a region — combine freely: force_n (total force, "
+    "split over region nodes), pressure_mpa (on face/surface/area), normal_force_n "
+    "(total force orthogonal to the region surface — + pushes in, - pulls; the "
+    "normal comes from the region axis or its exposed skin), bearing_n "
+    "(cosine-distributed bolt/bearing force on a bore wall — needs a "
+    "hole/anchor/bore region), moment_nm (pure couple [mx,my,mz] in N·m — "
+    "right-hand rule: +mz twists counter-clockwise looking down +z; for shaft "
+    "torque use a bore/cylinder region and align the vector with its axis), "
+    "preload_n (bolt pretension — axial squeeze on the two bore mouths), "
+    "remote_point [x,y,z] (REQUIRES force_n — applies it at that mm point and "
+    "adds the induced lever moment to the region), g_load [ax,ay,az] (body "
+    "force in units of g — gravity on the region's mass), direction_cone_deg "
+    "(robust TopOpt: tilts ALL directional vectors of this load — force, "
+    "moment axis, bearing dir — coherently over a cone)",
+    "properties": {
+        "region": _REGION_SCHEMA,
+        "force_n": {
+            **_VEC3,
+            "description": "[fx, fy, fz] in Newton — also the bearing direction",
+        },
+        "pressure_mpa": {
+            "type": "number",
+            "description": "uniform pressure on a face region",
+        },
+        "bearing_n": {
+            "type": "number",
+            "description": "total bearing force on a bore wall (N) — hole/anchor/bore region",
+        },
+        "bearing_dir": {**_VEC3, "description": "bearing direction (default: force_n)"},
+        "moment_nm": {
+            **_VEC3,
+            "description": "pure couple [mx,my,mz] in N·m — right-hand rule "
+            "about the vector; lands as tangential traction on the region's "
+            "skin; needs a region with real extent (patch/bore wall), a "
+            "single node cannot carry a couple — the solver auto-widens a "
+            "too-small patch and reports couple_deficit_nm in 'applied'",
+        },
+        "normal_force_n": {
+            "type": "number",
+            "description": "total force in N orthogonal to the region surface "
+            "(+ pushes into the surface, - pulls away)",
+        },
+        "preload_n": {
+            "type": "number",
+            "description": "bolt pretension along the bore axis (N)",
+        },
+        "remote_point": {
+            **_VEC3,
+            "description": "lever point in mm — REQUIRES force_n; adds the "
+            "induced moment (p-centroid) x F on the region",
+        },
+        "g_load": {**_VEC3, "description": "body accel in g units, e.g. [0,0,-1]"},
+        "direction_cone_deg": {
+            "type": "number",
+            "description": "robust TopOpt: tilts all directional vectors of "
+            "this load (force/moment/bearing) within this cone (deg)",
+        },
+        "spread_mode": {
+            "type": "string",
+            "enum": ["nodes", "area"],
+            "description": "force_n distribution over the region — 'nodes' "
+            "(default) = even split per node; 'area' = weighted by each "
+            "node's exposed-skin share (physical surface traction — pick "
+            "this for loads spread over a face)",
+        },
+    },
+}
+
+_LOAD_CASES_SCHEMA = {
+    "type": "array",
+    "description": "load cases; each needs at least one fixed region and one load",
+    "items": {
+        "type": "object",
+        "properties": {
+            "name": _s("case name"),
+            "weight": {
+                "type": "number",
+                "description": "relative objective weight for TopOpt (default 1)",
+            },
+            "fixed": {
+                "type": "array",
+                "items": _REGION_SCHEMA,
+                "description": "constrained regions — fix_mode 'all' (encastre) "
+                "or 'normal' (roller/symmetry on the axis DOF)",
+            },
+            "loads": {"type": "array", "items": _LOAD_SCHEMA},
+        },
+        "required": ["fixed", "loads"],
+    },
+}
+
+STRUCT_TOOLS = [
+    _fn(
+        "list_anchors",
+        "List the part's measured feature anchors: holes, bores, inserts, "
+        "bearing seats on ANY axis — each with index, 3D centre, axis, "
+        "diameter, depth, kind and bolt size. hole_index in hole/anchor/bore "
+        "regions refers to this table. Call FIRST — never guess coordinates "
+        "when a measured anchor exists. Free (no FEM budget).",
+        {},
+        [],
+    ),
+    _fn(
+        "suggest_load_cases",
+        "Draft load cases deterministically: fixed = anchor regions at the "
+        "measured mounting features (fallback: the -z surface), loads = a "
+        "template normal force + own weight — or the spec's declared cases "
+        "when they exist. This is a STARTING POINT: edit magnitudes, "
+        "directions and regions to match the prompt, then check_load. Free.",
+        {},
+        [],
+    ),
+    _fn(
+        "check_load",
+        "Sanity-check a load case WITHOUT solving: resolved node counts, "
+        "resultant force and applied moment about the support centroid "
+        "(split into direct couples vs remote-lever induced moments, plus "
+        "moment_deficit_nm = requested minus achieved), a per-load 'applied' "
+        "report showing which mechanisms landed with what magnitude "
+        "(couple_requested_nm/couple_deficit_nm/couple_footprint_mm for "
+        "moment loads), plus warnings for empty regions, degenerate couple "
+        "footprints or unstable supports. Call after writing each case — "
+        "cheaper than a full preview/fem run.",
+        {
+            "load_cases": _LOAD_CASES_SCHEMA,
+        },
+        ["load_cases"],
+    ),
+    _fn(
+        "preview_regions",
+        "Render which cells your regions select — fixed=blue, load=red, "
+        "keep=green — plus node counts and the resolved total force/moment. "
+        "Call BEFORE the first topopt_run to verify load placement; does "
+        "not consume FEM/TopOpt budget.",
+        {
+            "load_cases": _LOAD_CASES_SCHEMA,
+            "keep_regions": {
+                "type": "array",
+                "items": _REGION_SCHEMA,
+                "description": "regions that will be forced solid",
+            },
+        },
+        ["load_cases"],
+    ),
+    _fn(
+        "analyze_fem",
+        "Run FEM on the BASE part with the given load cases — returns per-case "
+        "safety factor, max von-Mises stress and displacement, warnings, "
+        "stress renders, and recommended_mode (infill|guided|topopt) — a "
+        "routing hint for which structural strategy fits this part. Runs at "
+        "a coarser default voxel pitch (2x) for speed: "
+        "the probe SF is a coarse estimate — the topopt_run export verification "
+        "solves finer. Use to check the design before optimizing or to "
+        "compare load-case variants.",
+        {
+            "load_cases": _LOAD_CASES_SCHEMA,
+            "material": _s("material name, e.g. PLA, PETG, aluminum — empty = spec default"),
+            "voxel_mm": {
+                "type": "number",
+                "description": "FEM voxel pitch in mm — keep <= smallest anchored bore dia/3.5 or anchored holes extract undersized; the engine clamps the design pitch to that feature floor (finer is safe, it only costs solver time)",
+            },
+        },
+        ["load_cases"],
+    ),
+    _fn(
+        "topopt_run",
+        "Run SIMP topology optimization on the base part, then FEM-verify the "
+        "result. Returns run_index, achieved volume fraction, iterations, "
+        "the verified worst-case safety factor (sf_verified — the worst "
+        "across the nominal/eroded/dilated export realizations) and a render "
+        "of the optimized shape. Real base bores are deterministically "
+        "re-cut after extraction before FEM export verification (recut_bores, "
+        "default true). Warm-starts automatically from a previous run's "
+        "density field — or from a guided infill run's coarse layout "
+        "(warm_start reports the source). Vary "
+        "target_volume_fraction / keep_regions / material between runs and "
+        "pick the best one with done(run_index).",
+        {
+            "target_volume_fraction": {
+                "type": "number",
+                "description": "0.1-0.9 fraction of material to keep",
+            },
+            "max_iterations": {"type": "integer", "description": "SIMP iteration cap"},
+            "keep_regions": {
+                "type": "array",
+                "items": _REGION_SCHEMA,
+                "description": "regions forced to stay solid (e.g. mounting bores; "
+                "set material for insert zones)",
+            },
+            "void_regions": {
+                "type": "array",
+                "items": _REGION_SCHEMA,
+                "description": "regions forced EMPTY (forbidden material: cable "
+                "runs, swing space, clearance zones)",
+            },
+            "keep_mode": {
+                "type": "string",
+                "enum": ["manual", "auto"],
+                "description": "'auto' adds a keep ring around EVERY detected anchor",
+            },
+            "recut_bores": {
+                "type": "boolean",
+                "description": "after extraction, restore keep surfaces then "
+                "re-cut real base-mesh bores at their exact feature diameters "
+                "before export FEM verification (default true)",
+            },
+            "min_member_mm": {
+                "type": "number",
+                "description": "enforce minimum member thickness (e.g. 1.6 for FDM)",
+            },
+            "density_threshold": {
+                "type": "number",
+                "description": "iso threshold 0.2-0.9 for mesh extraction (default 0.5)",
+            },
+            "self_supporting": {
+                "type": "boolean",
+                "description": "AM filter — cells need 45° support from below; "
+                "use when the part is printed without supports",
+            },
+            "print_direction": {
+                "type": "string",
+                "enum": ["+x", "-x", "+y", "-y", "+z", "-z"],
+                "description": "build direction for self_supporting (default +z)",
+            },
+            "filter": {
+                "type": "string",
+                "enum": ["cone", "heaviside", "helmholtz", "helmholtz+heaviside"],
+                "description": "density filter — 'heaviside' gives crisp 0/1 "
+                "fields (threshold-robust extraction, slower); 'helmholtz' is "
+                "the PDE filter (consistent feature size at domain boundaries, "
+                "no thinned edge members); 'helmholtz+heaviside' combines both",
+            },
+            "robust": {
+                "type": "boolean",
+                "description": "robust formulation (Sigmund/Wang): optimize the "
+                "WORST of eroded/intermediate/dilated designs — print-tolerant "
+                "and threshold-insensitive; forces a heaviside-bearing filter "
+                "('heaviside' or 'helmholtz+heaviside'), ~3x cost",
+            },
+            "robust_delta_eta": {
+                "type": "number",
+                "description": "robust eta half-width 0-0.45 (default 0.25)",
+            },
+            "robust_designs": {
+                "type": "string",
+                "enum": ["edi", "e"],
+                "description": "'edi' = eroded+intermediate+dilated; 'e' = eroded "
+                "only (~half the extra FEM cost)",
+            },
+            "symmetry": {
+                "type": "string",
+                "enum": ["xy", "xz", "yz"],
+                "description": "mirror the design about that domain mid-plane — "
+                "each iteration the density is averaged with its reflection so "
+                "the printed part comes out symmetric",
+            },
+            "multires": {
+                "type": "boolean",
+                "description": "coarse SIMP at 2x pitch warm-starts the fine "
+                "grid — ~3x faster on big parts",
+            },
+            "solver": {
+                "type": "string",
+                "enum": ["oc", "mma", "beso"],
+                "description": "optimizer — 'oc' (fast, volume-only), 'mma' "
+                "(enables real constraints below; required for "
+                "minmax/stress/displacement) or 'beso' (binary add/remove "
+                "evolution — crisp 0/1 designs by construction, volume-only)",
+            },
+            "case_objective": {
+                "type": "string",
+                "enum": ["weighted", "minmax"],
+                "description": "'minmax' optimizes the WORST load case instead "
+                "of the weighted average — use for uncertain loads (needs mma)",
+            },
+            "max_displacement_mm": {
+                "type": "number",
+                "description": "mma: hard cap on max nodal displacement",
+            },
+            "max_stress_mpa": {
+                "type": "number",
+                "description": "mma: P-norm von-Mises stress limit (e.g. yield/2)",
+            },
+            "min_gap_mm": {
+                "type": "number",
+                "description": "warn when enclosed gaps are narrower than this "
+                "(would fuse in printing) — defaults to min_member_mm",
+            },
+            "penal_init": {
+                "type": "number",
+                "description": "penal continuation: start exponent < penal "
+                "(softer start escapes grayscale local minima)",
+            },
+            "volfrac_init": {
+                "type": "number",
+                "description": "volfrac continuation: start volume fraction > "
+                "target (e.g. 0.7) — a material-rich start explores broad "
+                "layouts before the budget tightens (OC only)",
+            },
+            "volfrac_ramp_iters": {
+                "type": "integer",
+                "description": "iterations for the volfrac_init -> target "
+                "staged ramp (default 40) — shorter schedules may advance "
+                "before the stress layout settles",
+            },
+            "warmstart": {
+                "type": "string",
+                "enum": ["uniform", "loadpath"],
+                "description": "'loadpath' seeds the density from deterministic "
+                "load-path corridors (load centroids → fixed regions) — "
+                "typically 20-40% fewer iterations to a similar design",
+            },
+            "loadpath_corridor_mm": {
+                "type": "number",
+                "description": "corridor width for warmstart=loadpath in mm "
+                "(default 2.5xvoxel pitch) — wider corridors seed thicker "
+                "junctions that survive mesh smoothing better",
+            },
+            "grow_mm": {
+                "type": "number",
+                "description": "allow the optimizer to also ADD material up to "
+                "grow_mm beyond the part silhouette (reinforcement ribs, "
+                "thicker walls) — not just remove it",
+            },
+            "aniso_material": {
+                "type": "boolean",
+                "description": "orthotropic FDM stiffness: weaker along the "
+                "print_direction's layer normal — use with self_supporting "
+                "for realistic FDM safety factors",
+            },
+            "aniso_factor": {
+                "type": "number",
+                "description": "layer-normal stiffness factor when "
+                "aniso_material is on (default 0.6 — typical FDM "
+                "interlayer bond vs in-plane)",
+            },
+            "beso_er": {
+                "type": "number",
+                "description": "BESO evolutionary ratio — volume-ramp step "
+                "per iteration for solver=beso (default 0.02, classic "
+                "Huang & Xie setting; larger = faster but noisier)",
+            },
+            "mma_final_beta": {
+                "type": "number",
+                "description": "solver=mma only: project the converged "
+                "blueprint at this Heaviside sharpness for the returned "
+                "density (e.g. 8.0) — collapses residual gray fields",
+            },
+            "verify_robust": {
+                "type": "boolean",
+                "description": "export-verification sweep: re-solve eroded "
+                "and dilated realizations of the printed mask alongside the "
+                "nominal one — sf_verified reports the worst case (default "
+                "follows the fem_verify_realizations setting)",
+            },
+            "verify_homogenized": {
+                "type": "boolean",
+                "description": "also verify the homogenized infill model "
+                "(C_H(rho) class tensors + micro localization — sf_homog / "
+                "sf_micro); only meaningful for infill runs (default "
+                "follows the fem_homogenized_infill setting)",
+            },
+            "load_cases": _LOAD_CASES_SCHEMA,
+            "material": _s("material name — empty = spec default"),
+            "voxel_mm": {
+                "type": "number",
+                "description": "voxel pitch in mm — keep <= smallest anchored bore dia/3.5 or anchored holes extract undersized; the engine clamps the design pitch to that feature floor (finer is safe, it only costs solver time)",
+            },
+        },
+        [],
+    ),
+    _fn(
+        "infill_run",
+        "Shell + physics-graded lattice infill instead of SIMP: a full-"
+        "density FEM solve measures the per-element strain energy, a closed "
+        "outer shell keeps the silhouette and a density-graded gyroid "
+        "lattice fills the interior stiffer where load flows. ~2 solves "
+        "total (vs 60+ SIMP iterations) and natively watertight — best for "
+        "FDM parts that want shell+infill rather than voxel topology "
+        "changes. Same hardened export verification as topopt_run "
+        "(sf_verified = worst case across eroded/nominal/dilated "
+        "realizations; the homogenized lattice model adds sf_homog / "
+        "sf_micro); returns a run_index for done().",
+        {
+            "infill_scope": {
+                "type": "string",
+                "enum": ["full", "guided"],
+                "description": "'full' = infill the whole part; 'guided' = a "
+                "coarse SIMP picks the retained topology and the lattice "
+                "only fills what it keeps (stiffer result, slower)",
+            },
+            "infill_guide_solver": {
+                "type": "string",
+                "enum": ["oc", "beso"],
+                "description": "guided scope only: solver for the coarse "
+                "topology pass — 'beso' (default) returns a natively binary "
+                "layout that maps straight onto the guide mask; 'oc' keeps "
+                "the classic SIMP guide. The guide's density field is "
+                "persisted and can warm-start a follow-up topopt_run",
+            },
+            "infill_style": {
+                "type": "string",
+                "enum": ["gyroid_graded", "struts_aligned"],
+                "description": "lattice geometry — 'struts_aligned' orients "
+                "struts to the solved principal stress directions",
+            },
+            "infill_shell_mm": {
+                "type": "number",
+                "description": "closed outer skin thickness in mm (default 2.0)",
+            },
+            "infill_period_mm": {
+                "type": "number",
+                "description": "lattice cell size in mm (default 8.0), "
+                "modulated ±50% by local stiffness",
+            },
+            "infill_min_density": {
+                "type": "number",
+                "description": "lattice occupancy floor 0..0.9 (default "
+                "0.25) — keeps the core connected and printable",
+            },
+            "infill_max_density": {
+                "type": "number",
+                "description": "lattice occupancy cap at energy hotspots "
+                "(default 0.9 — near-solid below the skin)",
+            },
+            "infill_alpha": {
+                "type": "number",
+                "description": "energy→density grading exponent (default "
+                "0.7; <1 flattens the grading, >1 concentrates density "
+                "on hot cells)",
+            },
+            "infill_seed": {
+                "type": "integer",
+                "description": "deterministic lattice phase shift — same "
+                "seed + same mesh = same part",
+            },
+            "infill_octet": {
+                "type": "boolean",
+                "description": "struts_aligned only: include the 45° diagonal "
+                "strut families aligned to the stress frames (default "
+                "follows the infill_octet setting)",
+            },
+            "verify_robust": {
+                "type": "boolean",
+                "description": "export-verification sweep: re-solve eroded "
+                "and dilated realizations of the printed mask alongside the "
+                "nominal one — sf_verified reports the worst case (default "
+                "follows the fem_verify_realizations setting)",
+            },
+            "verify_homogenized": {
+                "type": "boolean",
+                "description": "also verify the homogenized infill model "
+                "(C_H(rho) class tensors + micro localization — sf_homog / "
+                "sf_micro; default follows the fem_homogenized_infill "
+                "setting)",
+            },
+            "target_volume_fraction": {
+                "type": "number",
+                "description": "overall material fraction including shell "
+                "(0.1-0.9, default from spec)",
+            },
+            "min_member_mm": {
+                "type": "number",
+                "description": "enforce minimum member thickness (e.g. 1.6 for FDM)",
+            },
+            "self_supporting": {
+                "type": "boolean",
+                "description": "keep the lattice printable: solid floor band "
+                "near the build plate instead of a full AM filter",
+            },
+            "print_direction": {
+                "type": "string",
+                "enum": ["+x", "-x", "+y", "-y", "+z", "-z"],
+                "description": "build direction for self_supporting (default +z)",
+            },
+            "load_cases": _LOAD_CASES_SCHEMA,
+            "material": _s("material name — empty = spec default"),
+            "voxel_mm": {
+                "type": "number",
+                "description": "voxel pitch in mm — keep <= smallest anchored bore dia/3.5 or anchored holes extract undersized; the engine clamps the design pitch to that feature floor (finer is safe, it only costs solver time)",
+            },
+        },
+        [],
+    ),
+    _fn(
+        "refine_features",
+        "Feature finishing on a completed topopt_run: re-cuts EXACT bores, "
+        "printed threads (tap-drill), inserts, bearing seats, countersinks and "
+        "counterbores at measured anchor positions on the optimized mesh, and "
+        "restores keep-region surfaces that voxel smoothing shrank (needs the "
+        "original part). Returns a NEW run_index you can pass to done(). "
+        "Each run can be refined once.",
+        {
+            "run_index": {
+                "type": "integer",
+                "description": "the topopt_run to finish",
+            },
+            "features": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "description": "FeatureSpec subset: {kind, anchor_index|dia|pos, "
+                    "axis, depth, thread_spec, cbore_dia, cbore_depth, csk_dia, "
+                    "csk_angle, length, section}. Empty → auto-resolve from the "
+                    "spec's declared features + scanned anchors.",
+                },
+                "description": "explicit features to re-cut; omit for auto-resolution",
+            },
+            "restore_planes": {
+                "type": "boolean",
+                "description": "union original keep-region surfaces back (default on)",
+            },
+            "load_cases": _LOAD_CASES_SCHEMA,
+        },
+        ["run_index"],
+    ),
+]
+
+OPTIMIZE_DONE_TOOLS = [
+    _fn(
+        "done",
+        "Finish the session. Pass run_index of the best topopt_run (as "
+        "returned by it), or -1 to keep the base part unoptimized.",
+        {
+            "run_index": {
+                "type": "integer",
+                "description": "chosen topopt run, or -1 to skip optimization",
+            },
+            "reasoning": _s("why this run / why skip"),
+        },
+        ["run_index"],
+    ),
+]
+
+# --------------------------------------------------------------------------- #
+# mesh session tools (mesh_refine step)                                        #
+# --------------------------------------------------------------------------- #
+
+MESH_INFO_TOOLS = [
+    _fn(
+        "mesh_inspect",
+        "Measured facts about the CURRENT working mesh: bbox, volume, "
+        "watertight, triangle count, flat-base ratio, body count, detected "
+        "holes/dimples, measured anchors, ops applied so far.",
+        {},
+        [],
+    ),
+    _fn(
+        "mesh_preview",
+        "Render the current working mesh (iso/front/top views) and see the "
+        "result as images. Limited calls — use to verify your transforms.",
+        {},
+        [],
+    ),
+    _fn(
+        "mesh_measure",
+        "Compare the working mesh against the spec: per-axis bbox deltas (mm), "
+        "detected tunnels vs measured anchor positions (dist + dia), "
+        "missing-hole count. No image output — pure numbers.",
+        {},
+        [],
+    ),
+    _fn(
+        "mesh_section",
+        "Rasterised cross-section of the mesh at an axis-aligned plane — "
+        "inspect internal structure, wall thickness, blind features. "
+        "Counts as a preview call.",
+        {
+            "axis": _AXIS,
+            "at_mm": {
+                "type": "number",
+                "description": "plane position in mm (default: bbox centre)",
+            },
+        },
+        ["axis"],
+    ),
+    _fn(
+        "mesh_overlay",
+        "Top-view overlay image: measured outline (red) vs current mesh "
+        "footprint (blue) vs anchor positions (green). Best single check for "
+        "footprint/hole alignment.",
+        {},
+        [],
+    ),
+    _fn(
+        "mesh_regen_edit",
+        "Text-steered regeneration round-trip: edits the conditioning image "
+        "with a local image-edit model (your prompt describes the change, e.g. "
+        "'add deeper knurled grip grooves'), regenerates the mesh from the "
+        "edited image with the SAME model+seed, and re-baselines it. Use for "
+        "surface-detail/shape changes that ops cannot express. ALL recorded "
+        "ops are discarded — re-apply needed transforms afterwards. Fails "
+        "cleanly when no edit-capable image adapter is installed.",
+        {
+            "prompt": {
+                "type": "string",
+                "description": "edit instruction for the reference image",
+            },
+            "strength": {
+                "type": "number",
+                "description": "img2img strength 0.3..0.9 (default 0.6; lower "
+                "keeps more of the original shape)",
+            },
+        },
+        ["prompt"],
+    ),
+]
+
+MESH_TRANSFORM_TOOLS = [
+    _fn(
+        "mesh_set_up",
+        "Re-orient: the named source axes of the CURRENT mesh map to +Z (up) "
+        "and +Y (front). Use when the part is lying on its side/back.",
+        {"up": _SIGNED_AXIS, "front": _SIGNED_AXIS},
+        ["up"],
+    ),
+    _fn(
+        "mesh_rotate",
+        "Rotate around a cartesian axis through the bbox centre (degrees). "
+        "After every transform the part is re-centred on XY.",
+        {"axis": _AXIS, "deg": {"type": "number", "description": "rotation in degrees"}},
+        ["axis", "deg"],
+    ),
+    _fn(
+        "mesh_mirror",
+        "Mirror along a cartesian axis (left/right handedness flip).",
+        {"axis": _AXIS},
+        ["axis"],
+    ),
+    _fn(
+        "mesh_scale",
+        "Uniform (`factor`) or per-axis (`x`/`y`/`z`) scaling about the bbox "
+        "centre — at least ONE of them is required. Per-axis is THE fix for "
+        "aspect-ratio mismatches.",
+        {
+            "factor": {"type": "number", "description": "uniform multiplier"},
+            "x": {"type": "number", "description": "X-axis multiplier"},
+            "y": {"type": "number", "description": "Y-axis multiplier"},
+            "z": {"type": "number", "description": "Z-axis multiplier"},
+        },
+        [],
+    ),
+    _fn(
+        "mesh_flatten_bottom",
+        "Cut + cap the mesh flat at `height_mm` above its lowest point — "
+        "creates a printable flat base.",
+        {"height_mm": {"type": "number", "description": "height above lowest point, mm"}},
+        ["height_mm"],
+    ),
+    _fn(
+        "mesh_slice",
+        "Cut + cap with an axis-aligned plane at `at_mm`; keep 'low' or 'high' "
+        "side. Coordinates are mm in the current frame (part rests on XY).",
+        {
+            "axis": _AXIS,
+            "at_mm": {"type": "number", "description": "plane position in mm"},
+            "keep": {"type": "string", "enum": ["low", "high"]},
+        },
+        ["axis", "at_mm", "keep"],
+    ),
+    _fn(
+        "mesh_crop",
+        "Keep only geometry inside the min/max box (mm).",
+        {"min": _VEC3, "max": _VEC3},
+        ["min", "max"],
+    ),
+    _fn(
+        "mesh_decimate",
+        "Reduce triangle count to ~`faces` (quadric). Needed before boolean "
+        "ops on dense generated meshes.",
+        {"faces": {"type": "integer", "description": "target triangle count"}},
+        ["faces"],
+    ),
+    _fn(
+        "mesh_smooth",
+        "Laplacian/Taubin smoothing — softens faceting/noise.",
+        {
+            "iterations": {"type": "integer", "description": "1-20, default 5"},
+            "scheme": {"type": "string", "enum": ["laplacian", "taubin"]},
+        },
+        [],
+    ),
+    _fn(
+        "mesh_smooth_preserve",
+        "Taubin smoothing with the flat bottom pinned — softens voxel "
+        "striations while keeping the base plane and XY envelope. Use after "
+        "mesh_flatten_bottom.",
+        {"iterations": {"type": "integer", "description": "1-30, default 10"}},
+        [],
+    ),
+    _fn(
+        "mesh_keep_largest",
+        "Drop all but the largest disconnected body (removes floaters).",
+        {},
+        [],
+    ),
+    _fn(
+        "mesh_drop_small",
+        "Drop disconnected bodies below `min_volume_frac` of the largest body.",
+        {"min_volume_frac": {"type": "number", "description": "0 < f < 0.5"}},
+        ["min_volume_frac"],
+    ),
+    _fn(
+        "mesh_repair",
+        "Re-run the cleaning pass: merge vertices, fix normals, fill holes, drop tiny floaters.",
+        {},
+        [],
+    ),
+    _fn(
+        "mesh_clip_height",
+        "Cut + cap everything above `z_max` mm — a hard ceiling on height "
+        "(e.g. a mesh that grew too tall vs the spec).",
+        {"z_max": {"type": "number", "description": "max height in mm"}},
+        ["z_max"],
+    ),
+    _fn(
+        "mesh_symmetrize",
+        "Mirror the better half across the symmetry plane at the bbox centre. "
+        "For parts that must be left/right symmetric — picks the bigger half "
+        "by default (keep: auto|pos|neg).",
+        {
+            "axis": _AXIS,
+            "keep": {"type": "string", "enum": ["auto", "pos", "neg"]},
+        },
+        [],
+    ),
+    _fn(
+        "mesh_remesh",
+        "Uniform voxel remesh — watertight by construction, evens topology. "
+        "Use before booleans on organic meshes or when faces are uneven.",
+        {
+            "voxel_mm": {
+                "type": "number",
+                "description": "voxel pitch in mm (0.05-5) — keep below ~bore_dia/3.5 through holed regions or the remesh rounds holes undersized",
+            }
+        },
+        ["voxel_mm"],
+    ),
+    _fn(
+        "mesh_shell",
+        "Hollow the part: erode an inner solid by `thickness_mm` and subtract "
+        "it. ONLY when the spec explicitly asks for a hollow part or wall "
+        "thickness — NEVER as a substitute for drilling a bore (hollowing a "
+        "solid part destroys it). `opening` slices one face open.",
+        {
+            "thickness_mm": {"type": "number", "description": "wall thickness mm"},
+            "opening": {"type": "string", "enum": ["none", "bottom", "top"]},
+        },
+        ["thickness_mm"],
+    ),
+    _fn(
+        "mesh_drill_holes",
+        "Drill straight holes along x/y/z — with "
+        "from_anchors=true the measured anchor positions/diameters are used "
+        "directly (never retype coordinates). An explicit holes list may add "
+        "extra holes; depth_mm for blind holes, csk_dia/csk_angle_deg for "
+        "countersinks. `axis` sets the drill direction: 'z' (default, "
+        "position = x,y), 'x' (position = y,z coords via x,y fields), 'y' "
+        '(position = x,z). Example: {"axis":"x","holes":[{"x":0,'
+        '"y":15,"dia":8}]} bores along X centred at y=0,z=15. Use the '
+        "critique's hole axis — a lengthwise grip bore is axis='x'. At least "
+        "one of from_anchors or holes is required.",
+        {
+            "from_anchors": {
+                "type": "boolean",
+                "description": "drill all measured anchor holes",
+            },
+            "holes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                        "dia": {"type": "number"},
+                        "depth_mm": {"type": "number"},
+                        "axis": {"type": "string", "enum": ["x", "y", "z"]},
+                        "csk_dia": {"type": "number"},
+                        "csk_angle_deg": {"type": "number"},
+                    },
+                    "required": ["x", "y", "dia"],
+                },
+            },
+        },
+        [],
+    ),
+    _fn(
+        "mesh_machine_feature",
+        "Semantic machining on a SURFACE — the mesh analogue of machine_feature "
+        "in build sessions. Target the entry surface once, then the cutter is "
+        "built and oriented automatically (normal to the skin, any direction — "
+        "not just x/y/z): "
+        'face="top|bottom|front|back|left|right|±x|±y|±z" casts a ray from the '
+        "bbox extreme at at=[u,v] (default in-plane centre); face or at as "
+        "[x,y,z] is a pick point resolved to the nearest surface point + its "
+        "outward normal. axis overrides the normal as the approach direction. "
+        "op: drill|tap|cbore|csk|insert|bearing_seat|tunnel — e.g. an M8 "
+        "tapped bore into the left sidewall: "
+        '{"op":"tap","face":"left","at":[0,12],"major_d":8,"pitch":1.25,'
+        '"depth":20}. tap cuts the tap-drill bore plus the real helical ISO '
+        "groove (helical=false → implied thread, plain bore). depth omitted "
+        "→ through.",
+        {
+            "op": {
+                "type": "string",
+                "enum": ["drill", "tap", "cbore", "csk", "insert", "bearing_seat", "tunnel"],
+                "description": "machining operation",
+            },
+            "face": {
+                "type": ["string", "array"],
+                "description": "'top|bottom|front|back|left|right|±x|±y|±z' or [x,y,z] pick",
+            },
+            "at": {"type": "array", "description": "[u,v] on the face or [x,y,z] pick"},
+            "axis": {"type": ["string", "array"], "description": "approach dir 'x|y|z' or [x,y,z]"},
+            "dia": {"type": "number", "description": "bore Ø mm (tap: pilot; else required)"},
+            "major_d": {"type": "number", "description": "tap: thread major Ø"},
+            "pitch": {"type": "number", "description": "tap: thread pitch (default ISO coarse)"},
+            "depth": {"type": "number", "description": "mm; omit = through"},
+            "cbore_dia": {"type": "number"},
+            "cbore_depth": {"type": "number"},
+            "csk_dia": {"type": "number"},
+            "csk_angle": {"type": "number"},
+            "helical": {"type": "boolean", "description": "tap: real groove (default true)"},
+        },
+        ["op"],
+    ),
+    _fn(
+        "mesh_radial_profile",
+        "Sculpt the OUTER shape along an axis without primitives: scales the "
+        "cross-section radially at stations (0..1 along `axis`). r1/r2 are "
+        "factors on the two cross-section axes (axis=x → r1=Y, r2=Z). Use for "
+        "ergonomic waists, tapered ends, or rounding an oval tube. Apply "
+        "BEFORE bore/hole cuts — the factors scale every vertex, including "
+        "existing bore walls.",
+        {
+            "axis": {**_AXIS, "description": "profile axis, default x"},
+            "stations": {
+                "type": "array",
+                "description": "2-32 stations, factors interpolate linearly",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "at": {"type": "number", "description": "0..1 along axis"},
+                        "r1": {"type": "number", "description": "factor on 1st radial axis"},
+                        "r2": {"type": "number", "description": "factor on 2nd radial axis"},
+                    },
+                    "required": ["at"],
+                },
+            },
+        },
+        ["axis", "stations"],
+    ),
+    _fn(
+        "mesh_silhouette_carve",
+        "Visual-hull carve: removes material OUTSIDE the reference silhouette "
+        "only — it never fills. `view` is the projection direction (+x/-x/+y/-y, "
+        "same convention as the mesh_view_mask silhouette check); `outline` is "
+        "the reference silhouette polygon in view-plane mm (u horizontal, v "
+        "vertical/up). Use for generator overhang vs the reference; a too-deep "
+        "waist needs mesh_radial_profile_auto instead.",
+        {
+            "view": {"type": "string", "enum": ["+x", "-x", "+y", "-y"]},
+            "outline": {
+                "type": "array",
+                "description": "3-500 polygon points [[u, v], ...] in view-plane mm",
+                "items": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                },
+            },
+            "tolerance_mm": {
+                "type": "number",
+                "description": "grow the carve prism by this (default 0.5)",
+            },
+        },
+        ["view", "outline"],
+    ),
+    _fn(
+        "mesh_radial_profile_auto",
+        "Rebuild a revolve cross-section from a smooth station profile — the "
+        "complement of silhouette_carve: sets the OUTER radius at each station "
+        "to radius_mm, so a too-deep waist/neck is filled, not just pinched. "
+        "stations come from the side silhouette (t = 0..1 along `axis`). "
+        "blend_mm gaussian-smooths transitions (0 = linear between stations; a "
+        "few mm keeps the waist soft). Apply BEFORE bore/hole cuts.",
+        {
+            "axis": {**_AXIS, "description": "profile axis, default x"},
+            "stations": {
+                "type": "array",
+                "description": "2-32 stations {t, radius_mm}",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "t": {"type": "number", "description": "0..1 along axis"},
+                        "radius_mm": {
+                            "type": "number",
+                            "description": "target outer radius in mm",
+                        },
+                    },
+                    "required": ["t", "radius_mm"],
+                },
+            },
+            "blend_mm": {
+                "type": "number",
+                "description": "smoothing length along the axis in mm (default 0)",
+            },
+        },
+        ["axis", "stations"],
+    ),
+    _fn(
+        "mesh_boolean_add",
+        "Union a primitive with the part — e.g. add a base plate "
+        "(box [x,y,z] centred at [0,0,h/2]) or a boss (cylinder). Required "
+        "per shape — box: size or size_xyz; cylinder: radius+height; "
+        "sphere: radius.",
+        {
+            "shape": {"type": "string", "enum": ["box", "cylinder", "sphere"]},
+            "size": {"type": "number", "description": "box: uniform edge length mm"},
+            "size_xyz": {**_VEC3, "description": "box: [x, y, z] extents mm"},
+            "radius": {"type": "number", "description": "cylinder/sphere radius mm"},
+            "height": {"type": "number", "description": "cylinder height mm"},
+            "center": _VEC3,
+            "axis": {**_AXIS, "description": "cylinder axis, default z"},
+            "rotate_z_deg": {"type": "number", "description": "box yaw around Z"},
+        },
+        ["shape", "center"],
+    ),
+    _fn(
+        "mesh_boolean_cut",
+        "Subtract a primitive from the part — e.g. drill a hole (cylinder), "
+        "cut a pocket (box) or slice off a region. Required per shape — "
+        "box: size or size_xyz; cylinder: radius+height; sphere: radius.",
+        {
+            "shape": {"type": "string", "enum": ["box", "cylinder", "sphere"]},
+            "size": {"type": "number", "description": "box: uniform edge length mm"},
+            "size_xyz": {**_VEC3, "description": "box: [x, y, z] extents mm"},
+            "radius": {"type": "number", "description": "cylinder/sphere radius mm"},
+            "height": {"type": "number", "description": "cylinder height mm"},
+            "center": _VEC3,
+            "axis": {**_AXIS, "description": "cylinder axis, default z"},
+            "rotate_z_deg": {"type": "number", "description": "box yaw around Z"},
+        },
+        ["shape", "center"],
+    ),
+]
+
+MESH_UNDO_TOOLS = [
+    _fn("mesh_undo", "Remove the last transform op and rebuild the state.", {}, []),
+    _fn("mesh_reset", "Clear ALL ops and return to the baseline mesh.", {}, []),
+]
+
+REGENERATE_TOOLS = [
+    _fn(
+        "regenerate",
+        "Give up on this mesh and request a NEW generation with a different "
+        "seed. Only when the shape itself is wrong — not for fixable issues.",
+        {
+            "subject_hint": _s("optional improved subject description for the generator"),
+            "note": _s("why regeneration is needed"),
+        },
+        [],
+    ),
+]
+
+
+SUBMIT_CODE_TOOLS = [
+    _fn(
+        "submit_code",
+        "Submit the complete code file as the answer. Call once, when the code is ready.",
+        {
+            "code": _s("complete build123d code file"),
+            "expected_bbox": {
+                "type": "array",
+                "items": {"type": "number"},
+                "description": "[L, W, H] in mm of the expected result",
+            },
+            "params": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": _s("PARAMS key"),
+                        "unit": _s("unit, e.g. mm or deg"),
+                        "min": {"type": "number", "description": "sensible minimum"},
+                        "max": {"type": "number", "description": "sensible maximum"},
+                        "description": _s("what this parameter controls"),
+                    },
+                },
+                "description": "optional metadata for PARAMS entries (unit/min/max/description)",
+            },
+            "reasoning": _s("short design rationale"),
+        },
+        ["code"],
+    ),
+]
+
+
+# --------------------------------------------------------------------------- #
+# lazy-elision guard: refuse "# … rest unchanged" placeholder submissions      #
+# --------------------------------------------------------------------------- #
+
+_COMMENT_LINE_RE = re.compile(r"^\s*(#.*)$")
+
+# matches on the comment BODY (after '#', stripped, case-insensitive) —
+# anchored phrase shapes so a legit note like "# keep wall thickness" survives
+_ELISION_RE = re.compile(
+    r"(?:"
+    r"^\s*(?:\.\.\.|…)|"  # '# …' / '# ... rest unchanged'
+    r"\brest\s+of\s+(?:the\s+)?(?:code|file|implementation|class|function|script)\b|"
+    r"\b(?:previous|existing|original|earlier)\s+"
+    r"(?:code|implementation|logic|parts?|sections?|lines?)\b|"
+    r"\b(?:rest|code|implementation|remainder|sections?)\s+"
+    r"(?:is\s+|remains?\s+|stays?\s+)?un(?:changed|modified)\b|"
+    r"^(?:unchanged|unmodified|as before|same as before|ditto)\W*$|"
+    r"\b(?:omitted|elided|skipped|removed|truncated)\s+for\s+brevity\b|"
+    r"\btodo\b[^\n]{0,15}\b(?:rest|remaining|unchanged)\b|"
+    r"\b(?:same|identical)\s+as\s+(?:before|above|earlier|previous)\b|"
+    r"\bkeep\s+the\s+rest\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def elision_marker(code: str) -> str | None:
+    """First lazy-elision comment found in `code` ("# ... rest", "# unchanged",
+    "# previous code", "# TODO rest" …) or None.
+
+    Comments come from ``tokenize`` so '#' inside string literals is never
+    mistaken for one; code that fails to tokenize falls back to comment-only
+    lines (the contract check will flag that code on other grounds anyway).
+    """
+    comments: list[str] = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+            if tok.type == tokenize.COMMENT:
+                comments.append(tok.string)
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        comments = [m.group(1) for ln in code.splitlines() if (m := _COMMENT_LINE_RE.match(ln))]
+    for c in comments:
+        if _ELISION_RE.search(c.lstrip("#").strip()):
+            return c.strip()
+    return None
+
+
+def _elision_error(marker: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": (
+            f"refused: comment '{marker[:80]}' looks like a placeholder for "
+            "omitted code — the executor runs the file VERBATIM. Submit the "
+            "COMPLETE code with every section written out (no '# ... rest' "
+            "shortcuts)."
+        ),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# session
+# --------------------------------------------------------------------------- #
+
+
+def _floor_target_warning(out: dict[str, Any], target_volfrac: float | None) -> None:
+    """Annotate a preview/check_load result when the keep/load/fix floor
+    already exceeds the session's volume target — the follow-up topopt_run
+    would refuse on `infeasible_preflight`, so surface it early."""
+    if target_volfrac is None:
+        return
+    floor = out.get("min_feasible_volfrac") or out.get("passive_fraction")
+    if not isinstance(floor, int | float) or floor <= target_volfrac:
+        return
+    out["infeasible_target"] = True
+    out["suggested_min_target"] = round(min(0.95, floor + 0.02), 4)
+    out["warning"] = (
+        f"keep/load/fixed floor {floor:.0%} exceeds the session target "
+        f"{target_volfrac:.0%} — a topopt_run at that target will refuse; "
+        "shrink keep regions or raise target_volume_fraction"
+    )
+
+
+class ToolSession:
+    """Mutable state + dispatch for one tool-calling session."""
+
+    def __init__(
+        self,
+        ctx: AgentCtx,
+        *,
+        kind: Literal["edit", "codegen", "build", "info", "inspect", "mesh", "optimize"],
+        code: str = "",
+        verify_fn: VerifyFn | None = None,
+        # full-pipeline variant of verify_fn (renders+dfm) — used by
+        # render_model only; verify itself runs the light pipeline
+        render_fn: VerifyFn | None = None,
+        # render-only fast path: takes the source attempt art_dir (not code)
+        # and renders PNGs from its stored mesh.stl — no sandbox rerun
+        render_existing_fn: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+        workbench: Any = None,
+        fem_fn: StructFn | None = None,
+        topopt_fn: StructFn | None = None,
+        preview_fn: StructFn | None = None,
+        anchors_fn: StructFn | None = None,
+        suggest_fn: StructFn | None = None,
+        refine_fn: StructFn | None = None,
+        infill_fn: StructFn | None = None,
+        # spec features for the submission audit — [{"type":..., "name":...}];
+        # submit_code/done reject stubs that build none of them
+        spec_features: list[dict[str, Any]] | None = None,
+        spec_drop_fn: SpecDropFn | None = None,
+        # optimize sessions: the session's volume target — preview/check_load
+        # warn when the passive floor already exceeds it
+        target_volfrac: float | None = None,
+    ) -> None:
+        self.ctx = ctx
+        self.kind = kind
+        self.buffer = code
+        self.verify_fn = verify_fn
+        self.render_fn = render_fn
+        self.render_existing_fn = render_existing_fn
+        self.workbench = workbench
+        self.fem_fn = fem_fn
+        self.topopt_fn = topopt_fn
+        self.preview_fn = preview_fn
+        self.anchors_fn = anchors_fn
+        self.suggest_fn = suggest_fn
+        self.refine_fn = refine_fn
+        self.infill_fn = infill_fn
+        self.spec_features = spec_features
+        self.spec_drop_fn = spec_drop_fn
+        self.target_volfrac = target_volfrac
+        self._refined_runs: set[int] = set()
+        settings = ctx.runtime_settings
+        # build sessions verify once per feature block — they get the larger
+        # staged-build budget instead of the edit/repair one
+        verify_max = (
+            settings.agent_build_verify_max if kind == "build" else settings.agent_tool_verify_max
+        )
+        self.verify_left = verify_max if (verify_fn and settings.agent_tool_verify) else 0
+        # verify_max==0 means verify is disabled, not spent — only offer the
+        # spent-stub once a real budget was granted and consumed
+        self._verify_budgeted = self.verify_left > 0
+        self.fem_left = (
+            settings.agent_fem_max_runs if (fem_fn and settings.agent_struct_tools) else 0
+        )
+        # generate_concept_image calls left (each call may yield up to 2 images)
+        self.image_left = (
+            settings.image_tool_budget if (ctx.image is not None and ctx.image_available) else 0
+        )
+        self.topopt_left = (
+            settings.agent_topopt_max_runs if (topopt_fn and settings.agent_struct_tools) else 0
+        )
+        # shared wall-clock budget across fem/optimize/infill calls — run
+        # counts alone don't bound the damage when one optimize pass takes
+        # ~45 min on a mid-size domain (api_v8 sprocket/robot_arm codegen)
+        self.struct_budget_left = (
+            float(settings.agent_struct_budget_s)
+            if (settings.agent_struct_tools and settings.agent_struct_budget_s)
+            else None
+        )
+        # topopt run results (index, metrics, stored executor result/iteration)
+        self.struct_runs: list[dict[str, Any]] = []
+        # executor-run invocations (incl. errored ones) — done(-1) without any
+        # attempt is only valid when the decline guard proves a run impossible
+        self.struct_attempts = 0
+        self._decline_guard: Any = None
+        self.edits_applied = 0
+        self.submitted: dict[str, Any] | None = None
+        self.tool_log: list[dict[str, Any]] = []
+        self._done_reasks = 0
+        self._unchanged_warned = False
+        # last buffer that passed a sandbox verify/render — the rescue path
+        # submits this instead of a possibly-broken head on exhaustion
+        self._last_good: str | None = None
+        # render-model fast path: hash of the code the last successful exec
+        # actually ran + the attempt dir holding its mesh.stl
+        self._last_exec_key: str | None = None
+        self._last_art_dir: str | None = None
+        # build sessions: named buffer snapshots for rollback()
+        self._checkpoints: dict[str, str] = {}
+        # sha1 of every image file already sent to the model — an identical
+        # re-render is stubbed to text instead of resending the same bytes
+        self._sent_image_hashes: set[str] = set()
+
+    # -- schema selection --------------------------------------------------- #
+
+    def _verify_render_tools(self) -> list[dict[str, Any]]:
+        """verify + render_model schemas — only while the shared sandbox
+        budget lasts. Once spent, a spent-stub keeps the name visible: a call
+        gets the handler's actionable error instead of 'not available', and
+        the schema text itself tells the model to finish."""
+        if self.verify_left <= 0:
+            return _VERIFY_SPENT_TOOLS if self._verify_budgeted else []
+        verify_desc = "Execute the CURRENT code in the CAD sandbox and return the outcome: error diagnosis on failure, measured geometry (bbox, holes, fillets…) on success. Limited calls — "
+        verify_desc += (
+            "call once per stage, right after each add_block — errors name the failing block."
+            if self.kind == "build"
+            else "use once, after your edits, before done."
+        )
+        out = [_fn("verify", verify_desc, {}, [])]
+        if self.render_fn is not None:
+            out += RENDER_TOOLS
+        return out
+
+    def tools(self) -> list[dict[str, Any]]:
+        if self.kind == "edit":
+            out = [
+                *CODE_READ_TOOLS,
+                *CODE_EDIT_TOOLS,
+                *INFO_TOOLS,
+                *LIBRARY_TOOLS,
+                *CHECK_TOOLS,
+                *self._verify_render_tools(),
+            ]
+            if getattr(self.ctx.executor, "edit_feature", None) is not None:
+                out += FEATURE_EDIT_TOOLS
+            spec_tools = SPEC_FEATURE_TOOLS if self.spec_drop_fn is not None else []
+            return out + spec_tools + DONE_TOOLS + IMAGE_TOOLS
+        if self.kind == "codegen":
+            return [
+                *INFO_TOOLS,
+                *LIBRARY_TOOLS,
+                *CHECK_SNIPPET_TOOLS,
+                *(SPEC_FEATURE_TOOLS if self.spec_drop_fn is not None else []),
+                *SUBMIT_CODE_TOOLS,
+                *IMAGE_TOOLS,
+            ]
+        if self.kind == "build":
+            out = [
+                *CODE_READ_TOOLS,
+                *CODE_EDIT_TOOLS,
+                *INFO_TOOLS,
+                *LIBRARY_TOOLS,
+                # both checks: check_code validates the session buffer, the
+                # snippet variant validates a block before add_block commits it
+                *CHECK_TOOLS,
+                *CHECK_SNIPPET_TOOLS,
+            ]
+            out += self._verify_render_tools()
+            if self.spec_drop_fn is not None:
+                out += SPEC_FEATURE_TOOLS
+            return out + DONE_TOOLS + BUILD_TOOLS + BUILD_MACHINE_TOOLS + IMAGE_TOOLS
+        if self.kind == "inspect":
+            return [*CODE_READ_TOOLS, *INFO_TOOLS, *LIBRARY_INFO_TOOLS, *IMAGE_TOOLS]
+        if self.kind == "mesh":
+            out = list(MESH_INFO_TOOLS)
+            if self.workbench is None or self.workbench.preview_left <= 0:
+                out = [t for t in out if t["function"]["name"] != "mesh_preview"]
+            if self.ctx.image is None:
+                # no image sidecar → the edit round-trip cannot work
+                out = [t for t in out if t["function"]["name"] != "mesh_regen_edit"]
+            transforms = MESH_TRANSFORM_TOOLS
+            if self.workbench is not None and self.workbench.orientation_locked:
+                # measurement-backed orientation is fixed — don't offer tools
+                # that would let the model overturn it again
+                transforms = [
+                    t
+                    for t in transforms
+                    if t["function"]["name"] not in {"mesh_set_up", "mesh_rotate", "mesh_mirror"}
+                ]
+            return out + transforms + MESH_UNDO_TOOLS + DONE_TOOLS + REGENERATE_TOOLS + IMAGE_TOOLS
+        if self.kind == "optimize":
+            out = [
+                t
+                for t in STRUCT_TOOLS
+                if (t["function"]["name"] == "analyze_fem" and self.fem_left > 0)
+                or (t["function"]["name"] == "topopt_run" and self.topopt_left > 0)
+                or (
+                    t["function"]["name"] == "infill_run"
+                    and self.infill_fn
+                    and self.topopt_left > 0
+                )
+                or (t["function"]["name"] == "preview_regions" and self.preview_fn)
+                or (t["function"]["name"] == "check_load" and self.preview_fn)
+                or (t["function"]["name"] == "list_anchors" and self.anchors_fn)
+                or (t["function"]["name"] == "suggest_load_cases" and self.suggest_fn)
+                or (
+                    t["function"]["name"] == "refine_features"
+                    and self.refine_fn
+                    and self.struct_runs
+                )
+            ]
+            spec_tools = SPEC_FEATURE_TOOLS if self.spec_drop_fn is not None else []
+            return out + spec_tools + OPTIMIZE_DONE_TOOLS + IMAGE_TOOLS
+        # info sessions (intake/plan): catalog/library lookups + image gen
+        out = [*INFO_TOOLS, *LIBRARY_TOOLS, *IMAGE_TOOLS]
+        if self.image_left > 0:
+            out += CONCEPT_IMAGE_TOOLS
+        return out
+
+    def allowed_names(self) -> set[str]:
+        """Tool names this session offers — guard against hallucinated calls
+        (e.g. submit_code in a critique session would end it unusably)."""
+        return {t["function"]["name"] for t in self.tools()}
+
+    # -- dispatch ------------------------------------------------------------ #
+
+    async def execute(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        schemas = self.tools()
+        spec = next((t["function"] for t in schemas if t["function"]["name"] == name), None)
+        if spec is None:
+            result = {"ok": False, "error": f"tool '{name}' is not available in this session"}
+            self.tool_log.append({"name": name, "args": _truncate_args(args), "result": result})
+            return result
+        # required-arg guard: a missing param otherwise surfaces as a
+        # cryptic KeyError ('start') instead of telling the model what to send
+        req = spec.get("parameters", {}).get("required") or []
+        missing = [k for k in req if not isinstance(args, dict) or k not in args]
+        if missing:
+            props = spec.get("parameters", {}).get("properties", {})
+            shape = []
+            for k, v in props.items():
+                items_req = ((v or {}).get("items") or {}).get("required")
+                if (v or {}).get("type") == "array" and items_req:
+                    shape.append(f"{k}: [{{{', '.join(items_req)}}}, ...]")
+                else:
+                    shape.append(k)
+            sent = (
+                f" — you sent keys: {sorted(args)}"
+                if isinstance(args, dict) and args
+                # empty args on a tool that requires them = the call was
+                # truncated to nothing upstream — say so, or the model
+                # believes it sent a valid payload and retries verbatim
+                else " — your call arrived with NO arguments at all "
+                "(payload was lost/truncated upstream — resend it "
+                "COMPLETE, split large payloads)"
+            )
+            result = {
+                "ok": False,
+                "error": (
+                    f"missing required argument(s): {', '.join(missing)} — "
+                    f"call {name} with args {{{', '.join(shape)}}}{sent}"
+                ),
+            }
+            self.tool_log.append({"name": name, "args": _truncate_args(args), "result": result})
+            return result
+        try:
+            result = await self._dispatch(name, args)
+        except Exception as e:  # a failing tool is a result, not an exception
+            log.warning("tool_session.tool_error", tool=name, error=str(e))
+            result = {"ok": False, "error": f"tool '{name}' failed: {e}"}
+        self.tool_log.append(
+            {"name": name, "args": _truncate_args(args), "result": _truncate(result)}
+        )
+        return result
+
+    async def _dispatch(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name.startswith("mesh_") and self.workbench is not None:
+            wb_res = await self.workbench.handle(name, args)
+            return wb_res if isinstance(wb_res, dict) else {"ok": False, "error": "bad tool result"}
+        handler = getattr(self, f"_tool_{name}", None)
+        if handler is None:
+            return {"ok": False, "error": f"unknown tool '{name}'"}
+        if inspect.iscoroutinefunction(handler):
+            res: dict[str, Any] = await handler(args)
+        else:
+            res = handler(args)
+        return res
+
+    # -- code reading -------------------------------------------------------- #
+
+    def _require_buffer(self) -> dict[str, Any] | None:
+        if not self.buffer:
+            return {"ok": False, "error": "no code loaded in this session"}
+        return None
+
+    def _tool_read_lines(self, a: dict[str, Any]) -> dict[str, Any]:
+        if err := self._require_buffer():
+            return err
+        return codeedits.read_lines(self.buffer, int(a.get("start", 1)), int(a.get("end", 1)))
+
+    def _tool_search_code(self, a: dict[str, Any]) -> dict[str, Any]:
+        if err := self._require_buffer():
+            return err
+        return codeedits.search_code(
+            self.buffer,
+            str(a.get("pattern", "")),
+            context=int(a.get("context", 2) or 2),
+            regex=bool(a.get("regex", False)),
+        )
+
+    # -- code editing (edit kind only) ---------------------------------------- #
+
+    def _sigcheck_enabled(self) -> bool:
+        return bool(getattr(self.ctx.runtime_settings, "agent_sigcheck", False))
+
+    def _sig_findings(self, code: str) -> tuple[list[str], list[str]]:
+        """Signature-gate findings for a code buffer — never raises, never
+        blocks (a mid-build buffer may legitimately be incomplete)."""
+        if not self._sigcheck_enabled() or not code.strip():
+            return [], []
+        from kiara.cad.sigcheck import check_code_signatures
+
+        rep = check_code_signatures(code)
+        return rep.errors, rep.warnings
+
+    def _apply(self, res: dict[str, Any]) -> dict[str, Any]:
+        if res.get("ok") and "code" in res:
+            self.buffer = res.pop("code")
+            self.edits_applied += 1
+            # signature gate on the NEW buffer — findings are surfaced so the
+            # model fixes them before verify/done, but the edit still lands
+            sig_errors, sig_warnings = self._sig_findings(self.buffer)
+            if sig_errors:
+                res["sig_errors"] = sig_errors[:10]
+                res["note"] = (
+                    "signature gate flagged API errors in the buffer — fix them "
+                    "before verify/done (the edit was still applied)"
+                )
+            if sig_warnings:
+                res["sig_warnings"] = sig_warnings[:10]
+        return res
+
+    def _edit_kind(self) -> dict[str, Any] | None:
+        if self.kind not in ("edit", "build"):
+            return {"ok": False, "error": "editing is not available in this session"}
+        return self._require_buffer()
+
+    def _tool_replace_lines(self, a: dict[str, Any]) -> dict[str, Any]:
+        if err := self._edit_kind():
+            return err
+        start, end, text = int(a["start"]), int(a["end"]), str(a.get("code", ""))
+        n_lines = len(self.buffer.splitlines())
+        if not text.strip() and (end - start + 1) >= max(5, int(0.7 * n_lines)):
+            # weak models sometimes "fix" by wiping the file — refuse, the
+            # buffer is the session's only copy
+            return {
+                "ok": False,
+                "error": "refused: that would clear most of the file — "
+                "replace only the lines that need changing",
+            }
+        return self._apply(codeedits.replace_lines(self.buffer, start, end, text))
+
+    def _tool_insert_after(self, a: dict[str, Any]) -> dict[str, Any]:
+        if err := self._edit_kind():
+            return err
+        return self._apply(
+            codeedits.insert_after_line(self.buffer, int(a["line"]), str(a.get("code", "")))
+        )
+
+    def _tool_insert_before(self, a: dict[str, Any]) -> dict[str, Any]:
+        if err := self._edit_kind():
+            return err
+        return self._apply(
+            codeedits.insert_before_line(self.buffer, int(a["line"]), str(a.get("code", "")))
+        )
+
+    def _tool_find_replace(self, a: dict[str, Any]) -> dict[str, Any]:
+        if err := self._edit_kind():
+            return err
+        find, replace = str(a.get("find", "")), str(a.get("replace", ""))
+        n_lines = len(self.buffer.splitlines())
+        if (
+            not replace.strip()
+            and find.strip()
+            and len(find.splitlines()) >= max(5, int(0.7 * n_lines))
+        ):
+            return {
+                "ok": False,
+                "error": "refused: that would clear most of the file — "
+                "replace only the lines that need changing",
+            }
+        return self._apply(codeedits.find_replace(self.buffer, find, replace))
+
+    def _tool_set_param(self, a: dict[str, Any]) -> dict[str, Any]:
+        if err := self._edit_kind():
+            return err
+        val = a.get("value")
+        if not isinstance(val, str | int | float | bool):
+            return {"ok": False, "error": "value must be string, number or boolean"}
+        return self._apply(codeedits.set_param(self.buffer, str(a.get("name", "")), val))
+
+    # -- staged build (build kind only) ----------------------------------------- #
+
+    def _block_names(self) -> list[str]:
+        """`## block: <name>` markers currently in the buffer, in order."""
+        return _BLOCK_RE.findall(self.buffer)
+
+    def _block_at_line(self, line: int) -> str | None:
+        """Name of the block section containing 1-based `line` (the last
+        `## block:` marker at or above it), or None for scaffold code."""
+        name: str | None = None
+        for i, ln in enumerate(self.buffer.splitlines(), 1):
+            if i > line:
+                break
+            m = _BLOCK_RE.match(ln)
+            if m:
+                name = m.group(1)
+        return name
+
+    def _tool_add_block(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "add_block is only available in build sessions"}
+        name = _NAME_SANITIZE_RE.sub("_", str(a.get("name", "")).split("\n", 1)[0].strip())
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        blocks = self._block_names()
+        if name in blocks:
+            return {
+                "ok": False,
+                "error": f"block '{name}' already exists — edit it in place "
+                "(search_code/read_lines + replace_lines) or pick a new name",
+                "blocks": blocks,
+            }
+        code = str(a.get("code", "")).rstrip()
+        if not code.strip():
+            return {"ok": False, "error": "code is required"}
+        text = f"\n## block: {name}\n{code}"
+        res = self._apply(
+            codeedits.insert_after_line(self.buffer, len(self.buffer.splitlines()), text)
+        )
+        if res.get("ok"):
+            res["block"] = name
+            res["blocks"] = self._block_names()
+        return res
+
+    def _tool_checkpoint(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "checkpoint is only available in build sessions"}
+        name = str(a.get("name", "")).strip()
+        if not name:
+            return {"ok": False, "error": "name is required"}
+        if name in self._checkpoints:
+            return {"ok": False, "error": f"checkpoint '{name}' already exists"}
+        if len(self._checkpoints) >= _MAX_CHECKPOINTS:
+            return {
+                "ok": False,
+                "error": f"checkpoint limit reached ({_MAX_CHECKPOINTS})",
+                "checkpoints": sorted(self._checkpoints),
+            }
+        self._checkpoints[name] = self.buffer
+        return {
+            "ok": True,
+            "checkpoint": name,
+            "checkpoints": sorted(self._checkpoints),
+            "lines_total": len(self.buffer.splitlines()),
+        }
+
+    def _tool_rollback(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "rollback is only available in build sessions"}
+        name = str(a.get("name", "")).strip()
+        saved = self._checkpoints.get(name)
+        if saved is None:
+            return {
+                "ok": False,
+                "error": f"unknown checkpoint '{name}'",
+                "checkpoints": sorted(self._checkpoints),
+            }
+        res = self._apply({"ok": True, "code": saved})
+        res["restored"] = name
+        res["lines_total"] = len(self.buffer.splitlines())
+        res["blocks"] = self._block_names()
+        return res
+
+    # -- semantic machining (build kind only) ----------------------------------- #
+
+    def _load_session_part(self) -> tuple[Any | None, str | None]:
+        """Last verified B-Rep as a solid — worker-side introspection, no
+        sandbox call. Returns (part, error): exactly one is set."""
+        rel = self._session_brep_rel()
+        if rel is None:
+            return None, "no verified geometry yet — run verify() first"
+        try:
+            from build123d import import_brep
+
+            part = import_brep(str(storage.resolve(rel)))
+        except Exception as e:
+            return None, f"could not load the verified B-Rep: {e}"
+        return part, None
+
+    def _tool_describe_faces(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "describe_faces is only available in build sessions"}
+        part, err = self._load_session_part()
+        if err:
+            return {"ok": False, "error": err}
+        from kiara.cad import cadlib
+
+        faces = cadlib.describe_faces(part)
+        return {
+            "ok": True,
+            "faces": faces,
+            "note": "indices match machine_feature's face parameter — or use "
+            "a word ('top','left'), axis ('+z'), kind ('cylindrical') or an "
+            "[x,y,z] pick point",
+        }
+
+    async def _tool_machine_feature(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "build":
+            return {"ok": False, "error": "machine_feature is only available in build sessions"}
+        op = str(a.get("op") or "").strip().lower()
+        if op not in _MACHINE_OPS:
+            return {
+                "ok": False,
+                "error": f"op must be one of {list(_MACHINE_OPS)}",
+            }
+        dims = a.get("dims") or {}
+        if not isinstance(dims, dict):
+            return {"ok": False, "error": "dims must be an object of mm values"}
+        on = str(a.get("on") or "result").strip() or "result"
+        if not _IDENT_RE.match(on):
+            return {"ok": False, "error": "on must be a variable name"}
+        face = a.get("face")
+        at = a.get("at")
+        axis = a.get("axis")
+
+        # worker-side preview on the last verified BRep — resolve the face
+        # and land point so the answer can say WHERE the op will land before
+        # the block commits (bad descriptor → error before editing)
+        preview: dict[str, Any] = {}
+        part, perr = self._load_session_part()
+        if part is not None:
+            try:
+                from kiara.cad import cadlib
+
+                resolved = cadlib.resolve_face(part, face)
+                pick = at if isinstance(at, list | tuple) and len(at) == 3 else None
+                uv = (
+                    (float(at[0]), float(at[1]))
+                    if isinstance(at, list | tuple) and len(at) == 2
+                    else None
+                )
+                frame = cadlib.face_frame(resolved, point=pick, at=uv)
+                pos, nrm = frame.location.position, frame.z_dir
+                preview["lands_at_mm"] = [round(pos.X, 3), round(pos.Y, 3), round(pos.Z, 3)]
+                preview["approach_normal"] = [round(nrm.X, 4), round(nrm.Y, 4), round(nrm.Z, 4)]
+            except Exception as e:
+                return {"ok": False, "error": f"face {face!r} did not resolve: {e}"}
+        elif perr:
+            preview["note"] = perr
+
+        code, cerr = self._machine_block_code(op, on, face, at, axis, dims)
+        if cerr:
+            return {"ok": False, "error": cerr}
+        assert code is not None
+
+        add = self._tool_add_block({"name": f"machine_{op}", "code": code})
+        if not add.get("ok"):
+            return add
+        out: dict[str, Any] = {
+            "ok": True,
+            "block": add["block"],
+            "emitted_code": code,
+            **preview,
+        }
+        # auto-verify costs the normal verify budget — a bad block surfaces
+        # immediately instead of at done
+        if self.verify_left > 0:
+            verify = await self._tool_verify({})
+            out["verify"] = verify
+            if not verify.get("ok"):
+                out["ok"] = False
+                out["note"] = (
+                    f"block '{add['block']}' appended but FAILED verify — fix it "
+                    "in place or rollback to the last checkpoint"
+                )
+        else:
+            out["note"] = "verify budget spent — block appended unverified"
+        return out
+
+    def _machine_block_code(
+        self,
+        op: str,
+        on: str,
+        face: Any,
+        at: Any,
+        axis: Any,
+        dims: dict[str, Any],
+    ) -> tuple[str | None, str | None]:
+        """Emit the canonical `cadlib.machine_on_face` block — the buffer
+        re-resolves the face deterministically at exec, so what verified is
+        what ships."""
+        feat_name = f"_feat_{op}_{len(self._block_names())}"
+        lines = [f"{on}, {feat_name} = cadlib.machine_on_face(", f"    {on}, face={face!r},"]
+        if isinstance(at, list | tuple) and len(at) in (2, 3):
+            lines.append(f"    at={[float(v) for v in at]!r},")
+        if axis is not None:
+            lines.append(f"    axis={axis!r},")
+        for key, value in dims.items():
+            if not _IDENT_RE.match(str(key)):
+                return None, f"invalid dims key {key!r}"
+            if not isinstance(value, int | float | str | bool):
+                return None, f"dims.{key} must be a number or string"
+            lines.append(f"    {key}={value!r},")
+        lines.append(f"    op={op!r})")
+        if "KIARA_FEATURES" in self.buffer:
+            lines.append(f"KIARA_FEATURES = KIARA_FEATURES + [{feat_name}]")
+        else:
+            lines.append(f"KIARA_FEATURES = [{feat_name}]")
+        code = "\n".join(lines)
+        if "import cadlib" not in self.buffer:
+            code = "import cadlib\n" + code
+        return code, None
+
+    # -- info tools ------------------------------------------------------------ #
+
+    def _tool_search_catalog(self, a: dict[str, Any]) -> dict[str, Any]:
+        query = str(a.get("query", "")).strip()
+        if not query:
+            return {"ok": False, "error": "query is required"}
+        hits = catalog.search(query)
+        return {"ok": True, "results": hits, "count": len(hits)}
+
+    def _tool_lookup_part(self, a: dict[str, Any]) -> dict[str, Any]:
+        try:
+            data = catalog.lookup_part(
+                str(a.get("class_name", "")),
+                fastener_type=a.get("fastener_type") or None,
+                size=str(a["size"]) if a.get("size") is not None else None,
+                length=float(a["length"]) if a.get("length") is not None else None,
+                parameters=a.get("parameters") if isinstance(a.get("parameters"), dict) else None,
+                simple=a.get("simple"),
+            )
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "part": data}
+
+    def _tool_create_standard_part(self, a: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from kiara.cad.standard_parts import build_standard_part_code, validate_standard_parts
+
+            part = StandardPartSpec.model_validate(a)
+            recipe = build_standard_part_code([part])
+            detail = validate_standard_parts([part])[0]
+            part_data = catalog.lookup_part(
+                part.class_name,
+                fastener_type=part.fastener_type or None,
+                size=part.size or None,
+                length=part.length_mm,
+                parameters=part.parameters,
+            )
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:500]}
+        return {
+            "ok": True,
+            "part": part_data,
+            "thread": detail["thread"],
+            "code": recipe,
+            "detail_policy": {
+                "preview": "lightweight visible thread cue",
+                "exports": "real thread geometry",
+            },
+        }
+
+    def _tool_cadlib_lookup(self, a: dict[str, Any]) -> dict[str, Any]:
+        try:
+            from kiara.cad import cadlib  # backend package path
+        except ImportError:
+            import cadlib  # type: ignore[no-redef]  # sandbox layout
+
+        name = str(a.get("name", ""))
+        fn = getattr(cadlib, name, None)
+        if fn is None or not callable(fn):
+            return {
+                "ok": False,
+                "error": f"'{name}' not found in cadlib. "
+                f"Available: {', '.join(n for n in dir(cadlib) if not n.startswith('_'))}",
+            }
+        try:
+            sig = str(inspect.signature(fn))
+        except (TypeError, ValueError):
+            sig = "(...)"
+        doc = inspect.getdoc(fn) or "no docstring"
+        return {"ok": True, "name": name, "signature": f"{name}{sig}", "doc": doc[:1500]}
+
+    def _tool_quickref(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Signature digest — synchronous host-side introspection, cached
+        per installed package versions in kiara.agent.quickref."""
+        from kiara.agent.quickref import quickref
+
+        topic = str(a.get("topic", "")).strip()
+        if not topic:
+            return {"ok": False, "error": "topic is required"}
+        text = quickref(topic)
+        if text.startswith(("unknown quickref topic", "cannot resolve")):
+            return {"ok": False, "error": text}
+        return {"ok": True, "topic": topic, "reference": text}
+
+    # -- web research ------------------------------------------------------------ #
+
+    async def _tool_web_search(self, a: dict[str, Any]) -> dict[str, Any]:
+        from kiara.agent import webresearch
+
+        query = str(a.get("query", "")).strip()
+        if not query:
+            return {"ok": False, "error": "query is required"}
+        max_results = int(getattr(self.ctx.runtime_settings, "agent_research_max_results", 5) or 5)
+        async with webresearch._client() as client:
+            rows = await webresearch.search(query, client, max_results=max_results)
+        if not rows:
+            return {"ok": False, "error": "no results — all search backends failed or empty"}
+        return {"ok": True, "results": rows}
+
+    async def _tool_fetch_url(self, a: dict[str, Any]) -> dict[str, Any]:
+        from kiara.agent import webresearch
+
+        url = str(a.get("url", "")).strip()
+        if not url:
+            return {"ok": False, "error": "url is required"}
+        async with webresearch._client() as client:
+            return await webresearch.fetch(url, client)
+
+    # -- image tools ------------------------------------------------------------ #
+
+    def _tool_view_image(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Return the image file via `_images` — toolloop forwards it as a
+        user message with image parts (tool messages can't carry images)."""
+        aid = str(a.get("asset_id", "")).strip()
+        images = [x for x in self.ctx.assets if x.kind in IMAGE_INPUT_KINDS]
+        match = next((x for x in images if x.asset_id == aid), None)
+        if match is None and aid:
+            cands = [x for x in images if x.asset_id.startswith(aid)]
+            if len(cands) == 1:
+                match = cands[0]
+        if match is None:
+            return {
+                "ok": False,
+                "error": f"unknown image asset '{aid}'",
+                "available": [x.asset_id for x in images],
+            }
+        if not match.path.exists():
+            return {"ok": False, "error": f"image file missing: {match.filename}"}
+        return {
+            "ok": True,
+            "asset_id": match.asset_id,
+            "filename": match.filename,
+            "caption": match.caption,
+            "_images": [str(match.path)],
+        }
+
+    async def _tool_generate_concept_image(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Local text-to-image call — budget-capped per session; the result is
+        persisted as a generated_image asset AND forwarded via `_images`."""
+        if self.image_left <= 0:
+            return {"ok": False, "error": "concept image budget exhausted"}
+        prompt = str(a.get("prompt", "")).strip()
+        if not prompt:
+            return {"ok": False, "error": "prompt is required"}
+        count = max(1, min(2, int(a.get("count", 1) or 1)))
+
+        # optional reference image — must be one of this project's image assets
+        # the agent already knows (ctx.assets); the id travels in the trace
+        # either way, but the bytes never leave the machine
+        ref_id = str(a.get("reference_asset_id") or "").strip()
+        ref_asset: InputAsset | None = None
+        if ref_id:
+            ref_asset = next(
+                (
+                    x
+                    for x in self.ctx.assets
+                    if x.asset_id == ref_id and x.kind in IMAGE_INPUT_KINDS
+                ),
+                None,
+            )
+            if ref_asset is None:
+                return {
+                    "ok": False,
+                    "error": f"reference_asset_id '{ref_id}' is not an image asset of this job",
+                    "calls_left": self.image_left,
+                }
+        strength = a.get("strength")
+        mark_sketch = a.get("mark_sketch")
+        # tolerate "false"/"0" strings — a schema-obedient literal bool("false")
+        # would wrongly tag every edit as a sketch
+        mark_sketch = mark_sketch is True or str(mark_sketch).lower() in ("true", "1", "yes")
+        self.image_left -= 1
+
+        try:
+            from kiara.agent.concept_image import generate_concept_images
+
+            out = await generate_concept_images(
+                self.ctx,
+                prompt,
+                count=count,
+                seed=int(a["seed"]) if a.get("seed") is not None else None,
+                ref_asset=ref_asset,
+                strength=float(strength) if strength is not None else None,
+                mark_sketch=mark_sketch,
+                source="concept_tool",
+            )
+            return {
+                "ok": True,
+                "calls_left": self.image_left,
+                "assets": [{"asset_id": x.asset_id, "filename": x.filename} for x in out],
+                "note": "image(s) shown below and stored as generated_image assets — "
+                "usable as image inputs for mesh generation",
+                "_images": [str(x.path) for x in out],
+            }
+        except Exception as e:
+            log.warning("tool_session.concept_image_failed", error=str(e))
+            return {
+                "ok": False,
+                "error": f"image generation failed: {e}",
+                "calls_left": self.image_left,
+            }
+
+    # -- library tools ---------------------------------------------------------- #
+
+    async def _fetch_part(self, part_id: str) -> Any:
+        from kiara.db.models import LibraryPart
+        from kiara.db.session import session_scope
+
+        try:
+            pid = uuid.UUID(part_id)
+        except ValueError:
+            return None
+        async with session_scope() as db:
+            return await db.get(LibraryPart, pid)
+
+    async def _tool_search_library(self, a: dict[str, Any]) -> dict[str, Any]:
+        from sqlalchemy import or_
+        from sqlmodel import col, select
+
+        from kiara.db.models import LibraryPart
+        from kiara.db.session import session_scope
+
+        q = str(a.get("query", "")).strip().lower()
+        kind = str(a.get("kind", "")).strip().lower()
+        stmt = select(LibraryPart)
+        if kind:
+            stmt = stmt.where(LibraryPart.kind == kind)
+        for t in q.split():
+            # ilike wildcards would change the old literal-substring match —
+            # escape %/_/\ so a query token keeps byte-for-byte semantics
+            esc = t.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pat = f"%{esc}%"
+            # the token may live in any of the display fields — the Python-side
+            # filter matched against "name caption filename" joined
+            stmt = stmt.where(
+                or_(
+                    LibraryPart.name.ilike(pat, escape="\\"),
+                    LibraryPart.caption.ilike(pat, escape="\\"),
+                    LibraryPart.filename.ilike(pat, escape="\\"),
+                )
+            )
+        # created_at order = the library list's own ordering; LIMIT replaces
+        # the old full-scan-then-[:20] cut (which read the whole table)
+        stmt = stmt.order_by(col(LibraryPart.created_at)).limit(20)
+        async with session_scope() as db:
+            rows = (await db.execute(stmt)).scalars().all()
+        hits: list[dict[str, Any]] = [
+            {
+                "id": str(p.id),
+                "name": p.name,
+                "kind": p.kind,
+                "filename": p.filename,
+                "caption": p.caption,
+                "params": sorted((p.params or {}).keys()) or None,
+            }
+            for p in rows
+        ]
+        out: dict[str, Any] = {"ok": True, "count": len(hits), "results": hits}
+        if not hits:
+            out["hint"] = "no library parts match — model the geometry yourself"
+        return out
+
+    async def _tool_library_part(self, a: dict[str, Any]) -> dict[str, Any]:
+        part = await self._fetch_part(str(a.get("part_id", "")))
+        if part is None:
+            return {"ok": False, "error": "library part not found"}
+        out: dict[str, Any] = {
+            "ok": True,
+            "id": str(part.id),
+            "name": part.name,
+            "kind": part.kind,
+            "filename": part.filename,
+            "caption": part.caption,
+        }
+        if part.kind == "template":
+            out["params"] = part.params or {}
+            out["code"] = (part.code or "")[:6000]
+        else:
+            out["usage"] = f'load_reference("{part.id}")  # returns the stored part solid'
+        return out
+
+    async def _tool_attach_library_part(self, a: dict[str, Any]) -> dict[str, Any]:
+        part = await self._fetch_part(str(a.get("part_id", "")))
+        if part is None:
+            return {"ok": False, "error": "library part not found"}
+        pid = str(part.id)
+        if pid in self.ctx.library_attached or any(x.asset_id == pid for x in self.ctx.assets):
+            return {"ok": True, "part_id": pid, "note": "already attached"}
+        if part.kind == "template":
+            self.ctx.library_templates.append(
+                {
+                    "name": part.name,
+                    "caption": part.caption,
+                    "code": part.code or "",
+                    "params": part.params or {},
+                }
+            )
+            usage = "template code attached — adapt it, don't copy verbatim"
+        else:
+            self.ctx.assets.append(
+                InputAsset(
+                    asset_id=pid,
+                    kind="reference_step" if part.kind == "step" else "reference_stl",
+                    path=storage.resolve(part.path),
+                    caption=f"{part.name} — {part.caption}".rstrip(" —"),
+                    filename=part.filename,
+                )
+            )
+            usage = f'file part attached — load it via load_reference("{pid}")'
+        self.ctx.library_attached.append(pid)
+        return {
+            "ok": True,
+            "part_id": pid,
+            "name": part.name,
+            "kind": part.kind,
+            "usage": usage,
+        }
+
+    # -- checks ---------------------------------------------------------------- #
+
+    def _contract_errors(self, code: str) -> list[str]:
+        chk = check_code(code, sigcheck=self._sigcheck_enabled())
+        errs = list(chk.errors) + list(chk.sig_errors)
+        if not chk.errors:
+            errs += check_standard_part_calls(chk.code or code)
+        return errs
+
+    def _contract_warnings(self, code: str) -> list[str]:
+        return list(check_code(code).warnings)
+
+    def _tool_check_code(self, a: dict[str, Any]) -> dict[str, Any]:
+        if err := self._require_buffer():
+            return err
+        errs = self._contract_errors(self.buffer)
+        out: dict[str, Any] = {"ok": not errs, "errors": errs[:10]}
+        if warns := self._contract_warnings(self.buffer):
+            out["warnings"] = warns[:10]
+        _, sig_warnings = self._sig_findings(self.buffer)
+        if sig_warnings:
+            out["sig_warnings"] = sig_warnings[:10]
+        return out
+
+    def _tool_check_snippet(self, a: dict[str, Any]) -> dict[str, Any]:
+        code = str(a.get("code", ""))
+        errs = self._contract_errors(code)
+        out: dict[str, Any] = {"ok": not errs, "errors": errs[:10]}
+        if warns := self._contract_warnings(code):
+            out["warnings"] = warns[:10]
+        _, sig_warnings = self._sig_findings(code)
+        if sig_warnings:
+            out["sig_warnings"] = sig_warnings[:10]
+        return out
+
+    # -- verify ---------------------------------------------------------------- #
+
+    def _exec_diag(self, res: dict[str, Any], label: str) -> dict[str, Any]:
+        """Failure shape shared by verify/render: structured error diagnosis."""
+        from kiara.cad.errordiag import diagnose
+
+        diag = diagnose(res.get("error"), res.get("traceback"), self.buffer)
+        out: dict[str, Any] = {
+            "ok": False,
+            label: "execution failed",
+            "category": diag.category,
+            "error": (res.get("error") or "")[:400],
+            "line": diag.failing_line,
+            "excerpt": diag.code_excerpt,
+            "hint": diag.hint,
+        }
+        # staged build: attribute the failing line to its `## block:` section
+        # so the model knows WHICH feature to fix/rollback, not just the line
+        if (
+            self.kind == "build"
+            and diag.failing_line is not None
+            and (blk := self._block_at_line(diag.failing_line))
+        ):
+            out["block"] = blk
+        # error-triggered doc injection: when the error names a real symbol
+        # (AttributeError/NameError/TypeError), attach its introspected
+        # signature so the repair doesn't guess the API again
+        try:
+            from kiara.agent.docfetch import docs_for_error
+
+            docs = docs_for_error(
+                res.get("error"), res.get("traceback"), self.buffer, diag.failing_line
+            )
+            if docs:
+                out["docs"] = docs
+        except Exception as e:  # doc injection is best-effort, never breaks the result
+            log.warning("docfetch.failed", error=str(e))
+        geo = res.get("geometry_at_failure")
+        if geo:
+            out["geometry_at_failure"] = geo
+            out["note"] = (
+                "geometry_at_failure shows where the built bodies ACTUALLY are "
+                "— a body at the origin that should be elsewhere means the "
+                "placement was discarded; fix positioning before selectors"
+            )
+        return out
+
+    async def _tool_verify(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.verify_fn is None or self.verify_left <= 0:
+            return {
+                "ok": False,
+                "error": "verify budget spent — finish with done now; do NOT call verify again",
+                "budget_exhausted": True,
+            }
+        if err := self._require_buffer():
+            return err
+        self.verify_left -= 1
+        try:
+            res = await self.verify_fn(self.buffer)
+        except Exception as e:
+            return {"ok": False, "error": f"verify execution failed: {e}"}
+        if res.get("ok"):
+            self._last_good = self.buffer
+            self._track_exec(res)
+            ana = res.get("analysis") or {}
+            out: dict[str, Any] = {
+                "ok": True,
+                "verify": "code executed successfully",
+                "bbox_size": ana.get("bbox_size"),
+                "volume": ana.get("volume"),
+                "is_valid": ana.get("is_valid"),
+                "watertight": ana.get("watertight"),
+                "warnings": ana.get("warnings"),
+            }
+            if code_warns := self._contract_warnings(self.buffer):
+                out["code_warnings"] = code_warns[:10]
+            if res.get("features"):
+                out["features"] = res["features"]
+            return out
+        return self._exec_diag(res, "verify")
+
+    def _exec_key(self) -> str:
+        return hashlib.sha256(self.buffer.encode()).hexdigest()
+
+    def _track_exec(self, res: dict[str, Any]) -> None:
+        """Remember which attempt dir rendered the current buffer — a later
+        render_model on identical code reuses its mesh.stl instead of paying
+        a full sandbox rerun."""
+        if res.get("art_dir"):
+            self._last_exec_key = self._exec_key()
+            self._last_art_dir = str(res["art_dir"])
+        else:
+            # no stored attempt dir -> nothing safe to fast-path
+            self._last_exec_key = None
+            self._last_art_dir = None
+
+    async def _tool_render_model(self, a: dict[str, Any]) -> dict[str, Any]:
+        """verify + vision: same sandbox run, but the contact-sheet render is
+        attached via `_images` so the model can see the geometry. Uses the
+        full (non-light) pipeline — renders are the point."""
+        fn = self.render_fn or self.verify_fn
+        if fn is None or self.verify_left <= 0:
+            return {"ok": False, "error": "render not available (budget exhausted or disabled)"}
+        if err := self._require_buffer():
+            return err
+        self.verify_left -= 1
+        key = self._exec_key()
+        res: dict[str, Any] | None = None
+        # fast path: identical buffer was already executed — re-render the
+        # stored mesh.stl rather than paying a full ~50s sandbox pipeline
+        if (
+            self.render_existing_fn is not None
+            and self._last_exec_key == key
+            and self._last_art_dir
+        ):
+            try:
+                res = await self.render_existing_fn(self._last_art_dir)
+                if res.get("ok"):
+                    res["render_fast_path"] = True
+                else:
+                    res = None  # stale source attempt — full render below
+            except Exception:
+                res = None
+        if res is None:
+            try:
+                res = await fn(self.buffer)
+            except Exception as e:
+                return {"ok": False, "error": f"render execution failed: {e}"}
+        if not res.get("ok"):
+            return self._exec_diag(res, "render")
+        self._last_good = self.buffer
+        if res.get("render_fast_path"):
+            # the source attempt still holds the canonical mesh.stl — keep
+            # pointing at it so the next identical render stays cheap
+            self._last_exec_key = key
+        else:
+            self._track_exec(res)
+        images: list[str] = []
+        if sheet := res.get("contact_sheet"):
+            with contextlib.suppress(ValueError):
+                images.append(str(storage.resolve(sheet)))
+        ana = res.get("analysis") or {}
+        out: dict[str, Any] = {
+            "ok": True,
+            "bbox_size": ana.get("bbox_size"),
+            "volume": ana.get("volume"),
+            "is_valid": ana.get("is_valid"),
+            "watertight": ana.get("watertight"),
+        }
+        if res.get("render_fast_path"):
+            out["render_fast_path"] = True
+        if images:
+            out["_images"] = images
+            out["render"] = "contact sheet attached — compare with the spec and references"
+        else:
+            out["render"] = "executed ok, but the executor produced no render"
+        return out
+
+    # -- verified feature edits (M9) -------------------------------------------- #
+
+    def _session_brep_rel(self) -> str | None:
+        """Newest verified B-Rep this session produced — ``_run/model.brep``
+        under any iteration/attempt dir of the working version."""
+        v_dir = storage.version_dir(self.ctx.project_id, self.ctx.version_id)
+        it_root = v_dir / "iterations"
+        candidates: list[Any] = []
+        if it_root.is_dir():
+            candidates.extend(it_root.glob("*/_run/model.brep"))
+            candidates.extend(it_root.glob("*/*/_run/model.brep"))
+        if not candidates:
+            return None
+        newest = max(candidates, key=lambda p: p.stat().st_mtime)
+        return storage.relpath(newest)
+
+    async def _feature_edit_exec(self, extra: dict[str, Any]) -> dict[str, Any]:
+        fn = getattr(self.ctx.executor, "edit_feature", None)
+        if fn is None:
+            return {"ok": False, "error": "edit_feature not available in this session kind"}
+        source = self._session_brep_rel()
+        if source is None:
+            return {
+                "ok": False,
+                "error": "no verified B-Rep in this session yet — run verify() first",
+            }
+        payload = {
+            "job_id": str(self.ctx.job_id),
+            "project_id": str(self.ctx.project_id),
+            "version_id": str(self.ctx.version_id),
+            "iteration": 0,
+            "source_brep": source,
+            "dry_run": True,  # gate check only — nothing is committed
+            "settings": self.ctx.settings.model_dump(),
+            "runtime_settings": self.ctx.runtime_settings.executor_values(),
+            **extra,
+        }
+        res = await fn(payload)
+        return res if isinstance(res, dict) else {"ok": False, "error": "bad executor result"}
+
+    async def _tool_list_editable_features(self, a: dict[str, Any]) -> dict[str, Any]:
+        res = await self._feature_edit_exec({"feature_id": None})
+        if not res.get("ok"):
+            return res
+        return {"ok": True, "features": res.get("features") or []}
+
+    async def _tool_edit_feature(self, a: dict[str, Any]) -> dict[str, Any]:
+        try:
+            feature_id: int | str = int(str(a.get("feature_id")))
+        except (TypeError, ValueError):
+            feature_id = str(a.get("feature_id") or "")
+        try:
+            diameter = float(a.get("diameter"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "diameter must be a number (mm)"}
+        res = await self._feature_edit_exec(
+            {"feature_id": feature_id, "parameter": "diameter", "value": diameter}
+        )
+        if res.get("ok"):
+            res["note"] = (
+                "gate passed — this diameter is geometrically safe; express the "
+                "same resize in the code buffer before submit_code/done"
+            )
+        return res
+
+    # -- structural tools (optimize kind) --------------------------------------- #
+
+    @staticmethod
+    def _coerce_obj_list(raw: Any) -> Any:
+        """Models often send a single object or a JSON string where a list is
+        required — accept `{...}` → `[{...}]` and `'[{...}]'` → parsed."""
+        if isinstance(raw, dict):
+            return [raw]
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                return raw
+            return [parsed] if isinstance(parsed, dict) else parsed
+        return raw
+
+    @staticmethod
+    def _fem_compact(fem: dict[str, Any]) -> dict[str, Any]:
+        """Compact FEM report for the model: per-case numbers + warnings."""
+        cases = []
+        for c in fem.get("cases") or []:
+            cc: dict[str, Any] = {
+                "name": c.get("name"),
+                "safety_factor": c.get("safety_factor"),
+                "max_vm_mpa": c.get("max_vm_mpa"),
+                "max_disp_mm": c.get("max_disp_mm"),
+                "converged": c.get("converged"),
+                "warnings": c.get("warnings") or [],
+            }
+            r = c.get("reactions")
+            if isinstance(r, dict):
+                # equilibrium report: resultant force + applied moment about
+                # the support centroid — lets the model verify that a couple
+                # it declared actually landed (and where)
+                cc["resultant_n"] = r.get("resultant_n")
+                cc["moment_nm"] = r.get("moment_nm")
+                cc["moment_mag_nm"] = r.get("moment_mag_nm")
+                if r.get("moment_mag_direct_nm") is not None:
+                    cc["moment_direct_nm"] = r.get("moment_direct_nm")
+                    cc["moment_induced_nm"] = r.get("moment_induced_nm")
+                if r.get("moment_mag_deficit_nm") is not None:
+                    cc["moment_deficit_nm"] = r.get("moment_deficit_nm")
+            elif r is not None:
+                cc["reactions_n"] = r  # legacy list shape
+            deficits = [
+                {
+                    "region": a.get("kind"),
+                    "axis": a.get("axis"),
+                    "hole_index": a.get("hole_index"),
+                    "couple_deficit_nm": a.get("couple_deficit_nm"),
+                    "couple_footprint_mm": a.get("couple_footprint_mm"),
+                }
+                for a in (c.get("applied") or [])
+                if a.get("couple_deficit_nm")
+                and max(abs(float(v)) for v in a["couple_deficit_nm"]) > 0.05
+            ]
+            if deficits:
+                cc["load_moment_deficits"] = deficits
+            cases.append(cc)
+        return {
+            "material": (fem.get("material") or {}).get("name"),
+            "grid": {k: fem.get("grid", {}).get(k) for k in ("pitch", "elements", "dofs")},
+            "pitch_mm": (fem.get("grid") or {}).get("pitch"),
+            "pitch_note": fem.get("pitch_note"),
+            # routing hint for the multi-stage structural pipeline — which
+            # structure_mode a follow-up run should start with
+            "recommended_mode": fem.get("recommended_mode"),
+            "recommended_reasons": fem.get("recommended_reasons"),
+            "recommended_target_volfrac": fem.get("recommended_target_volfrac"),
+            "cases": cases,
+            "warnings": fem.get("warnings") or [],
+            "note": fem.get("note"),
+        }
+
+    async def _tool_preview_regions(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.preview_fn is None:
+            return {"ok": False, "error": "preview_regions not available"}
+        cases = self._coerce_obj_list(a.get("load_cases"))
+        if not isinstance(cases, list) or not cases:
+            return {"ok": False, "error": "load_cases must be a non-empty list"}
+        res = await self.preview_fn(
+            {**a, "load_cases": cases, "keep_regions": self._coerce_obj_list(a.get("keep_regions"))}
+        )
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "preview failed"}
+        prev = res.get("preview") or {}
+        passive_frac = prev.get("passive_fraction")
+        out: dict[str, Any] = {
+            "ok": True,
+            "pitch_mm": prev.get("pitch_mm"),
+            "solid_elements": prev.get("solid_elements"),
+            "n_keep_cells": prev.get("n_keep_cells"),
+            "n_fixed_cells": prev.get("n_fixed_cells"),
+            "n_load_cells": prev.get("n_load_cells"),
+            "passive_fraction": passive_frac,
+            "free_fraction": (
+                round(1.0 - float(passive_frac), 4) if passive_frac is not None else None
+            ),
+            "min_feasible_volfrac": prev.get("min_feasible_volfrac"),
+            "cases": prev.get("cases") or [],
+        }
+        _floor_target_warning(out, self.target_volfrac)
+        images = [str(p) for p in res.get("_images") or []]
+        if images:
+            out["_images"] = images
+            out["preview"] = (
+                "region renders attached — blue=fixed red=load green=keep; "
+                "check the load lands where you intended"
+            )
+        return out
+
+    async def _tool_list_anchors(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.anchors_fn is None:
+            return {"ok": False, "error": "list_anchors not available"}
+        res = await self.anchors_fn(a)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "anchor scan failed"}
+        anchors = res.get("anchors") or []
+        return {
+            "ok": True,
+            "n_anchors": len(anchors),
+            "anchors": [
+                {
+                    k: a2.get(k)
+                    for k in (
+                        "index",
+                        "kind",
+                        "axis",
+                        "x",
+                        "y",
+                        "z",
+                        "dia",
+                        "depth_mm",
+                        "bolt_size",
+                        "name",
+                        "source",
+                    )
+                    if a2.get(k) is not None
+                }
+                for a2 in anchors
+            ],
+            "note": "hole_index in hole/anchor/bore regions refers to these indices",
+        }
+
+    async def _tool_suggest_load_cases(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.suggest_fn is None:
+            return {"ok": False, "error": "suggest_load_cases not available"}
+        return await self.suggest_fn(a)
+
+    async def _tool_check_load(self, a: dict[str, Any]) -> dict[str, Any]:
+        """Region resolution + resultant force/moment WITHOUT a render or a
+        solve — the cheap equilibrium sanity check."""
+        if self.preview_fn is None:
+            return {"ok": False, "error": "check_load not available"}
+        cases = self._coerce_obj_list(a.get("load_cases"))
+        if not isinstance(cases, list) or not cases:
+            return {"ok": False, "error": "load_cases must be a non-empty list"}
+        res = await self.preview_fn({**a, "load_cases": cases, "render_pngs": False})
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "check failed"}
+        prev = res.get("preview") or {}
+        out = {
+            "ok": True,
+            "pitch_mm": prev.get("pitch_mm"),
+            "solid_elements": prev.get("solid_elements"),
+            "n_keep_cells": prev.get("n_keep_cells"),
+            "n_fixed_cells": prev.get("n_fixed_cells"),
+            "n_load_cells": prev.get("n_load_cells"),
+            "passive_fraction": prev.get("passive_fraction"),
+            "min_feasible_volfrac": prev.get("min_feasible_volfrac"),
+            "cases": prev.get("cases") or [],
+        }
+        _floor_target_warning(out, self.target_volfrac)
+        return out
+
+    def _struct_budget_check(self, tool: str) -> dict[str, Any] | None:
+        if self.struct_budget_left is None or self.struct_budget_left > 0:
+            return None
+        return {
+            "ok": False,
+            "error": (
+                f"{tool} not available (structural wall-clock budget exhausted — "
+                "agent_struct_budget_s spent on earlier fem/optimize calls)"
+            ),
+        }
+
+    def _struct_budget_spend(self, t0: float) -> None:
+        if self.struct_budget_left is not None:
+            self.struct_budget_left -= time.monotonic() - t0
+
+    def _struct_budget_meta(self) -> dict[str, float]:
+        if self.struct_budget_left is None:
+            return {}
+        return {"struct_budget_s_left": round(max(0.0, self.struct_budget_left))}
+
+    async def _tool_analyze_fem(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.fem_fn is None or self.fem_left <= 0:
+            return {"ok": False, "error": "analyze_fem not available (budget exhausted)"}
+        if (over := self._struct_budget_check("analyze_fem")) is not None:
+            return over
+        cases = self._coerce_obj_list(a.get("load_cases"))
+        if not isinstance(cases, list) or not cases:
+            return {"ok": False, "error": "load_cases must be a non-empty list"}
+        self.fem_left -= 1
+        t0 = time.monotonic()
+        try:
+            res = await self.fem_fn(
+                {**a, "load_cases": cases, "target_volfrac": self.target_volfrac}
+            )
+        finally:
+            self._struct_budget_spend(t0)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "FEM failed"}
+        fem = res.get("fem") or {}
+        out = {"ok": True, **self._fem_compact(fem)}
+        images = [str(p) for p in res.get("_images") or []]
+        if images:
+            out["_images"] = images
+        out["fem_calls_left"] = self.fem_left
+        out.update(self._struct_budget_meta())
+        return out
+
+    async def _tool_topopt_run(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.topopt_fn is None or self.topopt_left <= 0:
+            return {"ok": False, "error": "topopt_run not available (budget exhausted)"}
+        if (over := self._struct_budget_check("topopt_run")) is not None:
+            return over
+        self.topopt_left -= 1
+        self.struct_attempts += 1
+        t0 = time.monotonic()
+        try:
+            res = await self.topopt_fn(
+                {
+                    **a,
+                    "load_cases": self._coerce_obj_list(a.get("load_cases")),
+                    "keep_regions": self._coerce_obj_list(a.get("keep_regions")),
+                }
+            )
+        finally:
+            self._struct_budget_spend(t0)
+        if not res.get("ok"):
+            top = res.get("topopt") or {}
+            out: dict[str, Any] = {"ok": False, "error": res.get("error") or "optimization failed"}
+            if top.get("infeasible_preflight"):
+                # refused before any SIMP iteration — refund the run budget
+                # and hand back the floor so the caller can re-target
+                self.topopt_left += 1
+                out["infeasible_target"] = True
+                out["min_feasible_volfrac"] = top.get("min_feasible_volfrac")
+                out["passive_fraction"] = top.get("passive_frac")
+                out["topopt_calls_left"] = self.topopt_left
+            return out
+        top = res.get("topopt") or {}
+        fem = res.get("fem") or {}
+        sfs = [
+            c.get("safety_factor")
+            for c in fem.get("cases") or []
+            if c.get("safety_factor") is not None
+        ]
+        idx = len(self.struct_runs)
+        self.struct_runs.append(
+            {
+                "index": idx,
+                "iteration": res.get("_iteration"),
+                "res": res,
+                "params": a,
+            }
+        )
+        # headline SF must be the pessimistic bound across mask + export —
+        # reporting only the mask number presented a 1.29 headline for a run
+        # whose exported part actually measured 0.53
+        sf_export = top.get("sf_export")
+        sf_verified = top.get("sf_verified")
+        worst = [v for v in (*sfs, sf_export, sf_verified) if v is not None]
+        # fraction of the design space pinned by keep/load/fix regions —
+        # i.e. the minimum volfrac a run can possibly reach
+        passive_frac = top.get("passive_frac")
+        out: dict[str, Any] = {
+            "ok": True,
+            "run_index": idx,
+            "volfrac_requested": top.get("volfrac_requested"),
+            "volfrac_target": top.get("volfrac_target"),
+            "volfrac_achieved": top.get("volfrac_achieved"),
+            "iterations": top.get("iterations"),
+            "converged": top.get("converged"),
+            # how the run ended — converged | infeasible_target |
+            # limit_cycle | degenerate | budget_exhausted
+            "status": top.get("status"),
+            "passive_fraction": passive_frac,
+            "free_fraction": (
+                round(1.0 - float(passive_frac), 4) if passive_frac is not None else None
+            ),
+            "min_feasible_volfrac": passive_frac,
+            "meets_safety_factor": (top.get("verification") or {}).get("meets_safety_factor"),
+            "worst_safety_factor": min(worst) if worst else None,
+            "sf_mask": top.get("sf_mask"),
+            "sf_export": top.get("sf_export"),
+            "sf_verified": sf_verified,
+            "sf_realizations": top.get("sf_realizations"),
+            "sf_micro": top.get("sf_micro"),
+            "bottleneck_mm2": top.get("bottleneck_mm2"),
+            "sf_floor": top.get("sf_floor"),
+            "load_path_ok": top.get("load_path_ok"),
+            "strut_align_deg": top.get("strut_align_deg"),
+            "sf_mesh_sensitive": top.get("sf_mesh_sensitive"),
+            "min_member_mm": top.get("min_member_mm"),
+            "domain_pitch": top.get("domain_pitch"),
+            "domain_spec_overshoot_mm": top.get("domain_spec_overshoot_mm"),
+            "auto_coarsen": top.get("auto_coarsen"),
+            "pitch_feature_warn": top.get("pitch_feature_warn"),
+            "thin_fraction": top.get("thin_fraction"),
+            "n_components": top.get("n_components"),
+            "n_bodies_export": top.get("n_bodies_export"),
+            "verified": (top.get("verification") or {}).get("valid"),
+            "sf_gap": (top.get("verification") or {}).get("sf_gap"),
+            "retry": top.get("retry"),
+            "overhang_pct": (top.get("verification") or {}).get("overhang_pct"),
+            "cases": self._fem_compact(fem).get("cases"),
+            # validity-critical warnings (degenerate solve, disconnected
+            # bodies, divergence) are appended LAST by the pipeline — a plain
+            # head-window drops exactly them on noisy runs
+            "warnings": _warning_window(top.get("warnings")),
+            "verify_spec": _verify_spec_compact(res.get("verify_spec")),
+            # measured feature evidence on the shipped mesh — the agent sees
+            # bore degradation the voxel metrics can't express (Ø8.5 -> 6.9)
+            "features_measured": _hole_groups_compact(res.get("features")),
+            "recut": _recut_compact(res.get("features")),
+            "topopt_calls_left": self.topopt_left,
+            **self._struct_budget_meta(),
+        }
+        # machine-readable recovery: next-run knobs keyed off how THIS run
+        # ended — the status names the failure, not the fix
+        recovery: list[str] = []
+        status = top.get("status")
+        ac = top.get("auto_coarsen") or {}
+        if ac.get("feature_floor_hit"):
+            recovery.append(
+                "grid held at the anchor feature floor — raise "
+                "fem_spsolve_dofs (settings) or accept CG solve time; do NOT "
+                "raise voxel_mm, that under-resolves the anchored bores the "
+                "floor protects"
+            )
+        if status == "limit_cycle":
+            recovery.append(
+                "limit_cycle — try symmetry=<plane>, filter='cone', or "
+                "solver='mma' + mma_final_beta to break the mask oscillation"
+            )
+        if status == "degenerate":
+            recovery.append(
+                "degenerate solve — check each load/fixed region resolves to "
+                ">0 cells; 'hole'/'anchor'/'bore' regions need hole_index or "
+                "an axis+center hint or they bind nothing"
+            )
+        if status == "mechanism":
+            recovery.append(
+                "mechanism — compliance exploded mid-run; the optimizer cut "
+                "the load path. Retry with a higher target_volume_fraction, "
+                "loadpath_corridor_mm, or tighter keep regions around the "
+                "load path"
+            )
+        if status == "plateau_regression":
+            recovery.append(
+                "plateau_regression — the run settled far above its own "
+                "best compliance (best design was restored); retry with a "
+                "different filter/threshold or the other solver "
+                "(oc <-> mma)"
+            )
+        if status == "infeasible_target":
+            recovery.append(
+                "infeasible_target — the passive floor already exceeds "
+                "volfrac; raise target_volume_fraction or relax keep regions"
+            )
+        if recovery:
+            out["recovery_hints"] = recovery
+        images = [str(p) for p in res.get("_images") or []]
+        if images:
+            out["_images"] = images
+        # structured run row for the job's live table — emit is a noop in
+        # non-job contexts (MCP/chat) and must never break the tool result.
+        # None-checked, not or-chained — a solved SF of 0.0 IS a verdict
+        worst_sf = sf_verified if sf_verified is not None else sf_export
+        if worst_sf is None:
+            worst_sf = min(sfs) if sfs else None
+        emit = getattr(self.ctx, "emit", None)
+        if emit is not None:
+            with contextlib.suppress(Exception):
+                await emit(
+                    "optimize",
+                    res.get("_iteration") or 0,
+                    f"run {idx} done — volfrac {top.get('volfrac_achieved')}, SF {worst_sf}",
+                    run={
+                        "index": idx,
+                        "type": "topopt",
+                        "volfrac": top.get("volfrac_target"),
+                        "achieved": top.get("volfrac_achieved"),
+                        "worst_sf": worst_sf,
+                    },
+                )
+        return out
+
+    async def _tool_infill_run(self, a: dict[str, Any]) -> dict[str, Any]:
+        # shell+infill burns an executor run like topopt_run — shared budget
+        if self.infill_fn is None or self.topopt_left <= 0:
+            return {"ok": False, "error": "infill_run not available (budget exhausted)"}
+        if (over := self._struct_budget_check("infill_run")) is not None:
+            return over
+        self.topopt_left -= 1
+        self.struct_attempts += 1
+        t0 = time.monotonic()
+        try:
+            res = await self.infill_fn(
+                {
+                    **a,
+                    "load_cases": self._coerce_obj_list(a.get("load_cases")),
+                }
+            )
+        finally:
+            self._struct_budget_spend(t0)
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "infill generation failed"}
+        top = res.get("topopt") or {}
+        fem = res.get("fem") or {}
+        sfs = [
+            c.get("safety_factor")
+            for c in fem.get("cases") or []
+            if c.get("safety_factor") is not None
+        ]
+        idx = len(self.struct_runs)
+        self.struct_runs.append(
+            {
+                "index": idx,
+                "iteration": res.get("_iteration"),
+                "res": res,
+                "params": {**a, "structure_mode": "infill"},
+            }
+        )
+        sf_export = top.get("sf_export")
+        sf_verified = top.get("sf_verified")
+        worst = [v for v in (*sfs, sf_export, sf_verified) if v is not None]
+        out: dict[str, Any] = {
+            "ok": True,
+            "run_index": idx,
+            "structure_mode": "infill",
+            "volfrac_achieved": top.get("volfrac_achieved"),
+            "meets_safety_factor": (top.get("verification") or {}).get("meets_safety_factor"),
+            "worst_safety_factor": min(worst) if worst else None,
+            "sf_mask": top.get("sf_mask"),
+            "sf_export": top.get("sf_export"),
+            "sf_verified": sf_verified,
+            "sf_realizations": top.get("sf_realizations"),
+            "sf_homog": top.get("sf_homog"),
+            "sf_micro": top.get("sf_micro"),
+            "bottleneck_mm2": top.get("bottleneck_mm2"),
+            "sf_floor": top.get("sf_floor"),
+            "load_path_ok": top.get("load_path_ok"),
+            "strut_align_deg": top.get("strut_align_deg"),
+            "sf_mesh_sensitive": top.get("sf_mesh_sensitive"),
+            "min_member_mm": top.get("min_member_mm"),
+            "n_components": top.get("n_components"),
+            "n_bodies_export": top.get("n_bodies_export"),
+            "verified": (top.get("verification") or {}).get("valid"),
+            "status": top.get("status"),
+            "infill": top.get("infill"),
+            "cases": self._fem_compact(fem).get("cases"),
+            "warnings": _warning_window(top.get("warnings")),
+            "verify_spec": _verify_spec_compact(res.get("verify_spec")),
+            "topopt_calls_left": self.topopt_left,
+            **self._struct_budget_meta(),
+        }
+        images = [str(p) for p in res.get("_images") or []]
+        if images:
+            out["_images"] = images
+        # None-checked — a solved SF of 0.0 IS a verdict
+        worst_sf = sf_verified if sf_verified is not None else sf_export
+        if worst_sf is None:
+            worst_sf = min(sfs) if sfs else None
+        emit = getattr(self.ctx, "emit", None)
+        if emit is not None:
+            with contextlib.suppress(Exception):
+                await emit(
+                    "optimize",
+                    res.get("_iteration") or 0,
+                    f"infill run {idx} done — SF {worst_sf}",
+                    run={
+                        "index": idx,
+                        "type": "infill",
+                        "worst_sf": worst_sf,
+                    },
+                )
+        return out
+
+    async def _tool_refine_features(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.refine_fn is None:
+            return {"ok": False, "error": "refine_features not available"}
+        idx = a.get("run_index")
+        if (
+            not isinstance(idx, int)
+            or isinstance(idx, bool)
+            or not (0 <= idx < len(self.struct_runs))
+        ):
+            return {
+                "ok": False,
+                "error": f"run_index must be 0..{len(self.struct_runs) - 1} "
+                "(a completed topopt_run)",
+            }
+        if idx in self._refined_runs:
+            return {"ok": False, "error": f"run {idx} already refined"}
+        res = await self.refine_fn(
+            {
+                **a,
+                "load_cases": self._coerce_obj_list(a.get("load_cases")),
+                "features": self._coerce_obj_list(a.get("features")),
+                "_run": self.struct_runs[idx],
+            }
+        )
+        if not res.get("ok"):
+            return {"ok": False, "error": res.get("error") or "refine failed"}
+        self._refined_runs.add(idx)
+        rep = (res.get("features") or {}).get("refine") or {}
+        fem = res.get("fem") or {}
+        sfs = [
+            c.get("safety_factor")
+            for c in fem.get("cases") or []
+            if c.get("safety_factor") is not None
+        ]
+        new_idx = len(self.struct_runs)
+        self.struct_runs.append(
+            {
+                "index": new_idx,
+                "iteration": res.get("_iteration"),
+                "res": res,
+                "params": {"refine_of": idx, "features": a.get("features") or "auto"},
+            }
+        )
+        verify_misses = rep.get("verify_misses") or []
+        out: dict[str, Any] = {
+            "ok": True,
+            "run_index": new_idx,
+            "refined_from_run": idx,
+            "features_applied": rep.get("applied") or [],
+            "features_skipped": rep.get("skipped") or [],
+            "restored_regions": rep.get("restored_regions") or 0,
+            "worst_safety_factor": min(sfs) if sfs else None,
+            "cases": self._fem_compact(fem).get("cases") if fem else None,
+            "warnings": _warning_window(rep.get("warnings")),
+            "verify_spec": _verify_spec_compact(res.get("verify_spec")),
+        }
+        if verify_misses:
+            out["verify_misses"] = [
+                {
+                    "name": (m.get("entry") or {}).get("name"),
+                    "expected_uv": [m.get("x"), m.get("y")],
+                    "dia_mm": m.get("dia"),
+                }
+                for m in verify_misses
+            ]
+            out["warning"] = (
+                f"{len(verify_misses)} cut feature(s) did not verify — no tunnel/"
+                "dimple at the expected position+diameter; the host region may "
+                "be gone or the anchor table stale. Check renders/spec anchors "
+                "before committing this run."
+            )
+        images = [str(p) for p in res.get("_images") or []]
+        if images:
+            out["_images"] = images
+        emit = getattr(self.ctx, "emit", None)
+        if emit is not None:
+            with contextlib.suppress(Exception):
+                await emit(
+                    "optimize",
+                    res.get("_iteration") or 0,
+                    f"run {new_idx} done — refined run {idx}, SF {min(sfs) if sfs else None}",
+                    run={
+                        "index": new_idx,
+                        "type": "refine",
+                        "refined_from": idx,
+                        "applied": len(rep.get("applied") or []),
+                        "worst_sf": min(sfs) if sfs else None,
+                    },
+                )
+        return out
+
+    # -- submission ------------------------------------------------------------ #
+
+    def _tool_drop_spec_feature(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.spec_drop_fn is None:
+            return {"ok": False, "error": "drop_spec_feature is not available in this session"}
+        index = a.get("feature_index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            return {"ok": False, "error": "feature_index must be a zero-based integer"}
+        reason = a.get("reason")
+        if not isinstance(reason, str) or len(reason.strip()) < 12:
+            return {
+                "ok": False,
+                "error": "reason must explain the limitation in at least 12 characters",
+            }
+        result = self.spec_drop_fn(index, reason)
+        if result.get("ok") and isinstance(result.get("active_features"), list):
+            self.spec_features = result["active_features"]
+        return result
+
+    def _tool_done(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind == "optimize":
+            idx = int(a.get("run_index", -1))
+            if idx < -1 or idx >= len(self.struct_runs):
+                return {
+                    "ok": False,
+                    "error": f"run_index must be -1 or 0..{len(self.struct_runs) - 1}",
+                }
+            if idx == -1:
+                qualified = [r for r in self.struct_runs if _optimize_run_qualifies(r)]
+                if qualified:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"run_index -1 declined: {len(qualified)} run(s) are "
+                            "connected, verified, printable and feature-complete "
+                            f"— pick the best (e.g. run_index "
+                            f"{qualified[-1]['index']}). -1 is only for when no "
+                            "run satisfies that — e.g. every run is disconnected, "
+                            "unverified or below the target safety factor."
+                        ),
+                    }
+                if not self.struct_runs and self.struct_attempts == 0 and self.topopt_left > 0:
+                    why = self._decline_guard() if self._decline_guard else None
+                    if why is None:
+                        return {
+                            "ok": False,
+                            "error": (
+                                "run_index -1 declined: no optimization run was "
+                                "attempted — a comfortable base safety factor is "
+                                "removal headroom, not a reason to skip. Call "
+                                "topopt_run (or infill_run) at least once; -1 is "
+                                "only valid after an attempted run failed, was "
+                                "proven infeasible, or can no longer finish in "
+                                "the remaining time budget."
+                            ),
+                        }
+            self.submitted = {
+                "chosen_run": idx,
+                "reasoning": str(a.get("reasoning", "")),
+            }
+            return {"ok": True, "done": True}
+        if self.kind == "mesh":
+            if self.workbench is None or self.workbench.work is None:
+                return {"ok": False, "error": self.workbench.error or "no mesh loaded"}
+            self.submitted = {
+                "ops": [o.model_dump() for o in self.workbench.ops],
+                "reasoning": str(a.get("reasoning", "")),
+                "expected_bbox": a.get("expected_bbox") or [],
+            }
+            return {"ok": True, "done": True}
+        if err := self._require_buffer():
+            return err
+        if marker := elision_marker(self.buffer):
+            return _elision_error(marker)
+        if self.edits_applied == 0 and not self._unchanged_warned:
+            self._unchanged_warned = True
+            return {
+                "ok": False,
+                "error": "no edits applied — make a change, or call done again "
+                "to confirm the code is already correct",
+            }
+        errs = self._contract_errors(self.buffer)
+        if errs and self._done_reasks < 2:
+            self._done_reasks += 1
+            return {
+                "ok": False,
+                "error": "contract check failed — fix before done",
+                "errors": errs[:10],
+            }
+        if self.spec_features:
+            missing = feature_audit_missing(self.buffer, self.spec_features)
+            if missing and self._done_reasks < 2:
+                self._done_reasks += 1
+                return {
+                    "ok": False,
+                    "error": "feature audit failed — the buffer builds none of the "
+                    f"required features: {', '.join(missing)}. Add them stage by "
+                    "stage (add_block + verify each), then done again.",
+                    "missing": missing,
+                }
+        self.submitted = {
+            "code": self.buffer,
+            "reasoning": str(a.get("reasoning", "")),
+            "expected_bbox": a.get("expected_bbox") or [],
+            "unchanged": self.edits_applied == 0,
+            "contract_errors": errs if errs else None,
+        }
+        return {"ok": True, "done": True}
+
+    def _tool_submit_code(self, a: dict[str, Any]) -> dict[str, Any]:
+        code = str(a.get("code", ""))
+        if marker := elision_marker(code):
+            return _elision_error(marker)
+        errs = self._contract_errors(code)
+        if errs and self._done_reasks < 2:
+            self._done_reasks += 1
+            return {
+                "ok": False,
+                "error": "contract check failed — fix and submit again",
+                "errors": errs[:10],
+            }
+        if self.spec_features:
+            missing = feature_audit_missing(code, self.spec_features)
+            if missing and self._done_reasks < 2:
+                self._done_reasks += 1
+                return {
+                    "ok": False,
+                    "error": "feature audit failed — the submission builds none of the "
+                    f"required features: {', '.join(missing)}. This is an exploration "
+                    "stub, not the part — add the features (add_block + verify each), "
+                    "then submit again.",
+                    "missing": missing,
+                }
+        self.submitted = {
+            "code": code,
+            "reasoning": str(a.get("reasoning", "")),
+            "expected_bbox": a.get("expected_bbox") or [],
+            "params": [p for p in (a.get("params") or []) if isinstance(p, dict)],
+            "contract_errors": errs if errs else None,
+        }
+        self.buffer = code
+        return {"ok": True, "submitted": True}
+
+    def _tool_regenerate(self, a: dict[str, Any]) -> dict[str, Any]:
+        if self.kind != "mesh":
+            return {"ok": False, "error": "regenerate is only available in mesh sessions"}
+        self.submitted = {
+            "regenerate": True,
+            "subject_hint": str(a.get("subject_hint", "")),
+            "note": str(a.get("note", "")),
+            "ops": [o.model_dump() for o in (self.workbench.ops if self.workbench else [])],
+        }
+        return {"ok": True, "regenerate": True}
+
+    @property
+    def is_done(self) -> bool:
+        return self.submitted is not None
+
+    @property
+    def last_good_buffer(self) -> str | None:
+        """Newest buffer that passed a sandbox verify/render this session —
+        None when nothing was verified ok."""
+        return self._last_good
+
+
+def _truncate(v: Any, limit: int = 1200) -> Any:
+    s = json.dumps(v, default=str)
+    if len(s) <= limit:
+        return v
+    return s[:limit] + "…"
+
+
+def _truncate_args(args: dict[str, Any]) -> dict[str, Any]:
+    out = {}
+    for k, v in args.items():
+        sv = str(v)
+        out[k] = sv if len(sv) <= 300 else sv[:300] + "…"
+    return out

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-CADX is in early alpha. Only the latest pre-release receives fixes.
+KIARA is in early alpha. Only the latest pre-release receives fixes.
 
 | Version         | Supported |
 | --------------- | --------- |
@@ -21,11 +21,11 @@ acknowledgement; there is no formal SLA while the project is in alpha.
 
 ## Scope notes
 
-- CADX is designed as a **local, single-user** tool. Exposing the API port
+- KIARA is designed as a **local, single-user** tool. Exposing the API port
   beyond localhost is out of the supported deployment model.
 - LLM API keys, HF tokens and other runtime secrets are stored
-  **Fernet-encrypted at rest** (`backend/cadx/secrets_crypto.py`, `enc:v1:`
-  prefix) — the key lives in `CADX_SETTINGS_KEY` or `data/.settings.key`.
+  **Fernet-encrypted at rest** (`backend/kiara/secrets_crypto.py`, `enc:v1:`
+  prefix) — the key lives in `KIARA_SETTINGS_KEY` or `data/.settings.key`.
   Never paste tokens into issues, logs, traces or screenshots.
 - LLM-generated CAD code executes only inside the sandboxed executor
   (`cad/sandbox.py`) — report sandbox escapes with high priority.

@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from cadx.cad.verifyspec import verify_spec
+from kiara.cad.verifyspec import verify_spec
 
 
 def _spec(**over):

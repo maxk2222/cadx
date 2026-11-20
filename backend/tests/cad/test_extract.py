@@ -10,8 +10,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cadx.cad.fem.extract import _volume_preserved_iso, density_to_mask, density_to_mesh
-from cadx.cad.fem.voxelize import VoxelDomain
+from kiara.cad.fem.extract import _volume_preserved_iso, density_to_mask, density_to_mesh
+from kiara.cad.fem.voxelize import VoxelDomain
 
 
 def _domain(n: int = 24, pitch: float = 1.0) -> VoxelDomain:

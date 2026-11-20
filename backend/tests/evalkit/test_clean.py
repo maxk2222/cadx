@@ -6,9 +6,9 @@ import uuid
 
 import pytest
 
-from cadx.db.models import AgentTrace, Job, JobStatus, Project, Version
-from cadx.db.session import async_session, create_all
-from cadx.evalkit.clean import purge_files, wipe_db
+from kiara.db.models import AgentTrace, Job, JobStatus, Project, Version
+from kiara.db.session import async_session, create_all
+from kiara.evalkit.clean import purge_files, wipe_db
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +18,7 @@ async def _tables():
     # counts reflect only what this test seeded (raw deletes, FK-safe order)
     from sqlalchemy import delete as sa_delete
 
-    from cadx.db.models import (
+    from kiara.db.models import (
         AppSetting,
         Artifact,
         Asset,
@@ -58,7 +58,7 @@ async def _seed(project_name="p"):
 async def _counts():
     from sqlmodel import func, select
 
-    from cadx.db.models import Artifact, Asset, Chat, ChatMessage, LibraryPart
+    from kiara.db.models import Artifact, Asset, Chat, ChatMessage, LibraryPart
 
     out = {}
     async with async_session() as db:
@@ -90,7 +90,7 @@ async def test_wipe_db_dry_run_counts_but_keeps_rows():
 async def test_wipe_db_executes_fk_safe_and_preserves_settings():
     from sqlmodel import func, select
 
-    from cadx.db.models import AppSetting
+    from kiara.db.models import AppSetting
 
     await _seed()
     async with async_session() as db:
@@ -126,7 +126,7 @@ async def test_wipe_db_refuses_with_active_jobs_unless_forced():
 
 
 def test_purge_files_dry_run_and_execute(tmp_path, monkeypatch):
-    import cadx.evalkit.clean as cl
+    import kiara.evalkit.clean as cl
 
     # purge targets real eval dirs — isolate so the test never wipes run output
     monkeypatch.setattr(cl, "RESULTS_DIR", tmp_path / "evals" / "results")
@@ -150,7 +150,7 @@ def test_purge_files_dry_run_and_execute(tmp_path, monkeypatch):
 
 
 def test_purge_files_never_touches_suite_or_baselines(tmp_path, monkeypatch):
-    import cadx.evalkit.clean as cl
+    import kiara.evalkit.clean as cl
 
     suite = tmp_path / "evals" / "suite"
     base = tmp_path / "evals" / "baselines"

@@ -10,9 +10,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from cadx.agent.context import bindings_block
-from cadx.agent.featurebind import bind_features
-from cadx.llm.schemas import PartSpec
+from kiara.agent.context import bindings_block
+from kiara.agent.featurebind import bind_features
+from kiara.llm.schemas import PartSpec
 
 _DIM = {"value": 60.0, "unit": "mm", "source": "stated"}
 
@@ -352,7 +352,7 @@ class TestBlock:
             raise RuntimeError("parser bug")
 
         monkeypatch.setitem(
-            __import__("cadx.agent.featurebind", fromlist=["x"])._BINDERS, "slot", boom
+            __import__("kiara.agent.featurebind", fromlist=["x"])._BINDERS, "slot", boom
         )
         # must not raise — the slot just doesn't get a binding
         assert all(b.name != "leg_slot" for b in bind_features(spec))

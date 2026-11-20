@@ -8,14 +8,14 @@ from pathlib import Path
 
 import trimesh
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.mesh_tools import MeshWorkbench, _primitive_volume
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.cad.mesh_ops import MeshPostParams
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.mesh_tools import MeshWorkbench, _primitive_volume
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.cad.mesh_ops import MeshPostParams
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.runtime_config import RuntimeSettings
 
 
 def _ctx(**kw) -> AgentCtx:

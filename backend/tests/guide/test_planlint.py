@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from cadx.guide.planlint import plan_lint
-from cadx.guide.state import AssemblyState, GuidePart, GuideState, GuideStep, GuideSubStep
+from kiara.guide.planlint import plan_lint
+from kiara.guide.state import AssemblyState, GuidePart, GuideState, GuideStep, GuideSubStep
 
 
 def _part(pid: str) -> GuidePart:
@@ -151,8 +151,8 @@ def test_host_without_incoming_mates_is_blocker() -> None:
     """The largest registered part is the assembly's base — a plan mating
     nothing to it produces a satellite disconnected from the host (kiara
     heatpump: adapters stacked onto each other, zero casing joints)."""
-    from cadx.guide.planlint import plan_lint
-    from cadx.guide.state import GuidePart
+    from kiara.guide.planlint import plan_lint
+    from kiara.guide.state import GuidePart
 
     big = GuidePart(id="casing", name="Gehäuse", bbox_min=[0, 0, 0], bbox_max=[10, 10, 10])
     small = GuidePart(id="adapter", name="Adapter", bbox_min=[0, 0, 0], bbox_max=[1, 1, 1])
@@ -176,7 +176,7 @@ def test_context_target_routes_to_parts_for_aliasing() -> None:
     """A placement target that IS context (a nozzle/port feature name) is
     fixed by alias_part onto the enclosing part — only the parts mission
     has that tool."""
-    from cadx.guide.planlint import plan_lint
+    from kiara.guide.planlint import plan_lint
 
     sess = _sess(
         [_part("casing"), _part("adapter")],
@@ -238,8 +238,8 @@ def test_detected_qty_bounds_plan_when_register_omits() -> None:
     """Register calls that omit `quantity` still get bounded by the
     Stückliste numbers the doc mission captured (heatpump: qty=None →
     5x l500 placed for a 2-piece kit)."""
-    from cadx.guide.planlint import plan_lint
-    from cadx.guide.state import DocumentIndex
+    from kiara.guide.planlint import plan_lint
+    from kiara.guide.state import DocumentIndex
 
     p = _part("pipe_l500")
     p.name = "Rohr DN22, l = 500 mm"
@@ -260,7 +260,7 @@ def test_detected_qty_bounds_plan_when_register_omits() -> None:
 
 
 def test_split_name_qty_variants() -> None:
-    from cadx.guide.doc_tools import _split_name_qty
+    from kiara.guide.doc_tools import _split_name_qty
 
     assert _split_name_qty("2x Rohr DN22") == ("Rohr DN22", 2, 0)
     assert _split_name_qty("Rohr DN22 x2") == ("Rohr DN22", 2, 0)
@@ -327,7 +327,7 @@ def test_plan_lint_reopen_uncapped_returns_fatal() -> None:
     from pathlib import Path
     from tempfile import mkdtemp
 
-    from cadx.guide.guide_runner import _plan_lint_reopen
+    from kiara.guide.guide_runner import _plan_lint_reopen
 
     sess = _sess(
         [_part("pipe")],
@@ -597,7 +597,7 @@ def test_add_sub_step_refuses_pin_side_contradiction() -> None:
     the right instance is refused immediately, naming both sides."""
     import asyncio
 
-    from cadx.guide.step_tools import add_sub_step
+    from kiara.guide.step_tools import add_sub_step
 
     sess = _adapter_plan("irrelevant")
     r = asyncio.run(
@@ -620,7 +620,7 @@ def test_add_sub_step_refuses_pin_side_contradiction() -> None:
 def test_add_sub_step_consistent_pin_and_forward_pin_pass() -> None:
     import asyncio
 
-    from cadx.guide.step_tools import add_sub_step
+    from kiara.guide.step_tools import add_sub_step
 
     sess = _adapter_plan("irrelevant")
     r = asyncio.run(
@@ -653,7 +653,7 @@ def test_add_sub_step_consistent_pin_and_forward_pin_pass() -> None:
 def test_update_sub_step_refuses_pin_contradiction_without_mutating() -> None:
     import asyncio
 
-    from cadx.guide.step_tools import update_sub_step
+    from kiara.guide.step_tools import update_sub_step
 
     sess = _adapter_plan("irrelevant")
     step4 = sess.state.step_by_number(4)
@@ -827,7 +827,7 @@ def test_premount_context_part_needs_no_marker() -> None:
     literal 'vormontiert' word adds nothing and deadlocks the repair
     loop (observed: 'Gehäuse linker Port' targets blocked because they
     lacked the marker while 'gehause' was BOM-premounted)."""
-    from cadx.guide.state import DocumentIndex
+    from kiara.guide.state import DocumentIndex
 
     sess = _sess(
         [GuidePart(id="casing", name="gehause", bbox_min=[0, 0, 0], bbox_max=[1, 1, 1]),
@@ -846,7 +846,7 @@ def test_premount_kit_kind_still_needs_marker() -> None:
     """A kind that ships BOTH kit and device-mounted copies keeps the
     marker requirement — otherwise premount references silently bind the
     kit instance instead of spawning the mounted one."""
-    from cadx.guide.state import DocumentIndex
+    from kiara.guide.state import DocumentIndex
 
     sess = _sess(
         [_part("casing"), _part("adapter"), _part("pipe")],

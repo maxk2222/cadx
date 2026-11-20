@@ -1,4 +1,4 @@
-name: cadx-dev
+name: kiara-dev
 
 # Infra only, for running api/worker/cad-executor natively (see Makefile `dev`).
 
@@ -6,15 +6,15 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: cadx
-      POSTGRES_PASSWORD: cadx
-      POSTGRES_DB: cadx
+      POSTGRES_USER: kiara
+      POSTGRES_PASSWORD: kiara
+      POSTGRES_DB: kiara
     ports:
       - "5432:5432"
     volumes:
       - pgdata-dev:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cadx -d cadx"]
+      test: ["CMD-SHELL", "pg_isready -U kiara -d kiara"]
       interval: 5s
       timeout: 3s
       retries: 20

@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from cadx.cad.contact_sheet import COLS, TILE, make_contact_sheet
+from kiara.cad.contact_sheet import COLS, TILE, make_contact_sheet
 
 
 def _png(path: Path, rgb: tuple[int, int, int] = (150, 150, 150)) -> Path:

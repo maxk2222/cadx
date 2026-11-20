@@ -19,8 +19,8 @@ import math
 import pytest
 import trimesh
 
-from cadx.cad.engine import _post_extract_finish
-from cadx.cad.fem.refine import (
+from kiara.cad.engine import _post_extract_finish
+from kiara.cad.fem.refine import (
     RefineFeature,
     applied_refine_features,
     apply_refine,
@@ -48,7 +48,7 @@ def _bored(x: float = 10.0, dia: float = 6.0) -> trimesh.Trimesh:
 
 def test_analytic_step_through_hole_has_cylinder_face(tmp_path):
     b3d = pytest.importorskip("build123d")
-    from cadx.cad.exporters import export_analytic_step
+    from kiara.cad.exporters import export_analytic_step
 
     feats = [RefineFeature(name="b1", kind="hole", axis="+z", u=10.0, v=0.0, dia=6.0)]
     res = export_analytic_step(_box(), feats, tmp_path / "m.step")
@@ -64,7 +64,7 @@ def test_analytic_step_through_hole_has_cylinder_face(tmp_path):
 def test_analytic_step_thread_keeps_cylinder_and_groove(tmp_path):
     b3d = pytest.importorskip("build123d")
     pytest.importorskip("bd_warehouse.thread")
-    from cadx.cad.exporters import export_analytic_step
+    from kiara.cad.exporters import export_analytic_step
 
     mesh = _box()
     feats = [
@@ -87,7 +87,7 @@ def test_analytic_step_thread_keeps_cylinder_and_groove(tmp_path):
 
 def test_analytic_step_blind_minus_z(tmp_path):
     b3d = pytest.importorskip("build123d")
-    from cadx.cad.exporters import export_analytic_step
+    from kiara.cad.exporters import export_analytic_step
 
     mesh = _box()
     feats = [RefineFeature(name="bl", kind="hole", axis="-z", u=-5.0, v=0.0, dia=6.0, depth_mm=5.0)]
@@ -101,7 +101,7 @@ def test_analytic_step_blind_minus_z(tmp_path):
 
 def test_analytic_step_dict_features(tmp_path):
     b3d = pytest.importorskip("build123d")
-    from cadx.cad.exporters import export_analytic_step
+    from kiara.cad.exporters import export_analytic_step
 
     feats = [{"name": "d1", "kind": "hole", "axis": "+z", "x": 0.0, "y": 0.0, "dia": 5.0}]
     res = export_analytic_step(_box(), feats, tmp_path / "d.step")
@@ -113,8 +113,8 @@ def test_analytic_step_dict_features(tmp_path):
 
 def test_analytic_step_sew_failure_never_raises(monkeypatch, tmp_path):
     pytest.importorskip("build123d")
-    import cadx.cad.mesh_ops as mo
-    from cadx.cad.exporters import export_analytic_step
+    import kiara.cad.mesh_ops as mo
+    from kiara.cad.exporters import export_analytic_step
 
     def boom(*args: object, **kwargs: object) -> object:
         raise ValueError("watertight rebuild diverged from input")
@@ -130,7 +130,7 @@ def test_analytic_step_sew_failure_never_raises(monkeypatch, tmp_path):
 
 def test_analytic_step_bad_feature_keeps_faceted_step(tmp_path):
     pytest.importorskip("build123d")
-    from cadx.cad.exporters import export_analytic_step
+    from kiara.cad.exporters import export_analytic_step
 
     # 'boss' is not a cuttable kind — skipped; the faceted sewn STEP still ships
     feats = [RefineFeature(name="boss", kind="boss", axis="+z", u=0.0, v=0.0, dia=8.0)]
@@ -232,7 +232,7 @@ def test_topopt_post_extract_recuts_real_base_bore() -> None:
     assert report["applied"]
     assert report["verify_misses"] == []
     assert refine_verify(out, report, anchors=anchors) == []
-    from cadx.cad.mesh_features import detect_mesh_features
+    from kiara.cad.mesh_features import detect_mesh_features
 
     holes = detect_mesh_features(out).holes
     assert any(h.axis == "z" and abs(h.dia - 6.0) < 0.6 for h in holes)
@@ -282,7 +282,7 @@ def test_refine_verify_missing_feature_flagged():
 
 def test_refine_verify_blind_probe_verifies(monkeypatch: pytest.MonkeyPatch):
     """Scan-invisible blind pocket confirmed by probe_blind_features → no miss."""
-    from cadx.cad.fem import anchors3d
+    from kiara.cad.fem import anchors3d
 
     seen: list[dict] = []
 
@@ -318,7 +318,7 @@ def test_refine_verify_blind_probe_verifies(monkeypatch: pytest.MonkeyPatch):
 
 def test_refine_verify_probe_shallow_keeps_miss(monkeypatch: pytest.MonkeyPatch):
     """Probe found the pocket but only 2 mm of the requested 6 mm → FAIL."""
-    from cadx.cad.fem import anchors3d
+    from kiara.cad.fem import anchors3d
 
     monkeypatch.setattr(
         anchors3d,
@@ -351,7 +351,7 @@ def test_refine_verify_probe_shallow_keeps_miss(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_refine_verify_probe_not_found_keeps_miss(monkeypatch: pytest.MonkeyPatch):
-    from cadx.cad.fem import anchors3d
+    from kiara.cad.fem import anchors3d
 
     monkeypatch.setattr(
         anchors3d,
@@ -367,7 +367,7 @@ def test_refine_verify_probe_not_found_keeps_miss(monkeypatch: pytest.MonkeyPatc
 
 def test_refine_verify_probe_crash_keeps_scan_verdict(monkeypatch: pytest.MonkeyPatch):
     """A probe error must never break verification — degrade to the scan."""
-    from cadx.cad.fem import anchors3d
+    from kiara.cad.fem import anchors3d
 
     def boom(*args: object, **kwargs: object) -> list[dict]:
         raise RuntimeError("probe exploded")
@@ -381,7 +381,7 @@ def test_refine_verify_probe_crash_keeps_scan_verdict(monkeypatch: pytest.Monkey
 
 def test_refine_verify_without_probe_keeps_miss(monkeypatch: pytest.MonkeyPatch):
     """Missing probe_blind_features (pre-merge) degrades to scan-only misses."""
-    from cadx.cad.fem import anchors3d
+    from kiara.cad.fem import anchors3d
 
     monkeypatch.delattr(anchors3d, "probe_blind_features", raising=False)
     report = {
@@ -393,7 +393,7 @@ def test_refine_verify_without_probe_keeps_miss(monkeypatch: pytest.MonkeyPatch)
 def test_refine_verify_real_probe_blind_pocket():
     """End-to-end with the real probe: a 1.2 mm blind pocket is too shallow
     for the dimple scan (≥1.5 mm) but probe_blind_features confirms it."""
-    from cadx.cad.fem import anchors3d
+    from kiara.cad.fem import anchors3d
 
     if getattr(anchors3d, "probe_blind_features", None) is None:
         pytest.skip("probe_blind_features not merged yet")
@@ -419,7 +419,7 @@ def test_refine_verify_real_probe_blind_pocket():
 
 def test_refine_verify_open_probe_verifies_through(monkeypatch: pytest.MonkeyPatch):
     """Through feature missed by the scan but probed open → verified."""
-    from cadx.cad.fem import anchors3d
+    from kiara.cad.fem import anchors3d
 
     monkeypatch.setattr(
         anchors3d,
@@ -442,7 +442,7 @@ def test_refine_verify_open_probe_verifies_through(monkeypatch: pytest.MonkeyPat
 
 
 def test_applied_refine_features_filters_by_name():
-    from cadx.cad.fem.refine import RefineReport
+    from kiara.cad.fem.refine import RefineReport
 
     feats = [
         RefineFeature(name="a", kind="hole", axis="+z", u=0.0, v=0.0, dia=5.0),
@@ -457,7 +457,7 @@ def test_applied_refine_features_filters_by_name():
 def test_end_to_end_applied_features_feed_analytic_step(tmp_path):
     """apply_refine → applied_refine_features → export_analytic_step."""
     b3d = pytest.importorskip("build123d")
-    from cadx.cad.exporters import export_analytic_step
+    from kiara.cad.exporters import export_analytic_step
 
     mesh = _box()
     feats = [RefineFeature(name="b1", kind="hole", axis="+z", u=10.0, v=0.0, dia=6.0)]
@@ -477,7 +477,7 @@ def test_end_to_end_applied_features_feed_analytic_step(tmp_path):
 
 def test_isolated_export_applies_feature(tmp_path):
     pytest.importorskip("build123d")
-    from cadx.cad.exporters import export_analytic_step_isolated
+    from kiara.cad.exporters import export_analytic_step_isolated
 
     stl = tmp_path / "base.stl"
     _bored().export(stl)
@@ -498,7 +498,7 @@ def test_isolated_export_timeout_keeps_prior_checkpoint(tmp_path, monkeypatch: p
     pytest.importorskip("build123d")
     import multiprocessing.context as mpctx
 
-    import cadx.cad.exporters as ex
+    import kiara.cad.exporters as ex
 
     class _FakeHangProcess:
         """Never actually starts — always reports alive so the parent
@@ -555,7 +555,7 @@ def test_isolated_export_timeout_keeps_prior_checkpoint(tmp_path, monkeypatch: p
 def test_isolated_export_no_valid_cut_keeps_faceted(tmp_path):
     """Without a resolvable pose no checkpoint exists → no STEP promotion."""
     pytest.importorskip("build123d")
-    from cadx.cad.exporters import export_analytic_step_isolated
+    from kiara.cad.exporters import export_analytic_step_isolated
 
     stl = tmp_path / "base.stl"
     _box().export(stl)
@@ -617,8 +617,8 @@ def _inline_process(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_faceswap_bore_replaces_faceted_wall():
     """Unit-level: the wall patch is swapped for a true cylinder face."""
     b3d = pytest.importorskip("build123d")
-    import cadx.cad.exporters as ex
-    from cadx.cad.mesh_ops import mesh_to_solid
+    import kiara.cad.exporters as ex
+    from kiara.cad.mesh_ops import mesh_to_solid
 
     mesh = _bored()
     solid = mesh_to_solid(mesh, max_faces=50000)
@@ -634,8 +634,8 @@ def test_faceswap_bore_replaces_faceted_wall():
 def test_faceswap_bore_no_wall_returns_none():
     """No faceted tunnel (uncut box) → honest refusal, never a fake solid."""
     pytest.importorskip("build123d")
-    import cadx.cad.exporters as ex
-    from cadx.cad.mesh_ops import mesh_to_solid
+    import kiara.cad.exporters as ex
+    from kiara.cad.mesh_ops import mesh_to_solid
 
     mesh = _box()
     solid = mesh_to_solid(mesh, max_faces=50000)
@@ -649,7 +649,7 @@ def test_isolated_faceswap_when_boolean_dead(tmp_path, monkeypatch: pytest.Monke
     """_occ_cut forced to fail → the worker falls back to the face-swap and
     the feature still lands an analytic CYLINDER in the STEP."""
     b3d = pytest.importorskip("build123d")
-    import cadx.cad.exporters as ex
+    import kiara.cad.exporters as ex
 
     monkeypatch.setattr(ex, "_occ_cut", lambda *a, **kw: None)
     _inline_process(monkeypatch)
@@ -674,7 +674,7 @@ def test_isolated_faceswap_when_boolean_dead(tmp_path, monkeypatch: pytest.Monke
 def test_isolated_faceswap_no_wall_keeps_honest_skip(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """Boolean dead AND no faceted wall to swap → the honest skip is intact."""
     pytest.importorskip("build123d")
-    import cadx.cad.exporters as ex
+    import kiara.cad.exporters as ex
 
     monkeypatch.setattr(ex, "_occ_cut", lambda *a, **kw: None)
     _inline_process(monkeypatch)
@@ -697,8 +697,8 @@ def test_isolated_faceswap_no_wall_keeps_honest_skip(tmp_path, monkeypatch: pyte
 def test_faceswap_uses_measured_diameter():
     """A reamed-oversize tunnel (Ø10 spec → Ø10.4 measured) still lands."""
     b3d = pytest.importorskip("build123d")
-    import cadx.cad.exporters as ex
-    from cadx.cad.mesh_ops import mesh_to_solid
+    import kiara.cad.exporters as ex
+    from kiara.cad.mesh_ops import mesh_to_solid
 
     mesh = _bored(dia=6.4)
     solid = mesh_to_solid(mesh, max_faces=50000)
@@ -723,7 +723,7 @@ def test_faceswap_uses_measured_diameter():
 def test_norm_for_worker_forwards_measured_dia():
     """measured_dia_mm survives normalisation → the worker's radius guess."""
     pytest.importorskip("build123d")
-    import cadx.cad.exporters as ex
+    import kiara.cad.exporters as ex
 
     feat = ex._norm_for_worker(
         {
@@ -745,7 +745,7 @@ def test_isolated_faceswap_retries_after_cut_timeout(tmp_path, monkeypatch: pyte
     b3d = pytest.importorskip("build123d")
     import multiprocessing.context as mpctx
 
-    import cadx.cad.exporters as ex
+    import kiara.cad.exporters as ex
 
     class _Hang:
         def __init__(self, *a: object, **kw: object) -> None:
@@ -821,7 +821,7 @@ def test_isolated_faceswap_thread_marks_degraded(tmp_path, monkeypatch: pytest.M
     """Thread feature swapped as pilot-wall-only → applied but degraded."""
     b3d = pytest.importorskip("build123d")
     pytest.importorskip("bd_warehouse.thread")
-    import cadx.cad.exporters as ex
+    import kiara.cad.exporters as ex
 
     monkeypatch.setattr(ex, "_occ_cut", lambda *a, **kw: None)
     _inline_process(monkeypatch)

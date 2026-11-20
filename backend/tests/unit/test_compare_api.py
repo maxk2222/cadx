@@ -9,20 +9,20 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadx.db.session import create_all
+from kiara.db.session import create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
 
 
 def _export_dir(pid: str, vid: str) -> Path:
-    from cadx import storage
+    from kiara import storage
 
     out = storage.export_dir(pid, vid)
     out.mkdir(parents=True, exist_ok=True)
@@ -41,8 +41,8 @@ async def _new_version(client: AsyncClient, pid: str, prompt: str) -> str:
     """Insert a bare Version row directly — /generate 503s without a worker
     queue (spawn treats enqueue failure as fatal), and compare doesn't need
     a job."""
-    from cadx.db.models import Version, VersionKind
-    from cadx.db.session import session_scope
+    from kiara.db.models import Version, VersionKind
+    from kiara.db.session import session_scope
 
     async with session_scope() as db:
         v = Version(
@@ -88,8 +88,8 @@ async def test_compare_params_diff(client):
     sorted by key."""
     from build123d import Box
 
-    from cadx.db.models import Version
-    from cadx.db.session import session_scope
+    from kiara.db.models import Version
+    from kiara.db.session import session_scope
 
     pid = (await client.post("/api/projects", json={"name": "cmp-params"})).json()["id"]
     va = await _new_version(client, pid, "a")
@@ -157,9 +157,9 @@ async def test_compare_step_artifact_in_iterations_dir(client):
     Artifact table — previously the endpoint 409'd on those versions."""
     from build123d import Box, export_step
 
-    from cadx import storage
-    from cadx.db.models import Artifact, ArtifactKind
-    from cadx.db.session import session_scope
+    from kiara import storage
+    from kiara.db.models import Artifact, ArtifactKind
+    from kiara.db.session import session_scope
 
     pid = (await client.post("/api/projects", json={"name": "cmp-iter"})).json()["id"]
     va = await _new_version(client, pid, "a")
@@ -191,7 +191,7 @@ async def test_compare_occ_lock_busy(client, monkeypatch):
     """A contended OCC lock degrades to ok=False 'compare busy' — never 500."""
     from build123d import Box
 
-    from cadx.api.routers import versions as versions_mod
+    from kiara.api.routers import versions as versions_mod
 
     class _HeldLock:
         def acquire(self, timeout=None):

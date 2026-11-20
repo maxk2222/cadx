@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from cadx.cad import catalog
+from kiara.cad import catalog
 
 
 @pytest.fixture(scope="module", autouse=True)

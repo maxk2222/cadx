@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from cadx.evalkit.features import ensure_features, needs_features
-from cadx.evalkit.models import StageOutcome
+from kiara.evalkit.features import ensure_features, needs_features
+from kiara.evalkit.models import StageOutcome
 
 trimesh = pytest.importorskip("trimesh")
 pytest.importorskip("numpy")
@@ -48,7 +48,7 @@ async def test_ensure_features_mesh_fallback(tmp_path):
 async def test_ensure_features_step_path(tmp_path, monkeypatch):
     """STEP artifact -> extract_features (BRep) path, resolved via storage."""
     build123d = pytest.importorskip("build123d")
-    from cadx.config import get_settings
+    from kiara.config import get_settings
 
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
@@ -79,7 +79,7 @@ async def test_ensure_features_marks_missing_artifact_unavailable():
 
 @pytest.mark.asyncio
 async def test_ensure_features_marks_extraction_failure_unavailable(tmp_path, monkeypatch):
-    from cadx.evalkit import features as feature_module
+    from kiara.evalkit import features as feature_module
 
     artifact = tmp_path / "broken.stl"
     artifact.write_text("not a mesh")

@@ -26,16 +26,16 @@ from typing import Any
 
 import numpy as np
 
-from cadx.cad.fem.regions import _axis_parts, surface_area_per_node
-from cadx.cad.fem.solver import (
+from kiara.cad.fem.regions import _axis_parts, surface_area_per_node
+from kiara.cad.fem.solver import (
     FemSolution,
     assemble,
     recover_elem_stress,
     reduce_case,
     solve_reduced,
 )
-from cadx.cad.fem.voxelize import VoxelDomain, voxelize
-from cadx.llm.schemas import LoadCase
+from kiara.cad.fem.voxelize import VoxelDomain, voxelize
+from kiara.llm.schemas import LoadCase
 
 from . import geometry
 
@@ -46,7 +46,7 @@ MAX_ELEMENTS = 400_000
 _STRESS_COMPS = {"sx": 0, "sy": 1, "sz": 2, "txy": 3, "tyz": 4, "tzx": 5}
 _AXIS_IDX = {"x": 0, "y": 1, "z": 2}
 
-# session report collector — conftest flushes it when CADX_FEMVERIFY_REPORT=1
+# session report collector — conftest flushes it when KIARA_FEMVERIFY_REPORT=1
 REPORT: list[dict[str, Any]] = []
 
 
@@ -107,7 +107,7 @@ def run_spec(spec: dict[str, Any], pitch_mm: float | None = None) -> RunResult:
     elem_E = np.full(dom.cell_count, E)
     K, edof, active = assemble(dom, elem_E, nu, solid)
     solved: list[SolvedCase] = []
-    from cadx.cad.fem.regions import resolve_case_dofs
+    from kiara.cad.fem.regions import resolve_case_dofs
 
     for lc in spec["cases"]:
         case = LoadCase.model_validate(lc)
@@ -462,8 +462,8 @@ def record(spec: dict[str, Any], results: list[ProbeResult], rr: RunResult | Non
 
 
 def flush_report() -> Path | None:
-    """Write the session report if CADX_FEMVERIFY_REPORT is set."""
-    if not REPORT or os.environ.get("CADX_FEMVERIFY_REPORT") != "1":
+    """Write the session report if KIARA_FEMVERIFY_REPORT is set."""
+    if not REPORT or os.environ.get("KIARA_FEMVERIFY_REPORT") != "1":
         return None
     import datetime
 

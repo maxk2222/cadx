@@ -6,8 +6,8 @@ import math
 
 import pytest
 
-from cadx.evalkit.gates import run_gates
-from cadx.evalkit.models import StageOutcome
+from kiara.evalkit.gates import run_gates
+from kiara.evalkit.models import StageOutcome
 
 trimesh = pytest.importorskip("trimesh")
 
@@ -1026,7 +1026,7 @@ def test_threads_gate_detects_helical_groove(tmp_path):
     """r19/r29 regression: a mesh whose bore measures the pilot diameter but
     carries no helical groove passed every bore/watertight gate. The
     `threads` gate must probe the wall for rotating groove evidence."""
-    from cadx.cad.fem.refine import _thread_groove_solid
+    from kiara.cad.fem.refine import _thread_groove_solid
 
     box = trimesh.creation.box(extents=(60.0, 40.0, 10.0)).apply_translation((0, 0, 5))
     bore = trimesh.creation.cylinder(radius=3.375, height=20, sections=48).apply_translation(
@@ -1055,7 +1055,7 @@ def test_threads_gate_tolerates_lattice_void_strays(tmp_path):
     annulus with void verts that reach the 1.8 mm band ceiling at a single
     height slice. A `max`-based reach vetoes the groove; the per-slice median
     must still accept it (and still reject when the void covers most slices)."""
-    from cadx.cad.fem.refine import _thread_groove_solid
+    from kiara.cad.fem.refine import _thread_groove_solid
 
     box = trimesh.creation.box(extents=(60.0, 40.0, 10.0)).apply_translation((0, 0, 5))
     bore = trimesh.creation.cylinder(radius=3.375, height=20, sections=48).apply_translation(
@@ -1093,7 +1093,7 @@ def test_threads_gate_detects_external_thread(tmp_path):
     """m8_hex regression: a screw shank has no bore anchor — the threads gate
     must also probe radial spread + crest phase. A smooth stepped shaft must
     NOT pass."""
-    from cadx.cad.fem.refine import _thread_groove_solid
+    from kiara.cad.fem.refine import _thread_groove_solid
 
     shaft = trimesh.creation.cylinder(radius=4.0, height=30, sections=64).apply_translation(
         (0, 0, 15)

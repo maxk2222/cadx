@@ -38,7 +38,7 @@ def upgrade() -> None:
         b.create_index("ix_version_part_id", ["part_id"])
         b.create_foreign_key("fk_version_part", "part", ["part_id"], ["id"])
 
-    from cadx.db.backfill import backfill_parts
+    from kiara.db.backfill import backfill_parts
 
     backfill_parts(op.get_bind())
 

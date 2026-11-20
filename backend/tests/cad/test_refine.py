@@ -10,8 +10,8 @@ import numpy as np
 import pytest
 import trimesh
 
-from cadx.cad.fem.anchors3d import scan_mesh_anchors
-from cadx.cad.fem.refine import (
+from kiara.cad.fem.anchors3d import scan_mesh_anchors
+from kiara.cad.fem.refine import (
     RefineFeature,
     RefineReport,
     _bore_ring_material,
@@ -308,7 +308,7 @@ def test_bore_ring_material_thin_wall_with_depth():
 def test_keep_prisms_warns_out_of_range_hole_index():
     """A dead `hole_index` must surface as a warning — the mount eval lost
     two keep rings to a silent skip."""
-    from cadx.cad.fem.refine import _keep_prisms
+    from kiara.cad.fem.refine import _keep_prisms
 
     warns: list[str] = []
     prisms = _keep_prisms(
@@ -326,7 +326,7 @@ def test_keep_prisms_warns_out_of_range_hole_index():
 def test_rebind_keep_hole_indices_feature_position():
     """`rebind_keep_hole_indices` rescues stored specs: #8/#9 counted as
     0-based `spec.features` positions rebind to the flange anchors #6/#7."""
-    from cadx.cad.fem.refine import rebind_keep_hole_indices
+    from kiara.cad.fem.refine import rebind_keep_hole_indices
 
     feats = [
         {"type": "block", "name": "base plate"},
@@ -610,7 +610,7 @@ def test_restore_anchor_keep_box():
 
 
 def test_anchor_keep_prism_is_cylinder_not_box():
-    from cadx.cad.fem.refine import _anchor_keep_prism
+    from kiara.cad.fem.refine import _anchor_keep_prism
 
     a = {"index": 1, "axis": "+z", "pos": [10.0, 0.0, 6.0], "x": 10.0, "y": 0.0, "dia": 8.5}
     p = _anchor_keep_prism(a, margin=3.0, span_axis=(0.0, 10.0))
@@ -622,7 +622,7 @@ def test_anchor_keep_prism_is_cylinder_not_box():
 def test_anchor_keep_prism_pad_dia_keeps_whole_boss():
     """A bore drilled through a Ø25 boss keeps the whole pad — the ring-only
     keep let TopOpt eat the boss and left a useless sleeve around the M12."""
-    from cadx.cad.fem.refine import _anchor_keep_prism
+    from kiara.cad.fem.refine import _anchor_keep_prism
 
     a = {
         "index": 1,
@@ -640,7 +640,7 @@ def test_anchor_keep_prism_pad_dia_keeps_whole_boss():
 def test_prism_mesh_side_axis_is_cylinder_along_x():
     """+x flange bores rotate the cylinder to the bore axis — extent along X
     is the span, the Y/Z cross-section stays round."""
-    from cadx.cad.fem.refine import _prism_mesh
+    from kiara.cad.fem.refine import _prism_mesh
 
     p = {"shape": "cyl", "ax": 0, "uv": (12.0, 25.0), "r": 5.25, "span": (42.0, 50.0)}
     m = _prism_mesh(p)
@@ -685,7 +685,7 @@ def test_restore_anchor_keep_restores_round_pad_not_square():
 def test_region_prism_accepts_unsigned_axis():
     """RegionSpec serializes axes bare ("z"); the prism path must normalize —
     a silent None skip left eval keep regions unrestored (restored=0)."""
-    from cadx.cad.fem.refine import _region_prism
+    from kiara.cad.fem.refine import _region_prism
 
     bounds = np.array([[-60.0, -35.0, 0.0], [60.0, 35.0, 90.0]])
     for axis in ("x", "y", "z", "+z", "-z"):
@@ -730,7 +730,7 @@ def test_entry_face_ring_seats_on_mouth_face_not_interior_seal():
     """A blind channel whose mouth is open but plugged deeper inside:
     the centre ray hits the plug (z≈6), the face around the mouth is at
     z=0 — the ring probe must seat the entry on the surrounding face."""
-    from cadx.cad.fem.refine import _entry_face_ring, _entry_point
+    from kiara.cad.fem.refine import _entry_face_ring, _entry_point
 
     base = _box()
     # blind channel Ø6 opening at z=0, then a plug from z=6 up
@@ -891,7 +891,7 @@ def test_dedup_keeps_distant_features():
 
 
 def _groove_spy(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
-    import cadx.cad.fem.refine as refine_mod
+    import kiara.cad.fem.refine as refine_mod
 
     calls: list[tuple] = []
     real = refine_mod._thread_groove_solid
@@ -955,7 +955,7 @@ def test_helical_default_gated_by_flag(monkeypatch: pytest.MonkeyPatch):
 
 def test_groove_failure_keeps_tap_drill(monkeypatch: pytest.MonkeyPatch):
     """A groove-build failure must never lose the bore — warn and fall back."""
-    import cadx.cad.fem.refine as refine_mod
+    import kiara.cad.fem.refine as refine_mod
 
     def boom(*args: object, **kwargs: object) -> trimesh.Trimesh:
         raise RuntimeError("groove wreckage")
@@ -1229,8 +1229,8 @@ def _write_box_stl(tmp_path) -> object:
 def test_run_refine_verify_misses_surfaced(tmp_path, monkeypatch: pytest.MonkeyPatch):
     """A cut that 'applied' but fails the post-refine rescan surfaces as
     verify_misses + a warning — the tool layer reads exactly that."""
-    import cadx.cad.fem.refine as refine_mod
-    from cadx.cad.engine import run_refine
+    import kiara.cad.fem.refine as refine_mod
+    from kiara.cad.engine import run_refine
 
     miss = [{"entry": {"name": "m6"}, "x": -30.0, "y": 0.0, "dia": 6.0}]
     monkeypatch.setattr(refine_mod, "refine_verify", lambda *a, **k: miss)
@@ -1248,7 +1248,7 @@ def test_run_refine_verify_misses_surfaced(tmp_path, monkeypatch: pytest.MonkeyP
 def test_run_refine_verify_passes_clean(tmp_path):
     """Happy path: the re-cut bore scans back at the requested position —
     no verify_misses key on the report."""
-    from cadx.cad.engine import run_refine
+    from kiara.cad.engine import run_refine
 
     res = run_refine(
         mesh_path=_write_box_stl(tmp_path),
@@ -1276,7 +1276,7 @@ def test_run_refine_fem_verify_scans_refined_mesh_anchors(tmp_path):
     be scanned there (run_fem_pipeline parity), not inherited from the
     parent. With anchors=None (imported STL / missing analysis) a hint-bound
     `bore` region otherwise falls back to a 1-cell boundary patch."""
-    from cadx.cad.engine import run_refine
+    from kiara.cad.engine import run_refine
 
     p = tmp_path / "bored.stl"
     _slab_bored(x0=10.0, dia=10.0).export(str(p))
@@ -1869,7 +1869,7 @@ def test_post_cut_cleanup_drops_sliver_keeps_real_bodies():
     """A sub-mm³ inverted boolean sliver riding along the main body is
     dropped (it trips the shipped bodies/watertight gates), while a real
     disconnected body above the bridge floor survives."""
-    from cadx.cad.fem.refine import RefineReport, _post_cut_cleanup
+    from kiara.cad.fem.refine import RefineReport, _post_cut_cleanup
 
     main = trimesh.creation.box(extents=[20, 20, 20])
     sliver = trimesh.creation.icosphere(subdivisions=1, radius=0.4)
@@ -1893,7 +1893,7 @@ def test_apply_refine_drops_sliver_minted_by_postpass(monkeypatch):
     """The reskin/re-cut stage runs after `_post_cut_cleanup` — a zero-volume
     sheet it mints (observed on the robot-arm flange wall) must still be
     dropped so the shipped mesh reports one body."""
-    import cadx.cad.fem.refine as rf
+    import kiara.cad.fem.refine as rf
 
     base = trimesh.creation.box(extents=[20, 20, 10])
 
@@ -1927,7 +1927,7 @@ def test_anchor_keep_prism_blind_anchor_bounds_to_feature_span():
     """The full-column defect: a 10 mm blind tap keep-restored a Ø12 solid
     cylinder through the WHOLE part because the prism span ignored
     `depth_mm`. Bounded anchors restore only mouth→bottom + grow."""
-    from cadx.cad.fem.refine import _anchor_keep_prism
+    from kiara.cad.fem.refine import _anchor_keep_prism
 
     bounds = np.array([[-60.0, -35.0, 0.0], [60.0, 35.0, 90.0]])
     a = {
@@ -1948,7 +1948,7 @@ def test_anchor_keep_prism_blind_anchor_bounds_to_feature_span():
 def test_anchor_keep_prism_through_anchor_falls_back_to_axis_bounds():
     """No depth/axial position → axis-specific bounds (not the global
     min/max scalar span): a +y bore on a 120x70x90 part spans Y, not -61..91."""
-    from cadx.cad.fem.refine import _anchor_keep_prism
+    from kiara.cad.fem.refine import _anchor_keep_prism
 
     bounds = np.array([[-60.0, -35.0, 0.0], [60.0, 35.0, 90.0]])
     a = {"index": 4, "axis": "+y", "pos": [0.0, None, 65.0], "dia": 30.0}
@@ -1959,7 +1959,7 @@ def test_anchor_keep_prism_through_anchor_falls_back_to_axis_bounds():
 def test_anchor_keep_prism_measured_tunnel_bounds_to_wall():
     """A through hole scanned with its pierced-wall thickness carries
     depth_mm too — the prism bounds to the wall it was measured on."""
-    from cadx.cad.fem.refine import _anchor_keep_prism
+    from kiara.cad.fem.refine import _anchor_keep_prism
 
     bounds = np.array([[-60.0, -35.0, 0.0], [60.0, 35.0, 90.0]])
     a = {
@@ -1978,7 +1978,7 @@ def test_merge_probe_features_adds_verified_blind_tap():
     """A verified blind-tap probe becomes a hole-group entry — the tunnel
     scan cannot see blind features, so without the merge they are
     invisible to every features consumer."""
-    from cadx.cad.fem.refine import merge_probe_features
+    from kiara.cad.fem.refine import merge_probe_features
 
     probes = [
         {
@@ -2009,7 +2009,7 @@ def test_merge_probe_features_adds_verified_blind_tap():
 def test_merge_probe_features_dedupes_measured_through():
     """A probe matching an already-measured tunnel (same axis, in-plane
     centre <2 mm, dia within 0.5 mm) must not double-count it."""
-    from cadx.cad.fem.refine import merge_probe_features
+    from kiara.cad.fem.refine import merge_probe_features
 
     groups = [
         {
@@ -2053,7 +2053,7 @@ def test_merge_probe_features_dedupes_measured_through():
 def test_merge_probe_features_ignores_unverified_and_obstructions():
     """verified:false probes and bore_obstruction records never create
     groups."""
-    from cadx.cad.fem.refine import merge_probe_features
+    from kiara.cad.fem.refine import merge_probe_features
 
     probes = [
         {
@@ -2080,7 +2080,7 @@ def test_refine_thread_render_features_maps_helical_taps():
     """Applied helical taps map to detail-camera features: mouth position
     on the entry face, axis flipped inward (camera focal = pos + axis*d),
     major dia from thread_spec, depth as length."""
-    from cadx.cad.fem.refine import refine_thread_render_features
+    from kiara.cad.fem.refine import refine_thread_render_features
 
     mesh = _box()  # z in [0,12]
     applied = [
@@ -2108,7 +2108,7 @@ def test_refine_thread_render_features_maps_helical_taps():
 
 def test_refine_thread_render_features_skips_non_helical():
     """Plain bores and helical:false entries produce no detail camera."""
-    from cadx.cad.fem.refine import refine_thread_render_features
+    from kiara.cad.fem.refine import refine_thread_render_features
 
     mesh = _box()
     applied = [
@@ -2247,7 +2247,7 @@ def test_corridor_fill_skips_fresh_helical_groove():
     """A freshly cut M8 thread shows interior surfaces only along the
     ROTATING groove direction — the fill must not treat it as slivers
     (refilling a real groove minted 747 coincident-face fragments)."""
-    from cadx.cad.fem.refine import _thread_groove_solid
+    from kiara.cad.fem.refine import _thread_groove_solid
 
     mesh = _bored_wide(0.0, 6.75)
     groove = _thread_groove_solid(r_in=3.32, r_out=4.3, pitch=1.25, depth=12.0)
@@ -2276,7 +2276,7 @@ def test_postpass_recut_restores_groove_erased_by_reskin():
     blind taps were never probed at all. The recut pass must probe the
     groove radius and re-cut it, so `helical` in the report never counts
     a thread the shipped mesh does not carry."""
-    from cadx.cad.fem.refine import _groove_present, _postpass_recut, _thread_groove_solid
+    from kiara.cad.fem.refine import _groove_present, _postpass_recut, _thread_groove_solid
 
     feat = RefineFeature(
         name="m8",
@@ -2314,7 +2314,7 @@ def test_recut_exported_threads_restores_groove_on_shipped_file(tmp_path):
     in-memory postpass already restored them). recut_exported_threads must
     re-probe the file mesh, re-cut the groove and write it back without
     another reskin."""
-    from cadx.cad.fem.refine import (
+    from kiara.cad.fem.refine import (
         _groove_present,
         recut_exported_threads,
     )
@@ -2347,7 +2347,7 @@ def test_recut_exported_threads_restores_groove_on_shipped_file(tmp_path):
 
 
 def test_recut_exported_threads_noop_without_helical(tmp_path):
-    from cadx.cad.fem.refine import recut_exported_threads
+    from kiara.cad.fem.refine import recut_exported_threads
 
     reskinned = _bored_wide(0.0, 6.75)
     stl = tmp_path / "model.stl"

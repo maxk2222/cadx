@@ -14,11 +14,11 @@ from build123d import (
     fillet,
 )
 
-from cadx.cad.analysis import analyze
-from cadx.cad.dfm.cnc import cnc_checks
-from cadx.cad.dfm.common import load_mesh
-from cadx.cad.dfm.fdm import fdm_checks
-from cadx.cad.exporters import quick_stl
+from kiara.cad.analysis import analyze
+from kiara.cad.dfm.cnc import cnc_checks
+from kiara.cad.dfm.common import load_mesh
+from kiara.cad.dfm.fdm import fdm_checks
+from kiara.cad.exporters import quick_stl
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -60,7 +60,7 @@ def test_overhang_ratio_directions():
     """overhang_ratio: an inverted-T's slab underside is the overhang for a
     +z build; flipped (-z) the same slab is the base and nothing overhangs.
     A plain box resting on the plate has no overhang either way."""
-    from cadx.cad.dfm.fdm import overhang_ratio
+    from kiara.cad.dfm.fdm import overhang_ratio
 
     post = trimesh.creation.box(extents=[40.0, 40.0, 5.0])
     post.apply_translation([0, 0, 2.5])

@@ -77,8 +77,8 @@ the same edit path for `mesh_regen_edit` — see `mesh-generation.md`.
 Manual check:
 
 ```bash
-backend/.venv/bin/cadx image-gen "studio photo of a red gear" --model auto
-backend/.venv/bin/cadx image-gen "make it matte black" --reference ref.png --strength 0.6
+backend/.venv/bin/kiara image-gen "studio photo of a red gear" --model auto
+backend/.venv/bin/kiara image-gen "make it matte black" --reference ref.png --strength 0.6
 # or straight on the sidecar
 mesh_server/.venv/bin/meshserver image --prompt "a red gear" --model flux-schnell-mlx
 ```

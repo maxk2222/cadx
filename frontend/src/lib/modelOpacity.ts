@@ -5,7 +5,7 @@ import * as THREE from "three";
 
 type Mat = THREE.Material & { opacity: number; depthWrite: boolean };
 
-const ORIG_KEY = "__cadx_orig_opacity";
+const ORIG_KEY = "__kiara_orig_opacity";
 
 interface Orig {
   opacity: number;

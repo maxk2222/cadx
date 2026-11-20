@@ -118,20 +118,20 @@ if [ ! -s run/updater.token ]; then
   python3 -c 'import secrets;print(secrets.token_hex(24))' > run/updater.token
   chmod 600 run/updater.token
 fi
-export CADX_UPDATE_TOKEN
-CADX_UPDATE_TOKEN="${CADX_UPDATE_TOKEN:-$(cat run/updater.token)}"
-export CADX_UPDATE_URL="http://127.0.0.1:${UPDATE_PORT:-8766}"
+export KIARA_UPDATE_TOKEN
+KIARA_UPDATE_TOKEN="${KIARA_UPDATE_TOKEN:-$(cat run/updater.token)}"
+export KIARA_UPDATE_URL="http://127.0.0.1:${UPDATE_PORT:-8766}"
 if [ "$DEV" = 0 ]; then
   touch .env
-  if grep -q '^CADX_UPDATE_TOKEN=' .env; then
-    CADX_UPDATE_TOKEN=$(grep '^CADX_UPDATE_TOKEN=' .env | tail -1 | cut -d= -f2-)
-    export CADX_UPDATE_TOKEN
-    printf '%s\n' "$CADX_UPDATE_TOKEN" > run/updater.token
+  if grep -q '^KIARA_UPDATE_TOKEN=' .env; then
+    KIARA_UPDATE_TOKEN=$(grep '^KIARA_UPDATE_TOKEN=' .env | tail -1 | cut -d= -f2-)
+    export KIARA_UPDATE_TOKEN
+    printf '%s\n' "$KIARA_UPDATE_TOKEN" > run/updater.token
     chmod 600 run/updater.token
   else
-    printf 'CADX_UPDATE_TOKEN=%s\n' "$CADX_UPDATE_TOKEN" >> .env
+    printf 'KIARA_UPDATE_TOKEN=%s\n' "$KIARA_UPDATE_TOKEN" >> .env
   fi
-  export CADX_UPDATE_URL="http://host.docker.internal:${UPDATE_PORT:-8766}"
+  export KIARA_UPDATE_URL="http://host.docker.internal:${UPDATE_PORT:-8766}"
 fi
 step_done "token ready"
 
@@ -200,11 +200,11 @@ if [ "$DEV" = 1 ]; then
     bash -c 'cd backend && ../.venv/bin/uv run alembic upgrade head' || exit 1
 
   step_begin "services (native)"
-  pidfile_start api      backend  ../.venv/bin/uv run uvicorn cadx.main:app --port 8000
-  pidfile_start worker   backend  ../.venv/bin/uv run arq cadx.queue.AgentWorkerSettings
-  pidfile_start executor backend  ../.venv/bin/uv run arq cadx.queue.CadWorkerSettings
-  pidfile_start executor-light backend ../.venv/bin/uv run arq cadx.queue.CadLightWorkerSettings
-  pidfile_start executor-fem backend   ../.venv/bin/uv run arq cadx.queue.CadFemWorkerSettings
+  pidfile_start api      backend  ../.venv/bin/uv run uvicorn kiara.main:app --port 8000
+  pidfile_start worker   backend  ../.venv/bin/uv run arq kiara.queue.AgentWorkerSettings
+  pidfile_start executor backend  ../.venv/bin/uv run arq kiara.queue.CadWorkerSettings
+  pidfile_start executor-light backend ../.venv/bin/uv run arq kiara.queue.CadLightWorkerSettings
+  pidfile_start executor-fem backend   ../.venv/bin/uv run arq kiara.queue.CadFemWorkerSettings
   pidfile_start web      frontend npm run dev -- --port 5173
   step_done
   APP_URL="http://localhost:5173"

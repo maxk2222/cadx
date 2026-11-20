@@ -8,9 +8,9 @@ import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
-import cadx.api.routers.system as system
-from cadx.db.models import Job, JobStatus, JobType, Project, Version, VersionKind
-from cadx.db.session import async_session, create_all
+import kiara.api.routers.system as system
+from kiara.db.models import Job, JobStatus, JobType, Project, Version, VersionKind
+from kiara.db.session import async_session, create_all
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -20,7 +20,7 @@ async def _db():
 
 @pytest.fixture()
 async def client():
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -155,7 +155,7 @@ async def test_status_proxy(client, monkeypatch):
         return {
             "state": "running",
             "phase": "deps",
-            "log_tail": ["== CADX update", "* deps"],
+            "log_tail": ["== KIARA update", "* deps"],
             "version": _git_info(),
         }
 
@@ -163,7 +163,7 @@ async def test_status_proxy(client, monkeypatch):
     r = await client.get("/api/system/update/status")
     assert r.status_code == 200
     assert r.json()["state"] == "running"
-    assert r.json()["log_tail"][0] == "== CADX update"
+    assert r.json()["log_tail"][0] == "== KIARA update"
 
 
 async def test_rollback_requires_confirm(client, monkeypatch):

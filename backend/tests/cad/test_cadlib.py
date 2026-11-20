@@ -17,8 +17,8 @@ from build123d import (
     export_stl,
 )
 
-from cadx.cad import cadlib
-from cadx.cad.sandbox import run_user_code
+from kiara.cad import cadlib
+from kiara.cad.sandbox import run_user_code
 
 _ALIGN_MIN = (Align.CENTER, Align.CENTER, Align.MIN)
 
@@ -203,7 +203,7 @@ def test_safe_fillet_shrinks_oversized_radius():
 def test_safe_fillet_shape_keeps_algebra_result():
     """Algebra mode must retain the new Shape; a nonzero radius alone is not
     evidence that the immutable input was changed."""
-    from cadx.cad.features import extract_features
+    from kiara.cad.features import extract_features
 
     foot = Box(60, 40, 4, align=(Align.CENTER, Align.CENTER, Align.MIN))
     leg = Pos(-28, 0, 25) * Box(4, 40, 50)
@@ -653,16 +653,16 @@ def test_bound_snippets_execute_bracket(tmp_path):
     EXECUTE against the real cadlib — strut as a bar, and host-bounded
     bores that pierce their own plate without touching the strut on the
     same axis line (the E2E cross-channel defect)."""
-    from cadx.agent.featurebind import bind_features
-    from cadx.cad.features import extract_features
-    from cadx.llm.schemas import PartSpec
+    from kiara.agent.featurebind import bind_features
+    from kiara.cad.features import extract_features
+    from kiara.llm.schemas import PartSpec
 
     spec = PartSpec.model_validate(
         json.loads((_FIXTURES / "bracket_strut_cad.json").read_text(encoding="utf-8"))
     )
     by_name = {b.name: b for b in bind_features(spec)}
     ns: dict = {}
-    header = "from build123d import *\nfrom cadx.cad.cadlib import *\n"
+    header = "from build123d import *\nfrom kiara.cad.cadlib import *\n"
     body = (
         "part = Pos(-57.5, 0.0, 50.0) * Box(5.0, 30.0, 100.0)\n"
         "part = part + Pos(0.0, 0.0, 97.5) * Box(120.0, 30.0, 5.0)\n"
@@ -803,7 +803,7 @@ def test_finish_edges_does_not_silently_ignore_empty_selection():
 
 def test_tapped_hole_preview_is_smooth_bore(tmp_path):
     """Preview mode: the cutter is a plain tap-drill cylinder — the thread
-    visual comes from CADX_FEATURES overlays, and a smooth bore wall keeps
+    visual comes from KIARA_FEATURES overlays, and a smooth bore wall keeps
     hole measurement working."""
     code = (
         "from build123d import *\n"
@@ -827,7 +827,7 @@ def test_tapped_hole_preview_is_smooth_bore(tmp_path):
 
 
 def test_tapped_hole_export_builds_real_groove_and_counts(tmp_path):
-    """Export mode: bore + IsoThread groove cutter, tagged _cadx_thread —
+    """Export mode: bore + IsoThread groove cutter, tagged _kiara_thread —
     the runner counts one real thread."""
     code = (
         "from build123d import *\n"
@@ -836,7 +836,7 @@ def test_tapped_hole_export_builds_real_groove_and_counts(tmp_path):
         "result = Box(20, 20, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
         "tap = cadlib.tapped_hole(8, 1.25, 14)\n"
         "result = result - Pos(0, 0, 12) * tap\n"
-        'CADX_FEATURES = [{"kind": "thread", "thread_spec": "M8x1.25-6H",'
+        'KIARA_FEATURES = [{"kind": "thread", "thread_spec": "M8x1.25-6H",'
         ' "major_diameter": 8.0, "pitch": 1.25, "length": 14.0,'
         ' "start": 0.0, "external": False, "hand": "right",'
         ' "axis": "z", "position_mm": [0.0, 0.0, 12.0]}]\n'
@@ -871,7 +871,7 @@ def test_tapped_hole_declared_helix_counts_as_real_thread(tmp_path):
         "with BuildPart() as tp:\n"
         "    sweep(sections=ts.sketch, path=path, is_frenet=True)\n"
         "result = result - tp.part\n"
-        'CADX_FEATURES = [{"kind": "thread", "thread_spec": "M8x1.25-6H",'
+        'KIARA_FEATURES = [{"kind": "thread", "thread_spec": "M8x1.25-6H",'
         ' "major_diameter": 8.0, "pitch": 1.25, "length": 12.0,'
         ' "start": 0.0, "external": False, "hand": "right",'
         ' "axis": "z", "position_mm": [0.0, 0.0, 12.0]}]\n'
@@ -893,7 +893,7 @@ def test_tapped_hole_disjoint_cutter_counts_no_thread(tmp_path):
         "tap = cadlib.tapped_hole(8, 1.25, 14)\n"
         "result = result - Pos(0, 0, -2) * tap\n"
         "result = result - Pos(0, 0, 12) * Cylinder(3.35, 16)\n"
-        'CADX_FEATURES = [{"kind": "thread", "thread_spec": "M8x1.25-6H",'
+        'KIARA_FEATURES = [{"kind": "thread", "thread_spec": "M8x1.25-6H",'
         ' "major_diameter": 8.0, "pitch": 1.25, "length": 14.0,'
         ' "start": 0.0, "external": False, "hand": "right",'
         ' "axis": "z", "position_mm": [0.0, 0.0, 12.0]}]\n'
@@ -915,12 +915,12 @@ def test_tapped_holes_built_in_loop_all_count(tmp_path):
         "PARAMS = {}\n"
         "part = Box(60, 60, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
         "taps = []\n"
-        "CADX_FEATURES = []\n"
+        "KIARA_FEATURES = []\n"
         "for _hx in (-20, 20):\n"
         "    for _hy in (-20, 20):\n"
         "        tap = cadlib.tapped_hole(8, 1.25, 12)\n"
         "        taps.append(tap.moved(Location(Vector(_hx, _hy, 12))))\n"
-        '        CADX_FEATURES.append({"kind": "thread", "thread_spec": "M8x1.25-6H",'
+        '        KIARA_FEATURES.append({"kind": "thread", "thread_spec": "M8x1.25-6H",'
         ' "major_diameter": 8.0, "pitch": 1.25, "length": 12.0,'
         ' "start": 0.0, "external": False, "hand": "right",'
         ' "axis": "-z", "position_mm": [_hx, _hy, 12.0]})\n'
@@ -939,7 +939,7 @@ def test_tapped_holes_built_in_loop_all_count(tmp_path):
 
 def test_unfused_thread_fragments_fail_the_gate(tmp_path):
     """Regression for the CSK-screw quilted-render failure: an old
-    `_cadx_fuse_solids` swallowed fuse exceptions and exported the raw
+    `_kiara_fuse_solids` swallowed fuse exceptions and exported the raw
     79-solid turn compound — geometrically present but unusable (overlapping
     shells render as triangle noise, volume is double-counted). The export
     gate must reject a result whose solid count explodes past the part
@@ -953,7 +953,7 @@ def test_unfused_thread_fragments_fail_the_gate(tmp_path):
         "from build123d import *\n"
         "import cadlib\n"
         "PARAMS = {}\n"
-        f"CADX_FEATURES = [{feature}]\n"
+        f"KIARA_FEATURES = [{feature}]\n"
         "tap = cadlib.tapped_hole(8, 1.25, 12)\n"
         "result = Compound(children=[Box(20, 20, 10)] + [cadlib.tapped_hole(8, 1.25, 12) for _ in range(8)])\n"
     )
@@ -965,7 +965,7 @@ def test_unfused_thread_fragments_fail_the_gate(tmp_path):
         "from build123d import *\n"
         "import cadlib\n"
         "PARAMS = {}\n"
-        f"CADX_FEATURES = [{feature}]\n"
+        f"KIARA_FEATURES = [{feature}]\n"
         "part = Box(20, 20, 12, align=(Align.CENTER, Align.CENTER, Align.MIN))\n"
         "part = part - cadlib.tapped_hole(8, 1.25, 12)\n"
         "result = Compound(children=[part, Pos(60, 0, 0) * Box(5, 5, 5)])\n"
@@ -978,24 +978,24 @@ def test_unfused_thread_fragments_fail_the_gate(tmp_path):
 def test_helical_thread_builds_few_tagged_valid_pieces():
     """Multi-turn loft pieces replace ~76 per-turn lofts: a 32 mm M10
     thread becomes ~6 valid solids carrying BSPLINE flank faces, with the
-    _cadx_thread tag the runner's thread_count scan picks up."""
+    _kiara_thread tag the runner's thread_count scan picks up."""
     from build123d import GeomType
 
-    from cadx.cad.cadlib.threads import helical_thread
+    from kiara.cad.cadlib.threads import helical_thread
 
     th = helical_thread(10, 1.5, 32, end_finishes=("fade", "raw"))
     pieces = th.solids()
     assert 1 < len(pieces) <= 6  # 21 turns, <=4 turns per piece
     assert all(p.is_valid for p in pieces)
     assert any(f.geom_type == GeomType.BSPLINE for f in th.faces())
-    tag = getattr(th, "_cadx_thread", None)
+    tag = getattr(th, "_kiara_thread", None)
     assert tag and tag["external"] is True and tag["pitch"] == 1.5
 
 
 def test_helical_thread_internal_swaps_apex_root():
     """internal=True sweeps the nut-style ridge: the root radius sits
     OUTSIDE the major radius (the ridge wraps the bore channel)."""
-    from cadx.cad.cadlib.threads import helical_thread
+    from kiara.cad.cadlib.threads import helical_thread
 
     th = helical_thread(10, 1.5, 12, external=False)
     assert th.is_valid
@@ -1005,7 +1005,7 @@ def test_helical_thread_internal_swaps_apex_root():
 def test_helical_thread_left_hand_mirrors_the_ridge():
     """A left-hand ridge winds the other way: at a quarter turn up it sits
     at -Y where the right-hand ridge sits at +Y."""
-    from cadx.cad.cadlib.threads import helical_thread
+    from kiara.cad.cadlib.threads import helical_thread
 
     right = helical_thread(10, 1.5, 30, hand="right")
     left = helical_thread(10, 1.5, 30, hand="left")
@@ -1016,7 +1016,7 @@ def test_helical_thread_left_hand_mirrors_the_ridge():
 
 
 def test_helical_thread_rejects_bad_args():
-    from cadx.cad.cadlib.threads import helical_thread
+    from kiara.cad.cadlib.threads import helical_thread
 
     with pytest.raises(ValueError):
         helical_thread(10, 1.5, 0)
@@ -1034,7 +1034,7 @@ def test_helical_thread_fuses_valid_onto_screw_core():
     caller lifts it 0.375*pitch to land the bottom face on the tip plane."""
     from bd_warehouse.fastener import CounterSunkScrew
 
-    from cadx.cad.cadlib.threads import helical_thread
+    from kiara.cad.cadlib.threads import helical_thread
 
     body = CounterSunkScrew(size="M10-1.5", length=120, fastener_type="iso10642", simple=True)
     bs = body.solids()[0]
@@ -1061,7 +1061,7 @@ def test_tapped_hole_export_cuts_real_groove():
     real helical channel — BSPLINE walls, not a smooth bore."""
     from build123d import GeomType
 
-    from cadx.cad.cadlib.ops import set_detail_mode
+    from kiara.cad.cadlib.ops import set_detail_mode
 
     set_detail_mode("export")
     try:
@@ -1075,7 +1075,7 @@ def test_tapped_hole_export_cuts_real_groove():
 
 
 def test_tapped_hole_pitch_and_drill_defaults():
-    from cadx.cad.cadlib import ops as cops
+    from kiara.cad.cadlib import ops as cops
 
     cops.set_detail_mode("preview")
     c = cadlib.tapped_hole(8, length=14)

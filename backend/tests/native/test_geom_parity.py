@@ -2,7 +2,7 @@
 
 These gate every geometry callsite swap: `native.*` must reproduce the
 trimesh results on the corpus before a call site may switch to it. Skip
-cleanly when cadx_native is absent (pure-Python environments stay valid)."""
+cleanly when kiara_native is absent (pure-Python environments stay valid)."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ import numpy as np
 import pytest
 
 trimesh = pytest.importorskip("trimesh")
-cadx_native = pytest.importorskip("cadx_native")
+kiara_native = pytest.importorskip("kiara_native")
 
-from cadx.cad import native  # noqa: E402
-from cadx.cad.fem.voxelize import _scanline_contains  # noqa: E402
+from kiara.cad import native  # noqa: E402
+from kiara.cad.fem.voxelize import _scanline_contains  # noqa: E402
 
 
 def _box(w=24.0, h=12.0, d=8.0, at=(0.0, 0.0, 0.0)):

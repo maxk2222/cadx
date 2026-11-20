@@ -8,14 +8,14 @@ from __future__ import annotations
 import uuid
 from pathlib import Path
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.orchestrator import build_issues, run_generation
-from cadx.agent.steps import critique as critique_step
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import Critique, PartSpec
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.orchestrator import build_issues, run_generation
+from kiara.agent.steps import critique as critique_step
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import Critique, PartSpec
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 

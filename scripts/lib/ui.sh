@@ -16,7 +16,7 @@
 #
 # Env:
 #   NO_COLOR / CI / TERM=dumb  -> disables colors + spinners automatically
-#   CADX_NO_SPIN=1             -> spinners off, plain log lines
+#   KIARA_NO_SPIN=1             -> spinners off, plain log lines
 #   QUIET / VERBOSE            -> set by --quiet/--verbose flags in callers
 
 # ---------- terminal detection ----------
@@ -28,7 +28,7 @@ ui_detect() {
     UI_TTY=1
   fi
   UI_SPIN=$UI_TTY
-  [ "${CADX_NO_SPIN:-0}" = "1" ] && UI_SPIN=0
+  [ "${KIARA_NO_SPIN:-0}" = "1" ] && UI_SPIN=0
   if [ "$UI_TTY" = 1 ]; then
     UI_B=$'\033[1m'; UI_DIM=$'\033[2m'; UI_RST=$'\033[0m'
     UI_R=$'\033[31m'; UI_G=$'\033[32m'; UI_Y=$'\033[33m'
@@ -376,9 +376,9 @@ pidfile_proc_matches() {
   p=$(pidfile_pid "$name"); [ -n "$p" ] || return 1
   cmd=$(ps -p "$p" -o command= 2>/dev/null) || return 1
   case "$name" in
-    api)         printf '%s' "$cmd" | grep -q 'uvicorn\|cadx.main' ;;
-    worker)      printf '%s' "$cmd" | grep -q 'arq.*AgentWorker\|cadx.queue' ;;
-    executor)    printf '%s' "$cmd" | grep -q 'arq.*CadWorker\|cadx.queue' ;;
+    api)         printf '%s' "$cmd" | grep -q 'uvicorn\|kiara.main' ;;
+    worker)      printf '%s' "$cmd" | grep -q 'arq.*AgentWorker\|kiara.queue' ;;
+    executor)    printf '%s' "$cmd" | grep -q 'arq.*CadWorker\|kiara.queue' ;;
     web)         printf '%s' "$cmd" | grep -q 'vite\|npm' ;;
     mesh-server) printf '%s' "$cmd" | grep -q 'meshserver\|mesh_server' ;;
     updater)     printf '%s' "$cmd" | grep -q 'update_server' ;;
@@ -416,7 +416,7 @@ pidfile_stop() {
       kill -9 "$pid" 2>/dev/null || true
       ok "stopped $name (pid $pid)"
     else
-      warn "$name pid $pid is not a cadx process — leaving it alone (stale pidfile removed)"
+      warn "$name pid $pid is not a kiara process — leaving it alone (stale pidfile removed)"
     fi
   fi
   rm -f "run/$name.pid"

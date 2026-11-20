@@ -13,13 +13,13 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadx.db.session import create_all
+from kiara.db.session import create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -155,13 +155,13 @@ async def test_accept_unknown_version_404(client):
 
 async def _chat_session(client, pid: str):
     """ChatToolSession bound to a chat on the given project (FakeLLM)."""
-    from cadx.agent.chat_tools import ChatToolSession
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.db.models import Chat, ProjectSettings
-    from cadx.db.session import session_scope
-    from cadx.llm.fake import FakeLLM
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.agent.chat_tools import ChatToolSession
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.db.models import Chat, ProjectSettings
+    from kiara.db.session import session_scope
+    from kiara.llm.fake import FakeLLM
+    from kiara.runtime_config import RuntimeSettings
 
     async with session_scope() as db:
         chat = Chat(project_id=uuid.UUID(pid), title="t")
@@ -234,7 +234,7 @@ async def test_agent_accept_version_and_list_markers(client):
 def test_accept_version_tool_surface():
     """accept_version is deterministic → lands in SAFE_ACTION_TOOLS, which
     the LLM-free MCP session picks up automatically."""
-    from cadx.agent.project_tools import (
+    from kiara.agent.project_tools import (
         CHAT_ACTION_TOOLS,
         LLM_ONLY_TOOL_NAMES,
         SAFE_ACTION_TOOLS,

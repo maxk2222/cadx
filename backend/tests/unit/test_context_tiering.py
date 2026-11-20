@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from cadx.agent.context import codegen_system
-from cadx.llm.schemas import Dim, Feature, ModelingPlan, PartSpec
+from kiara.agent.context import codegen_system
+from kiara.llm.schemas import Dim, Feature, ModelingPlan, PartSpec
 
 
 def _spec(features: list[Feature] | None = None) -> PartSpec:
@@ -87,7 +87,7 @@ def test_measured_features_block_renders_slot_fields():
     """P8: measured slot groups carry through/elongation axes and w x l —
     render them so the patcher sees exact geometry, not a round-hole
     approximation."""
-    from cadx.agent.context import measured_features_block
+    from kiara.agent.context import measured_features_block
 
     block = measured_features_block(
         {
@@ -119,7 +119,7 @@ def test_measured_features_block_renders_slot_fields():
 def test_measured_features_block_legacy_slot_line():
     """Slot groups without the new measured fields keep the generic
     elongated-void line."""
-    from cadx.agent.context import measured_features_block
+    from kiara.agent.context import measured_features_block
 
     block = measured_features_block(
         {
@@ -168,7 +168,7 @@ def test_part_family_hint_extracts_feet_params():
     """The sealed-vessel hint must carry the spec's REAL foot/bolt geometry —
     a static feet=0 template made the model disable the helper's feet and
     hand-build lugs it embeds into the cavity."""
-    from cadx.agent.context import part_family_hint
+    from kiara.agent.context import part_family_hint
 
     hint = part_family_hint(_vessel_spec(with_feet=True))
     assert "sealed_tank" in hint
@@ -180,7 +180,7 @@ def test_part_family_hint_extracts_feet_params():
 
 
 def test_part_family_hint_no_feet_falls_back():
-    from cadx.agent.context import part_family_hint
+    from kiara.agent.context import part_family_hint
 
     hint = part_family_hint(_vessel_spec(with_feet=False))
     assert "sealed_tank" in hint
@@ -207,7 +207,7 @@ def test_cadlib_filter_propeller_surfaces_radial_blade():
 def test_cadlib_filter_arch_and_strut_tags():
     """arch_bridge and strut carry their own trigger vocabulary — a spec
     naming 'arch bridge' or 'diagonal strut' must surface them."""
-    from cadx.agent.context import _cadlib_sections
+    from kiara.agent.context import _cadlib_sections
 
     arch = _spec([Feature(name="handle", type="other", dims={}, count=1)])
     arch.name = "arched carrying handle bridge"
@@ -219,6 +219,6 @@ def test_cadlib_filter_arch_and_strut_tags():
 
 
 def test_part_family_hint_non_vessel_empty():
-    from cadx.agent.context import part_family_hint
+    from kiara.agent.context import part_family_hint
 
     assert part_family_hint(_spec([Feature(name="rib", type="rib", dims={})])) == ""

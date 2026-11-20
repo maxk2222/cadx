@@ -3,13 +3,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cadx.cad.fem.extract import (
+from kiara.cad.fem.extract import (
     density_to_mesh,
     fill_enclosed_voids,
     sealed_void_metrics,
     thin_walled_sealed_voids,
 )
-from cadx.cad.fem.voxelize import VoxelDomain
+from kiara.cad.fem.voxelize import VoxelDomain
 
 
 def test_sealed_void_metrics_empty_and_single_cavity():

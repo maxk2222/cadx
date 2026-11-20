@@ -9,13 +9,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from cadx.db.session import create_all
+from kiara.db.session import create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

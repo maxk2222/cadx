@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import uuid
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.toolloop import run_session
-from cadx.agent.toolspecs import ToolSession
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.toolloop import run_session
+from kiara.agent.toolspecs import ToolSession
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.runtime_config import RuntimeSettings
 
 SEED = '''"""seed scaffold."""
 
@@ -306,8 +306,8 @@ async def test_done_submits_buffer_to_submitted_code():
 async def test_codegen_run_uses_build_session_when_staged():
     """codegen.run with agent_staged_build routes to a build session and the
     done-submitted buffer becomes the CodeResponse code."""
-    from cadx.agent.steps import codegen as codegen_step
-    from cadx.llm.schemas import Dim, PartSpec
+    from kiara.agent.steps import codegen as codegen_step
+    from kiara.llm.schemas import Dim, PartSpec
 
     llm = FakeLLM(
         [
@@ -335,8 +335,8 @@ async def test_codegen_run_build_rescues_undone_buffer():
     """Build session hits the call budget without `done` (long thinking
     calls ate the turns): the grown buffer is still submitted instead of
     raising 'no code'."""
-    from cadx.agent.steps import codegen as codegen_step
-    from cadx.llm.schemas import Dim, PartSpec
+    from kiara.agent.steps import codegen as codegen_step
+    from kiara.llm.schemas import Dim, PartSpec
 
     llm = FakeLLM(
         [
@@ -364,9 +364,9 @@ async def test_codegen_run_build_seed_only_still_fails():
     'produced no code' error is still correct then."""
     import pytest
 
-    from cadx.agent.steps import codegen as codegen_step
-    from cadx.llm.schemas import Dim, PartSpec
-    from cadx.llm.structured import LLMFormatError
+    from kiara.agent.steps import codegen as codegen_step
+    from kiara.llm.schemas import Dim, PartSpec
+    from kiara.llm.structured import LLMFormatError
 
     llm = FakeLLM([_call("quickref", topic="build123d"), {"content": "stuck"}])
     llm.tools_mode = "auto"
@@ -383,8 +383,8 @@ async def test_codegen_run_build_seed_only_still_fails():
 
 async def test_codegen_run_staged_off_keeps_submit_code():
     """agent_staged_build='off' keeps the classic one-shot codegen session."""
-    from cadx.agent.steps import codegen as codegen_step
-    from cadx.llm.schemas import Dim, PartSpec
+    from kiara.agent.steps import codegen as codegen_step
+    from kiara.llm.schemas import Dim, PartSpec
 
     llm = FakeLLM(
         [

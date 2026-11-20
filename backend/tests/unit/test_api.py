@@ -10,13 +10,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from cadx.db.session import create_all
+from kiara.db.session import create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -86,8 +86,8 @@ async def test_project_crud_and_generate_flow(client):
 
 
 async def test_edit_library_parts_inherit_replace_and_clear(client):
-    from cadx.db.models import Version, VersionStatus
-    from cadx.db.session import session_scope
+    from kiara.db.models import Version, VersionStatus
+    from kiara.db.session import session_scope
 
     project = (await client.post("/api/projects", json={"name": "library-edit"})).json()
     created = await client.post(
@@ -165,7 +165,7 @@ async def test_settings_roundtrip(client):
 
 
 async def test_settings_health_endpoint(client, monkeypatch):
-    from cadx.llm.client import LLMClient
+    from kiara.llm.client import LLMClient
 
     async def fake_ok(self):
         return {"ok": True, "vision_ok": True, "latency_ms": 12, "error": None}
@@ -239,8 +239,8 @@ async def test_catalog(client):
 
 
 async def test_optimize_endpoint(client):
-    from cadx.db.models import Job, Version, VersionStatus
-    from cadx.db.session import session_scope
+    from kiara.db.models import Job, Version, VersionStatus
+    from kiara.db.session import session_scope
 
     r = await client.post("/api/projects", json={"name": "opt"})
     pid = r.json()["id"]
@@ -296,7 +296,7 @@ async def test_404s(client):
 
 async def test_version_preview_endpoint(client):
     """Provisional renders are served while a job runs; newest iteration wins."""
-    from cadx import storage
+    from kiara import storage
 
     pid = (await client.post("/api/projects", json={"name": "preview"})).json()["id"]
     vid = (await client.post(f"/api/projects/{pid}/generate", json={"prompt": "x"})).json()[
@@ -324,8 +324,8 @@ async def test_version_preview_endpoint(client):
 
 
 async def test_job_finish_endpoint(client):
-    from cadx.db.models import Job, JobStatus
-    from cadx.db.session import session_scope
+    from kiara.db.models import Job, JobStatus
+    from kiara.db.session import session_scope
 
     pid = (await client.post("/api/projects", json={"name": "finish-test"})).json()["id"]
     created = await client.post(f"/api/projects/{pid}/generate", json={"prompt": "a block"})
@@ -395,8 +395,8 @@ async def test_job_restart_generate(client):
 
 async def test_job_restart_params(client):
     """A params job restart carries the same effective overrides."""
-    from cadx.db.models import Job, JobStatus, Version
-    from cadx.db.session import session_scope
+    from kiara.db.models import Job, JobStatus, Version
+    from kiara.db.session import session_scope
 
     pid = (await client.post("/api/projects", json={"name": "restart-params"})).json()["id"]
     r = await client.post(f"/api/projects/{pid}/generate", json={"prompt": "a block"})
@@ -451,7 +451,7 @@ async def test_project_card_best_thumbnail(client):
     """latest_thumbnail_url comes from the best-scoring succeeded version,
     not blindly from the newest (which may be a failed, renderless rerun).
     id/status still track the newest version so the live overlay works."""
-    from cadx.db.models import (
+    from kiara.db.models import (
         Artifact,
         ArtifactKind,
         Project,
@@ -459,7 +459,7 @@ async def test_project_card_best_thumbnail(client):
         VersionKind,
         VersionStatus,
     )
-    from cadx.db.session import session_scope
+    from kiara.db.session import session_scope
 
     pid = (await client.post("/api/projects", json={"name": "cards"})).json()["id"]
     async with session_scope() as s:

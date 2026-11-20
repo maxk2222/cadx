@@ -11,7 +11,7 @@
    "pdf": "evals/assets/kiara_heatpump/Montageanleitung_Demonstrator_KIARA_v2.pdf",
    "cad_parts": [],
    "guide_mode": "blender",
-   "prompt": "AR-Montageanleitung fuer den KIARA-Waermepumpen-Demonstrator aus der beigefuegten PDF erstellen. KEINE 3D-Teile wurden hochgeladen — modelliere jeden benoetigten Bausatz-Teil selbst in Blender (echte mm-Masse aus der PDF), platziere die Instanzen in der Szene und tagge sie per cadx_part/cadx_step. Vormontierte Komponenten (Verkleidung, Anschlussrohre, vormontierte Adapter) gehoeren zum Ausgangszustand — als cadx_step=0 + cadx_premount markieren. WICHTIG: Dichtungsscheiben/Dichtringe sind KEINE eigenen Teile — nur Schritttext-Hinweise, niemals modellieren oder registrieren.",
+   "prompt": "AR-Montageanleitung fuer den KIARA-Waermepumpen-Demonstrator aus der beigefuegten PDF erstellen. KEINE 3D-Teile wurden hochgeladen — modelliere jeden benoetigten Bausatz-Teil selbst in Blender (echte mm-Masse aus der PDF), platziere die Instanzen in der Szene und tagge sie per kiara_part/kiara_step. Vormontierte Komponenten (Verkleidung, Anschlussrohre, vormontierte Adapter) gehoeren zum Ausgangszustand — als kiara_step=0 + kiara_premount markieren. WICHTIG: Dichtungsscheiben/Dichtringe sind KEINE eigenen Teile — nur Schritttext-Hinweise, niemals modellieren oder registrieren.",
    "answers": [
     "Die vormontierten Komponenten gehoeren zum Ausgangszustand — positioniere sie plausibel laut PDF-Abbildungen und dokumentiere die Annahme.",
     "Nutze die PDF-Abbildungen als Referenz; bei Unsicherheit waehle die geometrisch konsistenteste Loesung und dokumentiere sie."

@@ -9,14 +9,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 
-from cadx.db.models import AgentTrace
-from cadx.db.session import async_session, create_all
+from kiara.db.models import AgentTrace
+from kiara.db.session import async_session, create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -114,7 +114,7 @@ async def test_job_trace_endpoint(client):
 
 
 async def test_meshgen_rejects_non_image_asset(client):
-    from cadx.db.models import Asset, AssetKind
+    from kiara.db.models import Asset, AssetKind
 
     pid = (await client.post("/api/projects", json={"name": "meshgen-bad"})).json()["id"]
     async with async_session() as db:

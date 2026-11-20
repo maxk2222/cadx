@@ -5,7 +5,7 @@ import math
 import pytest
 from build123d import Align, Box, Cone, Cylinder, Pos
 
-from cadx.cad.editfeature import MAX_FACES_FOR_EDIT, edit_feature, find_editable_features
+from kiara.cad.editfeature import MAX_FACES_FOR_EDIT, edit_feature, find_editable_features
 
 quiddity = pytest.importorskip("quiddity")
 

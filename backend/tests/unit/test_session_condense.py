@@ -13,14 +13,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.toolloop import run_session
-from cadx.agent.toolspecs import ToolSession
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.toolloop import run_session
+from kiara.agent.toolspecs import ToolSession
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -154,7 +154,7 @@ async def test_condense_digest_carries_state_lines():
     submissions, per-kind progress — so the post-condense model continues
     instead of re-exploring (observed: a build session re-ran
     search_library and re-added an existing block)."""
-    from cadx.agent.toolloop import _digest_state_lines
+    from kiara.agent.toolloop import _digest_state_lines
 
     ctx = _ctx(FakeLLM([{"content": "x"}]))
     session = ToolSession(ctx, kind="build", code=SEED)
@@ -262,8 +262,8 @@ async def test_repair_prompt_keeps_dynamic_content_last():
     """M7 APC ordering: the per-attempt code + diagnosis must be the LAST
     part of the repair user message — request/spec/context stay byte-stable
     at the head across repair_1..N so prefix caching can reuse them."""
-    from cadx.agent.steps import codegen as codegen_step
-    from cadx.llm.schemas import Dim, PartSpec
+    from kiara.agent.steps import codegen as codegen_step
+    from kiara.llm.schemas import Dim, PartSpec
 
     dim = Dim(value=60.0)
     spec = PartSpec(name="box", length_x=dim, width_y=dim, height_z=dim)

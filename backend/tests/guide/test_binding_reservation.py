@@ -16,10 +16,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from cadx.guide import preassembly as pa
-from cadx.guide import solver
-from cadx.guide.planlint import _resolve_part, plan_lint
-from cadx.guide.state import (
+from kiara.guide import preassembly as pa
+from kiara.guide import solver
+from kiara.guide.planlint import _resolve_part, plan_lint
+from kiara.guide.state import (
     AssemblyInstance,
     AssemblyState,
     GuidePart,
@@ -75,7 +75,7 @@ def test_binding_conflict_blocker_on_stale_binding() -> None:
     plan_lint canonicalizes first (which now binds pin-first), so the
     lint is exercised directly as the defense-in-depth for bindings
     written outside the canonicalizer."""
-    from cadx.guide.planlint import _lint_binding_conflicts
+    from kiara.guide.planlint import _lint_binding_conflicts
 
     steps = [
         _step(3, [{"action": "place", "part": "pipe_l70", "part_pid": "pipe_l70"}]),
@@ -105,7 +105,7 @@ def test_canonicalize_rewrites_conflicting_binding() -> None:
     """End-to-end: canonicalize_refs rebinds the pinned ref to what the
     pinned step produced — the stale pipe_l70 binding never survives
     into downstream consumers."""
-    from cadx.guide.planlint import canonicalize_refs
+    from kiara.guide.planlint import canonicalize_refs
 
     steps = [
         _step(3, [{"action": "place", "part": "pipe_l70", "part_pid": "pipe_l70"}]),
@@ -232,7 +232,7 @@ def test_floating_premount_does_not_root_a_satellite() -> None:
     """'vormontiert am Gerät' is a spatial claim: a premount placed a
     metre below the host must not root its subtree — the whole tree is
     disconnected debris the audit must name."""
-    from cadx.guide.assembly_tools import joint_geometry_audit
+    from kiara.guide.assembly_tools import joint_geometry_audit
 
     host = _part("casing")
     host.bbox_min, host.bbox_max = [-50, -50, -100], [50, 50, 100]
@@ -278,7 +278,7 @@ def test_floating_premount_does_not_root_a_satellite() -> None:
 def test_premount_on_host_still_roots() -> None:
     """A premount flush against the host keeps its root status — the
     exemption exists for real on-device hardware."""
-    from cadx.guide.assembly_tools import joint_geometry_audit
+    from kiara.guide.assembly_tools import joint_geometry_audit
 
     host = _part("casing")
     host.bbox_min, host.bbox_max = [-50, -50, -100], [50, 50, 100]
@@ -387,7 +387,7 @@ def test_bridge_leg_signature_ignores_shared_clause() -> None:
 async def test_resolve_open_mates_fails_honestly_when_nothing_open() -> None:
     """No declared second mate → the tool says so instead of pretending
     to have repaired something."""
-    from cadx.guide.assembly_tools import resolve_open_mates
+    from kiara.guide.assembly_tools import resolve_open_mates
 
     inst = AssemblyInstance(
         part_id="adapter",

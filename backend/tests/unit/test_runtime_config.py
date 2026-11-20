@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from cadx.db.models import AppSetting
-from cadx.db.session import create_all, session_scope
-from cadx.runtime_config import (
+from kiara.db.models import AppSetting
+from kiara.db.session import create_all, session_scope
+from kiara.runtime_config import (
     RuntimeSettings,
     ensure_runtime_seeded,
     load_runtime_settings,

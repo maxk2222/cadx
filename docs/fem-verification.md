@@ -121,7 +121,7 @@ not a failure.
   normal-only pinning on the roller, which `plane` expresses.
 - `voxelize._scanline_contains`: axis-scanline containment replaces
   per-point `contains()` on regular lattices (~dims-fold fewer ray tests,
-  identical results; `CADX_VOXEL_CONTAINS=1` falls back).
+  identical results; `KIARA_VOXEL_CONTAINS=1` falls back).
 - `test_topopt_inv.test_invariant_beso_contract` documents that soft-kill
   BESO is a greedy heuristic whose optima can sit above uniform-field
   compliance on coarse grids — the invariant asserts its contract (volume +

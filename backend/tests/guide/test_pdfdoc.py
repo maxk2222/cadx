@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cadx.guide import pdfdoc
+from kiara.guide import pdfdoc
 
 
 def _make_pdf(texts: list[str]) -> bytes:

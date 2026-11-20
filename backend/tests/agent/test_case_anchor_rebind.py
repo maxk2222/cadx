@@ -9,13 +9,13 @@ splits plural loads ("flange holes") across the matching anchors.
 
 from __future__ import annotations
 
-from cadx.agent.steps.intake import (
+from kiara.agent.steps.intake import (
     lint_envelope_fit,
     materialize_anchor_hints,
     rebind_case_anchors,
     sanitize_load_cases,
 )
-from cadx.llm.schemas import (
+from kiara.llm.schemas import (
     Feature,
     LoadCase,
     LoadSpec,
@@ -515,8 +515,8 @@ def test_materialize_keeps_index_on_estimated_anchor(monkeypatch):
     """An anchor whose position was estimated (no declared coordinates) is
     weaker evidence than the index itself — keep the index for the
     measured-order fallback."""
-    import cadx.agent.anchors as anchors_mod
-    from cadx.agent.anchors import Anchor
+    import kiara.agent.anchors as anchors_mod
+    from kiara.agent.anchors import Anchor
 
     est = Anchor(
         index=0,

@@ -6,14 +6,14 @@ import json
 import uuid
 from pathlib import Path
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.steps import improve
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.llm.schemas import Feature, PartSpec
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.steps import improve
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.llm.schemas import Feature, PartSpec
+from kiara.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -175,7 +175,7 @@ async def test_attempts_reach_session_prompt():
 def test_feature_audit_flags_probe_stub():
     """The observed stub: load_mesh_solid + prints only, spec declares lugs
     and bores — the audit must reject it before critique burns iterations."""
-    from cadx.agent.steps.codegen import _feature_audit
+    from kiara.agent.steps.codegen import _feature_audit
 
     stub = (
         "from build123d import *\nimport cadlib\n"
@@ -198,7 +198,7 @@ def test_feature_audit_flags_probe_stub():
 
 
 def test_feature_audit_accepts_real_build():
-    from cadx.agent.steps.codegen import _feature_audit
+    from kiara.agent.steps.codegen import _feature_audit
 
     code = (
         "mesh = load_mesh_solid()\n"
@@ -278,7 +278,7 @@ async def test_mixed_issues_still_reach_session():
 async def test_last_good_rescues_broken_head_buffer(monkeypatch):
     """P6: a session that exhausted its budget mid-edit leaves a broken
     head buffer — the last verified-good buffer is the candidate."""
-    from cadx.agent.toolloop import SessionResult
+    from kiara.agent.toolloop import SessionResult
 
     good = BOX_CODE + "\n# verified-safe edit\n"
     res = SessionResult(code="result = broken_call(", exhausted=True, end_reason="budget")
@@ -298,7 +298,7 @@ async def test_last_good_rescues_broken_head_buffer(monkeypatch):
 async def test_exhausted_session_with_no_better_buffer_yields_nothing(monkeypatch):
     """P6: exhausted + last_good identical to base (or absent) means the
     session produced no changes — do not submit a 'patch'."""
-    from cadx.agent.toolloop import SessionResult
+    from kiara.agent.toolloop import SessionResult
 
     res = SessionResult(code="result = broken_call(", exhausted=True, end_reason="budget")
     res.last_good = BOX_CODE  # the only good state IS the base — nothing new
@@ -318,7 +318,7 @@ async def test_exhausted_session_with_no_better_buffer_yields_nothing(monkeypatc
 async def test_infra_error_latches_one_shot_fallback(monkeypatch):
     """An executor-infra session abort is a broken interaction pattern —
     it counts toward the blind one-shot fallback like verify_loop."""
-    from cadx.agent.toolloop import SessionResult
+    from kiara.agent.toolloop import SessionResult
 
     res = SessionResult(code=None, exhausted=True, end_reason="infra_error")
 

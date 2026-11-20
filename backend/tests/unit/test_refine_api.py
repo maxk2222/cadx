@@ -13,15 +13,15 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadx.db.models import Job, JobType, Project, Version, VersionKind, VersionStatus
-from cadx.db.session import async_session, create_all
-from cadx.llm.schemas import OptimizeSpec, PartSpec
+from kiara.db.models import Job, JobType, Project, Version, VersionKind, VersionStatus
+from kiara.db.session import async_session, create_all
+from kiara.llm.schemas import OptimizeSpec, PartSpec
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -90,7 +90,7 @@ async def test_refine_request_forbids_extra(client):
 
 
 async def test_maybe_spawn_refine_hook(monkeypatch):
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     enqueued: list[dict] = []
 
@@ -98,7 +98,7 @@ async def test_maybe_spawn_refine_hook(monkeypatch):
         enqueued.append({"func": func, "payload": payload})
         return "fake-job-id"
 
-    import cadx.api.deps as deps
+    import kiara.api.deps as deps
 
     monkeypatch.setattr(deps, "enqueue", fake_enqueue)
 
@@ -143,7 +143,7 @@ async def test_maybe_spawn_refine_hook(monkeypatch):
 
 async def test_maybe_spawn_refine_noop(monkeypatch):
     """Without the flag or on a failed parent no child is created."""
-    from cadx.agent import worker_jobs as wj
+    from kiara.agent import worker_jobs as wj
 
     enqueued: list = []
 
@@ -151,7 +151,7 @@ async def test_maybe_spawn_refine_noop(monkeypatch):
         enqueued.append(payload)
         return
 
-    import cadx.api.deps as deps
+    import kiara.api.deps as deps
 
     monkeypatch.setattr(deps, "enqueue", fake_enqueue)
 

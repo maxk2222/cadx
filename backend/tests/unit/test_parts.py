@@ -13,13 +13,13 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadx.db.session import create_all
+from kiara.db.session import create_all
 
 
 @pytest.fixture(scope="module")
 async def client():
     await create_all()
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
@@ -116,8 +116,8 @@ async def test_part_id_validation(client):
 
 
 async def test_child_inherits_parent_part(client):
-    from cadx.db.models import Version, VersionStatus
-    from cadx.db.session import session_scope
+    from kiara.db.models import Version, VersionStatus
+    from kiara.db.session import session_scope
 
     pid = await _project(client, "inherit-part")
     r = await client.post(f"/api/projects/{pid}/generate", json={"prompt": "base"})
@@ -166,8 +166,8 @@ async def test_versions_part_filter(client):
 
 
 async def test_part_crud_and_cascade_delete(client):
-    from cadx.db.models import Job, Version
-    from cadx.db.session import session_scope
+    from kiara.db.models import Job, Version
+    from kiara.db.session import session_scope
 
     pid = await _project(client, "crud-part")
     r = await client.post(f"/api/projects/{pid}/generate", json={"prompt": "gear"})
@@ -213,7 +213,7 @@ async def test_part_cascade_fk_ordering():
     from sqlalchemy import event, func, select
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-    from cadx.db.models import (
+    from kiara.db.models import (
         Job,
         JobStatus,
         Part,
@@ -223,7 +223,7 @@ async def test_part_cascade_fk_ordering():
         VersionKind,
         VersionStatus,
     )
-    from cadx.parts import delete_part
+    from kiara.parts import delete_part
 
     eng = create_async_engine("sqlite+aiosqlite:///:memory:")
 
@@ -279,7 +279,7 @@ async def test_part_cascade_fk_ordering():
 
 
 def test_derive_part_name():
-    from cadx.parts import derive_part_name
+    from kiara.parts import derive_part_name
 
     assert derive_part_name("", 3) == "Part 3"
     assert derive_part_name("   ", 1) == "Part 1"
@@ -297,13 +297,13 @@ def test_derive_part_name():
 
 
 async def test_agent_list_parts_and_scoped_list_versions(client):
-    from cadx.agent.chat_tools import ChatToolSession
-    from cadx.agent.trace import MemoryTrace
-    from cadx.agent.types import AgentCtx
-    from cadx.db.models import Chat, ProjectSettings
-    from cadx.db.session import session_scope
-    from cadx.llm.fake import FakeLLM
-    from cadx.runtime_config import RuntimeSettings
+    from kiara.agent.chat_tools import ChatToolSession
+    from kiara.agent.trace import MemoryTrace
+    from kiara.agent.types import AgentCtx
+    from kiara.db.models import Chat, ProjectSettings
+    from kiara.db.session import session_scope
+    from kiara.llm.fake import FakeLLM
+    from kiara.runtime_config import RuntimeSettings
 
     pid = await _project(client, "agent-part")
     await client.post(f"/api/projects/{pid}/generate", json={"prompt": "plate"})
@@ -350,8 +350,8 @@ async def test_agent_list_parts_and_scoped_list_versions(client):
 def test_mcp_part_surface_boundary():
     """list_parts arrives via inherited CHAT_INFO_TOOLS; submit_code/
     mesh_generate expose part args; the LLM/delete boundary holds."""
-    from cadx.agent.project_tools import CHAT_INFO_TOOLS
-    from cadx.mcpserver.tools import MCP_TOOL_NAMES, MCP_TOOL_SCHEMAS
+    from kiara.agent.project_tools import CHAT_INFO_TOOLS
+    from kiara.mcpserver.tools import MCP_TOOL_NAMES, MCP_TOOL_SCHEMAS
 
     info_names = {t["function"]["name"] for t in CHAT_INFO_TOOLS}
     assert "list_parts" in info_names
@@ -376,7 +376,7 @@ async def test_backfill_groups_trees_and_orphans():
     """Versions under one root share a part; orphans get their own."""
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    from cadx.db.backfill import backfill_parts
+    from kiara.db.backfill import backfill_parts
 
     eng = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with eng.begin() as c:

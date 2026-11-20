@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from cadx.evalkit import baseline as bl
-from cadx.evalkit.models import CaseResult, GateResult, StageResult
-from cadx.evalkit.report import aggregate, load_results, render_markdown
+from kiara.evalkit import baseline as bl
+from kiara.evalkit.models import CaseResult, GateResult, StageResult
+from kiara.evalkit.report import aggregate, load_results, render_markdown
 
 
 def _res(

@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-import cadx.agent.worker_jobs as wj
-from cadx.agent.orchestrator import RunOutcome
-from cadx.db.models import (
+import kiara.agent.worker_jobs as wj
+from kiara.agent.orchestrator import RunOutcome
+from kiara.db.models import (
     Asset,
     AssetKind,
     Job,
@@ -18,8 +18,8 @@ from cadx.db.models import (
     VersionKind,
     VersionStatus,
 )
-from cadx.db.session import async_session, create_all
-from cadx.spawn import enqueue_resume, spawn_guide
+from kiara.db.session import async_session, create_all
+from kiara.spawn import enqueue_resume, spawn_guide
 
 
 @pytest.fixture(scope="module")
@@ -126,7 +126,7 @@ async def test_run_guide_job_waiting_then_resume(_db, monkeypatch):
         assert resume_state.get("guide_dir")
         return RunOutcome(status="succeeded", score=9)
 
-    import cadx.guide.guide_runner as gr
+    import kiara.guide.guide_runner as gr
 
     monkeypatch.setattr(wj, "QueueExecutor", lambda *a, **k: object())
     monkeypatch.setattr(wj, "_make_llm", lambda rt, **kw: object())
@@ -156,8 +156,8 @@ async def test_load_or_init_state_seeds_wizard_options(tmp_path):
     is locked against doc-mission autodetect."""
     from types import SimpleNamespace
 
-    from cadx.guide.guide_runner import _load_or_init_state
-    from cadx.guide.state import GuideState
+    from kiara.guide.guide_runner import _load_or_init_state
+    from kiara.guide.state import GuideState
 
     ctx = SimpleNamespace(project_id="p1", version_id="v1", prompt="note text")
     state = _load_or_init_state(
@@ -188,8 +188,8 @@ async def test_apply_rewrite_stores_variant_and_applies():
     updated — the shared core used by REST and the runner."""
     from types import SimpleNamespace
 
-    from cadx.guide.rewrite import apply_rewrite
-    from cadx.guide.state import GuideState, GuideStep
+    from kiara.guide.rewrite import apply_rewrite
+    from kiara.guide.state import GuideState, GuideStep
 
     class _FakeLLM:
         async def chat(self, role, messages, **kw):
@@ -225,9 +225,9 @@ async def test_apply_rewrite_stores_variant_and_applies():
 
 async def test_unity_artifact_written(_db, monkeypatch, tmp_path):
     """emit writes unity_guide.json into the guide output dir."""
-    from cadx import storage
-    from cadx.guide.guide_runner import _emit_artifacts
-    from cadx.guide.state import GuideState
+    from kiara import storage
+    from kiara.guide.guide_runner import _emit_artifacts
+    from kiara.guide.state import GuideState
 
     # production guide dirs live under storage.data_root() (version_dir/guide)
     state_dir = storage.data_root() / "test-guide" / "guide"
@@ -246,8 +246,8 @@ async def test_guide_note_endpoint_writes_jsonl(_db):
     before state.json exists (early-run notes)."""
     import json as _json
 
-    from cadx import storage
-    from cadx.api.routers.guide import GuideNoteIn, add_guide_note
+    from kiara import storage
+    from kiara.api.routers.guide import GuideNoteIn, add_guide_note
 
     project = await _mk_project()
     asset = await _mk_pdf_asset(project)
@@ -262,8 +262,8 @@ async def test_guide_note_endpoint_writes_jsonl(_db):
 
 def _seed_state(project, vid, n_steps=2):
     """Write a minimal durable GuideState so the guide endpoints load."""
-    from cadx import storage
-    from cadx.guide.state import GuideState, GuideStep
+    from kiara import storage
+    from kiara.guide.state import GuideState, GuideStep
 
     guide_dir = storage.version_dir(project.id, vid) / "guide"
     guide_dir.mkdir(parents=True, exist_ok=True)
@@ -292,7 +292,7 @@ async def _mk_img_asset(project: Project) -> Asset:
 
 async def test_annotation_crud_and_renumber(_db):
     """POST/PATCH/DELETE guide annotations round-trip through state.json."""
-    from cadx.api.routers.guide import (
+    from kiara.api.routers.guide import (
         AnnotationIn,
         AnnotationPatch,
         add_annotation,
@@ -328,7 +328,7 @@ async def test_annotation_crud_and_renumber(_db):
         d = await delete_annotation(v.id, 0, db)
         assert d["annotations"] == 1
 
-    from cadx.guide.state import GuideState
+    from kiara.guide.state import GuideState
 
     st = GuideState.load(guide_dir)
     assert len(st.annotations) == 1
@@ -338,8 +338,8 @@ async def test_annotation_crud_and_renumber(_db):
 
 async def test_annotation_axis_normalization(_db):
     """a raw vec3 is normalized; named directions resolve via _DIR_VECS."""
-    from cadx import storage
-    from cadx.api.routers.guide import AnnotationIn, add_annotation
+    from kiara import storage
+    from kiara.api.routers.guide import AnnotationIn, add_annotation
 
     project = await _mk_project()
     asset = await _mk_pdf_asset(project)
@@ -358,7 +358,7 @@ async def test_annotation_axis_normalization(_db):
         )
         assert r["ok"] is True
 
-    from cadx.guide.state import GuideState
+    from kiara.guide.state import GuideState
 
     st = GuideState.load(storage.version_dir(project.id, v.id) / "guide")
     assert st.annotations[0]["approach_axis"] == [0.0, 0.0, -1.0]
@@ -372,8 +372,8 @@ async def test_guide_media_upload_and_from_asset(_db):
 
     from fastapi import UploadFile
 
-    from cadx import storage
-    from cadx.api.routers.guide import (
+    from kiara import storage
+    from kiara.api.routers.guide import (
         MediaFromAsset,
         guide_media_from_asset,
         upload_guide_media,

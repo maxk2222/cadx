@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from cadx.db.models import (
+from kiara.db.models import (
     AgentTrace,
     Artifact,
     ArtifactKind,
@@ -24,7 +24,7 @@ from cadx.db.models import (
     VersionKind,
     VersionStatus,
 )
-from cadx.db.session import async_session, create_all
+from kiara.db.session import async_session, create_all
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -34,7 +34,7 @@ async def _db():
 
 @pytest.fixture(scope="module")
 async def client():
-    from cadx.main import app
+    from kiara.main import app
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c

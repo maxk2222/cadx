@@ -8,7 +8,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from cadx.agent.image_client import (
+from kiara.agent.image_client import (
     FakeImageClient,
     HttpImageClient,
     ImageGenError,
@@ -123,11 +123,11 @@ def fake_server(monkeypatch):
     real_async, real_sync = httpx.AsyncClient, httpx.Client
 
     monkeypatch.setattr(
-        "cadx.agent.image_client.httpx.AsyncClient",
+        "kiara.agent.image_client.httpx.AsyncClient",
         lambda *a, **kw: real_async(transport=transport),
     )
     monkeypatch.setattr(
-        "cadx.agent.image_client.httpx.Client",
+        "kiara.agent.image_client.httpx.Client",
         lambda *a, **kw: real_sync(transport=transport),
     )
 

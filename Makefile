@@ -103,15 +103,15 @@ infra: ## Postgres + Redis in docker for native dev
 	docker compose -f docker-compose.dev.yml up -d postgres redis
 
 dev-api: ## FastAPI on :8000 with reload
-	cd $(BACKEND) && ../$(VENV)/bin/uv run alembic upgrade head && ../$(VENV)/bin/uv run uvicorn cadx.main:app --reload --port 8000
+	cd $(BACKEND) && ../$(VENV)/bin/uv run alembic upgrade head && ../$(VENV)/bin/uv run uvicorn kiara.main:app --reload --port 8000
 
 dev-worker: ## Agent queue worker
-	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.AgentWorkerSettings
+	cd $(BACKEND) && ../$(VENV)/bin/uv run arq kiara.queue.AgentWorkerSettings
 
 dev-executor: ## CAD queue workers (cad + cad-light + cad-fem lanes)
-	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.CadWorkerSettings & \
-	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.CadLightWorkerSettings & \
-	cd $(BACKEND) && ../$(VENV)/bin/uv run arq cadx.queue.CadFemWorkerSettings & \
+	cd $(BACKEND) && ../$(VENV)/bin/uv run arq kiara.queue.CadWorkerSettings & \
+	cd $(BACKEND) && ../$(VENV)/bin/uv run arq kiara.queue.CadLightWorkerSettings & \
+	cd $(BACKEND) && ../$(VENV)/bin/uv run arq kiara.queue.CadFemWorkerSettings & \
 	wait
 
 dev-web: ## Vite dev server on :5173

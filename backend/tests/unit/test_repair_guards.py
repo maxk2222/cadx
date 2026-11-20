@@ -14,19 +14,19 @@ from typing import Any
 
 import pytest
 
-from cadx.agent.executor_client import InProcessExecutor
-from cadx.agent.orchestrator import (
+from kiara.agent.executor_client import InProcessExecutor
+from kiara.agent.orchestrator import (
     _exec_error_signature,
     _note_exec_error,
     _repair_error_history,
 )
-from cadx.agent.thinking import thinking_body, thinking_on
-from cadx.agent.toolspecs import ToolSession, elision_marker
-from cadx.agent.trace import MemoryTrace
-from cadx.agent.types import AgentCtx
-from cadx.db.models import ProjectSettings
-from cadx.llm.fake import FakeLLM
-from cadx.runtime_config import RuntimeSettings
+from kiara.agent.thinking import thinking_body, thinking_on
+from kiara.agent.toolspecs import ToolSession, elision_marker
+from kiara.agent.trace import MemoryTrace
+from kiara.agent.types import AgentCtx
+from kiara.db.models import ProjectSettings
+from kiara.llm.fake import FakeLLM
+from kiara.runtime_config import RuntimeSettings
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 BOX_CODE = (FIXTURES / "simple_box.py").read_text()
@@ -234,8 +234,8 @@ def test_repair_error_history_is_deterministic() -> None:
 async def test_repair_injects_docs_and_error_history() -> None:
     """One-shot repair path (no tool session): the classified AttributeError
     pulls the Edge member digest, the passed history lands verbatim."""
-    from cadx.agent.steps import codegen as codegen_step
-    from cadx.llm.schemas import PartSpec
+    from kiara.agent.steps import codegen as codegen_step
+    from kiara.llm.schemas import PartSpec
 
     dim = {"value": 60.0, "unit": "mm", "source": "stated"}
     spec = PartSpec.model_validate(
@@ -274,8 +274,8 @@ async def test_repair_injects_docs_and_error_history() -> None:
 async def test_repair_drops_elided_full_code() -> None:
     """An elided full_code is dropped BEFORE the caller can apply it — the
     remaining clean edits still go through."""
-    from cadx.agent.steps import codegen as codegen_step
-    from cadx.llm.schemas import PartSpec
+    from kiara.agent.steps import codegen as codegen_step
+    from kiara.llm.schemas import PartSpec
 
     dim = {"value": 60.0, "unit": "mm", "source": "stated"}
     spec = PartSpec.model_validate(

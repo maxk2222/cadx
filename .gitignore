@@ -23,4 +23,4 @@ evals/reports/
 evals/scratch/
 evals/pydeps/
 evals/*.log
-**/cadx_native/target/
+**/kiara_native/target/

@@ -3,8 +3,8 @@
 import trimesh
 from build123d import Box, Pos
 
-from cadx.cad import cadlib
-from cadx.cad.spans import declared_spans, plate_checks, span_checks, span_coverage
+from kiara.cad import cadlib
+from kiara.cad.spans import declared_spans, plate_checks, span_checks, span_coverage
 
 
 def _features(position: str) -> list[dict]:
@@ -126,7 +126,7 @@ def test_plate_checks_synthesises_footprint_from_centre_and_dims():
 # plate_checks — hybrid exemption
 #
 # On a mesh-derived solid the runner attaches the source trimesh as
-# `shape._cadx_mesh`; the band probe then reads the organic base body, whose
+# `shape._kiara_mesh`; the band probe then reads the organic base body, whose
 # whole extent may legitimately span a declared plate footprint — but only
 # while it stays inside the STATED overall dims.
 
@@ -173,7 +173,7 @@ def test_plate_checks_mesh_solid_exempted_within_stated_envelope():
     inside the stated 120x40 envelope — the organic base body legitimately
     spans the footprint."""
     shape, mesh = _organic_envelope()
-    shape._cadx_mesh = mesh
+    shape._kiara_mesh = mesh
     res = plate_checks(shape, _organic_pad_feature(), spec_dict=_STATED_ENVELOPE)
     assert len(res) == 1
     assert res[0]["ok"]
@@ -183,7 +183,7 @@ def test_plate_checks_mesh_exemption_requires_stated_source():
     """An `inferred` overall dim is the agent's own guess — it cannot excuse
     the overshoot the way a stated requirement can."""
     shape, mesh = _organic_envelope()
-    shape._cadx_mesh = mesh
+    shape._kiara_mesh = mesh
     spec = {
         "length_x": {"value": 120, "source": "stated"},
         "width_y": {"value": 40, "source": "inferred"},
@@ -197,7 +197,7 @@ def test_plate_checks_mesh_extent_beyond_stated_envelope_still_flags():
     """The exemption is bounded by the stated dims — a measured band wider
     than even the declared overall width is real overshoot, not organics."""
     shape, mesh = _organic_envelope()
-    shape._cadx_mesh = mesh
+    shape._kiara_mesh = mesh
     spec = {
         "length_x": {"value": 120, "source": "stated"},
         "width_y": {"value": 30, "source": "stated"},
@@ -209,7 +209,7 @@ def test_plate_checks_mesh_extent_beyond_stated_envelope_still_flags():
 
 def test_span_checks_accept_analysis_mesh(tmp_path):
     """The pipeline hands its analysis tessellation to the span checks —
-    a CAD solid without _cadx_mesh then uses ray-parity containment instead
+    a CAD solid without _kiara_mesh then uses ray-parity containment instead
     of per-point OCC is_inside (~200 ms/pt on curved B-Reps)."""
     import trimesh
     from build123d import export_stl
@@ -222,7 +222,7 @@ def test_span_checks_accept_analysis_mesh(tmp_path):
     mesh = trimesh.load(str(stl), force="mesh", process=False)
     mesh.merge_vertices()
     assert mesh.is_watertight
-    # same verdict as the _cadx_mesh path — but the mesh came in via kwarg
+    # same verdict as the _kiara_mesh path — but the mesh came in via kwarg
     cov = span_coverage(part, [-55, 0, 35], [15, 0, 95], mesh=mesh)
     assert cov >= 0.85
     feats = _features(

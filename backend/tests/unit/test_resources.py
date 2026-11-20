@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import cadx.cad.resources as res
-from cadx.runtime_config import RuntimeSettings
+import kiara.cad.resources as res
+from kiara.runtime_config import RuntimeSettings
 
 
 def _reset_detected(monkeypatch) -> None:

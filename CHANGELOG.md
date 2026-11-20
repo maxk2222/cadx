@@ -71,7 +71,7 @@ into verified, parametric, manufacturing-ready 3D models.
 - Mesh ops pipeline (`cad/mesh_ops.py`) with deterministic replay.
 - React/Vite/Three.js web UI: projects, versions, chat agent, jobs, stats,
   settings (provider/models/agent/mesh/fem/system tabs), wizards, editors.
-- MCP server surface (`cadx/mcpserver/`) — deterministic, LLM-free tools.
+- MCP server surface (`kiara/mcpserver/`) — deterministic, LLM-free tools.
 - EvalKit: durable live-API evaluation (`make eval`) + in-process scratch
   evaluation (`make eval-quick`), suites under `evals/suite/`.
 - One-command local stack (`make start`) with GPU tier autodetect

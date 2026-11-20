@@ -1,0 +1,343 @@
+"""IMPROVE — targeted fix of the best code so far (code model).
+
+Two protocols, chosen by provider capability:
+- tool session (preferred): the model edits the code buffer interactively
+  (read/search/edit/check/verify/done); the buffer IS the result.
+- legacy PatchResponse: one-shot find/replace edits or full_code.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from kiara.agent.context import (
+    anchors_block,
+    bindings_block,
+    codegen_system,
+    issues_block,
+    measured_features_block,
+    measurements_block,
+    numbered_code_block,
+    plan_block,
+    references_block,
+    request_block,
+    spec_block,
+    system_prompt,
+)
+from kiara.agent.thinking import thinking_body
+from kiara.agent.toolloop import run_session, tools_enabled
+from kiara.agent.toolspecs import ToolSession, VerifyFn
+from kiara.agent.types import AgentCtx
+from kiara.llm.schemas import ModelingPlan, PartSpec, PatchResponse
+from kiara.logging import get_logger
+
+log = get_logger(__name__)
+
+STEP = "improve"
+# minor-issue rounds (feature findings, lint minors — mostly "apply the bound
+# snippet") get their own step name so they stay OUT of the hard-steps set:
+# step_is_hard only matches numeric attempt suffixes, so "improve_minor*"
+# never consumes the per-job thinking budget (observed: the 8-call budget
+# fully spent by early minor improves, leaving later hard steps unthunked)
+STEP_MINOR = "improve_minor"
+
+# a structural FEM failure is exactly the kind of issue that benefits from
+# seeing the part — it must not take the cheap path (fewer calls, no render).
+# `features` stays light: measured defects arrive with numeric anchors that
+# patch fine without vision.
+_HARD_SOURCES = ("dims", "critique", "verify_question", "dfm", "solids", "exec", "fem")
+
+
+def _hard_issues(issues: list[dict[str, Any]]) -> bool:
+    """Any major issue from a source that needs real exploration — minor
+    rounds just patch snippets/fix lint, no vision or deep reasoning."""
+    return any(i.get("severity") == "major" and i.get("source") in _HARD_SOURCES for i in issues)
+
+
+def _actionable(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Issues a patch can actually act on — artifact-flagged repeats (same
+    fingerprint on unchanged measured geometry) and executor ``infra``
+    errors carry no code change; spending a session on them just burns
+    the tool-call budget. They stay on the persisted issue list, they
+    simply must not reach the patcher."""
+    return [i for i in issues if not i.get("artifact") and i.get("source") != "infra"]
+
+
+def _step_name(hard: bool, attempt: int) -> str:
+    base = STEP if hard else STEP_MINOR
+    return base if attempt == 1 else f"{base}_{attempt}"
+
+
+def _user_parts(
+    ctx: AgentCtx,
+    spec: PartSpec,
+    plan: ModelingPlan | None,
+    base_code: str,
+    issues: list[dict[str, Any]],
+    features: dict[str, Any] | None,
+    patch_errors: list[str] | None,
+    attempts: list[str] | None = None,
+    *,
+    numbered: bool = False,
+) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    rb = request_block(ctx.prompt)
+    if rb:
+        parts.append({"type": "text", "text": rb})
+    parts.append({"type": "text", "text": spec_block(spec)})
+    if plan is not None:
+        parts.append({"type": "text", "text": plan_block(plan)})
+    bb = bindings_block(spec)
+    if bb:
+        parts.append({"type": "text", "text": bb})
+    if ctx.hybrid_solid is not None:
+        parts.append(
+            {
+                "type": "text",
+                "text": (
+                    "HYBRID MODE rules:\n"
+                    "- keep `mesh = load_mesh_solid()` — never replace, rotate or "
+                    "translate it\n"
+                    "- add features only via boolean ops with fresh primitives "
+                    "(cylinders, boxes)\n"
+                    "- place features on `spine_y(x)` / `top_z(x,y)` helpers, never "
+                    "by guessed constants\n"
+                    "- `result` must contain the mesh solid"
+                ),
+            }
+        )
+    ref = references_block(ctx.assets)
+    if ref:
+        parts.append({"type": "text", "text": ref})
+    # APC ordering: measurements/anchors are job-stable — they precede the
+    # per-iteration tail (current code, measured geometry, issues) so the
+    # shared prefix reaches as far as possible across improve calls
+    mm = measurements_block(ctx.measurements)
+    if mm:
+        parts.append({"type": "text", "text": mm})
+    ab = anchors_block(ctx.anchors)
+    if ab:
+        parts.append({"type": "text", "text": ab})
+    if numbered:
+        parts.append({"type": "text", "text": numbered_code_block(base_code)})
+    else:
+        parts.append(
+            {
+                "type": "text",
+                "text": "CURRENT CODE (working unless noted):\n```python\n" + base_code + "\n```",
+            }
+        )
+    mf = measured_features_block(features)
+    if mf:
+        parts.append({"type": "text", "text": mf})
+    parts.append({"type": "text", "text": issues_block(issues)})
+    if attempts:
+        parts.append(
+            {
+                "type": "text",
+                "text": (
+                    "PREVIOUS ATTEMPTS this job — these edits were already tried; "
+                    "do NOT repeat them, choose a different construction:\n- "
+                    + "\n- ".join(attempts[-6:])
+                ),
+            }
+        )
+    if patch_errors:
+        # one-shot path needs full_code to escape missed hunks; a tool session
+        # edits the live buffer, so the warning is "don't repeat those edits"
+        text = (
+            "YOUR PREVIOUS PATCH HUNKS DID NOT APPLY — those exact `find` "
+            "blocks did not match the code, do not repeat them:\n- "
+            if numbered
+            else "YOUR PREVIOUS PATCH DID NOT APPLY — localised edits have "
+            "already failed on this code, so return the COMPLETE corrected "
+            "source in `full_code` (not `edits`). Errors to fix:\n- "
+        )
+        parts.append({"type": "text", "text": text + "\n- ".join(patch_errors)})
+    return parts
+
+
+def _session_system(ctx: AgentCtx, spec: PartSpec, plan: ModelingPlan | None) -> str:
+    return "\n\n".join(
+        [
+            system_prompt("improve_tools.md"),
+            system_prompt("tools_protocol.md"),
+            codegen_system(plan=plan, spec=spec, fresh=False, hybrid=ctx.hybrid_solid is not None),
+        ]
+    )
+
+
+async def run(
+    ctx: AgentCtx,
+    spec: PartSpec,
+    plan: ModelingPlan | None,
+    *,
+    base_code: str,
+    issues: list[dict[str, Any]],
+    features: dict[str, Any] | None = None,
+    patch_errors: list[str] | None = None,
+    attempts: list[str] | None = None,
+    iteration: int,
+    attempt: int = 1,
+    verify_fn: VerifyFn | None = None,
+    render_fn: VerifyFn | None = None,
+    render_existing_fn: VerifyFn | None = None,
+) -> PatchResponse:
+    issues = _actionable(issues)
+    if not issues:
+        return PatchResponse(reasoning="no actionable issues — measurement artifacts or infra only")
+    hard = _hard_issues(issues)
+    step = _step_name(hard, attempt)
+    if tools_enabled(ctx, "code") and ctx.edit_sessions_exhausted < 1:
+        # feature-only improve (missing hole/slot/rib findings + lint minors)
+        # is mostly "apply the bound snippet" — a full exploration budget
+        # just buys churn (observed: 12-call sessions at ~16k ptok each), and
+        # vision renders add nothing a light verify can't tell it
+        s = ctx.runtime_settings
+        mc = (
+            s.agent_tool_max_calls
+            if hard
+            else min(s.agent_tool_max_calls, s.agent_tool_max_calls_improve)
+        )
+        return await _run_session(
+            ctx,
+            spec,
+            plan,
+            base_code=base_code,
+            issues=issues,
+            features=features,
+            patch_errors=patch_errors,
+            attempts=attempts,
+            iteration=iteration,
+            attempt=attempt,
+            verify_fn=verify_fn,
+            render_fn=render_fn if hard else None,
+            render_existing_fn=render_existing_fn if hard else None,
+            max_calls=mc,
+            step=step,
+        )
+
+    messages: list[dict[str, Any]] = [
+        {
+            "role": "system",
+            "content": system_prompt("improve_system.md")
+            + "\n\n"
+            + codegen_system(
+                plan=plan, spec=spec, fresh=False, hybrid=ctx.hybrid_solid is not None
+            ),
+        },
+        {
+            "role": "user",
+            "content": _user_parts(
+                ctx, spec, plan, base_code, issues, features, patch_errors, attempts
+            ),
+        },
+    ]
+    resp = await ctx.llm.chat(
+        "code",
+        messages,
+        json_schema=PatchResponse,
+        temperature=0.1,
+        extra_body=thinking_body(ctx, step),
+    )
+    assert isinstance(resp.parsed, PatchResponse)
+    await ctx.trace.record(
+        step=step,
+        iteration=iteration,
+        model=resp.model,
+        messages=messages,
+        response_text=resp.text,
+        parsed={
+            "reasoning": resp.parsed.reasoning,
+            "n_edits": len(resp.parsed.edits),
+            "has_full_code": bool(resp.parsed.full_code),
+            # vLLM APC: prefix-cache hits land here so trace rows show the
+            # deployment actually shares prefixes across steps (P8b)
+            **({"cached_tokens": resp.cached_tokens} if resp.cached_tokens else {}),
+        },
+        prompt_tokens=resp.prompt_tokens,
+        completion_tokens=resp.completion_tokens,
+        latency_ms=resp.latency_ms,
+    )
+    return resp.parsed
+
+
+async def _run_session(
+    ctx: AgentCtx,
+    spec: PartSpec,
+    plan: ModelingPlan | None,
+    *,
+    base_code: str,
+    issues: list[dict[str, Any]],
+    features: dict[str, Any] | None,
+    patch_errors: list[str] | None,
+    attempts: list[str] | None,
+    iteration: int,
+    attempt: int,
+    verify_fn: VerifyFn | None,
+    render_fn: VerifyFn | None = None,
+    render_existing_fn: VerifyFn | None = None,
+    max_calls: int,
+    step: str = STEP,
+) -> PatchResponse:
+    session = ToolSession(
+        ctx,
+        kind="edit",
+        code=base_code,
+        verify_fn=verify_fn,
+        render_fn=render_fn,
+        render_existing_fn=render_existing_fn,
+    )
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": _session_system(ctx, spec, plan)},
+        {
+            "role": "user",
+            "content": _user_parts(
+                ctx,
+                spec,
+                plan,
+                base_code,
+                issues,
+                features,
+                patch_errors,
+                attempts,
+                numbered=True,
+            ),
+        },
+    ]
+    res = await run_session(
+        ctx,
+        "code",
+        messages,
+        session=session,
+        max_calls=max_calls,
+        step=step,
+        iteration=iteration,
+        temperature=0.1,
+    )
+    # only a broken interaction pattern blinds later repairs — a session that
+    # merely ran out of budget still delivered its buffer, no reason to punish
+    # every subsequent improve with the blind one-shot path
+    if res.exhausted and res.end_reason in ("verify_loop", "repeat_loop", "infra_error"):
+        ctx.edit_sessions_exhausted += 1
+        log.info(
+            "edit.oneshot_fallback",
+            exhausted=ctx.edit_sessions_exhausted,
+            reason=res.end_reason,
+        )
+    # P6: prefer the last known-good buffer the session verified — the head
+    # buffer may hold a broken half-edit when the session ran out of budget;
+    # an exhausted session with nothing better falls back to base_code so
+    # the loop treats it as "no changes", not as a patch to apply
+    last_good = getattr(res, "last_good", None)
+    candidate = last_good or (base_code if res.exhausted else res.code)
+    if candidate and candidate != base_code:
+        sub = res.submitted or {}
+        return PatchResponse(
+            reasoning=str(sub.get("reasoning", "")),
+            expected_bbox=list(sub.get("expected_bbox") or []),
+            full_code=candidate,
+        )
+    # session produced nothing usable — signal patch failure so the
+    # orchestrator falls back to fresh codegen
+    return PatchResponse(reasoning="tool session produced no changes")

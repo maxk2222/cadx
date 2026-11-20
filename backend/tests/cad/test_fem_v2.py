@@ -13,25 +13,25 @@ import pytest
 import trimesh
 from scipy import ndimage
 
-from cadx.cad.fem.analyze import run_fem_domain
-from cadx.cad.fem.anchors3d import merge_anchor_lists, scan_mesh_anchors
-from cadx.cad.fem.loads import (
+from kiara.cad.fem.analyze import run_fem_domain
+from kiara.cad.fem.anchors3d import merge_anchor_lists, scan_mesh_anchors
+from kiara.cad.fem.loads import (
     body_force,
     expand_cone,
     moment_deficit,
     spread_moment,
 )
-from cadx.cad.fem.regions import (
+from kiara.cad.fem.regions import (
     region_cell_mask,
     region_node_mask,
     resolve_case,
     resolve_case_dofs,
     surface_area_per_node,
 )
-from cadx.cad.fem.solver import solve
-from cadx.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
-from cadx.cad.fem.voxelize import VoxelDomain, voxelize
-from cadx.llm.schemas import LoadCase, LoadSpec, RegionSpec
+from kiara.cad.fem.solver import solve
+from kiara.cad.fem.topopt import TopOptParams, passive_solid_mask, simp
+from kiara.cad.fem.voxelize import VoxelDomain, voxelize
+from kiara.llm.schemas import LoadCase, LoadSpec, RegionSpec
 
 E_PLA = 3500.0
 NU = 0.36
@@ -152,7 +152,7 @@ def _blind_side_mesh() -> trimesh.Trimesh:
 def test_probe_blind_finds_z_pocket() -> None:
     """A blind pocket invisible to the tunnel scan reads found + open with
     sane measured depth/diameter."""
-    from cadx.cad.fem.anchors3d import probe_blind_features
+    from kiara.cad.fem.anchors3d import probe_blind_features
 
     anchor = {
         "index": 1,
@@ -179,7 +179,7 @@ def test_probe_blind_finds_z_pocket() -> None:
 
 def test_probe_blind_finds_side_pocket() -> None:
     """Same probe on a +x side face — the bore enters at x_max going -x."""
-    from cadx.cad.fem.anchors3d import probe_blind_features
+    from kiara.cad.fem.anchors3d import probe_blind_features
 
     anchor = {
         "index": 1,
@@ -197,7 +197,7 @@ def test_probe_blind_finds_side_pocket() -> None:
 
 
 def test_probe_blind_solid_box_not_found() -> None:
-    from cadx.cad.fem.anchors3d import probe_blind_features
+    from kiara.cad.fem.anchors3d import probe_blind_features
 
     anchor = {"index": 1, "axis": "+z", "x": 5.0, "y": 3.0, "dia": 8.0, "depth_mm": 16.0}
     r = probe_blind_features(_box_mesh(40.0, 30.0, 20.0), [anchor])[0]
@@ -208,7 +208,7 @@ def test_probe_blind_solid_box_not_found() -> None:
 
 def test_probe_blind_through_bore_is_open() -> None:
     """A through-hole anchor (no depth_mm) is expected to reach the axis span."""
-    from cadx.cad.fem.anchors3d import probe_blind_features
+    from kiara.cad.fem.anchors3d import probe_blind_features
 
     anchor = {"index": 1, "axis": "+z", "x": 10.0, "y": 0.0, "dia": 5.0}
     r = probe_blind_features(_bored_mesh(), [anchor])[0]
@@ -218,7 +218,7 @@ def test_probe_blind_through_bore_is_open() -> None:
 
 def test_probe_blind_unpositioned_anchor_safe() -> None:
     """Anchors without a resolvable position return found=False, never raise."""
-    from cadx.cad.fem.anchors3d import probe_blind_features
+    from kiara.cad.fem.anchors3d import probe_blind_features
 
     recs = probe_blind_features(
         _box_mesh(), [{"index": 1, "axis": "+x", "dia": 4.0, "pos": [None, None, None]}]
@@ -619,7 +619,7 @@ def test_cone_without_direction_warns() -> None:
 def test_case_reactions_split_direct_induced() -> None:
     """case_reactions splits the applied moment into the declared couple
     (moment_nm) and the remote-lever induced part (force_n + remote_point)."""
-    from cadx.cad.fem.regions import case_reactions
+    from kiara.cad.fem.regions import case_reactions
 
     dom = voxelize(_box_mesh(), 3.0, 150_000)
     case = LoadCase(
@@ -715,7 +715,7 @@ def test_moment_deficit_names_unresolvable_axis() -> None:
 def test_applied_report_couple_fields() -> None:
     """applied records expose couple_requested/deficit/footprint/extent and
     case_reactions sums the deficit — ~0 on a healthy patch."""
-    from cadx.cad.fem.regions import case_reactions
+    from kiara.cad.fem.regions import case_reactions
 
     dom = voxelize(_box_mesh(), 3.0, 150_000)
     case = LoadCase(
@@ -792,8 +792,8 @@ def test_moment_bore_no_concentration_warning() -> None:
 def test_cone_expand_rotates_all_vectors() -> None:
     """_cone_expand_case rotates force_n, moment_nm and bearing_dir by the
     SAME rotation — a combined wrench load stays physically coherent."""
-    from cadx.cad.engine import _cone_expand_case
-    from cadx.cad.fem.loads import rot_between
+    from kiara.cad.engine import _cone_expand_case
+    from kiara.cad.fem.loads import rot_between
 
     case = LoadCase(
         name="wrench",
@@ -1190,7 +1190,7 @@ def test_simp_per_cell_modulus_insert() -> None:
 
 
 def test_min_member_thickens_isolated_voxels() -> None:
-    from cadx.cad.fem.extract import density_to_mask
+    from kiara.cad.fem.extract import density_to_mask
 
     dom = voxelize(_box_mesh(24.0, 20.0, 10.0), 2.0, 150_000)
     rho = np.zeros(dom.cell_count)
@@ -1208,8 +1208,8 @@ def test_min_member_thickens_isolated_voxels() -> None:
 
 def test_run_topopt_resample(tmp_path: Path) -> None:
     """Full pipeline → density.npz → resample at a different threshold."""
-    from cadx import storage
-    from cadx.cad.engine import run_topopt_pipeline, run_topopt_resample
+    from kiara import storage
+    from kiara.cad.engine import run_topopt_pipeline, run_topopt_resample
 
     out_dir = storage.tmp_dir() / f"resample-{id(tmp_path)}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1262,9 +1262,9 @@ def test_run_topopt_resample(tmp_path: Path) -> None:
 def test_run_topopt_multires_warm_start(tmp_path: Path) -> None:
     """multires=True with a low cell threshold runs a coarse SIMP pass and
     warm-starts the fine grid — result stays valid and watertight."""
-    from cadx import storage
-    from cadx.cad.engine import run_topopt_pipeline
-    from cadx.runtime_config import RuntimeSettings
+    from kiara import storage
+    from kiara.cad.engine import run_topopt_pipeline
+    from kiara.runtime_config import RuntimeSettings
 
     out_dir = storage.tmp_dir() / f"multires-{id(tmp_path)}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1303,9 +1303,9 @@ def test_run_topopt_multires_warm_start(tmp_path: Path) -> None:
 
 def test_run_topopt_multires_skipped_below_threshold(tmp_path: Path) -> None:
     """Default threshold (4000 cells) keeps small domains single-resolution."""
-    from cadx import storage
-    from cadx.cad.engine import run_topopt_pipeline
-    from cadx.runtime_config import RuntimeSettings
+    from kiara import storage
+    from kiara.cad.engine import run_topopt_pipeline
+    from kiara.runtime_config import RuntimeSettings
 
     out_dir = storage.tmp_dir() / f"multires-off-{id(tmp_path)}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1340,7 +1340,7 @@ def test_run_topopt_multires_skipped_below_threshold(tmp_path: Path) -> None:
 
 
 def test_case_reactions_report() -> None:
-    from cadx.cad.fem.regions import case_reactions
+    from kiara.cad.fem.regions import case_reactions
 
     dom, fixed3, F = _cantilever()
     rep = case_reactions(dom, fixed3, F)
@@ -1374,7 +1374,7 @@ def test_tunnel_depth_measures_pierced_wall_not_span() -> None:
     """_tunnel_depth on a synthetic void column between two plates: the rim
     rays' longest material run is the 10 mm wall, not the 50 mm gap between
     the plates (rays through the void itself hit nothing)."""
-    from cadx.cad.fem.anchors3d import _tunnel_depth
+    from kiara.cad.fem.anchors3d import _tunnel_depth
 
     wall = trimesh.creation.box(extents=[40.0, 10.0, 30.0])
     wall.apply_translation([0.0, -25.0, 15.0])  # y in [-30,-20]

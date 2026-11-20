@@ -41,7 +41,7 @@ SSE stream, DELETE for session teardown). It also runs standalone:
 uv run kiara mcp --http --port 8001   # serves 127.0.0.1:8001/mcp
 ```
 
-**Auth:** set `CADX_MCP_TOKEN` to gate the endpoint behind
+**Auth:** set `KIARA_MCP_TOKEN` to gate the endpoint behind
 `Authorization: Bearer <token>` — an empty token (dev default) means open
 access. Sessions are pooled per `Mcp-Session-Id`, so a client keeps its bound
 project and spawned-job tracking across requests within one MCP session.

@@ -12,8 +12,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cadx.cad.fem.regions import material_cell_classes
-from cadx.cad.fem.solver import (
+from kiara.cad.fem.regions import material_cell_classes
+from kiara.cad.fem.solver import (
     _D,
     _fixed_dofs,
     _ke_from_D,
@@ -24,8 +24,8 @@ from cadx.cad.fem.solver import (
     solve,
     solve_reduced,
 )
-from cadx.cad.fem.voxelize import VoxelDomain
-from cadx.llm.schemas import RegionSpec
+from kiara.cad.fem.voxelize import VoxelDomain
+from kiara.llm.schemas import RegionSpec
 
 NU = 0.36
 

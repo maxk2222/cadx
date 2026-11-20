@@ -1,0 +1,2856 @@
+"""Mesh processing for the mesh/hybrid generation modes.
+
+Pure functions on trimesh.Trimesh — no DB, no queue. Runs inside the
+cad-executor (or in-process via the CLI). The generator output is a mesh in an
+arbitrary normalized space; this module cleans, orients, scales and converts
+it into the agent's frame contract (mm, X=length, Y=width(+Y front), Z=up,
+resting on XY, centred at origin).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import math
+from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Any, Literal, cast
+
+import numpy as np
+import trimesh
+from pydantic import BaseModel, Field
+
+from kiara.cad import native as _native
+from kiara.cad.analysis import Analysis
+from kiara.llm.schemas import OrganicParams, ParamDef, PartSpec
+from kiara.logging import get_logger
+from kiara.runtime_config import RuntimeSettings
+
+log = get_logger(__name__)
+
+AxisName = Literal["+x", "-x", "+y", "-y", "+z", "-z"]
+
+_AXIS_VECTORS: dict[str, tuple[int, int, int]] = {
+    "+x": (1, 0, 0),
+    "-x": (-1, 0, 0),
+    "+y": (0, 1, 0),
+    "-y": (0, -1, 0),
+    "+z": (0, 0, 1),
+    "-z": (0, 0, -1),
+}
+
+UP_CHOICES: list[AxisName] = ["+z", "-z", "+y", "-y", "+x", "-x"]
+
+
+# --------------------------------------------------------------------------- #
+# post-processing parameters (LLM-free "params" for mesh versions)             #
+# --------------------------------------------------------------------------- #
+
+
+class MeshOp(BaseModel):
+    """One recorded mesh transformation — serialisable + replayable.
+
+    `op` keys the OPS_REGISTRY; `args` are validated by the op's pydantic
+    param model when applied (never trusted from the LLM).
+    """
+
+    op: str
+    args: dict[str, Any] = Field(default_factory=dict)
+
+
+class MeshPostParams(BaseModel):
+    """Deterministic post-processing knobs. Stored as version.params and
+    re-runnable via the params job — same UX as CAD PARAMS."""
+
+    scale: float = 1.0  # extra uniform multiplier on top of spec scaling
+    up: AxisName | None = None  # generator axis that maps to +Z (None = keep/detected)
+    front: AxisName | None = None  # generator axis that maps to +Y (must be ⊥ up)
+    rotate_z_deg: float = 0.0  # extra yaw around +Z after orientation
+    auto_yaw: bool = False  # align XY footprint's min-area rect to the axes (post-orient)
+    decimate_faces: int | None = None  # target triangle count (None = keep all)
+    flatten_bottom_mm: float = 0.0  # cut + cap at this height above bbox min Z
+    mirror_x: bool = False
+    ops: list[MeshOp] = Field(default_factory=list)  # agent-applied transform sequence
+    ops_version: int = 0  # MESH_OPS_VERSION at record time; 0 = legacy/unknown
+
+
+def mesh_params_schema() -> list[ParamDef]:
+    return [
+        ParamDef(
+            name="scale",
+            value=1.0,
+            unit="-",
+            min=0.01,
+            max=100.0,
+            description="uniform scale multiplier (applied after spec scaling)",
+        ),
+        ParamDef(
+            name="up",
+            value="+z",
+            unit="-",
+            description="generator axis that becomes +Z: +x -x +y -y +z -z",
+        ),
+        ParamDef(
+            name="front",
+            value="+y",
+            unit="-",
+            description="generator axis that becomes +Y (front); must differ from up",
+        ),
+        ParamDef(
+            name="rotate_z_deg",
+            value=0.0,
+            unit="deg",
+            min=-180.0,
+            max=180.0,
+            description="yaw around +Z after orientation",
+        ),
+        ParamDef(
+            name="decimate_faces",
+            value=0,
+            unit="faces",
+            min=0,
+            description="target triangle count (0 = keep generator resolution)",
+        ),
+        ParamDef(
+            name="flatten_bottom_mm",
+            value=0.0,
+            unit="mm",
+            min=0.0,
+            max=20.0,
+            description="cut and cap the mesh flat at this height above its lowest point",
+        ),
+        ParamDef(
+            name="mirror_x",
+            value=False,
+            unit="-",
+            description="mirror the part along X (left/right handedness)",
+        ),
+    ]
+
+
+def merge_post_params(base: MeshPostParams, overrides: dict[str, Any]) -> MeshPostParams:
+    """Apply user overrides (params job). Only known keys are honored."""
+    data = base.model_dump()
+    for k, v in overrides.items():
+        if k not in data:
+            continue
+        if k in ("up", "front") and v in (None, ""):
+            continue
+        if k == "decimate_faces":
+            v = int(v) if v else None
+        data[k] = v
+    if data.get("up") and data.get("front") and data["up"] == data["front"]:
+        data["front"] = None
+    if data.get("up") and data.get("front") and data["up"][-1] == data["front"][-1]:
+        # same axis letter (x/y/z) on up and front is impossible to honour
+        data["front"] = None
+    return MeshPostParams(**data)
+
+
+# --------------------------------------------------------------------------- #
+# load / clean / decimate                                                      #
+# --------------------------------------------------------------------------- #
+
+
+def load_mesh(path: Path | str) -> trimesh.Trimesh:
+    """Load any mesh file; merges multi-body scenes into one Trimesh."""
+    loaded = trimesh.load(str(path), force="mesh", process=False)
+    if isinstance(loaded, trimesh.Trimesh):
+        return loaded
+    if isinstance(loaded, trimesh.Scene):
+        parts = [g for g in loaded.geometry.values() if isinstance(g, trimesh.Trimesh)]
+        if not parts:
+            raise ValueError("scene contains no triangle meshes")
+        return cast(trimesh.Trimesh, trimesh.util.concatenate(parts))
+    raise ValueError(f"unsupported mesh container: {type(loaded).__name__}")
+
+
+def clean(mesh: trimesh.Trimesh, min_component_frac: float = 0.01) -> trimesh.Trimesh:
+    """Drop floaters, fix winding/normals, fill holes — best effort."""
+    try:
+        bodies = mesh.split(only_watertight=False)
+        if len(bodies) > 1:
+            # only positive-volume components are bodies — negative ones are
+            # inner cavity walls; dropping them would open the hollow region
+            vols = np.array([float(b.volume) for b in bodies])
+            keep = (vols <= 0.0) | (vols >= vols.max() * min_component_frac)
+            bodies = [b for b, k in zip(bodies, keep, strict=True) if k] or [
+                bodies[int(np.argmax(vols))]
+            ]
+            mesh = cast(trimesh.Trimesh, trimesh.util.concatenate(bodies))
+    except Exception:
+        pass
+    for fn in (
+        mesh.merge_vertices,
+        mesh.remove_unreferenced_vertices,
+        mesh.remove_infinite_values,
+        lambda: mesh.fix_normals() if not mesh.is_winding_consistent else None,
+        lambda: trimesh.repair.fill_holes(mesh),
+    ):
+        try:
+            fn()
+        except Exception:
+            log.debug("mesh.clean.step_skipped", fn=getattr(fn, "__name__", "?"))
+    return orient_nested_shells(mesh)
+
+
+def decimate(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
+    """Quadric decimation to ~target_faces. No-op when already below."""
+    if target_faces <= 0 or len(mesh.faces) <= target_faces:
+        return mesh
+    try:
+        import fast_simplification
+
+        pts, faces = fast_simplification.simplify(
+            np.asarray(mesh.vertices, dtype=np.float32),
+            np.asarray(mesh.faces, dtype=np.int32),
+            target_reduction=1.0 - target_faces / len(mesh.faces),
+        )
+        return trimesh.Trimesh(vertices=pts, faces=faces, process=False)
+    except Exception:
+        pass
+    try:
+        return mesh.simplify_quadric_decimation(face_count=target_faces)
+    except Exception:
+        log.warning("mesh.decimate.failed", exc_info=True)
+        return mesh
+
+
+# --------------------------------------------------------------------------- #
+# orientation                                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def _axis(axis: AxisName | None, default: AxisName) -> np.ndarray:
+    return np.array(_AXIS_VECTORS[axis or default], dtype=float)
+
+
+def orient(
+    mesh: trimesh.Trimesh,
+    up: AxisName | None,
+    front: AxisName | None,
+    rotate_z_deg: float = 0.0,
+    mirror_x: bool = False,
+) -> trimesh.Trimesh:
+    """Rotate so that source `up` -> +Z and source `front` -> +Y, then yaw."""
+    u = _axis(up, "+z")
+    f = _axis(front, "+y")
+    if np.allclose(np.abs(np.dot(u, f)), 1.0):
+        # front parallel to up — pick any axis perpendicular to u
+        for cand in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+            if not np.allclose(np.abs(np.dot(u, cand)), 1.0):
+                f = np.array(cand, dtype=float)
+                break
+    f = f - u * np.dot(u, f)  # orthogonalize
+    f /= np.linalg.norm(f)
+    n = np.cross(f, u)  # -> +X  (x = y x z in a right-handed frame)
+    basis = np.stack([n, f, u], axis=1)  # columns: src axes mapped to +X,+Y,+Z
+    rot = basis.T
+    m4 = np.eye(4)
+    m4[:3, :3] = rot
+    out = mesh.copy()
+    out.apply_transform(m4)
+    if mirror_x:
+        mirror = np.eye(4)
+        mirror[0, 0] = -1.0
+        out.apply_transform(mirror)
+        out.invert()
+    if rotate_z_deg:
+        rz = trimesh.transformations.rotation_matrix(math.radians(rotate_z_deg), [0, 0, 1])
+        out.apply_transform(rz)
+    return out
+
+
+def default_front(up: AxisName, extents: np.ndarray) -> AxisName:
+    """Pick the front axis for a given up: the horizontal axis with the
+    LARGER extent becomes X (length); front is the other horizontal axis."""
+    up_idx = "xyz".index(up[-1])
+    horiz = [i for i in range(3) if i != up_idx]
+    # the wider axis becomes length/X; front (width/Y) is the other one
+    other = horiz[0] if horiz[1] == sorted(horiz, key=lambda i: -extents[i])[0] else horiz[1]
+    return cast(AxisName, f"+{'xyz'[other]}")  # sign convention: camera default +Y
+
+
+def footprint_yaw_deg(mesh: trimesh.Trimesh) -> float:
+    """Yaw (deg) that aligns the XY footprint's minimum-area rectangle with the
+    axes, longest side on X. 0.0 when the footprint is roundish or already aligned."""
+    pts = np.asarray(mesh.vertices)[:, :2]
+    if len(pts) < 3:
+        return 0.0
+    try:
+        t2, ext = trimesh.bounds.oriented_bounds_2D(pts)
+    except Exception:
+        return 0.0
+    ext = np.asarray(ext, dtype=float)
+    if ext.min() <= 0:
+        return 0.0
+    aspect = float(ext.max() / ext.min())
+    if aspect < 1.3:
+        return 0.0  # roundish footprint — no stable yaw to recover
+    lo = pts.min(axis=0)
+    hi = pts.max(axis=0)
+    a0 = float((hi[0] - lo[0]) * (hi[1] - lo[1]))  # axis-aligned bbox area
+    obb = float(ext[0] * ext[1])
+    if a0 <= 0:
+        return 0.0
+    if obb > 0.9 * a0 and (hi[0] - lo[0]) >= (hi[1] - lo[1]):
+        # OBB barely beats the axis-aligned box AND the long side already sits
+        # on X — nothing to fix. A long-side-on-Y footprint (90° yaw) still
+        # rotates so length lands on X.
+        return 0.0
+    yaw = math.degrees(math.atan2(t2[1, 0], t2[0, 0]))
+    if ext[1] > ext[0]:
+        yaw += 90.0  # long rectangle side would land on Y — put it on X
+    while yaw <= -90.0:
+        yaw += 180.0
+    while yaw > 90.0:
+        yaw -= 180.0
+    return round(yaw * 2) / 2
+
+
+def suggest_up(mesh: trimesh.Trimesh) -> AxisName:
+    """Stability heuristic: the up axis whose bottom side has the largest flat
+    contact area (lowest 2% of vertices) wins; tie-break on lower CoM height."""
+    best: tuple[float, AxisName] = (-1.0, "+z")
+    for up in UP_CHOICES:
+        m = orient(mesh, up, None)
+        z = m.vertices[:, 2]
+        span = max(float(np.ptp(z)), 1e-9)
+        low = z <= z.min() + 0.02 * span
+        score = float(low.mean())
+        # prefer smaller height ratio? keep it simple: contact fraction + margin
+        if score > best[0]:
+            best = (score, up)
+    return best[1]
+
+
+def candidate_meshes(mesh: trimesh.Trimesh) -> dict[str, trimesh.Trimesh]:
+    """{up: oriented mesh} for the 6 up candidates, with default front chosen."""
+    out: dict[str, trimesh.Trimesh] = {}
+    for up in UP_CHOICES:
+        m = orient(mesh, up, None)  # up -> +Z
+        front = default_front("+z", np.asarray(m.extents))  # in the rotated frame
+        out[up] = rest_on_xy_center(orient(m, "+z", front))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# scale / rest                                                                 #
+# --------------------------------------------------------------------------- #
+
+
+def scale_to_spec(
+    mesh: trimesh.Trimesh, spec: PartSpec | None
+) -> tuple[trimesh.Trimesh, float, list[str]]:
+    """Uniform scaling so the most reliable stated spec dimension matches.
+
+    Returns (mesh, factor, issues). Aspect mismatches on other stated axes are
+    reported as issues — never non-uniformly scaled.
+    """
+    issues: list[str] = []
+    if spec is None:
+        return mesh, 1.0, issues
+
+    stated: list[tuple[float, int, str]] = []
+    for dim, idx, name in (
+        (spec.length_x, 0, "length/X"),
+        (spec.width_y, 1, "width/Y"),
+        (spec.height_z, 2, "height/Z"),
+    ):
+        if dim is not None and dim.source == "stated" and dim.value > 0:
+            stated.append((float(dim.value), idx, name))
+
+    target_dims = stated or [
+        (float(d.value), i, n)
+        for d, i, n in (
+            (spec.length_x, 0, "length/X"),
+            (spec.width_y, 1, "width/Y"),
+            (spec.height_z, 2, "height/Z"),
+        )
+        if d is not None and d.value > 0
+    ]
+    extents = np.asarray(mesh.extents, dtype=float)
+    if not target_dims:
+        # nothing usable — normalize largest extent to 100 mm
+        factor = 100.0 / max(float(extents.max()), 1e-9)
+        issues.append("no usable spec dimensions — normalized to 100 mm largest extent")
+        out = mesh.copy()
+        out.apply_scale(factor)
+        return out, float(factor), issues
+
+    # scale by the axis with the largest stated value (least relative error)
+    ref_value, ref_idx, _ref_name = max(target_dims, key=lambda t: t[0])
+    factor = ref_value / max(extents[ref_idx], 1e-9)
+    out = mesh.copy()
+    out.apply_scale(factor)
+    new_ext = extents * factor
+    for value, idx, name in stated:
+        if idx == ref_idx:
+            continue
+        dev = abs(new_ext[idx] - value) / value
+        if dev > 0.10:
+            issues.append(
+                f"aspect mismatch on {name}: spec {value:g} mm vs scaled {new_ext[idx]:.1f} mm "
+                f"({dev * 100:.0f}% off; generator output is not dimension-true)"
+            )
+    return out, float(factor), issues
+
+
+def fit_stated_dims(
+    mesh: trimesh.Trimesh,
+    spec: PartSpec | None,
+    issues: list[str],
+    *,
+    tol: float = 0.10,
+    lo: float = 0.45,
+    hi: float = 2.2,
+) -> tuple[trimesh.Trimesh, dict[str, float], list[str]]:
+    """Non-uniform per-axis fit onto STATED spec dims (uniform scale's residue).
+
+    `scale_to_spec` keeps the generator's proportions and only reports axis
+    mismatches — so a wrong image ratio propagates into the part and the
+    repair loop can then only satisfy the envelope by resizing a spec-pinned
+    feature (observed: lugs widened 20->40 mm because the mesh body could not
+    supply the declared 40 mm width). When the deviation is moderate the
+    stated dimension wins over the generated shape: stretch/shrink each axis
+    to spec. Axes needing an extreme factor (>hi/<lo) mean the generator
+    output is badly wrong — those stay reported, not fitted.
+
+    Returns (mesh, applied_factors, remaining_issues).
+    """
+    if spec is None:
+        return mesh, {}, issues
+    stated = [
+        (d, i, n)
+        for d, i, n in (
+            (spec.length_x, 0, "length/X"),
+            (spec.width_y, 1, "width/Y"),
+            (spec.height_z, 2, "height/Z"),
+        )
+        if d is not None and d.source == "stated" and float(d.value or 0) > 0
+    ]
+    if not stated:
+        return mesh, {}, issues
+    ext = np.asarray(mesh.extents, dtype=float)
+    targets: dict[int, float] = {}
+    for dim, idx, _name in stated:
+        value = float(dim.value)
+        if abs(ext[idx] - value) / value <= tol:
+            continue
+        f = value / max(float(ext[idx]), 1e-9)
+        if lo <= f <= hi:
+            targets[idx] = f
+    if not targets:
+        return mesh, {}, issues
+    factors = np.array([targets.get(i, 1.0) for i in range(3)])
+    out = mesh.copy()
+    c = _bbox_center(mesh)
+    m = np.eye(4)
+    m[:3, :3] = np.diag(factors)
+    m[:3, 3] = c - factors * c
+    out.apply_transform(m)
+    # re-check against the fitted result: out-of-range axes keep reporting
+    remaining: list[str] = []
+    new_ext = np.asarray(out.extents, dtype=float)
+    for dim, idx, name in stated:
+        value = float(dim.value)
+        dev = abs(new_ext[idx] - value) / value
+        if dev > tol:
+            remaining.append(
+                f"aspect mismatch on {name}: spec {value:g} mm vs fitted "
+                f"{new_ext[idx]:.1f} mm ({dev * 100:.0f}% off; generator output "
+                "is not dimension-true)"
+            )
+    applied = {"xyz"[i]: round(float(factors[i]), 4) for i in targets}
+    return out, applied, remaining
+
+
+def rest_on_xy_center(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Translate so bbox min.z == 0 and XY center is at the origin."""
+    out = mesh.copy()
+    b = out.bounds
+    out.apply_translation([-(b[0][0] + b[1][0]) / 2, -(b[0][1] + b[1][1]) / 2, -b[0][2]])
+    return out
+
+
+def flatten_bottom(mesh: trimesh.Trimesh, height_mm: float) -> trimesh.Trimesh:
+    """Rebuild the solid so the -z face is a flat plane across the full footprint.
+
+    Voxel column fill-down: every occupied XY column is extended down to the
+    floor, then marching-cubes rebuilds a watertight solid. Unlike a plane cut
+    this also fills under overhangs/wings whose sculpted underside would
+    otherwise stay above the cap. `height_mm` then removes that much material
+    from the floor (plain capped slice — safe now that every column is solid
+    through the cut height). Best-effort: on failure returns the input."""
+    if height_mm <= 0:
+        return mesh
+    out = mesh
+    try:
+        lo, hi = np.asarray(mesh.bounds[0], dtype=float), np.asarray(mesh.bounds[1], dtype=float)
+        ext = hi - lo
+        pitch = float(np.clip(min(ext[0], ext[1]) / 200.0, 0.2, 0.6))
+        # bound the dense bool grid BEFORE allocating — an unbounded pitch on
+        # a long part (observed: 130 mm grip at 0.2 mm → >40 M verts in the
+        # marching-cubes output → MemoryError inside the worker)
+        pitch = max(pitch, float(ext.max()) / _VOXEL_REPAIR_MAX_CELLS)
+        vg = _voxelize(mesh, pitch)
+        mat = np.asarray(vg.matrix)
+        if mat.any():
+            # fill-down: a voxel is solid if any voxel above it in its column is
+            filled = np.maximum.accumulate(mat[:, :, ::-1], axis=2)[:, :, ::-1]
+            rebuilt = trimesh.voxel.VoxelGrid(filled, transform=vg.transform).marching_cubes
+            rebuilt.apply_transform(vg.transform)
+            if len(rebuilt.faces):
+                # knock the marching-cubes stair steps down — floor is pinned,
+                # XY envelope rescaled, so the silhouette stays true
+                rebuilt = smooth_preserve(rebuilt, 4)
+                # voxel padding grows the envelope ~1 pitch on every side —
+                # crop the XY silhouette back to the original bounds
+                for axis in (0, 1):
+                    for at, sign in ((lo[axis], 1.0), (hi[axis], -1.0)):
+                        normal = np.zeros(3)
+                        normal[axis] = sign
+                        origin = np.zeros(3)
+                        origin[axis] = at
+                        cut = rebuilt.slice_plane(
+                            plane_origin=origin, plane_normal=normal, cap=True
+                        )
+                        if isinstance(cut, trimesh.Trimesh) and len(cut.faces):
+                            rebuilt = cut
+                out = rebuilt
+    except Exception:
+        log.warning("mesh.flatten_bottom.voxel_fill.failed", exc_info=True)
+        out = mesh
+    if height_mm > 0:
+        z = float(out.bounds[0][2]) + height_mm
+        try:
+            sliced = out.slice_plane(plane_origin=[0, 0, z], plane_normal=[0, 0, 1], cap=True)
+            if isinstance(sliced, trimesh.Trimesh) and len(sliced.faces):
+                out = sliced
+        except Exception:
+            log.warning("mesh.flatten_bottom.slice.failed", exc_info=True)
+    if len(out.faces) > _REBUILD_MAX_FACES:
+        out = decimate(out, _REBUILD_MAX_FACES)
+    return out
+
+
+def smooth_preserve(
+    mesh: trimesh.Trimesh,
+    iterations: int = 10,
+    *,
+    pin_floor: bool = True,
+    floor_tol: float = 0.05,
+    pin_mask: tuple[np.ndarray, float, np.ndarray] | None = None,
+) -> trimesh.Trimesh:
+    """Taubin smoothing that keeps the flat bottom and the envelope fixed.
+
+    Vertices on the lowest Z layer (z <= zmin + floor_tol) are pinned so the
+    manufacturing floor stays a plane; after smoothing all three extents are
+    rescaled back to the input bounds — Taubin otherwise shrinks thin members
+    measurably per pass (~20% volume on 2-cell plates), and the Z span is
+    exactly the thickness the spec envelope clip enforces. Returns the input
+    unchanged when the result is not watertight or degenerate.
+
+    `pin_mask` pins whole voxel cells: ``(origin, pitch, passive_3d)`` with
+    ``origin`` the (3,) world-mm min corner of cell (0,0,0) and
+    ``passive_3d`` a bool array of the domain's ``dims`` — every vertex whose
+    containing cell is marked passive (keep/fix/load zones) is pinned too,
+    so verified mounting surfaces survive smoothing unmoved.
+    """
+    out = mesh.copy()
+    out.merge_vertices()
+    pinned = None
+    if pin_floor:
+        pinned = np.flatnonzero(out.vertices[:, 2] <= out.bounds[0][2] + floor_tol)
+    if pin_mask is not None:
+        try:
+            origin, pitch, passive_3d = pin_mask
+            dims = np.asarray(passive_3d.shape, dtype=int)
+            ijk = np.clip(
+                np.floor(
+                    (out.vertices - np.asarray(origin, dtype=float)) / max(float(pitch), 1e-9)
+                ).astype(int),
+                0,
+                dims - 1,
+            )
+            cell_pinned = np.flatnonzero(passive_3d[ijk[:, 0], ijk[:, 1], ijk[:, 2]])
+            pinned = cell_pinned if pinned is None else np.union1d(pinned, cell_pinned)
+        except Exception:
+            log.warning("mesh.smooth_preserve.pin_mask.failed", exc_info=True)
+    try:
+        lap = trimesh.smoothing.laplacian_calculation(
+            out, equal_weight=True, pinned_vertices=pinned
+        )
+        trimesh.smoothing.filter_taubin(
+            out, lamb=0.5, nu=-0.53, iterations=iterations, laplacian_operator=lap
+        )
+    except Exception:
+        log.warning("mesh.smooth_preserve.taubin.failed", exc_info=True)
+        return mesh
+    b0 = np.asarray(mesh.bounds, dtype=float)
+    b1 = np.asarray(out.bounds, dtype=float)
+    for axis in (0, 1, 2):
+        span0 = float(b0[1][axis] - b0[0][axis])
+        span1 = float(b1[1][axis] - b1[0][axis])
+        factor = span0 / max(span1, 1e-9)
+        if abs(factor - 1.0) > 1e-4:
+            # XY rescales about the bbox center like before; Z anchors at the
+            # floor plane when it is pinned (the pinned vertices must not
+            # move), otherwise at the center too
+            c = (b0[0] + b0[1]) / 2.0
+            if axis == 2 and pin_floor:
+                c = np.asarray([c[0], c[1], b0[0][2]])
+            factors = np.ones(3)
+            factors[axis] = factor
+            m = np.eye(4)
+            m[:3, :3] = np.diag(factors)
+            m[:3, 3] = c - factors * c
+            out.apply_transform(m)
+    if not out.is_watertight or len(out.faces) == 0:
+        return mesh
+    return out
+
+
+def _nesting_depths(parts: list[trimesh.Trimesh]) -> list[int] | None:
+    """Shell-nesting depth per component — how many bigger components fully
+    contain it. Solid/void alternate with depth: 0 = body, 1 = its cavity
+    wall, 2 = an island inside that cavity (a real second solid). Returns
+    None when containment probing fails (non-watertight outer shells make
+    ray tests unreliable) so callers can degrade to sign-based rules."""
+    order = sorted(range(len(parts)), key=lambda i: -abs(float(parts[i].volume)))
+    depth = [0] * len(parts)
+    for rank, i in enumerate(order):
+        probe = parts[i].vertices[:: max(1, len(parts[i].vertices) // 16)]
+        for j in order[:rank]:
+            try:
+                if bool(np.asarray(parts[j].contains(probe)).all()):
+                    depth[i] += 1
+            except Exception:
+                log.debug("mesh.nesting_depth.probe_failed", part=i, container=j)
+                return None
+    return depth
+
+
+def orient_nested_shells(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Orient each boundary component by shell parity.
+
+    A uniform winding flip can only fix the outermost shell — nested
+    cavity walls keep positive signed volume and every downstream consumer
+    (``solid_body_count``, ``_body_groups``, the evalkit ``bodies`` gate)
+    then counts a hollow part as two bodies. Even nesting depth wants
+    +volume, odd wants -volume. Repair steps that re-orient components
+    (``fix_normals`` and friends) must be followed by this so a healthy
+    nested-shell mesh keeps its parity."""
+    try:
+        parts = mesh.split(only_watertight=False)
+    except Exception:
+        return mesh
+    if len(parts) <= 1:
+        return mesh
+    depth = _nesting_depths(parts)
+    if depth is None:
+        return mesh
+    changed = False
+    for i, d in enumerate(depth):
+        if (float(parts[i].volume) > 0.0) != (d % 2 == 0):
+            parts[i].invert()
+            changed = True
+    if not changed:
+        return mesh
+    out = trimesh.util.concatenate(parts)
+    if out.volume < 0:
+        out.invert()
+    return cast(trimesh.Trimesh, out)
+
+
+def solid_body_count(mesh: trimesh.Trimesh) -> int:
+    """Physical solid bodies = positive-signed-volume components.
+
+    A watertight part's boundary splits into one component per enclosed
+    void region plus the outer wall — a closed shell already has two
+    (outer wall + inner cavity wall). Cavity walls carry *negative* signed
+    volume because their normals point into the void, so counting
+    ``mesh.split()`` components as "solids" fails on every hollow part.
+    Falls back to the component count when winding is broken (all volumes
+    non-positive) — erring toward reporting more bodies, not fewer.
+    Nesting parity beats winding when it can be probed: a cavity wall that
+    lost its negative winding to a normals-repair still sits at odd depth
+    and is not a body.
+    """
+    try:
+        parts = mesh.split(only_watertight=False)
+    except Exception:
+        return 1
+    if not parts:
+        return 1
+    if len(parts) > 1:
+        depth = _nesting_depths(parts)
+        if depth is not None:
+            # parity decides enclosure, volume decides solidity — a
+            # zero-area sliver at depth 0 is still not a body
+            n = sum(
+                1 for d, p in zip(depth, parts, strict=True) if d % 2 == 0 and float(p.volume) > 0.0
+            )
+            if n > 0:
+                return n
+            # nothing at even depth — winding is likely inverted wholesale;
+            # fall through to the sign-based pessimistic count
+    vols = np.array([float(p.volume) for p in parts])
+    positive = int((vols > 0.0).sum())
+    return positive if positive > 0 else len(parts)
+
+
+def _body_groups(bodies: list[trimesh.Trimesh]) -> list[list[trimesh.Trimesh]]:
+    """Group surface components into physical solids.
+
+    Each positive-volume component is a body; every negative-volume
+    component is an inner cavity wall and is assigned to the positive body
+    whose enclosed volume contains it (unassigned walls stay with the
+    largest body — dropping a wall would open the cavity). A hollow part
+    therefore groups as [outer wall, inner wall(s)], while two detached
+    parts form two single-component groups. Nesting parity decides when it
+    can be probed — a cavity wall that lost its negative winding to a
+    normals-repair is still a wall, never its own droppable solid.
+    """
+    depth = _nesting_depths(list(bodies))
+    if depth is not None and len(bodies) > 1:
+        solids, walls = [], []
+        for b, d in zip(bodies, depth, strict=True):
+            (solids if d % 2 == 0 and float(b.volume) > 0.0 else walls).append(b)
+    else:
+        solids = [b for b in bodies if float(b.volume) > 0]
+        walls = [b for b in bodies if float(b.volume) <= 0]
+    if not solids:
+        return [list(bodies)]
+    groups: list[list[trimesh.Trimesh]] = [[b] for b in solids]
+    for w in walls:
+        probe = w.vertices[:: max(1, len(w.vertices) // 64)]
+        owner = next(
+            (i for i, s in enumerate(solids) if bool(np.asarray(s.contains(probe)).all())),
+            None,
+        )
+        if owner is None:
+            owner = int(np.argmax([float(s.volume) for s in solids]))
+        groups[owner].append(w)
+    return groups
+
+
+def _largest_group(
+    groups: list[list[trimesh.Trimesh]],
+) -> list[trimesh.Trimesh]:
+    """The group whose positive body has the largest volume."""
+    return max(
+        groups,
+        key=lambda g: max((float(b.volume) for b in g if float(b.volume) > 0), default=0.0),
+    )
+
+
+def keep_significant_components(
+    mesh: trimesh.Trimesh, min_fraction: float = 0.005, min_volume_mm3: float = 1.0
+) -> tuple[trimesh.Trimesh, int]:
+    """Drop only near-zero-volume mesh components, preserving signed cavity shells.
+
+    Marching cubes can produce tiny closed slivers, but a large negative
+    signed-volume component may be the inner wall of a real hollow lattice.
+    Testing ``volume > cutoff`` drops that surface and turns the cavity into
+    solid material; the cutoff therefore applies to absolute volume.
+    """
+    parts = mesh.split(only_watertight=False)
+    if len(parts) <= 1:
+        return mesh, 0
+    dominant_volume = max(abs(float(part.volume)) for part in parts)
+    cutoff = max(float(min_volume_mm3), dominant_volume * float(min_fraction))
+    kept = [part for part in parts if abs(float(part.volume)) >= cutoff]
+    if not kept:
+        return mesh, 0
+    out = kept[0] if len(kept) == 1 else trimesh.util.concatenate(kept)
+    return out, len(parts) - len(kept)
+
+
+def surface_roughness_deg(mesh: trimesh.Trimesh) -> float:
+    """Mean dihedral angle (deg) between adjacent near-vertical faces.
+
+    Used as a proxy for voxel striations on organic surfaces; floor and flat
+    top faces (|normal.z| >= 0.95) are ignored.
+    """
+    try:
+        angles = np.asarray(mesh.face_adjacency_angles, dtype=float)
+        if len(angles) == 0:
+            return 0.0
+        pairs = np.asarray(mesh.face_adjacency, dtype=np.int64)
+        normals = np.asarray(mesh.face_normals, dtype=float)
+        vertical = np.abs(normals[:, 2]) < 0.95
+        mask = vertical[pairs[:, 0]] & vertical[pairs[:, 1]]
+        sel = angles[mask]
+        if len(sel) == 0:
+            return 0.0
+        return float(np.degrees(np.mean(sel)))
+    except Exception:
+        return 0.0
+
+
+def is_flat_bottom(mesh: trimesh.Trimesh) -> bool:
+    """True when most downward-facing area lies in a single plane at min Z."""
+    try:
+        normals = np.asarray(mesh.face_normals, dtype=float)
+        down = normals[:, 2] < -0.9
+        if not down.any():
+            return False
+        z0 = float(mesh.bounds[0][2])
+        centers = np.asarray(mesh.triangles_center, dtype=float)
+        flat = down & (np.abs(centers[:, 2] - z0) < 0.1)
+        areas = np.asarray(mesh.area_faces, dtype=float)
+        return float(areas[flat].sum()) / max(float(areas[down].sum()), 1e-9) >= 0.6
+    except Exception:
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# agent ops — validated, recordable mesh transformations                       #
+# --------------------------------------------------------------------------- #
+#
+# Ops run in the final frame (mm, +Z up, resting on XY, centred) AFTER the
+# deterministic baseline. Each op is validated by its own pydantic model —
+# LLM-supplied args are never trusted — and applied to a copy so a failed op
+# leaves the working mesh untouched.
+
+CartesianAxis = Literal["x", "y", "z"]
+_CARTESIAN: dict[str, np.ndarray] = {
+    "x": np.array([1.0, 0.0, 0.0]),
+    "y": np.array([0.0, 1.0, 0.0]),
+    "z": np.array([0.0, 0.0, 1.0]),
+}
+# manifold3d booleans stay fast well past this; voxel-rebuild ops
+# (flatten_bottom/remesh) cap their output just below it so rebuild→boolean
+# stacks remain composable
+BOOLEAN_MAX_FACES = 500_000
+_REBUILD_MAX_FACES = BOOLEAN_MAX_FACES - 50_000
+_MAX_PRIMITIVE_MM = 2000.0
+# dense bool grid hard cap for the _ensure_watertight voxel fallback —
+# 350^3 cells ≈ 43 MB bool + marching-cubes float scan; beyond that the
+# repair costs more memory than it saves
+_VOXEL_REPAIR_MAX_CELLS = 350.0
+# alpha-wrap reskin needs octree+dense-mesh memory up front; below this
+# cgroup headroom the repair ladder skips straight to the bounded voxel rung
+# — the executor pool runs siblings that already hold gigabytes
+_ALPHA_WRAP_MIN_HEADROOM_MB = 3_000.0
+# trimesh's default "subdivide" voxelization refines the input until every
+# edge < pitch — long/thin faces (boolean seams, generative slivers) explode
+# the count (observed: 33M faces → 1.5 GB edge array → MemoryError). Above
+# this estimate we drop to ray voxelization, which needs no subdivision.
+_VOXEL_SUBDIVIDE_MAX_FACES = 4_000_000
+
+
+def _voxelize(mesh: trimesh.Trimesh, pitch: float) -> trimesh.voxel.VoxelGrid:
+    """Occupancy grid with a bound on trimesh's subdivide path.
+
+    `voxelized(method="subdivide")` halves every edge > pitch per round —
+    worst-case growth ~faces * 4^ceil(log2(max_edge/pitch)): a coarse mesh
+    at fine pitch turns into tens of millions of faces before the grid is
+    even allocated (observed: 33M faces → 1.5 GB edge array → MemoryError).
+    Coarsen the pitch until the subdivision estimate fits the cap (pitch >=
+    max_edge makes subdivide a no-op, so the loop always terminates). Ray
+    voxelization is NOT a substitute — VoxelGrid.fill() needs the subdivided
+    surface to label the interior correctly.
+
+    Callers must read the effective pitch back via `vg.pitch` when they
+    compute voxel-space counts (e.g. shell erosion depth).
+    """
+    if len(mesh.faces):
+        max_edge = float(mesh.edges_unique_length.max())
+        while max_edge > pitch:
+            rounds = math.ceil(math.log2(max_edge / pitch))
+            if len(mesh.faces) * (4**rounds) <= _VOXEL_SUBDIVIDE_MAX_FACES:
+                break
+            pitch *= 2.0
+    return mesh.voxelized(pitch)
+
+
+class OpSetUp(BaseModel):
+    """Re-orient in the current frame: the named source axes map to +Z/+Y."""
+
+    up: AxisName = "+z"
+    front: AxisName | None = None
+
+
+class OpRotate(BaseModel):
+    axis: CartesianAxis = "z"
+    deg: float = Field(ge=-360.0, le=360.0)
+
+
+class OpMirror(BaseModel):
+    axis: CartesianAxis = "x"
+
+
+class OpScale(BaseModel):
+    """Uniform (`factor`) or per-axis (`x`/`y`/`z`) scaling about the bbox center."""
+
+    factor: float | None = Field(default=None, ge=0.01, le=100.0)
+    x: float | None = Field(default=None, ge=0.01, le=100.0)
+    y: float | None = Field(default=None, ge=0.01, le=100.0)
+    z: float | None = Field(default=None, ge=0.01, le=100.0)
+
+
+class OpFlattenBottom(BaseModel):
+    height_mm: float = Field(gt=0.0, le=50.0)
+
+
+class OpSlice(BaseModel):
+    """Cut + cap with an axis-aligned plane at `at_mm`; keep the chosen side."""
+
+    axis: CartesianAxis = "z"
+    at_mm: float = 0.0
+    keep: Literal["low", "high"] = "high"
+
+
+class OpCrop(BaseModel):
+    """Keep only geometry inside the min/max box (mm)."""
+
+    min: list[float] = Field(min_length=3, max_length=3)
+    max: list[float] = Field(min_length=3, max_length=3)
+
+
+class OpDecimate(BaseModel):
+    faces: int = Field(ge=100, le=2_000_000)
+
+
+class OpSmooth(BaseModel):
+    iterations: int = Field(default=5, ge=1, le=20)
+    scheme: Literal["laplacian", "taubin"] = "laplacian"
+
+
+class OpSmoothPreserve(BaseModel):
+    iterations: int = Field(default=10, ge=1, le=30)
+
+
+class OpClipToOutline(BaseModel):
+    """Clip the XY footprint to a measured plan-view outline polygon (mm)."""
+
+    outline: list[list[float]] = Field(min_length=3, max_length=500)
+    margin_mm: float = Field(default=0.3, ge=0.0, le=5.0)
+
+
+class OpSilhouetteCarve(BaseModel):
+    """Visual-hull carve to a reference side silhouette.
+
+    `view` selects the orthographic direction ("+x"…"-y", the
+    `silhouette.mesh_view_mask` convention); `outline` is the silhouette
+    polygon in view-plane mm using that projection's (u, v) basis
+    (u = +Z x view, v = view x u — v is world +Z for all four side views).
+    The mesh is intersected with the polygon prism extruded along the view
+    axis, so the op only removes material OUTSIDE the reference silhouette —
+    the visual hull is the MAXIMAL silhouette-consistent body and never
+    fills a notch (use `radial_profile_auto` for the complementary fill)."""
+
+    view: Literal["+x", "-x", "+y", "-y"] = "+y"
+    outline: list[list[float]] = Field(min_length=3, max_length=500)
+    tolerance_mm: float = Field(default=0.5, ge=0.0, le=5.0)
+
+
+class OpKeepLargest(BaseModel):
+    pass
+
+
+class OpDropSmall(BaseModel):
+    """Drop disconnected bodies below `min_volume_frac` of the largest body."""
+
+    min_volume_frac: float = Field(gt=0.0, lt=0.5)
+
+
+class OpRepair(BaseModel):
+    pass
+
+
+class OpClipHeight(BaseModel):
+    """Cut + cap everything above `z_max` mm — a hard ceiling on height."""
+
+    z_max: float = Field(gt=0.1, le=2000.0)
+
+
+class OpSymmetrize(BaseModel):
+    """Mirror the better half across the symmetry plane at the bbox centre.
+
+    `keep` selects which half survives: 'pos'/'neg' force a side, 'auto'
+    keeps the half with more volume (more material ≈ more detail)."""
+
+    axis: CartesianAxis = "y"
+    keep: Literal["auto", "pos", "neg"] = "auto"
+
+
+class OpRemesh(BaseModel):
+    """Uniform voxel remesh — watertight by construction, even topology.
+
+    Improves boolean robustness and gives smoothing a uniform base at the
+    cost of some surface detail (set by `voxel_mm`). `smooth_iters` applies
+    a light Taubin pass afterwards to knock marching-cubes stair steps
+    down (floor pinned, XY envelope preserved)."""
+
+    voxel_mm: float = Field(gt=0.05, le=5.0)
+    smooth_iters: int = Field(default=4, ge=0, le=30)
+
+
+class DrillHole(BaseModel):
+    """One straight hole along an axis (mm, frame coords).
+
+    `axis` selects the drill direction; `x`/`y` are the hole-axis position on
+    the plane perpendicular to it:
+    - "z" (default): axis along Z, position (x, y)
+    - "x": axis along X, position (y=x, z=y) — i.e. x→Y-coord, y→Z-coord
+    - "y": axis along Y, position (x=x, z=y)
+
+    `depth_mm`/`csk_*` measure from the +axis end (for "x"/"y" the countersink
+    opens on the positive end face)."""
+
+    x: float
+    y: float
+    dia: float = Field(gt=0.05, le=500.0)
+    depth_mm: float | None = Field(default=None, gt=0.0)  # None = through
+    axis: Literal["x", "y", "z"] = "z"
+    csk_dia: float | None = Field(default=None, gt=0.05, le=500.0)  # countersink at +axis
+    csk_angle_deg: float = Field(default=90.0, gt=30.0, lt=180.0)
+
+
+class OpDrillHoles(BaseModel):
+    """Drill straight holes — explicit `holes` list or `from_anchors` resolves
+    `version.analysis.anchors.holes` (x, y, dia, vertical) at replay time."""
+
+    holes: list[DrillHole] = Field(default_factory=list, max_length=64)
+    from_anchors: bool = False
+
+
+class OpMachineFeature(BaseModel):
+    """Semantic surface-targeted machining op — the mesh analogue of
+    `cadlib.machine.machine_on_face`.
+
+    Target resolution (first match wins):
+    - `at` [x,y,z] pick point → nearest surface point + outward face normal
+    - `face` [x,y,z] → same (pick-point shorthand)
+    - `face` "+x"|"-x"|"+y"|"-y"|"+z"|"-z" → ray cast from the bbox extreme
+      inward at `at`(u,v) or the in-plane bbox centre → first surface hit
+
+    `axis` overrides the resolved normal as the approach direction
+    ([x,y,z] vector — NOT the inward cut direction; the cutter always
+    advances from the surface along -normal). Cutter stack reuses the
+    refine-side construction: pilot bore (+ helical ISO groove for `tap`),
+    countersink cone, counterbore, insert pocket."""
+
+    op: Literal["drill", "tap", "cbore", "csk", "insert", "bearing_seat", "tunnel"] = "drill"
+    face: str | list[float] | None = None
+    at: list[float] | None = None
+    axis: str | list[float] | None = None
+    dia: float | None = Field(default=None, gt=0.05, le=500.0)
+    major_d: float | None = Field(default=None, gt=0.05, le=500.0)
+    pitch: float | None = Field(default=None, gt=0.05, le=20.0)
+    depth: float | None = Field(default=None, gt=0.05, le=1000.0)  # None = through
+    cbore_dia: float | None = Field(default=None, gt=0.05, le=500.0)
+    cbore_depth: float | None = Field(default=None, gt=0.05, le=200.0)
+    csk_dia: float | None = Field(default=None, gt=0.05, le=500.0)
+    csk_angle: float = Field(default=90.0, gt=30.0, lt=180.0)
+    helical: bool = True  # False = plain tap-drill bore (thread implied)
+
+
+class OpShell(BaseModel):
+    """Hollow the part: erode an inner solid by `thickness_mm` and subtract it.
+
+    `opening` slices a face open after hollowing (FDM-friendly shell);
+    'none' produces a sealed hollow body."""
+
+    thickness_mm: float = Field(gt=0.2, le=20.0)
+    opening: Literal["none", "bottom", "top"] = "bottom"
+
+
+class RadialStation(BaseModel):
+    """Radial scale factors at a normalized position `at` (0..1) along `axis`.
+
+    r1/r2 scale the two radial axes independently (axis="x" → r1 on Y, r2 on
+    Z). Equal factors give a concentric waist/taper; unequal factors round an
+    oval cross-section out."""
+
+    at: float = Field(ge=0.0, le=1.0)
+    r1: float = Field(default=1.0, gt=0.2, le=5.0)
+    r2: float = Field(default=1.0, gt=0.2, le=5.0)
+
+
+class OpRadialProfile(BaseModel):
+    """Scale the cross-section along a primary axis — ergonomic waists,
+    tapered ends, or rounding an oval tube (e.g. a grip along X).
+
+    Every vertex is displaced radially about the part's radial centroid, so a
+    centred bore keeps its axis — but a bore already cut scales too, so apply
+    BEFORE boolean cuts that must stay exact. Factors interpolate linearly
+    between stations."""
+
+    axis: CartesianAxis = "x"
+    stations: list[RadialStation] = Field(min_length=2, max_length=32)
+
+
+class ProfileStation(BaseModel):
+    """Absolute target outer radius (mm) at a normalised position `t` (0..1)
+    along the profile axis — e.g. derived from a side silhouette via
+    `silhouette.profile_stations_from_outline`."""
+
+    t: float = Field(ge=0.0, le=1.0)
+    radius_mm: float = Field(gt=0.0, le=1000.0)
+
+
+class OpRadialProfileAuto(BaseModel):
+    """Set a revolve-style cross-section to an absolute station profile (mm).
+
+    Complements `radial_profile` (which takes relative factors): the current
+    outer radius is measured around each station and displaced to
+    `radius_mm` — constructive, so a too-deep waist/V-notch is filled back
+    up, not just pinched. `blend_mm` gaussian-smooths the factor curve over
+    that axis length so the profile stays a soft waist (0 = raw station
+    factors, linearly interpolated). Apply BEFORE bore/hole cuts — every
+    vertex moves, including existing bore walls."""
+
+    axis: CartesianAxis = "x"
+    stations: list[ProfileStation] = Field(min_length=2, max_length=32)
+    blend_mm: float = Field(default=0.0, ge=0.0, le=200.0)
+
+
+class OpBoolean(BaseModel):
+    """Union/difference with a primitive placed in mm frame coordinates."""
+
+    op: Literal["union", "difference"] = "difference"
+    shape: Literal["box", "cylinder", "sphere"] = "box"
+    size: float | None = Field(default=None, gt=0.0, le=_MAX_PRIMITIVE_MM)
+    size_xyz: list[float] | None = Field(default=None, min_length=3, max_length=3)
+    radius: float | None = Field(default=None, gt=0.0, le=_MAX_PRIMITIVE_MM)
+    height: float | None = Field(default=None, gt=0.0, le=_MAX_PRIMITIVE_MM)
+    center: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    axis: CartesianAxis = "z"  # cylinder orientation
+    rotate_z_deg: float = Field(default=0.0, ge=-360.0, le=360.0)
+
+
+_OpFn = Callable[[trimesh.Trimesh, Any], trimesh.Trimesh]
+
+
+def _bbox_center(mesh: trimesh.Trimesh) -> np.ndarray:
+    b = np.asarray(mesh.bounds, dtype=float)
+    return cast(np.ndarray, (b[0] + b[1]) / 2.0)
+
+
+def _op_set_up(mesh: trimesh.Trimesh, p: OpSetUp) -> trimesh.Trimesh:
+    return rest_on_xy_center(orient(mesh, p.up, p.front))
+
+
+def _op_rotate(mesh: trimesh.Trimesh, p: OpRotate) -> trimesh.Trimesh:
+    out = mesh.copy()
+    m = trimesh.transformations.rotation_matrix(
+        math.radians(p.deg), _CARTESIAN[p.axis], _bbox_center(mesh)
+    )
+    out.apply_transform(m)
+    return out
+
+
+def _op_mirror(mesh: trimesh.Trimesh, p: OpMirror) -> trimesh.Trimesh:
+    out = mesh.copy()
+    m = np.eye(4)
+    idx = "xyz".index(p.axis)
+    m[idx, idx] = -1.0
+    out.apply_transform(m)
+    out.invert()  # reflection flips winding
+    return out
+
+
+def _op_scale(mesh: trimesh.Trimesh, p: OpScale) -> trimesh.Trimesh:
+    if p.factor is None and p.x is None and p.y is None and p.z is None:
+        raise ValueError("scale needs `factor` or at least one of x/y/z")
+    factors = np.array([p.x or p.factor or 1.0, p.y or p.factor or 1.0, p.z or p.factor or 1.0])
+    out = mesh.copy()
+    c = _bbox_center(mesh)
+    m = np.eye(4)
+    m[:3, :3] = np.diag(factors)
+    m[:3, 3] = c - factors * c
+    out.apply_transform(m)
+    return out
+
+
+def _op_flatten_bottom(mesh: trimesh.Trimesh, p: OpFlattenBottom) -> trimesh.Trimesh:
+    return flatten_bottom(mesh, p.height_mm)
+
+
+def _op_slice(mesh: trimesh.Trimesh, p: OpSlice) -> trimesh.Trimesh:
+    idx = "xyz".index(p.axis)
+    b = np.asarray(mesh.bounds)
+    lo, hi = float(b[0][idx]), float(b[1][idx])
+    if not lo + 1e-4 < p.at_mm < hi - 1e-4:
+        raise ValueError(f"at_mm {p.at_mm:g} outside mesh range [{lo:.2f}, {hi:.2f}] on {p.axis}")
+    normal = _CARTESIAN[p.axis].copy()
+    origin = np.zeros(3)
+    origin[idx] = p.at_mm
+    if p.keep == "low":
+        normal = -normal  # slice_plane keeps the positive-normal side
+    out = mesh.slice_plane(plane_origin=origin, plane_normal=normal, cap=True)
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError("slice removed the whole mesh")
+    return cast(trimesh.Trimesh, out)
+
+
+def _op_crop(mesh: trimesh.Trimesh, p: OpCrop) -> trimesh.Trimesh:
+    mn, mx = np.asarray(p.min, dtype=float), np.asarray(p.max, dtype=float)
+    if np.any(mx <= mn):
+        raise ValueError("crop max must be > min on every axis")
+    out = mesh
+    for i in range(3):
+        for at, axis_sign in ((mn[i], 1.0), (mx[i], -1.0)):
+            normal = _CARTESIAN["xyz"[i]] * axis_sign
+            origin = np.zeros(3)
+            origin[i] = at
+            cut = out.slice_plane(plane_origin=origin, plane_normal=normal, cap=True)
+            if cut is not None and len(cut.faces):
+                out = cut
+    if not len(out.faces):
+        raise ValueError("crop removed the whole mesh")
+    return out
+
+
+def _op_decimate(mesh: trimesh.Trimesh, p: OpDecimate) -> trimesh.Trimesh:
+    # pymeshlab quadric collapse (optional dep) evaluates quadrics on the
+    # full mesh with topology preservation — better than fast_simplification
+    # on delicate features; falls back to the stock path on any failure
+    try:
+        from kiara.cad.mesh_repair_pml import pm_available, quadric_decimate
+
+        if pm_available():
+            return quadric_decimate(mesh, p.faces)
+    except Exception:
+        log.warning("mesh.decimate.pml.failed", exc_info=True)
+    return decimate(mesh, p.faces)
+
+
+def _op_smooth(mesh: trimesh.Trimesh, p: OpSmooth) -> trimesh.Trimesh:
+    from trimesh.smoothing import filter_laplacian, filter_taubin
+
+    out = mesh.copy()
+    if p.scheme == "taubin":
+        # pymeshlab's taubin (optional dep) is the better volume-preserving
+        # implementation; stock trimesh taubin on any failure
+        try:
+            from kiara.cad.mesh_repair_pml import pm_available, taubin_smooth
+
+            if pm_available():
+                return taubin_smooth(out, p.iterations)
+        except Exception:
+            log.warning("mesh.smooth.taubin.pml.failed", exc_info=True)
+        filter_taubin(out, iterations=p.iterations)
+    else:
+        filter_laplacian(out, iterations=p.iterations)
+    return out
+
+
+def _op_smooth_preserve(mesh: trimesh.Trimesh, p: OpSmoothPreserve) -> trimesh.Trimesh:
+    return smooth_preserve(mesh, p.iterations)
+
+
+def _op_clip_to_outline(mesh: trimesh.Trimesh, p: OpClipToOutline) -> trimesh.Trimesh:
+    return clip_to_outline(mesh, p.outline, margin_mm=p.margin_mm)
+
+
+def _op_silhouette_carve(mesh: trimesh.Trimesh, p: OpSilhouetteCarve) -> trimesh.Trimesh:
+    """Intersect the mesh with the `outline` polygon extruded along `view`.
+
+    Deterministic and image-free: the caller already mapped the reference
+    mask into world mm (`silhouette.mask_to_outline_mm`). Only material
+    outside the reference silhouette is removed — the visual hull is the
+    maximal silhouette-consistent body, so notches are never filled."""
+    if len(mesh.faces) > BOOLEAN_MAX_FACES:
+        raise ValueError(
+            f"mesh too dense for silhouette_carve "
+            f"({len(mesh.faces)} faces > {BOOLEAN_MAX_FACES}) — run mesh_decimate first"
+        )
+    from shapely.geometry import Polygon
+
+    poly = Polygon(p.outline)
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    if poly.geom_type == "MultiPolygon":
+        poly = max(poly.geoms, key=lambda g: g.area)
+    if poly.is_empty or poly.area <= 0:
+        raise ValueError("silhouette_carve: outline is empty or degenerate")
+    if p.tolerance_mm:
+        # grow the prism so anti-aliased reference edges don't over-carve the rim
+        poly = poly.buffer(p.tolerance_mm)
+        if poly.is_empty:
+            raise ValueError("silhouette_carve: tolerance emptied the outline")
+    n = np.asarray(_AXIS_VECTORS[p.view], dtype=float)
+    u = np.cross([0.0, 0.0, 1.0], n)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)  # == +Z for the four side views
+    ai = "xyz".index(p.view[-1])
+    lo, hi = float(mesh.bounds[0][ai]), float(mesh.bounds[1][ai])
+    pad = 1.0 + p.tolerance_mm
+    prism = trimesh.creation.extrude_polygon(poly, height=(hi - lo) + 2.0 * pad)
+    # extrude_polygon builds along local +Z — rotate local (x,y,z) onto the
+    # view's (u, v, n) basis, then slide the prism over the mesh extent
+    rot = np.eye(4)
+    rot[:3, :3] = np.column_stack([u, v, n])
+    prism.apply_transform(rot)
+    prism.apply_translation(n * (lo - pad))
+    try:
+        if not (mesh.is_watertight and mesh.is_winding_consistent):
+            mesh = _ensure_watertight(mesh)  # manifold needs closed input
+        out = mesh.intersection(prism, engine="manifold")
+    except Exception as e:
+        raise ValueError(
+            f"silhouette_carve boolean failed: {e} — try mesh_repair/mesh_remesh first"
+        ) from e
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError(
+            "silhouette_carve removed the whole mesh — the outline does not "
+            "overlap the mesh projection on that view"
+        )
+    return cast(trimesh.Trimesh, out)
+
+
+def _body_sizes(bodies: list[trimesh.Trimesh]) -> np.ndarray:
+    def size(b: trimesh.Trimesh) -> float:
+        try:
+            return max(abs(float(b.volume)), 1e-12)
+        except Exception:
+            return float(b.area)
+
+    return np.array([size(b) for b in bodies])
+
+
+def _op_keep_largest(mesh: trimesh.Trimesh, p: OpKeepLargest) -> trimesh.Trimesh:
+    bodies = mesh.split(only_watertight=False)
+    if len(bodies) <= 1:
+        return mesh
+    group = _largest_group(_body_groups(bodies))
+    return cast(
+        trimesh.Trimesh,
+        group[0] if len(group) == 1 else trimesh.util.concatenate(group),
+    )
+
+
+def _op_drop_small(mesh: trimesh.Trimesh, p: OpDropSmall) -> trimesh.Trimesh:
+    bodies = mesh.split(only_watertight=False)
+    if len(bodies) <= 1:
+        return mesh
+    groups = _body_groups(bodies)
+    vols = np.array(
+        [max((float(b.volume) for b in g if float(b.volume) > 0), default=0.0) for g in groups]
+    )
+    keep = [g for g, v in zip(groups, vols, strict=True) if v >= vols.max() * p.min_volume_frac]
+    if not keep:
+        raise ValueError("drop_small would remove every body")
+    flat = [b for g in keep for b in g]
+    return cast(
+        trimesh.Trimesh,
+        flat[0] if len(flat) == 1 else trimesh.util.concatenate(flat),
+    )
+
+
+def _op_repair(mesh: trimesh.Trimesh, p: OpRepair) -> trimesh.Trimesh:
+    return clean(mesh)
+
+
+def _op_clip_height(mesh: trimesh.Trimesh, p: OpClipHeight) -> trimesh.Trimesh:
+    z0, z1 = float(mesh.bounds[0][2]), float(mesh.bounds[1][2])
+    if p.z_max <= z0 + 1e-3:
+        raise ValueError(f"z_max {p.z_max:g} would remove the whole mesh (min z = {z0:.2f})")
+    if p.z_max >= z1 - 1e-4:
+        return mesh  # nothing above the ceiling — no-op
+    out = mesh.slice_plane(plane_origin=[0.0, 0.0, p.z_max], plane_normal=[0, 0, -1], cap=True)
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError("clip_height removed the whole mesh")
+    return cast(trimesh.Trimesh, out)
+
+
+def _safe_volume(m: trimesh.Trimesh) -> float:
+    try:
+        return abs(float(m.volume))
+    except Exception:
+        return float(m.area)
+
+
+def _op_symmetrize(mesh: trimesh.Trimesh, p: OpSymmetrize) -> trimesh.Trimesh:
+    idx = "xyz".index(p.axis)
+    axis_vec = _CARTESIAN[p.axis]
+    c = float((mesh.bounds[0][idx] + mesh.bounds[1][idx]) / 2.0)
+    origin = np.zeros(3)
+    origin[idx] = c
+    neg = mesh.slice_plane(plane_origin=origin, plane_normal=-axis_vec, cap=True)
+    pos = mesh.slice_plane(plane_origin=origin, plane_normal=axis_vec, cap=True)
+    if neg is None or pos is None or not len(neg.faces) or not len(pos.faces):
+        raise ValueError("symmetrize cut produced an empty half")
+    if p.keep == "auto":
+        keep = neg if _safe_volume(neg) >= _safe_volume(pos) else pos
+    else:
+        keep = pos if p.keep == "pos" else neg
+    # reflect the kept half across the centre plane
+    m = np.eye(4)
+    m[:3, :3] = np.eye(3) - 2.0 * np.outer(axis_vec, axis_vec)
+    m[:3, 3] = 2.0 * c * axis_vec
+    mirrored = keep.copy()
+    mirrored.apply_transform(m)
+    mirrored.invert()  # reflection flips winding
+
+    # drop the coincident cap faces on the mirror plane — without that the
+    # seam edges would be shared by 4 faces (non-manifold)
+    def _drop_cap_faces(part: trimesh.Trimesh) -> trimesh.Trimesh:
+        centers = np.asarray(part.triangles_center)
+        normals = np.asarray(part.face_normals)
+        on_plane = np.abs(centers[:, idx] - c) < 1e-4
+        facing = np.abs(normals @ axis_vec) > 0.9
+        mask = ~(on_plane & facing)
+        if not mask.any():
+            return part
+        out = part.copy()
+        out.update_faces(mask)
+        out.remove_unreferenced_vertices()
+        return out
+
+    out = cast(
+        trimesh.Trimesh,
+        trimesh.util.concatenate([_drop_cap_faces(keep), _drop_cap_faces(mirrored)]),
+    )
+    out.merge_vertices()
+    return clean(out, min_component_frac=0.0)
+
+
+def _voxel_remesh(mesh: trimesh.Trimesh, pitch_mm: float) -> trimesh.Trimesh:
+    """Voxelize + fill + marching-cubes, cropped back to the original bounds
+    (voxel padding grows the envelope ~1 pitch on every side)."""
+    cells = float((np.asarray(mesh.extents, dtype=float) / pitch_mm).max())
+    if cells > _VOXEL_REPAIR_MAX_CELLS:
+        raise ValueError(
+            f"voxel_mm {pitch_mm:g} too fine for {mesh.extents.max():.0f} mm extent "
+            f"({cells:.0f} cells/axis, cap {_VOXEL_REPAIR_MAX_CELLS:.0f}) — "
+            "use a coarser pitch"
+        )
+    vg = _voxelize(mesh, pitch_mm)
+    with contextlib.suppress(Exception):
+        vg = vg.fill()  # fails on open meshes — remesh surface voxels as-is
+    mat = np.asarray(vg.matrix)
+    if not mat.any():
+        raise ValueError("voxelization produced an empty grid")
+    rebuilt = trimesh.voxel.VoxelGrid(mat, transform=vg.transform).marching_cubes
+    rebuilt.apply_transform(vg.transform)
+    if not len(rebuilt.faces):
+        raise ValueError("remesh produced an empty mesh")
+    lo, hi = np.asarray(mesh.bounds[0]), np.asarray(mesh.bounds[1])
+    for axis in range(3):
+        for at, sign in ((lo[axis], 1.0), (hi[axis], -1.0)):
+            normal = np.zeros(3)
+            normal[axis] = sign
+            origin = np.zeros(3)
+            origin[axis] = float(at)
+            cut = rebuilt.slice_plane(plane_origin=origin, plane_normal=normal, cap=True)
+            if isinstance(cut, trimesh.Trimesh) and len(cut.faces):
+                rebuilt = cut
+    return rebuilt
+
+
+def _op_remesh(mesh: trimesh.Trimesh, p: OpRemesh) -> trimesh.Trimesh:
+    # resolution guard applies to BOTH engines: pitch too fine for the extent
+    # explodes the output face count even when the engine itself has no dense
+    # grid (voxel path re-checks inside _voxel_remesh)
+    cells = float(np.max(np.asarray(mesh.extents, dtype=float) / p.voxel_mm))
+    if cells > _VOXEL_REPAIR_MAX_CELLS:
+        raise ValueError(
+            f"voxel_mm {p.voxel_mm:g} too fine for {mesh.extents.max():.0f} mm extent "
+            f"({cells:.0f} cells/axis, cap {_VOXEL_REPAIR_MAX_CELLS:.0f}) — "
+            "use a coarser pitch"
+        )
+    # pymeshlab isotropic remesh (optional dep): uniform edges without the
+    # marching-cubes stair steps — `voxel_mm` becomes the target edge length.
+    # grid bound lives in _voxel_remesh (_VOXEL_REPAIR_MAX_CELLS) — a sparse
+    # shell can make nearly every occupied cell a boundary cell, so marching
+    # cubes can out-vertex the cell count several-fold
+    out: trimesh.Trimesh | None = None
+    try:
+        from kiara.cad.mesh_repair_pml import isotropic_remesh, pm_available
+
+        if pm_available():
+            out = isotropic_remesh(mesh, p.voxel_mm)
+    except Exception:
+        log.warning("mesh.remesh.pml.failed", exc_info=True)
+        out = None
+    if out is None:
+        out = _voxel_remesh(mesh, p.voxel_mm)
+    if p.smooth_iters:
+        out = smooth_preserve(out, p.smooth_iters)
+    if len(out.faces) > BOOLEAN_MAX_FACES:
+        out = decimate(out, BOOLEAN_MAX_FACES)
+    return out
+
+
+def _resolve_drill_holes(p: OpDrillHoles, anchors: dict[str, Any] | None) -> list[DrillHole]:
+    holes = list(p.holes)
+    if p.from_anchors:
+        for a in (anchors or {}).get("holes") or []:
+            try:
+                holes.append(DrillHole(x=float(a["x"]), y=float(a["y"]), dia=float(a["dia"])))
+            except Exception:
+                continue
+    return holes
+
+
+_AXES: dict[str, tuple[float, float, float]] = {
+    "x": (1.0, 0, 0),
+    "y": (0, 1.0, 0),
+    "z": (0, 0, 1.0),
+}
+
+
+def _drill_tool(mesh: trimesh.Trimesh, h: DrillHole) -> trimesh.Trimesh:
+    """Cylindrical (+ optional countersink) cutting solid for one hole."""
+    ax = _AXES[h.axis]
+    ai = "xyz".index(h.axis)
+    lo, hi = float(mesh.bounds[0][ai]), float(mesh.bounds[1][ai])
+    if h.depth_mm is not None:
+        bot, top = hi - h.depth_mm, hi + 1.0
+    else:
+        bot, top = lo - 1.0, hi + 1.0
+    cyl = trimesh.creation.cylinder(radius=h.dia / 2.0, height=top - bot, sections=48)
+    tools = [cyl]
+    if h.csk_dia and h.csk_dia > h.dia:
+        # cone widening from the bore dia to csk_dia over h_csk of depth;
+        # the cone is extended 0.5 mm past the top surface so the boolean
+        # cut leaves a clean rim (surface dia stays exactly csk_dia)
+        h_csk = (h.csk_dia - h.dia) / 2.0 / math.tan(math.radians(h.csk_angle_deg) / 2.0)
+        if h_csk > 0.01:
+            h_cone = h_csk + 0.5
+            r_cone = (h.csk_dia / 2.0) * h_cone / h_csk
+            cone = trimesh.creation.cone(radius=r_cone, height=h_cone)
+            # trimesh cone: base at z=-h/2, apex at +h/2 — flip so the apex
+            # points down, then seat the apex at depth h_csk below the top
+            cone.apply_transform(trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0]))
+            cone.apply_translation([0, 0, hi - h_csk + h_cone / 2.0])
+            tools.append(cone)
+    tool = cast(trimesh.Trimesh, trimesh.util.concatenate(tools))
+    if ai != 2:  # cylinder is built along +z — rotate onto the drill axis
+        tool.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], list(ax)))
+    off = [0.0, 0.0, 0.0]
+    if h.axis == "z":
+        off = [h.x, h.y, (top + bot) / 2.0]
+    elif h.axis == "x":
+        off = [(top + bot) / 2.0, h.x, h.y]
+    else:
+        off = [h.x, (top + bot) / 2.0, h.y]
+    if h.depth_mm is not None:
+        off[ai] = (bot + top) / 2.0
+    tool.apply_translation(off)
+    return tool
+
+
+def _op_drill_holes(mesh: trimesh.Trimesh, p: OpDrillHoles) -> trimesh.Trimesh:
+    if len(mesh.faces) > BOOLEAN_MAX_FACES:
+        raise ValueError(
+            f"mesh too dense for drill_holes ({len(mesh.faces)} faces > {BOOLEAN_MAX_FACES}) "
+            "— run mesh_decimate first"
+        )
+    if not p.holes:
+        raise ValueError("drill_holes: no holes given (empty list and no anchors resolved)")
+    if not (mesh.is_watertight and mesh.is_winding_consistent):
+        mesh = _ensure_watertight(mesh)  # manifold needs closed input
+    out = mesh
+    for i, h in enumerate(p.holes):
+        tool = _drill_tool(out, h)
+        try:
+            res = out.difference(tool, engine="manifold")
+        except Exception as e:
+            raise ValueError(
+                f"drill_holes failed on hole {i} (x={h.x}, y={h.y}): {e} "
+                "— mesh may be non-watertight; try mesh_repair"
+            ) from e
+        if res is None or not len(getattr(res, "faces", [])):
+            raise ValueError(f"drill_holes produced an empty mesh at hole {i}")
+        out = cast(trimesh.Trimesh, res)
+    return out
+
+
+_MACHINE_KIND: dict[str, str] = {
+    "drill": "hole",
+    "tap": "tap",
+    "cbore": "counterbore",
+    "csk": "countersink",
+    "insert": "insert",
+    "bearing_seat": "bearing_seat",
+    "tunnel": "tunnel",
+}
+
+_FACE_WORDS: dict[str, str] = {
+    "top": "+z",
+    "bottom": "-z",
+    "front": "+y",
+    "back": "-y",
+    "right": "+x",
+    "left": "-x",
+    "+x": "+x",
+    "-x": "-x",
+    "+y": "+y",
+    "-y": "-y",
+    "+z": "+z",
+    "-z": "-z",
+}
+
+
+def _unit_vec(v: Sequence[float] | np.ndarray) -> np.ndarray:
+    a = np.asarray(v, dtype=float)
+    n = float(np.linalg.norm(a))
+    if n < 1e-9:
+        raise ValueError("machine_feature: zero-length direction")
+    return a / n
+
+
+def _mesh_target(mesh: trimesh.Trimesh, p: OpMachineFeature) -> tuple[np.ndarray, np.ndarray]:
+    """Resolve (entry_point, outward_normal) on the mesh skin."""
+    pick = None
+    for c in (p.at, p.face):
+        if isinstance(c, (list, tuple)) and len(c) == 3:
+            pick = np.asarray(c, dtype=float)
+            break
+    if pick is not None:
+        pts, _, tids = mesh.nearest.on_surface([pick])
+        n = _unit_vec(mesh.face_normals[int(tids[0])])
+        return np.asarray(pts[0], dtype=float), n
+    word = _FACE_WORDS.get(str(p.face or "+z").lower())
+    if word is None:
+        raise ValueError(
+            f"machine_feature: unresolvable face '{p.face}' — use a pick point "
+            "or one of top|bottom|front|back|left|right|±x|±y|±z"
+        )
+    ai = "xyz".index(word[-1])
+    sign = 1.0 if word[0] == "+" else -1.0
+    lo, hi = mesh.bounds[0], mesh.bounds[1]
+    ui, vi = (i for i in (0, 1, 2) if i != ai)
+    u, v = (
+        (float(p.at[0]), float(p.at[1]))
+        if isinstance(p.at, (list, tuple)) and len(p.at) == 2
+        else (float((lo[ui] + hi[ui]) / 2.0), float((lo[vi] + hi[vi]) / 2.0))
+    )
+    origin = np.zeros(3)
+    origin[ui], origin[vi] = u, v
+    origin[ai] = hi[ai] + 1.0 if sign > 0 else lo[ai] - 1.0
+    d = np.zeros(3)
+    d[ai] = -sign
+    locs, _, tids = mesh.ray.intersects_location(
+        ray_origins=np.array([origin]), ray_directions=np.array([d]), multiple_hits=True
+    )
+    if not len(locs):
+        raise ValueError(f"machine_feature: no surface on {word} at u={u:.1f}, v={v:.1f}")
+    k = int(np.argmin(locs[:, ai] * sign) if sign < 0 else np.argmax(locs[:, ai] * sign))
+    n = _unit_vec(mesh.face_normals[int(tids[k])])
+    return np.asarray(locs[k], dtype=float), n
+
+
+def _op_machine_feature(mesh: trimesh.Trimesh, p: OpMachineFeature) -> trimesh.Trimesh:
+    if len(mesh.faces) > BOOLEAN_MAX_FACES:
+        raise ValueError(
+            f"mesh too dense for machine_feature ({len(mesh.faces)} faces > "
+            f"{BOOLEAN_MAX_FACES}) — run mesh_decimate first"
+        )
+    if not (mesh.is_watertight and mesh.is_winding_consistent):
+        mesh = _ensure_watertight(mesh)
+    entry, normal = _mesh_target(mesh, p)
+    if p.axis is not None:
+        av = _AXES[p.axis] if isinstance(p.axis, str) and p.axis in _AXES else p.axis
+        normal = _unit_vec(np.asarray(av, dtype=float))
+    span = float(max(mesh.extents))
+    if p.op == "tap":
+        d_maj = float(p.major_d or p.dia or 6.0)
+        pitch = float(p.pitch) if p.pitch else _metric_pitch(d_maj)
+        dia = float(p.dia or (d_maj - pitch))
+        thread_spec = f"M{d_maj:g}-{pitch:g}"
+    else:
+        dia = float(p.dia or 4.0)
+        thread_spec = ""
+    from kiara.cad.fem.refine import RefineFeature, _cutter_mesh
+
+    feat = RefineFeature(
+        name=f"machine_{p.op}",
+        kind=_MACHINE_KIND[p.op],
+        dia=dia,
+        depth_mm=p.depth,
+        through=p.depth is None,
+        csk_dia=p.csk_dia,
+        csk_angle_deg=p.csk_angle,
+        cbore_dia=p.cbore_dia,
+        cbore_depth_mm=p.cbore_depth,
+        thread_spec=thread_spec,
+        helical=p.helical if p.op == "tap" else None,
+    )
+    cutter = _cutter_mesh(feat, 0.0, span)
+    cutter.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], normal.tolist()))
+    cutter.apply_translation(entry)
+    try:
+        res = mesh.difference(cutter, engine="manifold")
+    except Exception as e:
+        raise ValueError(f"machine_feature {p.op} failed: {e} — try mesh_repair") from e
+    if res is None or not len(getattr(res, "faces", [])):
+        raise ValueError(f"machine_feature {p.op} produced an empty mesh")
+    return cast(trimesh.Trimesh, res)
+
+
+def _metric_pitch(dia: float) -> float:
+    from kiara.cad.fem.refine import _metric_pitch as _mp
+
+    return _mp(dia)
+
+
+def _op_shell(mesh: trimesh.Trimesh, p: OpShell) -> trimesh.Trimesh:
+    import scipy.ndimage as ndi
+
+    ext = np.asarray(mesh.extents, dtype=float)
+    if float(ext.min()) < p.thickness_mm * 3.0:
+        raise ValueError(f"part is too thin ({ext.min():.1f} mm) for a {p.thickness_mm:g} mm shell")
+    pitch = float(np.clip(min(p.thickness_mm / 2.0, float(ext.min()) / 80.0), 0.15, 1.0))
+    pitch = max(pitch, float(ext.max()) / _VOXEL_REPAIR_MAX_CELLS)
+    vg = _voxelize(mesh, pitch)
+    pitch = float(np.max(vg.pitch))  # _voxelize may coarsen an open-mesh pitch
+    with contextlib.suppress(Exception):
+        vg = vg.fill()
+    mat = np.asarray(vg.matrix)
+    iters = max(1, math.ceil(p.thickness_mm / pitch))
+    inner_mat = ndi.binary_erosion(mat, iterations=iters)
+    if not inner_mat.any():
+        raise ValueError(f"part too thin for a {p.thickness_mm:g} mm shell at this pitch")
+    inner = trimesh.voxel.VoxelGrid(inner_mat, transform=vg.transform).marching_cubes
+    inner.apply_transform(vg.transform)
+    if not len(inner.faces):
+        raise ValueError("shell erosion produced an empty inner solid")
+    # smooth the eroded cutter — the cavity walls inherit its stair steps
+    inner = smooth_preserve(inner, 4, pin_floor=False)
+    try:
+        out = mesh.difference(inner, engine="manifold")
+    except Exception as e:
+        raise ValueError(f"shell boolean failed: {e} — try mesh_repair first") from e
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError("shell produced an empty mesh")
+    out = cast(trimesh.Trimesh, out)
+    if p.opening != "none":
+        # slice a thin skin off the opening face with cap=False — the
+        # cavity becomes reachable; walls stay standing to the rim
+        eps = min(0.3, p.thickness_mm * 0.3)
+        z = (
+            float(mesh.bounds[0][2]) + eps
+            if p.opening == "bottom"
+            else float(mesh.bounds[1][2]) - eps
+        )
+        normal = np.array([0, 0, -1.0]) if p.opening == "bottom" else np.array([0, 0, 1.0])
+        try:
+            cut = out.slice_plane(plane_origin=[0.0, 0.0, z], plane_normal=normal, cap=False)
+            if isinstance(cut, trimesh.Trimesh) and len(cut.faces):
+                out = cut
+        except Exception:
+            log.warning("mesh.shell.opening_failed", exc_info=True)
+    return out
+
+
+def _boolean_primitive(p: OpBoolean) -> trimesh.Trimesh:
+    if p.shape == "box":
+        ext = list(p.size_xyz) if p.size_xyz else [p.size] * 3 if p.size else None
+        if ext is None:
+            raise ValueError("box needs `size` or `size_xyz`")
+        if any(float(v) <= 0 or float(v) > _MAX_PRIMITIVE_MM for v in ext):
+            raise ValueError("box size out of bounds")
+        prim = trimesh.creation.box(extents=ext)
+        if p.rotate_z_deg:
+            prim.apply_transform(
+                trimesh.transformations.rotation_matrix(math.radians(p.rotate_z_deg), [0, 0, 1])
+            )
+    elif p.shape == "cylinder":
+        if not p.radius or not p.height:
+            raise ValueError("cylinder needs `radius` and `height`")
+        prim = trimesh.creation.cylinder(radius=p.radius, height=p.height, sections=48)
+        if p.axis == "x":
+            prim.apply_transform(trimesh.transformations.rotation_matrix(math.pi / 2, [0, 1, 0]))
+        elif p.axis == "y":
+            prim.apply_transform(trimesh.transformations.rotation_matrix(-math.pi / 2, [1, 0, 0]))
+    else:
+        if not p.radius:
+            raise ValueError("sphere needs `radius`")
+        prim = trimesh.creation.icosphere(subdivisions=3, radius=p.radius)
+    prim.apply_translation(np.asarray(p.center, dtype=float))
+    return cast(trimesh.Trimesh, prim)
+
+
+def _op_boolean(mesh: trimesh.Trimesh, p: OpBoolean) -> trimesh.Trimesh:
+    if len(mesh.faces) > BOOLEAN_MAX_FACES:
+        raise ValueError(
+            f"mesh too dense for boolean ({len(mesh.faces)} faces > {BOOLEAN_MAX_FACES}) "
+            "— run mesh_decimate first"
+        )
+    prim = _boolean_primitive(p)
+    try:
+        if not (mesh.is_watertight and mesh.is_winding_consistent):
+            mesh = _ensure_watertight(mesh)  # manifold needs closed input
+        if p.op == "union":
+            out = mesh.union(prim, engine="manifold")
+        else:
+            out = mesh.difference(prim, engine="manifold")
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(
+            f"boolean {p.op} failed: {e} — mesh may be non-watertight; try mesh_repair"
+        ) from e
+    if out is None or not len(getattr(out, "faces", [])):
+        raise ValueError(f"boolean {p.op} produced an empty mesh")
+    return cast(trimesh.Trimesh, out)
+
+
+def _op_radial_profile(mesh: trimesh.Trimesh, p: OpRadialProfile) -> trimesh.Trimesh:
+    ax = "xyz".index(p.axis)
+    radial = [i for i in range(3) if i != ax]
+    verts = np.asarray(mesh.vertices, dtype=float).copy()
+    b = np.asarray(mesh.bounds, dtype=float)
+    lo, hi = float(b[0][ax]), float(b[1][ax])
+    span = hi - lo
+    if span <= 1e-9:
+        raise ValueError("radial_profile: zero-length span on the profile axis")
+    t = np.clip((verts[:, ax] - lo) / span, 0.0, 1.0)
+    st = sorted(p.stations, key=lambda s: s.at)
+    at = np.asarray([s.at for s in st], dtype=float)
+    centre = verts[:, radial].mean(axis=0)
+    for k, ri in enumerate(radial):
+        fac = np.interp(t, at, [s.r1 if k == 0 else s.r2 for s in st])
+        verts[:, ri] = centre[k] + (verts[:, ri] - centre[k]) * fac
+    out = mesh.copy()
+    out.vertices = verts
+    return out
+
+
+def _op_radial_profile_auto(mesh: trimesh.Trimesh, p: OpRadialProfileAuto) -> trimesh.Trimesh:
+    """Thin measurement layer over `_op_radial_profile`: absolute target
+    radii → per-station scale factors, optionally gaussian-smoothed."""
+    ax = "xyz".index(p.axis)
+    radial = [i for i in range(3) if i != ax]
+    verts = np.asarray(mesh.vertices, dtype=float)
+    b = np.asarray(mesh.bounds, dtype=float)
+    lo, hi = float(b[0][ax]), float(b[1][ax])
+    span = hi - lo
+    if span <= 1e-9:
+        raise ValueError("radial_profile_auto: zero-length span on the profile axis")
+    t_v = np.clip((verts[:, ax] - lo) / span, 0.0, 1.0)
+    centre = verts[:, radial].mean(axis=0)
+    r_v = np.linalg.norm(verts[:, radial] - centre, axis=1)
+
+    st = sorted(p.stations, key=lambda s: s.t)
+    at = np.asarray([s.t for s in st], dtype=float)
+    target = np.asarray([s.radius_mm for s in st], dtype=float)
+    # current outer radius near each station — the 98th percentile is robust
+    # to a stray spike vertex; the band widens until populated (coarse meshes
+    # may place no vertex inside a narrow window)
+    spacing = float(np.median(np.diff(at))) if len(at) > 1 else 0.25
+    fac = np.empty(len(st), dtype=float)
+    for i, ts in enumerate(at):
+        band = max(spacing * 0.25, 0.01)
+        sel = np.abs(t_v - ts) <= band
+        while not sel.any() and band < 0.5:
+            band *= 2.0
+            sel = np.abs(t_v - ts) <= band
+        if not sel.any():
+            raise ValueError(f"radial_profile_auto: no vertices near station t={ts:g}")
+        cur = float(np.quantile(r_v[sel], 0.98))
+        fac[i] = float(np.clip(target[i] / max(cur, 1e-3), 0.2, 5.0))
+
+    if p.blend_mm > 0.0:
+        # smooth the factor curve on a fine t-grid — the waist stays soft
+        # instead of stair-stepping between stations
+        grid = np.linspace(0.0, 1.0, 129)
+        f = np.interp(grid, at, fac)
+        sigma = (p.blend_mm / span) * (len(grid) - 1)
+        if sigma > 0.25:
+            rad = math.ceil(3.0 * sigma)
+            x = np.arange(-rad, rad + 1, dtype=float)
+            k = np.exp(-0.5 * (x / sigma) ** 2)
+            k /= k.sum()
+            f = np.convolve(np.pad(f, rad, mode="edge"), k, mode="valid")
+        idx = np.unique(np.linspace(0, len(grid) - 1, 32).round().astype(int))
+        at, fac = grid[idx], f[idx]
+
+    stations = [
+        RadialStation(at=float(a), r1=float(f_), r2=float(f_))
+        for a, f_ in zip(at, fac, strict=True)
+    ]
+    return _op_radial_profile(mesh, OpRadialProfile(axis=p.axis, stations=stations))
+
+
+def _op_organic(
+    mesh: trimesh.Trimesh,
+    p: OrganicParams,
+    runtime: RuntimeSettings | None = None,
+) -> trimesh.Trimesh:
+    """Pseudo-topology organic restyle — procedural density field extracted
+    through the TopOpt pipeline. Aesthetic only, not structurally verified."""
+    from kiara.cad.fem.organic import organic_transform
+
+    res = organic_transform(mesh, p, runtime=runtime)
+    out = smooth_preserve(res.mesh, 4, pin_floor=is_flat_bottom(mesh))
+    if len(out.faces) > BOOLEAN_MAX_FACES:
+        out = decimate(out, BOOLEAN_MAX_FACES)
+    # surface recognizability + friends for the GUI status bar — apply_ops
+    # merges this into the per-op report (mesh-preview surfaces it live)
+    out.metadata["op_metrics"] = {
+        "organic": {
+            "surface_coverage": res.report.get("surface_coverage"),
+            "volfrac_achieved": res.report.get("volfrac_achieved"),
+            "n_components": res.report.get("n_components"),
+            "shell_mm": res.report.get("shell_mm"),
+            "warnings": (res.report.get("warnings") or [])[:4],
+        }
+    }
+    return out
+
+
+class MeshOpError(ValueError):
+    """An op in an apply_ops stack failed — carries the 0-based index of the
+    failing op plus the per-op report accumulated so far (GUI highlights the
+    offending stack entry)."""
+
+    def __init__(
+        self, op_index: int, op_name: str, cause: Exception, report: list[dict[str, Any]]
+    ) -> None:
+        super().__init__(f"op {op_index + 1} '{op_name}' failed: {cause}")
+        self.op_index = op_index
+        self.op_name = op_name
+        self.cause = cause
+        self.report = report
+
+
+OPS_REGISTRY: dict[str, tuple[type[BaseModel], _OpFn]] = {
+    "set_up": (OpSetUp, _op_set_up),
+    "rotate": (OpRotate, _op_rotate),
+    "mirror": (OpMirror, _op_mirror),
+    "scale": (OpScale, _op_scale),
+    "flatten_bottom": (OpFlattenBottom, _op_flatten_bottom),
+    "slice": (OpSlice, _op_slice),
+    "crop": (OpCrop, _op_crop),
+    "decimate": (OpDecimate, _op_decimate),
+    "smooth": (OpSmooth, _op_smooth),
+    "smooth_preserve": (OpSmoothPreserve, _op_smooth_preserve),
+    "clip_to_outline": (OpClipToOutline, _op_clip_to_outline),
+    "silhouette_carve": (OpSilhouetteCarve, _op_silhouette_carve),
+    "keep_largest": (OpKeepLargest, _op_keep_largest),
+    "drop_small": (OpDropSmall, _op_drop_small),
+    "repair": (OpRepair, _op_repair),
+    "clip_height": (OpClipHeight, _op_clip_height),
+    "symmetrize": (OpSymmetrize, _op_symmetrize),
+    "remesh": (OpRemesh, _op_remesh),
+    "drill_holes": (OpDrillHoles, _op_drill_holes),
+    "machine_feature": (OpMachineFeature, _op_machine_feature),
+    "shell": (OpShell, _op_shell),
+    "radial_profile": (OpRadialProfile, _op_radial_profile),
+    "radial_profile_auto": (OpRadialProfileAuto, _op_radial_profile_auto),
+    "boolean": (OpBoolean, _op_boolean),
+    "organic": (OrganicParams, _op_organic),
+}
+
+# bump when an op's semantics change so old version.params replays are
+# recognised as pre-change (stored alongside params, warn-not-fail)
+MESH_OPS_VERSION = 8  # + silhouette_carve / radial_profile_auto (visual-hull refit)
+
+
+def _is_single_solid(mesh: trimesh.Trimesh) -> bool:
+    """Watertight and exactly one solid body — the part contract.
+
+    A hollow part's boundary has one extra component per enclosed void
+    (inner walls) — those are not separate solids.
+    """
+    try:
+        return bool(mesh.is_watertight) and solid_body_count(mesh) <= 1
+    except Exception:
+        return False
+
+
+def _salvage_solid(mesh: trimesh.Trimesh) -> trimesh.Trimesh | None:
+    """Rescue an op result that broke the single-solid contract.
+
+    Keeps the largest *positive-volume* component and runs the watertight
+    repair ladder. Inner cavity walls (negative volume) belong to their
+    enclosing body — only walls nested inside the kept body survive, so a
+    legitimately hollow part is not gutted into an open shell.
+    Returns a valid single solid, or None when the damage is not fixable —
+    the caller then reverts the op entirely (a missed flatten/slice is far
+    better than a shattered part shipping to export).
+    """
+    try:
+        bodies = mesh.split(only_watertight=False)
+        if len(bodies) > 1:
+            group = _largest_group(_body_groups(bodies))
+            mesh = group[0] if len(group) == 1 else trimesh.util.concatenate(group)
+        out = _ensure_watertight(mesh)
+        return out if _is_single_solid(out) else None
+    except Exception:
+        return None
+
+
+def apply_op(
+    mesh: trimesh.Trimesh,
+    op: MeshOp | dict[str, Any],
+    *,
+    anchors: dict[str, Any] | None = None,
+    runtime: RuntimeSettings | None = None,
+) -> trimesh.Trimesh:
+    """Validate + apply one op. Raises ValueError on bad args or op failure."""
+    mo = op if isinstance(op, MeshOp) else MeshOp.model_validate(op)
+    entry = OPS_REGISTRY.get(mo.op)
+    if entry is None:
+        raise ValueError(
+            f"unknown mesh op '{mo.op}' — available: {', '.join(sorted(OPS_REGISTRY))}"
+        )
+    params_t, fn = entry
+    params = params_t.model_validate(mo.args)
+    if isinstance(params, OpDrillHoles) and params.from_anchors:
+        holes = _resolve_drill_holes(params, anchors)
+        if not holes:
+            raise ValueError("drill_holes: from_anchors set but no anchors available")
+        params = params.model_copy(update={"holes": holes})
+    if isinstance(params, OrganicParams):
+        if params.auto_keep and not params.anchors:
+            params = params.model_copy(update={"anchors": list((anchors or {}).get("holes") or [])})
+        return _op_organic(mesh, params, runtime=runtime)
+    return fn(mesh, params)
+
+
+def apply_ops(
+    mesh: trimesh.Trimesh,
+    ops: Sequence[MeshOp | dict[str, Any]],
+    *,
+    anchors: dict[str, Any] | None = None,
+    runtime: RuntimeSettings | None = None,
+) -> tuple[trimesh.Trimesh, list[dict[str, Any]]]:
+    """Apply an op list in order; returns (mesh, per-op report).
+
+    The part is re-grounded (`rest_on_xy_center`) after every op so positional
+    ops (slice/crop/boolean) always see a centred, on-XY frame — identical in
+    the refine session and the executor pipeline.
+    """
+    report: list[dict[str, Any]] = []
+    for i, raw in enumerate(ops):
+        try:
+            mo = raw if isinstance(raw, MeshOp) else MeshOp.model_validate(raw)
+        except Exception as e:
+            name = raw.get("op", "?") if isinstance(raw, dict) else "?"
+            raise MeshOpError(i, str(name), e, report) from e
+        faces_in = len(mesh.faces)
+        try:
+            out = apply_op(mesh, mo, anchors=anchors, runtime=runtime)
+        except Exception as e:
+            raise MeshOpError(i, mo.op, e, report) from e
+        reverted = False
+        salvaged = False
+        # ops that shatter a single watertight solid (bad slice/cut/boolean)
+        # are worse than a missed op — salvage or revert before they reach
+        # export, where they'd surface as solids>1 / non-watertight majors.
+        # "organic" is exempt: disjoint lattices/islands are legitimate output
+        # (reported via n_components + needs_review), and reverting them would
+        # silently show the unchanged part while commit produces the real one.
+        if mo.op != "organic" and _is_single_solid(mesh) and not _is_single_solid(out):
+            rescued = _salvage_solid(out)
+            if rescued is not None:
+                out, salvaged = rescued, True
+            else:
+                out, reverted = mesh, True
+        mesh = rest_on_xy_center(out)
+        entry = {
+            "op": mo.op,
+            "args": mo.args,
+            "faces_in": faces_in,
+            "faces_out": len(mesh.faces),
+            "watertight": bool(mesh.is_watertight),
+            "salvaged": salvaged,
+            "reverted": reverted,
+        }
+        # ops may stash UI-facing metrics on the result mesh (e.g. organic's
+        # surface-coverage) — lift them into the report so mesh-preview and
+        # the executor pipeline both surface them
+        md = getattr(mesh, "metadata", None)
+        extra = md.pop("op_metrics", None) if isinstance(md, dict) else None
+        if isinstance(extra, dict):
+            entry.update(extra)
+        report.append(entry)
+    return mesh, report
+
+
+def baseline_mesh(
+    raw: trimesh.Trimesh,
+    post: MeshPostParams,
+    spec: PartSpec | None,
+    *,
+    cad_cap_faces: int | None = None,
+) -> tuple[trimesh.Trimesh, dict[str, Any]]:
+    """Deterministic baseline: clean -> decimate -> orient -> scale -> flatten -> rest.
+
+    Shared by the executor pipeline (steps 1-5 of run_mesh_pipeline) and the
+    worker-side refine session so preview and final result never drift.
+    """
+    mesh = clean(raw)
+
+    target = post.decimate_faces or 0
+    if cad_cap_faces:
+        target = target or cad_cap_faces
+    if target:
+        mesh = decimate(mesh, target)
+
+    mesh = orient(mesh, post.up, post.front, post.rotate_z_deg, post.mirror_x)
+
+    yaw_auto = 0.0
+    if post.auto_yaw and not post.rotate_z_deg:
+        # generative output keeps the source image's iso yaw — a footprint
+        # that is far off-axis fails the dim gate for the wrong reason
+        yaw_auto = footprint_yaw_deg(mesh)
+        if yaw_auto:
+            mesh.apply_transform(
+                trimesh.transformations.rotation_matrix(math.radians(yaw_auto), [0, 0, 1])
+            )
+
+    mesh, factor, dim_issues = scale_to_spec(mesh, spec)
+    mesh, dim_fit, dim_issues = fit_stated_dims(mesh, spec, dim_issues)
+    if post.scale and abs(post.scale - 1.0) > 1e-9:
+        mesh.apply_scale(post.scale)
+        factor *= post.scale
+
+    if post.flatten_bottom_mm > 0:
+        flat = flatten_bottom(mesh, post.flatten_bottom_mm)
+        if _is_single_solid(mesh) and not _is_single_solid(flat):
+            flat = _salvage_solid(flat) or mesh
+        mesh = flat
+    mesh = rest_on_xy_center(mesh)
+
+    info = {
+        "input_triangles": len(raw.faces),
+        "triangles": len(mesh.faces),
+        "orientation": {
+            "up": post.up,
+            "front": post.front,
+            "rotate_z_deg": post.rotate_z_deg,
+            "yaw_auto_deg": yaw_auto,
+            "mirror_x": post.mirror_x,
+        },
+        "scale_factor": round(factor, 6),
+        "dim_fit": dim_fit,
+        "dim_issues": dim_issues,
+    }
+    return mesh, info
+
+
+# --------------------------------------------------------------------------- #
+# mesh -> solid (hybrid bridge)                                                #
+# --------------------------------------------------------------------------- #
+
+
+def _alpha_wrap_repair(m: trimesh.Trimesh, faces_in: int) -> trimesh.Trimesh | None:
+    """pymeshlab alpha-wrap rung of the watertight ladder — or None.
+
+    The reskin is watertight/2-manifold by construction, far better than the
+    voxel fallback's marching-cubes dust on thin/sparse geometry. Returns
+    None (caller falls through to the voxel rung) when pymeshlab is not
+    installed, the wrap granularity would exceed the shared rebuild budget
+    (_VOXEL_REPAIR_MAX_CELLS), or the wrap fails/produces a non-watertight
+    result. Wrap granularity is bounded by the bbox diagonal, not by the
+    input face count.
+    """
+    try:
+        from kiara.cad import resources
+        from kiara.cad.mesh_repair_pml import (
+            ALPHA_WRAP_DEFAULT_DIV,
+            alpha_wrap,
+            pm_available,
+        )
+
+        if not pm_available():
+            return None
+        if ALPHA_WRAP_DEFAULT_DIV > _VOXEL_REPAIR_MAX_CELLS:
+            return None
+        # alpha-wrap builds an octree at ~bbox/div granularity and reskins to
+        # ~10^5 faces regardless of input size — on a congested container
+        # (sibling FEM/optimize workers share the cgroup) that allocation is
+        # what tips the OOM-kill (observed: executor killed mid-eval twice).
+        # The voxel rung below is strictly bounded, so skip the wrap when
+        # cgroup headroom is measurably low; when it is unmeasurable (None)
+        # the wrap runs as before.
+        headroom = resources.mem_headroom_mb()
+        if headroom is not None and headroom < _ALPHA_WRAP_MIN_HEADROOM_MB:
+            log.warning(
+                "mesh.repair_alpha_wrap_skipped",
+                headroom_mb=round(headroom),
+                faces_in=faces_in,
+            )
+            return None
+        wrapped = alpha_wrap(m)
+        # sparse/complex input wraps per component — keep the dominant
+        # body, same policy as the voxel fallback; cavity walls stay with it
+        try:
+            bodies = wrapped.split(only_watertight=False)
+            if len(bodies) > 1:
+                group = _largest_group(_body_groups(bodies))
+                wrapped = group[0] if len(group) == 1 else trimesh.util.concatenate(group)
+        except Exception:
+            pass
+        if len(wrapped.faces) > _REBUILD_MAX_FACES:
+            wrapped = decimate(wrapped, _REBUILD_MAX_FACES)
+        if not (len(wrapped.faces) and wrapped.is_watertight):
+            return None
+        log.warning(
+            "mesh.repair_alpha_wrap",
+            faces_in=faces_in,
+            faces_out=len(wrapped.faces),
+        )
+        return wrapped
+    except Exception:
+        return None
+
+
+def _rebuild_drift(
+    mesh: trimesh.Trimesh,
+    rebuilt: trimesh.Trimesh,
+    *,
+    max_vol_ratio: float = 1.5,
+    max_bbox_growth_mm: float = 1.0,
+) -> str | None:
+    """Reason string when a repair/rebuild diverged materially from the input,
+    else None. The reskin/voxel repair rungs fill every enclosed void — sound
+    for a leaky solid, catastrophic on topology-optimised lattices or hollow
+    parts whose interior cavities are the design. ``mesh.volume`` on a leaky
+    mesh reads ~40% low (missing faces), so the volume gate stays generous."""
+    growth = float(
+        np.max((rebuilt.bounds[1] - rebuilt.bounds[0]) - (mesh.bounds[1] - mesh.bounds[0]))
+    )
+    if growth > max_bbox_growth_mm:
+        return f"bbox grew {growth:.2f} mm"
+    try:
+        base_vol = abs(float(mesh.volume))
+    except Exception:
+        base_vol = 0.0
+    # mesh.volume on a leaky mesh is approximate but still catches the
+    # catastrophic case — enclosed-void fill that leaves the bbox untouched
+    if base_vol > 0 and float(rebuilt.volume) > base_vol * max_vol_ratio:
+        return f"volume grew {float(rebuilt.volume) / base_vol:.2f}x"
+    return None
+
+
+def _boundary_rows(mesh: trimesh.Trimesh) -> np.ndarray:
+    """Row indices into ``mesh.edges`` of boundary half-edges (one incident
+    face). ``edges_sorted`` dedupes the two directions of a shared edge."""
+    try:
+        return np.asarray(
+            trimesh.grouping.group_rows(mesh.edges_sorted, require_count=1), dtype=np.int64
+        )
+    except Exception:
+        return np.zeros(0, dtype=np.int64)
+
+
+def _nonmanifold_count(mesh: trimesh.Trimesh) -> int:
+    """Edges with >2 incident faces — the failure mode a global tolerance
+    weld produces; the local stitch must never add to it."""
+    try:
+        groups = trimesh.grouping.group_rows(mesh.edges_sorted)
+        return int(sum(1 for g in groups if len(g) > 2))
+    except Exception:
+        return 0
+
+
+def _stitch_hairline_boundary(  # noqa: C901
+    mesh: trimesh.Trimesh, *, tol: float | None = None, max_passes: int = 6
+) -> trimesh.Trimesh:
+    """Weld hairline boundary cracks lip-to-lip and return the repaired mesh.
+
+    Boolean re-cuts on organic surfaces leave micron-thin cracks: two
+    surface lips carry parallel boundary half-edges whose endpoints are
+    near-coincident but distinct vertices. ``fill_holes`` can't patch the
+    degenerate loop (the spanning triangle is ~zero-area) and a global
+    tolerance weld mints count-4 non-manifold edges by fusing unrelated
+    nearby geometry. Instead we pair only DIRECTED boundary half-edges
+    whose reversed twin exists within ``tol`` — (a->b) against (c->d)
+    where a~d and b~c — and weld exactly those endpoint pairs. Welding
+    turns the pair into one interior edge; the orphaned sliver triangle
+    collapses and its two neighbours pair up the same way, so a chain of
+    stitches walks a crack shut. Each pass is accepted only if it strictly
+    reduces boundary edges without adding non-manifold edges — otherwise
+    the mesh falls through to the heavier repair rungs unchanged."""
+    m = mesh.copy()
+    tol = float(tol) if tol is not None else float(np.clip(float(m.scale) * 1e-4, 1e-3, 0.1))
+    n_b0 = len(_boundary_rows(m))
+    if not n_b0:
+        return mesh
+    nm0 = _nonmanifold_count(m)
+    try:
+        tree = m.kdtree
+    except Exception:
+        return mesh
+
+    def _score(mm: trimesh.Trimesh) -> tuple[int, int]:
+        return len(_boundary_rows(mm)), _nonmanifold_count(mm)
+
+    cur = (n_b0, nm0)
+    for _ in range(max_passes):
+        rows = _boundary_rows(m)
+        if not len(rows):
+            break
+        bedges = np.asarray(m.edges[rows], dtype=np.int64)
+        verts = np.asarray(m.vertices, dtype=float)
+        incoming: dict[int, list[int]] = {}
+        for i in range(len(bedges)):
+            incoming.setdefault(int(bedges[i][1]), []).append(i)
+        pairs: set[tuple[int, int]] = set()
+        for i in range(len(bedges)):
+            a, b = int(bedges[i][0]), int(bedges[i][1])
+            if np.linalg.norm(verts[a] - verts[b]) <= tol:
+                # sub-tolerance boundary edge — collapse it outright
+                pairs.add((a, b))
+            for d in tree.query_ball_point(verts[a], tol):
+                for j in incoming.get(int(d), []):
+                    if j == i:
+                        continue
+                    c = int(bedges[j][0])
+                    if np.linalg.norm(verts[b] - verts[c]) <= tol:
+                        pairs.add((a, int(d)))
+                        pairs.add((b, c))
+        if not pairs:
+            break
+        remap = _native.collapse_remap(pairs, len(verts))
+        if remap is None:
+            # python fallback — identical union-find semantics
+            parent = np.arange(len(verts))
+
+            def _find(x: int, _p: np.ndarray = parent) -> int:
+                # _p pins the pass's union table (B023 — the closure outlives
+                # the loop variable)
+                while _p[x] != x:
+                    _p[x] = _p[_p[x]]
+                    x = _p[x]
+                return int(x)
+
+            for a, b in pairs:
+                ra, rb = _find(a), _find(b)
+                if ra != rb:
+                    parent[rb] = ra
+            remap = np.array([_find(i) for i in range(len(verts))], dtype=np.int64)
+        faces = remap[np.asarray(m.faces, dtype=np.int64)]
+        keep = (
+            (faces[:, 0] != faces[:, 1])
+            & (faces[:, 1] != faces[:, 2])
+            & (faces[:, 2] != faces[:, 0])
+        )
+        cand = trimesh.Trimesh(vertices=verts, faces=faces[keep], process=False)
+        cand.remove_unreferenced_vertices()
+        score = _score(cand)
+        # strictly fewer open edges, never more non-manifold — else keep
+        # what we had and let the next ladder rung try
+        if score[0] >= cur[0] or score[1] > cur[1]:
+            break
+        m, cur = cand, score
+        tree = m.kdtree
+    return m if cur != (n_b0, nm0) else mesh
+
+
+def _drop_nonmanifold_slivers(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Resolve boolean X-junction sheets via a manifold self-union.
+
+    A groove/bore cut can leave the cutter wall crossing the part wall —
+    edge shared by 4 faces (two intersecting sheets), topologically
+    consistent for manifold3d but failing trimesh.is_watertight's
+    exactly-two-faces rule. Sliver surgery (drop/weld/fill) oscillates:
+    fill_holes re-mints the flap on the shared edge. A self-union
+    re-evaluates the mesh through manifold3d's own tessellation, which
+    resolves the junctions natively — same volume, same bbox, no reskin
+    (groove-safe by construction). Adopted only when it actually seals."""
+    m = mesh.copy()
+    try:
+        groups = trimesh.grouping.group_rows(m.edges_sorted)
+        if not any(len(g) > 2 for g in groups):
+            return m
+        from manifold3d import Manifold, Mesh
+
+        mm = Manifold(
+            mesh=Mesh(
+                vert_properties=m.vertices.astype(np.float32),
+                tri_verts=m.faces.astype(np.uint32),
+            )
+        )
+        merged = (mm + mm).to_mesh()
+        cand = trimesh.Trimesh(
+            vertices=np.asarray(merged.vert_properties)[:, :3],
+            faces=np.asarray(merged.tri_verts),
+            process=False,
+        )
+        v0 = abs(float(m.volume))
+        if (
+            cand.is_watertight
+            and cand.is_winding_consistent
+            and (v0 < 1e-6 or abs(float(cand.volume) - v0) / v0 < 0.01)
+        ):
+            return cand
+    except Exception:
+        pass
+    return m
+
+
+def _ensure_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Repair ladder plus shell-parity: whatever rung fixed the mesh, the
+    result keeps nested cavity walls negatively wound."""
+    return orient_nested_shells(_ensure_watertight_impl(mesh))
+
+
+def _ensure_watertight_impl(mesh: trimesh.Trimesh) -> trimesh.Trimesh:  # noqa: C901
+    """Best-effort repair ladder before boolean/B-Rep conversion.
+
+    1) process + merge + fill_holes + normals (cheap, preserves detail)
+    2) local hairline-crack stitch (welds near-coincident boundary lips)
+    3) manifold3d roundtrip (enforces 2-manifold where possible)
+    4) pymeshlab alpha-wrap reskin (watertight/2-manifold by construction;
+       optional dep — skipped entirely when pymeshlab is not installed)
+    5) voxel remesh (always closed; lossy — last resort)
+    Returns the repaired mesh or raises ValueError when nothing works.
+    """
+    if mesh.is_watertight and mesh.is_winding_consistent:
+        return mesh
+    m = mesh.copy()
+    for fn in (
+        lambda: m.process(validate=True),
+        m.merge_vertices,
+        m.remove_unreferenced_vertices,
+        m.remove_infinite_values,
+        m.fix_normals,
+        lambda: trimesh.repair.fill_holes(m),
+    ):
+        with contextlib.suppress(Exception):
+            fn()
+    if m.is_watertight and m.is_winding_consistent:
+        return m
+    # micron-scale boundary cracks survive the loop above — stitch them
+    # lip-to-lip before paying for reskin/voxel rebuilds
+    m2 = _stitch_hairline_boundary(m)
+    if m2 is not m:
+        m = m2
+        with contextlib.suppress(Exception):
+            trimesh.repair.fill_holes(m)
+            m.fix_normals()
+        if m.is_watertight and m.is_winding_consistent:
+            return m
+    try:
+        from manifold3d import Manifold
+        from manifold3d import Mesh as MMesh
+
+        man = Manifold(
+            mesh=MMesh(
+                vert_properties=np.asarray(m.vertices, dtype=np.float32),
+                tri_verts=np.asarray(m.faces, dtype=np.uint32),
+            )
+        )
+        if int(man.status()) == 0:
+            om = man.to_mesh()
+            out = trimesh.Trimesh(
+                vertices=np.asarray(om.vert_properties)[:, :3],
+                faces=np.asarray(om.tri_verts),
+                process=False,
+            )
+            if len(out.faces) and out.is_watertight:
+                return out
+    except Exception:
+        pass
+    # pymeshlab alpha-wrap — see _alpha_wrap_repair; skipped entirely when
+    # pymeshlab is not installed so the voxel path below stays bit-identical
+    wrapped = _alpha_wrap_repair(m, len(mesh.faces))
+    if wrapped is not None:
+        return wrapped
+    try:
+        pitch = max(float(max(m.extents)) / 220.0, 0.15)
+        # bound the grid BEFORE allocating: voxelized().fill() builds a dense
+        # bool matrix (cells^3) — an OOM-kill here took the eval worker down
+        # twice. Refuse absurd grids instead of letting the kernel decide.
+        cells = float((np.asarray(m.extents, dtype=float) / pitch).max())
+        if cells > _VOXEL_REPAIR_MAX_CELLS:
+            raise ValueError(
+                f"voxel repair grid too large ({cells:.0f} cells/axis at "
+                f"{pitch:g} mm pitch) — decimate the mesh first"
+            )
+        vg = _voxelize(m, pitch).fill()
+        rem = vg.marching_cubes
+        rem.apply_transform(vg.transform)
+        # marching cubes can out-faces the input by an order of magnitude —
+        # cap the rebuild so the next boolean/op doesn't hit BOOLEAN_MAX_FACES
+        if len(rem.faces) > _REBUILD_MAX_FACES:
+            rem = decimate(rem, _REBUILD_MAX_FACES)
+        # sparse occupancy voxelises into dust — marching_cubes then returns
+        # hundreds of disconnected shells (observed: 40k-face knob -> 1801
+        # bodies). Keep the dominant body; dust is never the subject.
+        try:
+            bodies = rem.split(only_watertight=False)
+            if len(bodies) > 1:
+                group = _largest_group(_body_groups(bodies))
+                rem = group[0] if len(group) == 1 else trimesh.util.concatenate(group)
+        except Exception:
+            pass
+        if len(rem.faces) and rem.is_watertight:
+            rem = _rescale_to_envelope(rem, m)
+            log.warning(
+                "mesh.repair_voxel_fallback",
+                faces_in=len(mesh.faces),
+                faces_out=len(rem.faces),
+            )
+            return rem
+    except Exception:
+        pass
+    raise ValueError(
+        f"mesh could not be made watertight ({len(mesh.faces)} faces) — "
+        "run mesh_repair/mesh_keep_largest first"
+    )
+
+
+def _rescale_to_envelope(rem: trimesh.Trimesh, ref: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Fit ``rem`` onto ``ref``'s bbox (per-axis scale about the bbox centre).
+
+    Marching cubes quantizes the envelope outward (~a pitch per side) — the
+    pad absorbs a dim-gate fit loop's scale ops round after round (observed:
+    the identical y-fit factor applied twice without the measured bbox
+    moving). Rescaling the rebuild back to the input envelope keeps the
+    shape while restoring exact bounds.
+    """
+    try:
+        src_b = np.asarray(ref.bounds, dtype=float)
+        dst_b = np.asarray(rem.bounds, dtype=float)
+        src_span = src_b[1] - src_b[0]
+        dst_span = dst_b[1] - dst_b[0]
+        if not (np.all(src_span > 1e-6) and np.all(dst_span > 1e-6)):
+            return rem
+        factors = src_span / dst_span
+        c_src = (src_b[0] + src_b[1]) / 2.0
+        c_dst = (dst_b[0] + dst_b[1]) / 2.0
+        t = np.eye(4)
+        t[:3, :3] = np.diag(factors)
+        t[:3, 3] = c_src - factors * c_dst
+        rem.apply_transform(t)
+    except Exception:
+        pass
+    return rem
+
+
+def heal_seam_slivers(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Weld float32-quantized seam slivers left by manifold3d booleans.
+
+    manifold3d quantizes output vertices to float32, leaving near-degenerate
+    triangles (area < ~1e-4 mm²) along boolean seams; sewn into B-Reps they
+    become degenerate edges that stall OCC booleans for minutes. Welding
+    vertices at 1e-4 mm collapses the slivers to edges — the shell stays
+    closed, unlike naive face dropping which breaks watertightness and
+    triggers the lossy voxel-remesh fallback in _ensure_watertight.
+
+    Lossless-only: returns the ORIGINAL mesh unchanged when the healed mesh
+    is not a volume, loses >2% of its faces, or drifts >0.5% in volume.
+    """
+    m = mesh.copy()
+    m.merge_vertices(digits_vertex=4)
+    m.update_faces(m.nondegenerate_faces())
+    m.update_faces(m.unique_faces())
+    m.remove_unreferenced_vertices()
+    if not m.is_volume:
+        return mesh
+    if len(m.faces) < 0.98 * len(mesh.faces):
+        return mesh
+    try:
+        drift = abs(float(m.volume) - float(mesh.volume)) / max(abs(float(mesh.volume)), 1.0)
+        if drift > 0.005:
+            return mesh
+    except Exception:
+        return mesh
+    if len(m.faces) != len(mesh.faces):
+        log.debug(
+            "mesh.heal_seam_slivers",
+            faces_in=len(mesh.faces),
+            faces_out=len(m.faces),
+        )
+    return m
+
+
+def mesh_to_solid(mesh: trimesh.Trimesh, *, max_faces: int | None = None) -> Any:
+    """Convert a (watertight) trimesh into a build123d Solid via STL + sewing.
+
+    Returns a build123d Solid/Part. Raises on failure — caller decides the
+    fallback. Repairs non-watertight input (process/fill/manifold/voxel
+    ladder) and decimates first when the mesh exceeds `max_faces` (default
+    from runtime settings).
+    """
+    max_faces = max_faces or RuntimeSettings().mesh_max_faces_for_cad
+    # decimate BEFORE the watertight ladder — repair/voxel remesh memory
+    # scales with input faces and an uncapped input OOMs the executor
+    # (observed: 283k-face mesh -> >6GB -> cgroup kill)
+    if len(mesh.faces) > max_faces:
+        mesh = decimate(mesh, max_faces)
+    repaired = _ensure_watertight(mesh)
+    # a reskin/voxel rebuild that fills enclosed voids would ship a filled blob
+    # as STEP — refuse the drift and let the caller skip STEP instead
+    drift = _rebuild_drift(mesh, repaired)
+    if drift:
+        raise ValueError(
+            f"watertight rebuild diverged from input ({drift}) — "
+            "refusing to convert a materially changed mesh to B-rep"
+        )
+    mesh = repaired
+    # repair itself can inflate faces (voxel rebuild) — cap again before sewing
+    if len(mesh.faces) > max_faces:
+        mesh = decimate(mesh, max_faces)
+    if len(mesh.faces) > max_faces * 4:
+        raise ValueError(f"mesh too dense for B-rep conversion ({len(mesh.faces)} faces)")
+    # manifold booleans (keep-restore unions, hybrid ops) leave
+    # float32-quantized sliver triangles along seams — sewn into degenerate
+    # B-Rep edges they stall OCC booleans. Weld before sewing; the area_faces
+    # gate keeps clean meshes on the zero-overhead path.
+    if len(mesh.faces) and bool((mesh.area_faces < 1e-4).any()):
+        mesh = heal_seam_slivers(mesh)
+
+    from kiara.cad.mesh_boolean import sew_mesh, unify_checked
+
+    solid = sew_mesh(mesh)
+    # OCC sewing can produce an inside-out solid (negative volume) on
+    # meshes whose face winding trimesh counts as consistent — booleans on
+    # such a B-Rep silently return empty/no-op results. Normalise the
+    # orientation before anything consumes it.
+    try:
+        if float(solid.volume) < 0:
+            wrapped = solid.wrapped
+            wrapped.Reverse()
+            from build123d import Solid
+
+            solid = Solid(wrapped)
+    except Exception:
+        pass
+    # coplanar facets merge into real planar faces — downstream OCC booleans
+    # get cheaper and STEP exports carry analytic patches instead of facet
+    # noise; guarded: any drift keeps the sewn solid
+    return unify_checked(solid)
+
+
+# --------------------------------------------------------------------------- #
+# analysis                                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def mesh_analysis(mesh: trimesh.Trimesh) -> Analysis:
+    """Analysis equivalent for a trimesh (B-Rep fields get mesh equivalents)."""
+    b = np.asarray(mesh.bounds)
+    size = b[1] - b[0]
+    warnings: list[str] = []
+    watertight = bool(mesh.is_watertight and mesh.is_winding_consistent)
+    if not watertight:
+        warnings.append("mesh is not watertight / winding inconsistent")
+    try:
+        com = [round(float(c), 4) for c in mesh.center_mass]
+    except Exception:
+        com = []
+    try:
+        volume = abs(float(mesh.volume))
+    except Exception:
+        volume = 0.0
+    sits = abs(float(b[0][2])) < 0.01
+    cx, cy = float(b[:, 0].mean()), float(b[:, 1].mean())
+    centered = (
+        abs(cx) < max(size[0] * 0.01, 0.5) and abs(cy) < max(size[1] * 0.01, 0.5)
+        if max(size[0], size[1]) > 0
+        else False
+    )
+    if not sits:
+        warnings.append("part does not rest on the XY plane (min Z != 0)")
+    if not centered:
+        warnings.append("part is not centred at the origin in XY")
+    try:
+        surface_components = len(mesh.split(only_watertight=False))
+        solid_count = solid_body_count(mesh)
+    except Exception:
+        surface_components, solid_count = 0, 1
+    if solid_count != 1:
+        warnings.append(f"part has {solid_count} disconnected solids (expected 1)")
+    return Analysis(
+        bbox_min=[round(float(v), 4) for v in b[0]],
+        bbox_max=[round(float(v), 4) for v in b[1]],
+        bbox_size=[round(float(v), 4) for v in size],
+        volume=round(volume, 3),
+        surface_area=round(float(mesh.area), 3),
+        center_of_mass=com,
+        solid_count=solid_count,
+        surface_components=surface_components,
+        is_valid=watertight,
+        watertight=watertight,
+        face_count=len(mesh.faces),
+        edge_count=0,
+        cylindrical_faces=[],
+        sits_on_xy=sits,
+        centered_xy=centered,
+        warnings=warnings,
+        source="mesh",
+        triangle_count=len(mesh.faces),
+        roughness_deg=surface_roughness_deg(mesh),
+    )
+
+
+def flat_base_ratio(mesh: trimesh.Trimesh) -> float:
+    """Fraction of total surface that is downward-facing and near min Z."""
+    try:
+        normals = mesh.face_normals
+        centers = mesh.triangles_center
+        z0 = float(mesh.bounds[0][2])
+        mask = (normals[:, 2] < -0.9) & (centers[:, 2] < z0 + 0.3)
+        return float(mesh.area_faces[mask].sum()) / max(float(mesh.area), 1e-9)
+    except Exception:
+        return 0.0
+
+
+# --------------------------------------------------------------------------- #
+# plan-view orientation / footprint clip                                       #
+# --------------------------------------------------------------------------- #
+
+
+def _footprint_poly(mesh: trimesh.Trimesh, step_frac: float = 120.0):
+    """Shapely polygon of the XY footprint, centred at the origin.
+
+    Step is derived from the mesh extent so raw (unit-scale) generator meshes
+    and processed mm meshes both rasterise to a usable grid."""
+    from shapely.geometry import Polygon
+
+    from kiara.cad.mesh_features import detect_mesh_features
+
+    extent = max(float(mesh.extents.max()), 1e-9)
+    step = max(extent / step_frac, extent / 5000.0)
+    feats = detect_mesh_features(mesh, step_mm=step)
+    if len(feats.outline_mm) < 3:
+        return None
+    return Polygon(feats.outline_mm).buffer(0)
+
+
+def _norm_poly(poly, target_span: float):
+    """Translate centroid to origin and scale uniformly to `target_span`."""
+    from shapely.affinity import scale, translate
+
+    c = poly.centroid
+    p = translate(poly, -c.x, -c.y)
+    span = max(p.bounds[2] - p.bounds[0], p.bounds[3] - p.bounds[1], 1e-9)
+    return scale(p, xfact=target_span / span, yfact=target_span / span, origin=(0, 0))
+
+
+def outline_iou(a, b) -> float:
+    """IoU of two shapely polygons (0 when degenerate)."""
+    union = a.union(b).area
+    if union <= 0:
+        return 0.0
+    return float(a.intersection(b).area / union)
+
+
+def orient_by_plan_view(
+    mesh: trimesh.Trimesh,
+    outline_mm: list[list[float]],
+) -> tuple[AxisName, AxisName, bool, float] | None:
+    """Find the axis orientation whose XY footprint best matches the measured
+    plan-view outline. Tries all 24 (up, front) combos plus X-mirrors.
+
+    Returns (up, front, mirror_x, iou) for the best candidate with IoU >= 0.7,
+    else None — the caller falls back to the LLM orientation step."""
+    from shapely.geometry import Polygon
+
+    if len(outline_mm) < 3:
+        return None
+    img_poly = Polygon(outline_mm).buffer(0)
+    if img_poly.is_empty or img_poly.area <= 0:
+        return None
+    img_normed = _norm_poly(img_poly, 100.0)
+
+    best: tuple[float, AxisName, AxisName, bool] | None = None
+    for up in UP_CHOICES:
+        up_idx = "xyz".index(up[-1])
+        for front_idx in range(3):
+            if front_idx == up_idx:
+                continue
+            for front_sign in "+-":
+                front = cast(AxisName, f"{front_sign}{'xyz'[front_idx]}")
+                try:
+                    m = orient(mesh, up, front)
+                except Exception:
+                    continue
+                fp = _footprint_poly(m)
+                if fp is None or fp.is_empty:
+                    continue
+                normed = _norm_poly(fp, 100.0)
+                score = outline_iou(normed, img_normed)
+                mirrored = _norm_poly(
+                    _footprint_poly(orient(mesh, up, front, mirror_x=True)) or fp, 100.0
+                )
+                m_score = outline_iou(mirrored, img_normed)
+                for s_, mx in ((score, False), (m_score, True)):
+                    if best is None or s_ > best[0]:
+                        best = (s_, up, front, mx)
+    if best is None or best[0] < 0.7:
+        return None
+    score, up, front, mx = best
+    return up, front, mx, round(score, 3)
+
+
+def clip_to_outline(
+    mesh: trimesh.Trimesh, outline_mm: list[list[float]], *, margin_mm: float = 0.3
+) -> trimesh.Trimesh:
+    """Clip the mesh to a prism extruded from the measured plan-view outline.
+
+    Used when the generator's footprint drifts from the measured silhouette:
+    the XY outline (Frame coords, mm) becomes the hard boundary. Falls back to
+    the input mesh when the boolean fails or the result is not watertight."""
+    try:
+        from shapely.geometry import Polygon
+
+        poly = Polygon(outline_mm)
+        if poly.is_empty:
+            return mesh
+        # the outline lives in centred mm coords; the mesh is centred too —
+        # no translation needed, just the margin
+        poly = poly.buffer(margin_mm)
+        z0, z1 = float(mesh.bounds[0][2]), float(mesh.bounds[1][2])
+        prism = trimesh.creation.extrude_polygon(poly, height=(z1 - z0) + 2.0)
+        prism.apply_translation([0, 0, z0 - 1.0])
+        out = mesh.intersection(prism, engine="manifold")
+        if isinstance(out, trimesh.Trimesh) and out.is_watertight and not out.is_empty:
+            return out
+    except Exception:
+        pass
+    return mesh
+
+
+def export_stl(mesh: trimesh.Trimesh, path: Path | str, file_type: str = "stl") -> trimesh.Trimesh:
+    """Write an STL whose on-disk topology matches what was verified in memory.
+
+    trimesh exports STL in float32 — hairline vertices that are distinct in
+    float64 collapse on disk, and an in-memory watertight surface can split
+    open into boundary edges / non-manifold flaps (the r29 refine leak:
+    15 boundary edges at a pin-bore mouth that only existed post-write).
+    Quantizing to float32 precision FIRST turns the collapse into an
+    in-memory event we can merge and light-repair; the file then carries
+    exactly the checked topology. Heavy reskins stay in repair_mesh_file —
+    this helper never re-skins (that would erase sub-mm thread detail).
+
+    Returns the quantized mesh actually written.
+    """
+    q = mesh.copy()
+    q.vertices = np.asarray(q.vertices, dtype=np.float32).astype(np.float64)
+    q.merge_vertices()
+    q.remove_unreferenced_vertices()
+    area = q.area_faces
+    keep = np.isfinite(area) & (area > 1e-9)
+    if not bool(keep.all()):
+        q.update_faces(keep)
+        q.remove_unreferenced_vertices()
+    if not (q.is_watertight and q.is_winding_consistent):
+        with contextlib.suppress(Exception):
+            q.process(validate=True)
+        with contextlib.suppress(Exception):
+            trimesh.repair.fill_holes(q)
+            q.fix_normals()
+        if not (q.is_watertight and q.is_winding_consistent):
+            q = _stitch_hairline_boundary(q)
+            with contextlib.suppress(Exception):
+                trimesh.repair.fill_holes(q)
+                q.fix_normals()
+        if not (q.is_watertight and q.is_winding_consistent):
+            # quantizing re-mints X-junction sheets at coincidence vertices —
+            # resolve them via self-union like the in-memory postpass
+            with contextlib.suppress(Exception):
+                fixed = _drop_nonmanifold_slivers(q)
+                if fixed is not q:
+                    # union output re-tessellates in f64 — quantize again so
+                    # the on-disk file carries exactly the verified topology
+                    # instead of collapsing silently at write time
+                    fixed.vertices = fixed.vertices.astype(np.float32).astype(np.float64)
+                    fixed.merge_vertices()
+                    q = fixed
+    q.export(str(path), file_type=file_type)
+    return q
