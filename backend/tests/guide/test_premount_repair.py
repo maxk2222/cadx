@@ -250,6 +250,30 @@ def test_mate_blocking_root_walks_to_premount() -> None:
     assert dead is not None and dead["root"] == "pipe#9" and dead["kind"] == "unjoined"
 
 
+def test_mate_blocking_root_stops_at_movable_boundary() -> None:
+    """A chain jointed onto the anchor is repaired at its LAST MOVABLE
+    link — the host's pose is not the defect, the bind TO the wrong host
+    port is. Naming the anchor told the model to demolish it (observed:
+    request_repair(step=1) tore down the casing + 8 instances)."""
+    s = _sess([_part("casing"), _part("spigot"), _part("pipe")])
+    asm = s.state.assembly
+    asm.instances = [
+        _inst("casing", "casing#1", step=1),
+        _inst("spigot", "spigot#1", _txyz(0.0, -60.0, 300.0), step=5),
+        _inst("pipe", "pipe#1", _txyz(0.0, 480.0, 300.0), step=7),
+    ]
+    asm.joints = [
+        {"step": 5, "moving_instance": "spigot#1", "fixed_instance": "casing#1"},
+        {"step": 7, "moving_instance": "pipe#1", "fixed_instance": "spigot#1"},
+    ]
+    cause = _mate_blocking_root(s, "pipe#1")
+    assert cause is not None
+    assert cause["root"] == "spigot#1"
+    assert cause["kind"] == "anchor_binding"
+    assert cause["host"] == "casing#1"
+    assert cause["step"] == 5
+
+
 # --------------------------------------------------------------------- #
 # P3 — repair cascade
 # --------------------------------------------------------------------- #

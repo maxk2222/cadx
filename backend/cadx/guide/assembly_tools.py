@@ -1893,12 +1893,13 @@ async def unplace_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
 
 
 def _mate_blocking_root(s: GuideToolSession, iid: str) -> dict[str, Any] | None:
-    """Walk the joint graph upstream from ``iid`` to the chain's root —
-    the placed instance feeding this open mate that has no incoming joint
-    of its own (a premount) or is a dead-ended subtree. Returns
-    ``{root, step, kind}`` — the instance a repair must re-bind, not the
-    leaf the residual is measured on."""
+    """Walk the joint graph upstream from ``iid`` to the instance a repair
+    must re-bind. A premount's unjointed pose is the cause; a chain
+    jointed onto a host is repaired at the LAST MOVABLE link (its bind to
+    the host port is the defect), never at the host itself. Returns
+    ``{root, step, kind, host?}``."""
     insts = {i.instance_id or i.part_id: i for i in s.state.assembly.instances}
+    first = str(s.state.assembly.instances[0].instance_id) if s.state.assembly.instances else ""
     fixed_of: dict[str, str] = {}
     for j in s.state.assembly.joints:
         fixed_of.setdefault(str(j.get("moving_instance")), str(j.get("fixed_instance")))
@@ -1911,8 +1912,16 @@ def _mate_blocking_root(s: GuideToolSession, iid: str) -> dict[str, Any] | None:
         if getattr(inst, "premounted", False):
             return {"root": cur, "step": inst.placed_in_step, "kind": "premount"}
         nxt = fixed_of.get(cur)
-        if nxt is None:
-            kind = "anchor" if cur == (s.state.assembly.instances[0].instance_id if s.state.assembly.instances else "") else "unjoined"
+        nxt_inst = insts.get(nxt) if nxt else None
+        if nxt_inst is not None and getattr(nxt_inst, "premounted", False):
+            return {"root": nxt, "step": nxt_inst.placed_in_step, "kind": "premount"}
+        if nxt is None or nxt not in fixed_of:
+            if nxt_inst is not None:
+                # cur's upstream is an anchor/dead-end — its bind to that
+                # host is the repairable defect, not the host itself
+                kind = "anchor_binding" if nxt == first else "host_binding"
+                return {"root": cur, "step": inst.placed_in_step, "kind": kind, "host": nxt}
+            kind = "anchor" if cur == first else "unjoined"
             return {"root": cur, "step": inst.placed_in_step, "kind": kind}
         cur = nxt
     return None
