@@ -16,11 +16,13 @@ from typing import Any
 
 import numpy as np
 
+from cadx.guide.scene import Scene
 from cadx.guide.solver import (
     _unit,
     buried_instances,
     disconnected_instances,
     evaluate_mate,
+    routed_inside_instances,
     sibling_pairs,
     touch_pairs,
     world_bbox,
@@ -103,6 +105,25 @@ def _mat_to_quat(r: np.ndarray) -> list[float]:
 # --------------------------------------------------------------------------- #
 
 _GUIDE_VERSION = "1.0"
+
+
+def _emit_scene(insts: dict[str, Any], parts: dict[str, Any]) -> Scene:
+    """Placed meshes rebuilt for the emit-time interior probe — the
+    mission gate already verdicted this state; an emit-side rebuild keeps
+    evidence parity for downstream consumers. Fail-open: a mesh that
+    cannot load here simply yields no flags, same as the gate's
+    check_failed semantics."""
+    sc = Scene()
+    for iid, inst in insts.items():
+        part = parts.get(inst.part_id)
+        mp = getattr(part, "mesh_path", None) if part is not None else None
+        if inst.transform is None or not mp:
+            continue
+        try:
+            sc.add(iid, mp, inst.transform)
+        except Exception:
+            continue
+    return sc
 
 
 def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[str, Any]]:
@@ -214,6 +235,9 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[
     audit = {
         "buried_instances": buried_rows,
         "disconnected_instances": disconnected_rows,
+        "routed_inside": routed_inside_instances(
+            bboxes, joint_pairs, _emit_scene(insts, parts).mesh_interior_frac
+        ),
         "axis_profiles": axis_profiles,
         "sibling_pairs": sib_pairs,
     }

@@ -57,6 +57,9 @@ from cadx.guide.tolerances import (
     MISS_RESIDUAL_MAX_MM,
     PORT_EXPOSURE_MAX_MM,
     PREMOUNT_HOST_GAP_MM,
+    ROUTED_CROSS_PENALTY_MM,
+    ROUTED_MIDLINK_AABB,
+    ROUTED_PARTNER_OUT_FRAC,
     SHIFT_MEAN_MIN_MM,
     SHIFT_SPREAD_MM,
     SWALLOW_FRAC_GATE,
@@ -3377,6 +3380,7 @@ def _premount_chain_transform(
     ti: int,
     task: dict[str, Any],
     pid: str,
+    host_inst: Any = None,
 ) -> tuple[list[list[float]] | None, str]:
     """Back-solve a premounted fitting's pose through the chain it feeds.
 
@@ -3415,6 +3419,7 @@ def _premount_chain_transform(
     _s, prev_m, prev_port = best_b
     prev_part = bpart
     out_dir = np.asarray(_world_dir(tip_inst.transform, free_tip[0].axis))
+    mid_mats: list[tuple[str, np.ndarray]] = []
     for mpid in reversed(mids):
         nxt_link = _solve_mid_link(
             sess, mpid, prev_part, prev_m, prev_port, leg_axis, out_dir, snaps
@@ -3422,6 +3427,7 @@ def _premount_chain_transform(
         if nxt_link is None:
             return None, f"midlink_fail:{mpid}"
         _s, prev_m, prev_part, prev_port = nxt_link
+        mid_mats.append((mpid, prev_m))
     # final link: the premount part mates the lowest mid's free end
     best_a: tuple[float, np.ndarray] | None = None
     for ap in part.ports or []:
@@ -3441,7 +3447,40 @@ def _premount_chain_transform(
                 best_a = (s, np.asarray(c["transform"], dtype=float).reshape(4, 4))
     if best_a is None:
         return None, "final_mate_fail"
+    veto = _pass_through_veto(sess, part, best_a[1], mid_mats, host_inst)
+    if veto is not None:
+        return None, veto
     return best_a[1].tolist(), "ok"
+
+
+def _pass_through_veto(
+    sess: GuideToolSession,
+    part: Any,
+    premount_m: np.ndarray,
+    mid_mats: list[tuple[str, np.ndarray]],
+    host_inst: Any,
+) -> str | None:
+    """The chain's anchor end sits outside the host but an unwound mid
+    link lands inside the host body — the chain solves by routing
+    THROUGH the casing, not around it. A legit in-host chain (premount
+    inside too, e.g. an electronics bay) keeps the solve."""
+    host = sess.state.part_by_id(host_inst.part_id) if host_inst is not None else None
+    if host is None or not getattr(host_inst, "transform", None) or not mid_mats:
+        return None
+    hb = solver.world_bbox(
+        host.bbox_min, host.bbox_max, np.asarray(host_inst.transform, dtype=float)
+    )
+    pmn, pmx = solver.world_bbox(part.bbox_min, part.bbox_max, premount_m)
+    if solver.union_containment(pmn, pmx, [hb]) >= ROUTED_PARTNER_OUT_FRAC:
+        return None
+    for mpid, mm in mid_mats:
+        mp = sess.state.part_by_id(mpid)
+        if mp is None:
+            continue
+        mn, mx = solver.world_bbox(mp.bbox_min, mp.bbox_max, mm)
+        if solver.union_containment(mn, mx, [hb]) > ROUTED_MIDLINK_AABB:
+            return f"route_through_host:{mpid}"
+    return None
 
 
 def _solve_bridge_onto_tip(
@@ -3684,22 +3723,27 @@ def _premount_pose_pick(
     cand_fps: list[Any | None] = [
         fp for _s, fp in _score_host_ports(host_view, xy_axes, feed_perp)
     ][:6] or [None]
-    best: tuple[tuple[float, float, float], Any | None, list[list[float]], float | None] | None = None
+    best: tuple[tuple[float, float, float], Any | None, list[list[float]], float | None, float] | None = None
     for ci, fp in enumerate(cand_fps):
         tr_i, out_port_i = _premount_heuristic_tr(
             sess, task, part, host_view, fp, axes, tasks, ti
         )
-        res_i = (
-            _premount_closure_res(sess, tasks, ti, task, pid, tr_i, out_port_i, host_inst.part_id)
-            if tasks is not None
-            else None
-        )
+        res_i: float | None = None
+        cross_i = 0.0
+        if tasks is not None:
+            res_i, cross_i = _premount_closure_res(
+                sess, tasks, ti, task, pid, tr_i, out_port_i, host_inst.part_id
+            )
         key = (0.0 if res_i is not None else 1.0, res_i if res_i is not None else 0.0, float(ci))
         if best is None or key < best[0]:
-            best = (key, fp, tr_i, res_i)
+            best = (key, fp, tr_i, res_i, cross_i)
     if best is None:
         return None, [], None
-    _key, fp, tr, res = best
+    _key, fp, tr, res, cross = best
+    if cross > 0.0:
+        # every candidate still committed — but the evidence stays: the
+        # chosen pose's estimated chain route passes through the host body
+        task["_route_through_host"] = round(cross, 2)
     return fp, tr, res
 
 
@@ -3712,7 +3756,7 @@ def _premount_closure_res(
     tr: list[list[float]],
     out_port: Any | None,
     host_pid: str,
-) -> float | None:
+) -> tuple[float | None, float]:
     """Predicted gap between where the chain growing from pose ``tr``
     would end and the partner tip its declared bridge must reach — None
     when the task feeds no resolvable bridge chain (nothing to predict).
@@ -3720,21 +3764,21 @@ def _premount_closure_res(
     outward port — the same reach model ``_chain_height`` documents."""
     mids, bridge = _walk_premount_chain(sess, tasks, ti)
     if bridge is None or not mids:
-        return None
+        return None, 0.0
     bpid = _tpart(sess, bridge)
     chain_pids = {pid, *mids}
     if bpid:
         chain_pids.add(bpid)
     t2 = _bridge_second_mate(sess, bridge, chain_pids)
     if t2 is None:
-        return None
+        return None, 0.0
     sides = set(task.get("_ref_sides") or [])
     tip_inst, _how = _side_matched_instance(sess, tasks, t2, sides)
     if tip_inst is None or not tip_inst.transform:
-        return None
+        return None, 0.0
     free_tip = _free_cyl_ports(sess, tip_inst)
     if not free_tip:
-        return None
+        return None, 0.0
     tip_w = np.asarray(_world_pos(tip_inst.transform, free_tip[0].pos), dtype=float)
     start = (
         np.asarray(_world_pos(tr, out_port.pos), dtype=float)
@@ -3744,7 +3788,32 @@ def _premount_closure_res(
     leg_axis = np.array([0.0, 0.0, -1.0 if "d" in sides else 1.0])
     h = _chain_height(sess, tasks, ti, host_pid)
     chain_tip = start + leg_axis * h
-    return float(np.linalg.norm(chain_tip - tip_w))
+    res = float(np.linalg.norm(chain_tip - tip_w))
+    # route-through-host penalty: the straight estimate is coarse, so this
+    # only reorders near ties — a start→tip segment crossing the host's
+    # AABB means the predicted chain dives through the body it should
+    # clear. The mesh-level audit is the authoritative gate; here we
+    # merely prefer poses whose estimated route stays outside.
+    hpart = sess.state.part_by_id(host_pid)
+    host_boxes = [
+        solver.world_bbox(
+            hpart.bbox_min,
+            hpart.bbox_max,
+            np.asarray(inst.transform, dtype=float),
+        )
+        for inst in sess.state.assembly.instances
+        if hpart is not None and inst.part_id == host_pid and inst.transform
+    ]
+    if host_boxes:
+        t = np.linspace(0.0, 1.0, 32)[:, None]
+        seg = start[None, :] + (chain_tip - start)[None, :] * t
+        inside = np.zeros(len(seg), dtype=bool)
+        for hmn, hmx in host_boxes:
+            inside |= np.all(seg >= hmn[None, :], axis=1) & np.all(seg <= hmx[None, :], axis=1)
+        cross = float(inside.mean())
+        res += cross * ROUTED_CROSS_PENALTY_MM
+        return res, cross
+    return res, 0.0
 
 
 async def _premount_back_solve_place(
@@ -3759,7 +3828,7 @@ async def _premount_back_solve_place(
     """Chain back-solve commit path of ``_place_premount_ref``: the
     partner tip fixes the premount pose exactly when the chain resolves.
     Returns the placed instance id or ``None`` (reason on the task)."""
-    tr, bs_reason = _premount_chain_transform(sess, tasks, ti, task, pid)
+    tr, bs_reason = _premount_chain_transform(sess, tasks, ti, task, pid, host_inst)
     if tr is None:
         task["_back_solve_reason"] = bs_reason
         log.info(

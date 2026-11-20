@@ -35,6 +35,9 @@ from cadx.guide.tolerances import (
     NORMAL_DOT_GATE,
     OPENING_RADIUS_FACTOR,
     OPENING_RADIUS_MM,
+    ROUTED_HOST_AABB_MIN,
+    ROUTED_INSIDE_FRAC,
+    ROUTED_PARTNER_OUT_FRAC,
     SOCKET_FIT_MARGIN_MM,
     THROUGH_BORE_DEPTH_MM,
     UNRELATED_FAR_FRAC,
@@ -847,6 +850,78 @@ def buried_instances(
                 "buried_in": chain_host,
             })
     return buried
+
+
+def routed_inside_instances(
+    boxes: dict[str, tuple[np.ndarray, np.ndarray]],
+    joint_pairs: list[tuple[str, str]],
+    frac_fn: Any,
+) -> list[dict[str, Any]]:
+    """Instances routed THROUGH a foreign part's interior — the failure
+    boolean collision cannot see (the cavity is empty space) and the
+    AABB burial rule deliberately exempts (enclosure content is
+    legitimate). Measured on the actual mesh by ``frac_fn(host, probe)
+    -> fraction|None`` (``None`` = no evidence, never a violation).
+
+    A flag needs ALL THREE conditions — this is the discriminator that
+    keeps legitimate enclosure content clean:
+      the probe's surface is ≥ROUTED_INSIDE_FRAC inside the host mesh
+      AND the probe is not jointed to that host (joint = engagement)
+      AND ≥1 joint partner sits mostly OUTSIDE the host (pass-through
+      signature: content whose partners are all inside is content, not
+      routing)
+
+    The enclosure-host exemption is NOT consulted here on purpose: the
+    AABB union rule and this mesh-level pass-through test measure
+    different things — a chain through an open hood legitimately counts
+    as enclosure content by volume while still being misrouted.
+    """
+    partners: dict[str, set[str]] = {}
+    for a, b in joint_pairs:
+        partners.setdefault(a, set()).add(b)
+        partners.setdefault(b, set()).add(a)
+    out: list[dict[str, Any]] = []
+    for iid, (mn, mx) in boxes.items():
+        # host candidates: AABB already claims a chunk of the probe —
+        # keeps the mesh probe off pairs that cannot qualify anyway
+        hosts = [
+            k
+            for k, hb in boxes.items()
+            if k != iid
+            and k not in partners.get(iid, set())
+            and union_containment(mn, mx, [hb]) >= ROUTED_HOST_AABB_MIN
+        ]
+        if not hosts:
+            continue
+        host_boxes = [boxes[h] for h in hosts]
+        outside_partners = {
+            p
+            for p in partners.get(iid, set())
+            if p in boxes
+            and union_containment(boxes[p][0], boxes[p][1], host_boxes)
+            < ROUTED_PARTNER_OUT_FRAC
+        }
+        if not outside_partners:
+            continue
+        for h in hosts:
+            frac = frac_fn(h, iid)
+            if frac is None or frac < ROUTED_INSIDE_FRAC:
+                continue
+            out.append(
+                {
+                    "instance": iid,
+                    "host": h,
+                    "inside_frac": round(float(frac), 3),
+                    "outside_partner": sorted(outside_partners)[0],
+                    "issue": (
+                        f"{iid} routes {round(frac * 100)}% of its surface "
+                        f"through {h}'s interior without a joint to it — "
+                        f"a chain passing through a hollow host's cavity, "
+                        f"not mounted content"
+                    ),
+                }
+            )
+    return out
 
 
 def touch_pairs(

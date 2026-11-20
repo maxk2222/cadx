@@ -1927,6 +1927,30 @@ def _mate_blocking_root(s: GuideToolSession, iid: str) -> dict[str, Any] | None:
     return None
 
 
+def _routed_inside_audit(
+    s: GuideToolSession,
+    bboxes: dict[str, tuple[np.ndarray, np.ndarray]],
+    ikey: Any,
+) -> list[dict[str, Any]]:
+    """Pass-through detection + repair-boundary enrichment: removing the
+    flagged inside link itself changes nothing — the chain root that sent
+    it through the host is the instance a repair must re-place. Name it
+    in the evidence or the model repairs leaves forever."""
+    sc = _scene(s)
+    routed_inside = solver.routed_inside_instances(
+        bboxes,
+        _joint_pairs(s, ikey, bboxes),
+        lambda h, p: sc.mesh_interior_frac(h, p),
+    )
+    for r in routed_inside:
+        root = _mate_blocking_root(s, str(r["instance"]))
+        if root is not None:
+            r["boundary_root"] = root["root"]
+            r["root_step"] = root["step"]
+            r["issue"] += f" — repair boundary: re-place {root['root']} (step {root['step']})"
+    return routed_inside
+
+
 def _flagged_instances(s: GuideToolSession) -> set[str]:
     """Instances the geometry audit currently implicates — the surgical
     repair target set."""
@@ -1949,6 +1973,13 @@ def _flagged_instances(s: GuideToolSession) -> set[str]:
                         flagged.add(end)
             elif isinstance(it, str):
                 flagged.add(it)
+    # routed_inside: the inside link AND its boundary root (leaf repairs
+    # re-derive the same through-host route under the same chain root)
+    for r in audit.get("routed_inside") or []:
+        if r.get("instance"):
+            flagged.add(str(r["instance"]))
+        if r.get("boundary_root"):
+            flagged.add(str(r["boundary_root"]))
     # mate_blocking: chain roots measured unclosable by resolve_open_mates
     # (residual beyond pairing-error scale) — the leaf stays flagged too,
     # but repairing the leaf can never close a ~500mm upstream offset
@@ -2397,6 +2428,7 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         )
     buried = _buried_instances_audit(s, bboxes, _ikey)
     disconnected = _connectivity_audit(s, bboxes, _ikey)
+    routed_inside = _routed_inside_audit(s, bboxes, _ikey)
     # world-space dominant axis per instance — layout evidence for the
     # reviewer ("pipe vertical" is checkable against the manual, not
     # vibes): a 500mm pipe must not report horizontal when the figure
@@ -2491,6 +2523,7 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         "bad_joints": bad,
         "buried_instances": buried,
         "disconnected_instances": disconnected,
+        "routed_inside": routed_inside,
         "axis_profiles": axis_profiles,
         "sibling_pairs": sib_pairs,
         "approximated_joints": approx,
@@ -2872,6 +2905,7 @@ async def validate_assembly_geometry(s: GuideToolSession, a: dict[str, Any]) -> 
         and col["ok"]
         and not audit["buried_instances"]
         and not audit["disconnected_instances"]
+        and not audit["routed_inside"]
         and not audit["unfulfilled_mates"]
         and not audit["unexpected_mates"]
         and not audit["bridge_incomplete"],
@@ -2908,6 +2942,7 @@ def _done_guard(s: GuideToolSession) -> dict[str, Any] | None:
     probs += [f"{b['instance']} buried" for b in audit["buried_instances"][:4]]
     probs += [d["issue"] for d in audit["disconnected_instances"][:4]]
     probs += [f"collision {c}" for c in col["collisions"][:4]]
+    probs += [r["issue"] for r in audit["routed_inside"][:4]]
     # plan-vs-joints reconciliation gates too — a mate declared in the
     # plan that never materialized (or landed on an undeclared part, or
     # left a bridge leg open) means the SCENE does not match the MANUAL

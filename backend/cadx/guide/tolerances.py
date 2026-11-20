@@ -96,6 +96,32 @@ SWALLOW_FRAC_GATE = 0.6
 # spawned a meter away.
 PREMOUNT_HOST_GAP_MM = 100.0
 
+# Cavity-routing audit: a part passing THROUGH a foreign part's hollow
+# interior — never jointed to it, jointed to something outside it — is
+# physically wrong even though boolean collision sees nothing (the
+# cavity is empty space) and AABB burial exempts enclosures. Detected
+# by mesh ray-parity on a vertex subsample, so it also works on open
+# shells (covers, hoods) where watertight tests fail.
+#   ROUTED_INSIDE_FRAC   min fraction of sampled surface verts inside
+#                        the foreign mesh to count as routing
+#   ROUTED_HOST_AABB_MIN min AABB containment before the (costlier)
+#                        mesh test is even run
+#   ROUTED_SAMPLE_VERTS  vertex subsample cap for the parity probe
+#   ROUTED_PARTNER_OUT_FRAC  partner counts as "outside" below this
+#                        AABB containment in the same host
+#   ROUTED_MIDLINK_AABB  premount back-solve rejects a chain whose
+#                        unwound mid link lands this deep in the host box
+#   ROUTED_CROSS_PENALTY_MM  moderate ranking penalty per unit of
+#                        start→tip segment inside the host AABB — the
+#                        straight-line estimate must only reorder near
+#                        ties, a real bent path may legitimately clear
+ROUTED_INSIDE_FRAC = 0.35
+ROUTED_HOST_AABB_MIN = 0.25
+ROUTED_SAMPLE_VERTS = 400
+ROUTED_PARTNER_OUT_FRAC = 0.5
+ROUTED_MIDLINK_AABB = 0.3
+ROUTED_CROSS_PENALTY_MM = 150.0
+
 # Post-hoc joint verification tolerances are deliberately wider than the
 # solve-time gate: GAP_GATE * this factor (or the socket depth, capped)
 # still counts as seated after the fact.

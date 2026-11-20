@@ -89,6 +89,8 @@ def _audit_evidence(s: GuideToolSession) -> tuple[bool, list[str]]:
             )
         for d in audit.get("disconnected_instances", []):
             evidence.append(d["issue"])
+        for r in audit.get("routed_inside", []):
+            evidence.append(r["issue"])
         # declared mates that never materialized / joints that landed on
         # parts the sub-step did not declare — topology deviations the
         # geometry checks alone can't see (a clean mate on the wrong part)

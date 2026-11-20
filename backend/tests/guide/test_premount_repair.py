@@ -206,10 +206,10 @@ def test_premount_closure_res_discriminates_pose() -> None:
     out_port = adapt.ports[0]
     # chain reach: adapt half-span 10 + pipe link (200 - 15) = 195 above
     # the premount port — a pose at z~15 lands the tip on the partner
-    near = pa._premount_closure_res(
+    near, _c1 = pa._premount_closure_res(
         s, tasks, 0, tasks[0], "adapt", _txyz(0.0, 0.0, 15.0).tolist(), out_port, "host"
     )
-    far = pa._premount_closure_res(
+    far, _c2 = pa._premount_closure_res(
         s, tasks, 0, tasks[0], "adapt", _txyz(400.0, 0.0, 15.0).tolist(), out_port, "host"
     )
     assert near is not None and far is not None

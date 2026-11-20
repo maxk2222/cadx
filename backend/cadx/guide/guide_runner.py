@@ -129,6 +129,7 @@ def _tool_failures(result: Any, limit: int = 6) -> list[str]:
                     or res.get("unfulfilled_mates")
                     or res.get("unexpected_mates")
                     or res.get("disconnected_instances")
+                    or res.get("routed_inside")
                     or res.get("collisions")
                     or "ok=false"
                 )
@@ -148,6 +149,7 @@ def _tool_failures(result: Any, limit: int = 6) -> list[str]:
                 "unexpected_mates",
                 "buried_instances",
                 "disconnected_instances",
+                "routed_inside",
                 "issues",
                 "collisions",
             ):

@@ -215,3 +215,39 @@ class Scene:
                         }
                     )
         return {"ok": not hits, "collisions": hits}
+
+    def mesh_interior_frac(
+        self,
+        host_iid: str,
+        probe_iid: str,
+        sample_cap: int = 400,
+    ) -> float | None:
+        """Fraction of the probe's sampled surface verts inside the host's
+        mesh interior — ray-parity ``contains`` (rtree-ray batch), so it
+        also reads open shells (covers, hoods) where watertight tests
+        fail. Boolean collision cannot see this: a part inside a hollow
+        cavity intersects no solid.
+
+        Returns ``None`` when the probe cannot be evaluated (missing
+        instance, no verts, parity backend failure) — callers must treat
+        ``None`` as "no evidence", never as a violation."""
+        host = self._placed.get(host_iid)
+        probe = self._placed.get(probe_iid)
+        if host is None or probe is None or not len(probe.mesh.vertices):
+            return None
+        verts = probe.mesh.vertices
+        if len(verts) > sample_cap:
+            # deterministic stride sample — stable evidence across runs
+            idx = np.linspace(0, len(verts) - 1, sample_cap).astype(int)
+            verts = verts[idx]
+        try:
+            inside = host.mesh.contains(verts)
+        except Exception as exc:
+            log.warning(
+                "guide.interior.contains_failed",
+                host=host_iid,
+                probe=probe_iid,
+                err=str(exc),
+            )
+            return None
+        return float(np.asarray(inside, dtype=bool).sum()) / float(len(verts))
