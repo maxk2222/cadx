@@ -2166,8 +2166,9 @@ async def resolve_open_mates(s: GuideToolSession, a: dict[str, Any]) -> dict[str
     # upstream attribution: a residual beyond the pairing-error scale is a
     # binding error somewhere UP the chain — find the chain root so the
     # repair hits the cause, not the measured leaf (observed: leaf repair
-    # loops died on a ~425mm premount offset they could never close)
-    blocking: dict[str, str] = getattr(s, "_mate_blocking", None) or {}
+    # loops died on a ~425mm premount offset they could never close).
+    # Fresh measurement each call — a re-solved chain stops blocking.
+    blocking: dict[str, str] = {}
     s._mate_blocking = blocking
     for f in failed:
         res_mm = float(f.get("res_mm") or 0.0)
