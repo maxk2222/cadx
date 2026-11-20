@@ -11,12 +11,14 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from kiara.api.routers import (
+    app_updates,
     assets,
     catalog,
     chat,
     editor,
     files,
     guide,
+    guides,
     health,
     images,
     jobs,
@@ -27,6 +29,8 @@ from kiara.api.routers import (
     settings,
     sse,
     stats,
+    sync,
+    sync_assets,
     system,
     versions,
 )
@@ -60,6 +64,16 @@ async def lifespan(app: FastAPI):
     s.data_path.mkdir(parents=True, exist_ok=True)
     log.info("kiara.start", data_dir=s.data_dir)
     await _bootstrap_runtime_config()
+    # Guide-sync recovery sweeps (web-suite parity): drop stale upload attempts
+    # left by a crash mid-upload and clear orphaned store staging dirs. Both are
+    # bounded, idempotent and run off the event loop.
+    from fastapi.concurrency import run_in_threadpool
+
+    from kiara.guides import attempts
+    from kiara.guides.asset_store import sweep_asset_store
+
+    await run_in_threadpool(attempts.expire_attempts)
+    await run_in_threadpool(sweep_asset_store)
     # the MCP session manager's task group lives for the app's lifetime —
     # /mcp requests fail until it is running
     from kiara.mcpserver.http import mcp_lifespan
@@ -130,6 +144,20 @@ for r in (
     guide.router,
 ):
     app.include_router(r, prefix="/api")
+
+
+# Headset-sync surface (KIARA Web Suite parity): bare route paths mounted at
+# both /sync and /api/sync; sync_assets/app_updates carry their own full
+# paths; instructions CRUD is dual-mounted like the suite.
+app.include_router(sync.router, prefix="/sync")
+app.include_router(sync.router, prefix="/api/sync")
+app.include_router(sync_assets.router)
+app.include_router(app_updates.router)
+app.include_router(guides.router, prefix="/instructions")
+app.include_router(guides.router, prefix="/api/instructions")
+# suite parity: the settings surface is dual-mounted bare + /api
+# (the router carries its own /settings prefix — mount it unprefixed here)
+app.include_router(settings.router)
 
 
 # MCP server (Streamable HTTP) — ASGI dispatch instead of Mount (a Mount

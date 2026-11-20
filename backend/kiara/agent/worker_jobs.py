@@ -973,6 +973,26 @@ async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
             outcome.resume_state = {"guide_dir": str(guide_dir)}
         await _persist_outcome(db, job, version, outcome, emit)
         await _emit_masternotes_asset(db, version, guide_dir)
+        # publish the run's projection into the project's stable AR Guide
+        # document (web-suite parity): succeeded ships plainly, needs_review
+        # ships flagged [FEHLER], failed publishes nothing.
+        try:
+            from kiara.guides.publish import publish_run_dir
+
+            stored = await asyncio.to_thread(
+                publish_run_dir,
+                guide_dir,
+                project_id=version.project_id,
+                version_id=version.id,
+                status=outcome.status,
+            )
+            if stored is not None:
+                params = dict(version.params or {})
+                params["guide_id"] = str(stored.get("guideId") or "")
+                version.params = params
+                await db.commit()
+        except Exception:
+            log.exception("guide.publish_failed", version=str(version.id))
         return {"ok": outcome.status in ("succeeded", "needs_review"), "status": outcome.status}
 
 

@@ -26,6 +26,14 @@ class Settings(BaseSettings):
     # outer cap on one agent job (arq job_timeout); slow local models with
     # meshgen + many improve iterations legitimately exceed 1h
     agent_job_timeout_s: int = 14400
+    # AR-guide media upload caps + assimp conversion (KIARA web-suite parity)
+    media_max_image_bytes: int = 25 * 1024 * 1024
+    media_max_video_bytes: int = 500 * 1024 * 1024
+    media_max_audio_bytes: int = 100 * 1024 * 1024
+    media_max_cad_bytes: int = 100 * 1024 * 1024
+    media_max_image_pixels: int = 50_000_000
+    assimp_docker_image: str = "kiara-assimp:5.3.1"
+    assimp_timeout_seconds: int = 120
 
     @property
     def data_path(self) -> Path:

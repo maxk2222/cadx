@@ -50,6 +50,7 @@ from kiara.cad.mesh_ops import (
     mesh_to_solid,
     orient_nested_shells,
     rest_on_xy_center,
+    smooth_preserve,
 )
 from kiara.cad.mesh_ops import (
     load_mesh as load_triangle_mesh,

@@ -321,6 +321,37 @@ class ChatMessage(SQLModel, table=True):
     created_at: datetime = SField(default_factory=utcnow)
 
 
+class Guide(SQLModel, table=True):
+    """AR-guide document entity (KIARA web-suite GuideSchema parity).
+
+    `doc` holds the normalized guide JSON verbatim — the same dict shape the
+    suite writes to instruction.json — and stays the single source of truth.
+    The scalar columns are denormalized mirrors for listing, locking
+    (`SELECT … FOR UPDATE`) and the project↔guide publish coupling only; every
+    writer goes through `kiara/guides/mutation.py` which re-derives them from
+    `doc` on each write.
+    """
+
+    __tablename__ = "guide"
+
+    id: uuid.UUID = SField(default_factory=uuid.uuid4, primary_key=True)
+    guide_id: str = SField(index=True, unique=True)
+    database_id: str = SField(default="", index=True)
+    title: str = ""
+    doc: dict[str, Any] = SField(default_factory=dict, sa_column=Column(JSON))
+    version: int = 1
+    base_version: int | None = None
+    content_hash: str | None = None
+    format_version: int | None = None
+    # publish coupling: one AR guide per project (1:1), pointing at the guide
+    # run whose output was last published
+    project_id: uuid.UUID | None = SField(default=None, foreign_key="project.id", index=True)
+    source_version_id: uuid.UUID | None = None
+    source_file_id: str | None = None
+    created_at: datetime = SField(default_factory=utcnow)
+    updated_at: datetime = SField(default_factory=utcnow)
+
+
 class LibraryPart(SQLModel, table=True):
     """Project-independent reusable part: an uploaded STEP/STL body or a
     saved parametric code template from a successful version."""

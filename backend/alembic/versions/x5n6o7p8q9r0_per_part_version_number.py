@@ -22,14 +22,14 @@ depends_on = None
 def upgrade() -> None:
     op.execute(
         """
-        UPDATE version v
+        UPDATE version
         SET number = sub.rn
         FROM (
             SELECT id,
                    ROW_NUMBER() OVER (PARTITION BY part_id ORDER BY created_at, id) AS rn
             FROM version
         ) sub
-        WHERE v.id = sub.id AND v.number <> sub.rn
+        WHERE version.id = sub.id AND version.number <> sub.rn
         """
     )
 
