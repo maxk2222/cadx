@@ -1,4 +1,4 @@
-"""evalkit — standardized evaluation for the CADX pipeline.
+"""evalkit — standardized evaluation for the KIARA pipeline.
 
 Two drivers over one shared core (suite definitions, gates, metrics):
 

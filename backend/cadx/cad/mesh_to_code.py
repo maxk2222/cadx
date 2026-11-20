@@ -1,6 +1,6 @@
 """Emit contract-conformant build123d source for reconstructed parts.
 
-Everything emitted here follows the CADX sandbox contract (see
+Everything emitted here follows the KIARA sandbox contract (see
 ``cadx/agent/steps/codegen.py`` and ``cadx/cad/allowlist.py``): a top-level
 ``PARAMS`` dict literal, allowlist imports only (``build123d``, ``cadlib``)
 and a final ``result`` assignment. Coordinate contract: X = length,

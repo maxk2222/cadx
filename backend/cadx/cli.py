@@ -1,4 +1,4 @@
-"""CADX CLI: api server, workers, migrations, local agent run."""
+"""KIARA CLI: api server, workers, migrations, local agent run."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any
 
 import typer
 
-app = typer.Typer(add_completion=False, help="CADX")
+app = typer.Typer(add_completion=False, help="KIARA")
 
 
 @app.command()
@@ -55,7 +55,7 @@ def mcp(
     http: bool = typer.Option(False, "--http", help="Serve Streamable HTTP instead of stdio"),
     port: int = 8001,
 ) -> None:
-    """Run the CADX MCP server (stdio default; --http for Streamable HTTP)."""
+    """Run the KIARA MCP server (stdio default; --http for Streamable HTTP)."""
     if http:
         from contextlib import asynccontextmanager
 

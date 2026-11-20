@@ -135,7 +135,7 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def hf_token_forward(request: Request, call_next):
-        """The CADX backend forwards the configured Hugging Face token as a
+        """The KIARA backend forwards the configured Hugging Face token as a
         per-request header. Apply it process-wide so every huggingface_hub
         call — managed weight downloads, adapter loads, gen_worker children
         (they inherit os.environ at spawn) — can reach gated repos."""
@@ -164,7 +164,7 @@ def create_app(cfg: ServerConfig | None = None) -> FastAPI:
 
     @app.get("/v1/models", response_model=dict)
     async def models() -> dict:
-        # dual-shape: internal `models[]` (CADX management view) plus the
+        # dual-shape: internal `models[]` (KIARA management view) plus the
         # OpenAI `data[]` listing so stock SDKs/clients can discover the
         # served llm + image model ids
         listing = {"models": [m.model_dump() for m in registry.models()]}

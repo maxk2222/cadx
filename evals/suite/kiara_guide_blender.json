@@ -2,7 +2,7 @@
  "name": "kiara_guide_blender",
  "project": "eval:kiara-guide-blender",
  "difficulty": 5,
- "description": "Anleitungsbuilder blender-mode — PDF only, zero CAD uploads. A free Blender-MCP agent reconstructs every part, places tagged instances, renders steps; CADX gates on the read-back scene. Requires Blender running with the MCP addon.",
+ "description": "Anleitungsbuilder blender-mode — PDF only, zero CAD uploads. A free Blender-MCP agent reconstructs every part, places tagged instances, renders steps; KIARA gates on the read-back scene. Requires Blender running with the MCP addon.",
  "stages": [
   {
    "id": "guide",

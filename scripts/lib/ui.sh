@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CADX shared UI toolkit for setup/start/status/stop scripts.
+# KIARA shared UI toolkit for setup/start/status/stop scripts.
 # bash 3.2 compatible (macOS system bash) — no assoc arrays, no wait -n.
 #
 # Usage:

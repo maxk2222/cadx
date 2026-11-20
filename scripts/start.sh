@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CADX launcher — runs setup if needed, then starts the full stack
+# KIARA launcher — runs setup if needed, then starts the full stack
 # (docker by default, --dev for native) plus the mesh-server natively.
 #
 # Usage:
@@ -48,7 +48,7 @@ mkdir -p run logs
 # run/mode records how the stack was started — update.sh restarts the same way
 echo "$([ "$DEV" = 1 ] && echo dev || echo docker)" > run/mode
 
-say "CADX start — tier: $TIER · mode: $([ "$DEV" = 1 ] && echo dev || echo docker)"
+say "KIARA start — tier: $TIER · mode: $([ "$DEV" = 1 ] && echo dev || echo docker)"
 info "log: $LOG_FILE"
 
 # ---------- 1. setup check ----------

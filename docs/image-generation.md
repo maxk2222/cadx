@@ -1,6 +1,6 @@
 # Local image generation
 
-CADX can synthesise images with a **local text-to-image model** hosted on the
+KIARA can synthesise images with a **local text-to-image model** hosted on the
 same `mesh_server` sidecar as the image→3D generators — or with an external
 **OpenAI-compatible images API** when `image_backend="openai"`
 (`image_openai_model` — `gpt-image-1` / `dall-e-3` / `dall-e-2`;

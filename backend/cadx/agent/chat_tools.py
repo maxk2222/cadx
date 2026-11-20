@@ -1,4 +1,4 @@
-"""Chat-agent tool session — the full CADX capability set as LLM tools.
+"""Chat-agent tool session — the full KIARA capability set as LLM tools.
 
 `ChatToolSession` subclasses the generic `ToolSession` so the catalog /
 library / image-inspection handlers are reused verbatim; chat adds

@@ -991,7 +991,7 @@ def make_llm(
         model = runtime.llm_sidecar_model.strip() or None
         # forward the HF token so lazy downloads of gated model repos work
         # (the sidecar middleware applies it as HF_TOKEN for the process)
-        # X-Mesh-Internal marks CADX-originated traffic — the sidecar queue
+        # X-Mesh-Internal marks KIARA-originated traffic — the sidecar queue
         # classifies it under its configured internal priority
         headers = {"X-Mesh-Internal": "1"}
         if tok := runtime.hf_token.get_secret_value():

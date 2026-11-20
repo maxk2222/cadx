@@ -2,7 +2,7 @@
 
 Generation modes: `cad | mesh | hybrid | topopt | auto`.
 
-CADX can generate geometry in three ways and lets a planner pick:
+KIARA can generate geometry in three ways and lets a planner pick:
 
 | mode | what runs | output |
 |------|-----------|--------|

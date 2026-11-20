@@ -136,7 +136,7 @@ verifies physical quality before review.
 
 **Units**: 1 Blender unit = 1 mm (`blender_exec` enforces
 `scale_length=0.001` so glTF export + `normalize_mesh_units` compose
-exactly). Blender is Z-up like CADX — `matrix_world` IS the mm transform.
+exactly). Blender is Z-up like KIARA — `matrix_world` IS the mm transform.
 
 **Networking/files**: worker→`host.docker.internal:9876` (compose sets
 `extra_hosts`; env `CADX_BLENDER_HOST`/`CADX_BLENDER_PORT`). Blender
@@ -169,7 +169,7 @@ Extra artifacts in blender mode: `guide.blend`, `assembly_blender.glb`,
 - **Missing parts**: `generate_missing_part` → `spawn_generate` → normal
   sandboxed codegen job; parked child questions surface to the agent so
   it can relay them via `ask_user`.
-- **Units/frame**: CADX mm/Z-up RH → Unity m/Y-up LH via
+- **Units/frame**: KIARA mm/Z-up RH → Unity m/Y-up LH via
   `(x, z, y)·0.001` and `R_u = M·R·Mᵀ` (det −1 map) — golden-tested in
   `tests/guide/test_unity.py`.
 - **Annotations**: per-step `arrows` carry `origin`/`direction` where

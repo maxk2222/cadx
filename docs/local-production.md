@@ -1,6 +1,6 @@
 # Local production — resilience & operations
 
-How CADX stays alive on a single host: supervision, queue recovery, backups,
+How KIARA stays alive on a single host: supervision, queue recovery, backups,
 disk hygiene, health semantics. For the update flow itself see `updating.md`.
 
 ## Service topology

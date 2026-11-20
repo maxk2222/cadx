@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CADX shared installer helpers for mesh_server/scripts/install_*.sh —
+# KIARA shared installer helpers for mesh_server/scripts/install_*.sh —
 # deduplicates the venv/pip/uv/clone/HF-download boilerplate.
 #
 # Usage (from a mesh_server install script):

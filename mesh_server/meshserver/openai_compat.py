@@ -10,7 +10,7 @@ back to the queued job.
 
 `/v1/embeddings` lives in `llm_proxy.py` (shares the resolve→admit→load
 path); `/v1/models` merges `openai_models()` here with the internal
-listing (dual-shape: OpenAI clients read `data[]`, CADX reads `models[]`).
+listing (dual-shape: OpenAI clients read `data[]`, KIARA reads `models[]`).
 """
 
 from __future__ import annotations

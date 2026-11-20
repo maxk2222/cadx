@@ -1,9 +1,9 @@
 """VAST-AI TripoSG-scribble — scribble/sketch + text conditioned image->mesh.
 
 Unlike plain TripoSG, the scribble variant takes a line/silhouette sketch and
-a text prompt, which makes it a strong fit for CADX flat parts: the measured
+a text prompt, which makes it a strong fit for KIARA flat parts: the measured
 plan-view outline is rendered as a filled silhouette and `GenOpts.subject`
-carries the part description. The CADX worker sends the silhouette as the
+carries the part description. The KIARA worker sends the silhouette as the
 first image with role 'scribble'.
 
 Install (same package as TripoSG):

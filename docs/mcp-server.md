@@ -1,6 +1,6 @@
 # MCP server
 
-CADX ships a [Model Context Protocol](https://modelcontextprotocol.io) server
+KIARA ships a [Model Context Protocol](https://modelcontextprotocol.io) server
 so external agents (Claude Code, Devin, your own orchestrator) can drive the
 deterministic parts of the pipeline: verify and execute build123d code in the
 sandbox, persist versions, run mesh/FEM/topology jobs, manage assets and query
@@ -15,16 +15,16 @@ not on the wire, and `restart_job` refuses LLM-generated (`generate`/`edit`)
 versions because those re-run through `run_agent_job`.
 
 The contract inverts the internal flow: **the external agent writes the
-build123d code itself**. CADX supplies the conditioning documents
+build123d code itself**. KIARA supplies the conditioning documents
 (`codegen_contract`), static verification (`check_code`), sandboxed execution
 (`execute_cad`) and the same persistence/job machinery the REST API uses.
 
 ## Transports
 
-### stdio — `cadx mcp`
+### stdio — `kiara mcp`
 
 ```bash
-cd backend && uv run cadx mcp
+cd backend && uv run kiara mcp
 ```
 
 Serves MCP on stdin/stdout — the standard local transport. Point your client
@@ -38,7 +38,7 @@ The main API mounts the server at **`/mcp`** (POST for JSON-RPC, GET for the
 SSE stream, DELETE for session teardown). It also runs standalone:
 
 ```bash
-uv run cadx mcp --http --port 8001   # serves 127.0.0.1:8001/mcp
+uv run kiara mcp --http --port 8001   # serves 127.0.0.1:8001/mcp
 ```
 
 **Auth:** set `CADX_MCP_TOKEN` to gate the endpoint behind
@@ -49,7 +49,7 @@ project and spawned-job tracking across requests within one MCP session.
 ```mermaid
 flowchart LR
     C["MCP client<br/>(external agent writes<br/>build123d code itself)"]
-    C -->|"stdio"| CLI["cadx mcp"]
+    C -->|"stdio"| CLI["kiara mcp"]
     C -->|"POST /mcp<br/>Bearer token?"| HTTP["api :8000<br/>Streamable HTTP"]
     CLI --> S["McpToolSession<br/>ctx.llm = None"]
     HTTP --> S

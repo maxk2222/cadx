@@ -327,7 +327,7 @@ async def test_llm_models_split_registry_attrs(upstream):
 
 async def test_llm_models_ctx_overlay_wins(upstream):
     """The runtime overlay (PUT /v1/config llm_ctx=…) must beat both the
-    env value and the catalog max in the served listing — CADX budgets
+    env value and the catalog max in the served listing — KIARA budgets
     prompts from exactly this number."""
     from types import SimpleNamespace
 

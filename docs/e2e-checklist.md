@@ -146,7 +146,7 @@ code and FEM/TopOpt actually run in.
 
 ## Eval benchmarks
 
-`cadx eval` runs scripted FakeLLM benchmarks through the real agent loop.
+`kiara eval` runs scripted FakeLLM benchmarks through the real agent loop.
 TopOpt coverage: `topopt_mma_minmax_scripted` (solver=mma, case_objective=
 minmax, displacement cap, penal_init, min_gap_mm) and
 `topopt_filters_scripted` (heaviside, self_supporting, multires,

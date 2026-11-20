@@ -13,7 +13,7 @@ Scheduling (``_LlmQueue``) — score =
 already-loaded/loading model batch together (no model thrash), priority
 steps earn a head start, and the growing ``waited`` term keeps every
 request starvation-free. Priority is classified server-side
-(``auth.request_priority``): internal callers (CADX backend /
+(``auth.request_priority``): internal callers (KIARA backend /
 ``X-Mesh-Internal`` / loopback) read ``llm_prio_internal``, external LAN
 clients read ``llm_prio_external``.
 

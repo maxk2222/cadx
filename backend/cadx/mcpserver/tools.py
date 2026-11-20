@@ -1,4 +1,4 @@
-"""MCP tool catalog: schemas + handlers for the LLM-free CADX capability set.
+"""MCP tool catalog: schemas + handlers for the LLM-free KIARA capability set.
 
 `MCP_TOOL_SCHEMAS` are `_fn()`-format dicts (same shape as the agent tool
 specs) — `cadx.mcpserver.server` exposes them to MCP clients as tools 1:1.
@@ -10,7 +10,7 @@ dispatch, so a handler registered here shadows any same-named session tool.
 and image budget); re-declaring them here would duplicate the wire names.
 
 STRICTLY LLM-FREE: no handler may touch `session.ctx.llm` or spawn an agent
-(`run_agent_job`) job. The external agent writes build123d code itself; CADX
+(`run_agent_job`) job. The external agent writes build123d code itself; KIARA
 only verifies (`check_code`, `execute_cad`, `audit_params`), persists
 (`submit_code`), runs deterministic jobs (mesh gen/edit, FEM, feature edits)
 and serves assets/catalog data.
@@ -109,7 +109,7 @@ MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
     # -- code loop ------------------------------------------------------- #
     _fn(
         "codegen_contract",
-        "Read the CADX code contract and reference docs the sandbox enforces: "
+        "Read the KIARA code contract and reference docs the sandbox enforces: "
         "coordinate frame (X=length, Y=width, Z=height, part on XY centred at "
         "origin, mm), the PARAMS dict + `result` assignment rules, allowed "
         "imports (build123d, bd_warehouse.*, cadlib, math, numpy), the "
@@ -354,7 +354,7 @@ MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
         "STEP/STL/DXF become reference assets loadable via load_reference() "
         "in generated code. Required before mesh_generate / img2img tools.",
         {
-            "path": _s("absolute path of a file readable by the CADX host"),
+            "path": _s("absolute path of a file readable by the KIARA host"),
             "data_base64": _s("base64-encoded file bytes (XOR with path)"),
             "kind": {
                 "type": "string",
@@ -386,7 +386,7 @@ MCP_TOOL_SCHEMAS: list[dict[str, Any]] = [
     # -- system ----------------------------------------------------------- #
     _fn(
         "settings_get",
-        "Read the CADX runtime settings (models, budgets, timeouts, mesh/"
+        "Read the KIARA runtime settings (models, budgets, timeouts, mesh/"
         "image sidecar config). Secrets are never included — llm_api_key "
         "only appears as the boolean llm_api_key_set.",
         {},

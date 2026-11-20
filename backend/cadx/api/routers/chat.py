@@ -1,4 +1,4 @@
-"""Chat endpoints — persistent conversations with the CADX agent.
+"""Chat endpoints — persistent conversations with the KIARA agent.
 
 Flow: the client POSTs a user message (persisted immediately, `pending`),
 then the agent worker is enqueued (idempotent — an atomic claim in

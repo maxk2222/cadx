@@ -1,10 +1,10 @@
-<p align="center"><img src="../frontend/public/brand/hero.png" width="100%" alt="CADX"></p>
+<p align="center"><img src="../frontend/public/brand/hero.png" width="100%" alt="KIARA"></p>
 
 <h2 align="center">Documentation</h2>
 
 <p align="center">
   <i>Text &amp; photos in — verified, parametric, manufacturing-ready CAD out.</i><br>
-  CADX turns reference images and a text prompt into parametric, verified 3D
+  KIARA turns reference images and a text prompt into parametric, verified 3D
   models for 3D printing and CNC. This index groups the documentation by
   audience — start with <a href="getting-started.md">Getting started</a> if you
   are new.
@@ -19,7 +19,7 @@
 | [Updating](updating.md) | Self-update from GitHub: `make update` / the Settings button, channels, rollback, the updater daemon |
 | [Troubleshooting](troubleshooting.md) | Diagnostics (`--doctor`, `status.sh`) and common failures |
 
-## Using CADX
+## Using KIARA
 
 | Doc | Contents |
 |-----|----------|

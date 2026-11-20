@@ -59,7 +59,7 @@ callers.
 
 ```json
 {
-  "models": [MeshModelInfo],   // internal management view (CADX)
+  "models": [MeshModelInfo],   // internal management view (KIARA)
   "data": [                   // OpenAI listing — stock SDK discovery
     {"id": "…", "object": "model", "created": 0, "owned_by": "meshserver",
      "supports_vision": true, "supports_tools": true, "context_len": 262144,
@@ -314,7 +314,7 @@ batch lane keeps. `/v1/queue` shows the interactive lane
 **Caller priority** — one global policy for the llm queue and the job
 lane (`GenParams.priority`). Classification (`auth.request_priority`):
 
-- *internal* — `X-Mesh-Internal: 1` (stamped by the CADX backend) or any
+- *internal* — `X-Mesh-Internal: 1` (stamped by the KIARA backend) or any
   loopback peer → `llm_prio_internal` (default 0).
 - *external* — authenticated LAN clients → `llm_prio_external`
   (default 10).
@@ -409,7 +409,7 @@ CUDA/ROCm/other hosts. All entries are natively multimodal
 | `qwen3.8-flash-next-mlx` (darwin only) | `mlx-community/Qwen3.8-Flash-Next-4bit` (≥128 GB RAM) | ~112 GB |
 
 Image parts arrive as OpenAI `image_url` data-URIs; there is no model-side
-image-count limit — context is the bound (the CADX worker caps at 8
+image-count limit — context is the bound (the KIARA worker caps at 8
 images/message anyway). User-registered repos are added via
 `POST /v1/models/register` and persisted in
 `model_dir/custom_models.json`. Adapter subprocess logs land in
@@ -491,7 +491,7 @@ LAN exposure: `scripts/start.sh --lan` (or `MESH_LAN=1` + `MESH_API_KEYS`
 in `.env`) binds `0.0.0.0:8765`; **any non-loopback bind without an API
 key refuses to start** — the Bearer middleware covers every endpoint but
 `/v1/health` + `OPTIONS`. Keep the port firewalled to the LAN segment,
-rotate keys when sharing the box, and point CADX at it via
+rotate keys when sharing the box, and point KIARA at it via
 `base_url=http://<host>:8765/v1`.
 
 #### Media-part gating
@@ -686,7 +686,7 @@ In addition to the existing `MESH_*` knobs (see
 ## Semantics
 
 - Meshes are cleaned on the server (floaters, normals, holes) but **not**
-  scaled/oriented — CADX's `cad/mesh_ops.py` owns the frame contract.
+  scaled/oriented — KIARA's `cad/mesh_ops.py` owns the frame contract.
 - Results expire after `MESH_JOB_TTL_S` (default 1 h).
 - The client cancels the server job whenever its own agent job is cancelled.
 

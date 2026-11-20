@@ -1,4 +1,4 @@
-/** Thin Recharts wrappers with CADX dark-theme defaults — keeps StatsPage lean.
+/** Thin Recharts wrappers with KIARA dark-theme defaults — keeps StatsPage lean.
  *  Axis ticks are locale-aware: pass `xTick`/`yTick` formatters; the Y axis
  *  defaults to compact notation (150000 → "150K") with an explicit width so
  *  long labels never get clipped. */

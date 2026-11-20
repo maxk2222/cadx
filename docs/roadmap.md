@@ -44,6 +44,6 @@ have their own docs — this file is only for orientation and ideas.
 
 ## Explicit non-goals
 
-- Multi-user operation / auth — CADX is a local single-user system.
+- Multi-user operation / auth — KIARA is a local single-user system.
 - Certification-grade structural analysis — FEM/TopOpt is design feedback
   only; see the limits in [fem-topopt.md](fem-topopt.md).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CADX updater — pulls the repo, re-runs the installer, restarts the stack.
+# KIARA updater — pulls the repo, re-runs the installer, restarts the stack.
 # Works in docker mode (default) and native dev mode; the mode is read from
 # run/mode (written by start.sh) with a pidfile fallback.
 #
@@ -433,7 +433,7 @@ do_rollback() {
 }
 
 # ---------- main ----------
-say "CADX update"
+say "KIARA update"
 info "log: $LOG_FILE"
 mkdir -p run logs
 

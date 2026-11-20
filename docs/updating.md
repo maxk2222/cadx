@@ -1,6 +1,6 @@
-# Updating CADX
+# Updating KIARA
 
-CADX can update itself end-to-end: fetch from GitHub, reinstall dependencies,
+KIARA can update itself end-to-end: fetch from GitHub, reinstall dependencies,
 rebuild docker images, run migrations and restart the whole stack — from the
 terminal or from the web GUI (**Settings → System → Software update**).
 

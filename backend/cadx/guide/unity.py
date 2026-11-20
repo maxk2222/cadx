@@ -1,6 +1,6 @@
 """Unity export — unity_guide.json + coordinate conversion.
 
-CADX frame: mm, Z-up, right-handed (x=len, y=width, z=height).
+KIARA frame: mm, Z-up, right-handed (x=len, y=width, z=height).
 Unity frame: m, Y-up, left-handed (x=right, y=up, z=forward).
 
 The mapping p_u = (x, z, y)·0.001 applies the spatial reflection

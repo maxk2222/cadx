@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Harvest verified CADX eval runs into SFT pairs (axolotl messages JSONL).
+"""Harvest verified KIARA eval runs into SFT pairs (axolotl messages JSONL).
 
 Reads per-run `result.json` summaries under the eval output root
 (`$CADX_EVAL_OUT` / `--root`, default <repo>/evals/results), follows each

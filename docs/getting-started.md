@@ -1,6 +1,6 @@
 # Getting started
 
-Install and run CADX locally. The fastest path is the one-command setup, which
+Install and run KIARA locally. The fastest path is the one-command setup, which
 detects your GPU tier, installs the matching mesh/image adapters and starts the
 whole stack.
 
@@ -10,7 +10,7 @@ whole stack.
 - Python ≥ 3.11 and [`uv`](https://docs.astral.sh/uv/) (`python3 -m pip install uv`)
 - Node.js ≥ 20 (native dev mode only)
 - Optional, for `mesh`/`hybrid` modes: Apple Silicon (MLX) or an NVIDIA GPU
-  (CUDA) — without either, CADX runs in CAD-only mode or with a deterministic
+  (CUDA) — without either, KIARA runs in CAD-only mode or with a deterministic
   fake adapter for testing
 
 ## One-command start
@@ -168,18 +168,18 @@ The CLI exercises the pipeline in-process — no queues or database needed:
 
 ```bash
 cd backend
-../.venv/bin/uv run cadx run "a 40x20x10 block with 1.5mm edge fillets" --fake   # no LLM needed
-../.venv/bin/uv run cadx exec ../path/to/model.py                               # executor pipeline only
-../.venv/bin/uv run cadx eval                                                   # scripted benchmarks
-../.venv/bin/uv run cadx mesh-gen photo.png -o out.glb                          # direct mesh-server call
-../.venv/bin/uv run cadx mesh-process model.glb --dims 80x40x30                 # mesh post-pipeline only
-../.venv/bin/uv run cadx mesh-health                                          # mesh-server reachability
-../.venv/bin/uv run cadx mcp                                                  # MCP server, stdio (--http for HTTP)
+../.venv/bin/uv run kiara run "a 40x20x10 block with 1.5mm edge fillets" --fake   # no LLM needed
+../.venv/bin/uv run kiara exec ../path/to/model.py                               # executor pipeline only
+../.venv/bin/uv run kiara eval                                                   # scripted benchmarks
+../.venv/bin/uv run kiara mesh-gen photo.png -o out.glb                          # direct mesh-server call
+../.venv/bin/uv run kiara mesh-process model.glb --dims 80x40x30                 # mesh post-pipeline only
+../.venv/bin/uv run kiara mesh-health                                          # mesh-server reachability
+../.venv/bin/uv run kiara mcp                                                  # MCP server, stdio (--http for HTTP)
 ```
 
 ## Upgrading from `cadagent`
 
-The system was renamed to **CADX** (package `cadx`, CLI `cadx`, compose project
+The system was renamed to **KIARA** (package `cadx`, CLI `kiara`, compose project
 `cadx`). Existing installs that still use `cadagent_*` docker volumes can keep
 the old credentials via `POSTGRES_USER=cadagent POSTGRES_PASSWORD=cadagent
 POSTGRES_DB=cadagent` in `.env` (docker-compose overrides only).

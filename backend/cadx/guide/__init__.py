@@ -1,6 +1,6 @@
 """Anleitungsbuilder — PDF instruction manual -> Unity AR guide pipeline.
 
-Ported from KIARA's ar_guide_agent_v4 architecture into the CADX
+Ported from KIARA's ar_guide_agent_v4 architecture into the KIARA
 chat/job/tool-use stack (see docs/anleitungsbuilder-masterplan.md).
 
 Layout:

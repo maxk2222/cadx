@@ -1,4 +1,4 @@
-"""Project-level tool session — the deterministic CADX capability set.
+"""Project-level tool session — the deterministic KIARA capability set.
 
 `ProjectToolSession` subclasses the generic `ToolSession` so the catalog /
 library / image-inspection handlers are reused verbatim; it adds

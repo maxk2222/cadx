@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# CADX updater daemon — tiny stdlib-only HTTP wrapper around scripts/update.sh.
+# KIARA updater daemon — tiny stdlib-only HTTP wrapper around scripts/update.sh.
 # Runs on the HOST (not in docker) so it survives the stack restart it drives.
 #
 # Endpoints (Bearer token on everything except /v1/health):
@@ -495,7 +495,7 @@ def _mesh_respawn(env: dict[str, str]) -> None:
 
 
 def _supervise_mesh() -> None:
-    """Respawn the native mesh server — only when it was started under CADX
+    """Respawn the native mesh server — only when it was started under KIARA
     supervision (start.sh wrote run/mesh-server.env). A foreign process on
     the port without the env file is never adopted."""
     st = _mesh_state()

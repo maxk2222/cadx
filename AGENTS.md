@@ -1,7 +1,7 @@
 # AGENTS.md — working rules for this repo
 
 ## What this is
-LLM-driven CAD agent ("CADX"): images + text prompt → parametric build123d code →
+LLM-driven CAD agent ("KIARA"): images + text prompt → parametric build123d code →
 verified 3D model (STEP/STL/3MF/GLB/DXF/SVG) for 3D printing & CNC.
 Stack: FastAPI + SQLModel/Postgres + arq/Redis + build123d/bd_warehouse + React/Vite/Three.js.
 The authoritative design document is `docs/architecture.md` (derived from the master plan).
@@ -255,7 +255,7 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   delegate to `session`/spawn/executor helpers — never duplicate business
   logic). `MCP_HANDLERS` shadows same-named `_tool_*` methods on MCP
   sessions only (`_mcp_handlers_enabled`).
-- Transports: `cadx mcp` (stdio) and `/mcp` on the API (Streamable HTTP,
+- Transports: `kiara mcp` (stdio) and `/mcp` on the API (Streamable HTTP,
   `CADX_MCP_TOKEN` bearer when configured). Spawn tools default `wait=false`
   on this surface. See `docs/mcp-server.md`.
 

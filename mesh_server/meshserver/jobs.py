@@ -105,7 +105,7 @@ class MeshJob:
         self.steps = params.steps
         self.guidance = params.guidance
         self.resolution = params.resolution
-        # scheduling priority — server-classified at submit (internal CADX
+        # scheduling priority — server-classified at submit (internal KIARA
         # jobs vs external LAN callers); 0 is neutral
         self.priority = 0
         # monotonic timestamp of the last *observable* progress change —

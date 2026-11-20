@@ -266,7 +266,7 @@ class ServerConfig:
     llm_keepalive_s: float = field(
         default_factory=lambda: _env_float("MESH_LLM_KEEPALIVE_S", 5)
     )
-    # scheduling priority per caller class — internal = CADX backend /
+    # scheduling priority per caller class — internal = KIARA backend /
     # loopback tooling, external = authenticated LAN clients. One step =
     # +llm_queue_fair_s score (external default jumps ~10 windows ahead)
     llm_prio_internal: int = field(

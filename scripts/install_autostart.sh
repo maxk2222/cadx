@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install a login/boot autostart for the CADX updater daemon — the daemon is
+# Install a login/boot autostart for the KIARA updater daemon — the daemon is
 # the supervisor, so starting it on login is enough for the full stack to
 # come up (it respawns mesh-server + heals compose services).
 #
@@ -60,7 +60,7 @@ install_systemd() {
   mkdir -p "$(dirname "$UNIT")"
   cat > "$UNIT" <<EOF
 [Unit]
-Description=CADX updater/supervisor daemon
+Description=KIARA updater/supervisor daemon
 After=docker.service network-online.target
 
 [Service]

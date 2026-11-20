@@ -1,4 +1,4 @@
-# CADX — LLM-driven CAD agent for 3D printing & CNC
+# KIARA — LLM-driven CAD agent for 3D printing & CNC
 # Requires: uv (python -m pip install uv), node >= 20, docker compose
 #
 # `make` or `make help` lists all targets.
@@ -21,7 +21,7 @@ FRONTEND := frontend
 ##@ Setup & run (one command)
 
 help: ## Show this help
-	@awk 'BEGIN {FS = ":.*##"; printf "\n\033[1mCADX — make targets\033[0m\n"} \
+	@awk 'BEGIN {FS = ":.*##"; printf "\n\033[1mKIARA — make targets\033[0m\n"} \
 	  /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2} \
 	  /^##@/ {printf "\n\033[1m%s\033[0m\n", substr($$0, 5)} \
 	  END {print ""}' $(MAKEFILE_LIST)
@@ -167,22 +167,22 @@ migrate: ## alembic upgrade head
 	cd $(BACKEND) && ../$(VENV)/bin/uv run alembic upgrade head
 
 eval: ## Evalkit suite via the running API (real DB versions under eval:* projects)
-	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval run $(ARGS)
+	cd $(BACKEND) && ../$(VENV)/bin/uv run kiara eval run $(ARGS)
 
 eval-quick: ## Fast scratch run — no API/Redis/real-DB writes, results in evals/scratch
-	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval run --local $(ARGS)
+	cd $(BACKEND) && ../$(VENV)/bin/uv run kiara eval run --local $(ARGS)
 
 eval-cases: ## List suite cases/stages/gates
-	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval cases
+	cd $(BACKEND) && ../$(VENV)/bin/uv run kiara eval cases
 
 eval-report: ## Aggregate evals/results into a variant x case table
-	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval report $(ARGS)
+	cd $(BACKEND) && ../$(VENV)/bin/uv run kiara eval report $(ARGS)
 
 eval-clean: ## Guarded cleanup (dry-run): --wipe-db --purge-files --yes via ARGS
-	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval clean $(ARGS)
+	cd $(BACKEND) && ../$(VENV)/bin/uv run kiara eval clean $(ARGS)
 
 eval-baseline: ## Save/diff baselines: ARGS="save <label>" | "diff <a> <b>" | "list"
-	cd $(BACKEND) && ../$(VENV)/bin/uv run cadx eval baseline $(ARGS)
+	cd $(BACKEND) && ../$(VENV)/bin/uv run kiara eval baseline $(ARGS)
 
 ##@ Mesh sidecar
 

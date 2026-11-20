@@ -14,7 +14,7 @@ Target branch: `feature/anleitungsbuilder`
 
 ## 1. Feature definition
 
-User flow (all inside ONE CADX chat):
+User flow (all inside ONE KIARA chat):
 
 1. User uploads a PDF instruction manual + zero or more CAD part files
    (`.step/.stp/.stl/.glb/.gltf`) as project assets; says "Erstelle eine
@@ -139,9 +139,9 @@ multi-pipeline selection, non-GLB CAD passthrough.
   `MAX_ASSET_BYTES = 25MB` is a single global cap.
 - **Frontend composer**: `frontend/src/components/chat/Composer.tsx:132`
   has `accept="image/*"`.
-- **Units**: CADX is mm, Z-up RH, X=length/Y=width/Z=height (AGENTS frame
+- **Units**: KIARA is mm, Z-up RH, X=length/Y=width/Z=height (AGENTS frame
   contract). KIARA assembly space is **cm, Y-up RH** — do NOT copy its
-  transform math blindly (§11 has the verified CADX→Unity formula).
+  transform math blindly (§11 has the verified KIARA→Unity formula).
 - **`waiting_for_input` is terminal** in `TERMINAL_JOB_STATES` — a child
   `generate` job that parks on questions returns to the waiting caller;
   the guide mission must forward that as `ask_user`.
@@ -606,7 +606,7 @@ smoke check).
   Small mission (`max_calls ≈ 3×steps`).
 - `guide/unity.py` — port `output_tools.py`/`guide_object_builders.py`
   **schema + prefab conventions**, NOT their transform math.
-  **Verified CADX→Unity conversion** (mm/Z-up/RH → m/Y-up/LH):
+  **Verified KIARA→Unity conversion** (mm/Z-up/RH → m/Y-up/LH):
   ```
   pos_u   = (cad_x, cad_z, cad_y) * 0.001        # x right, z up→y up, y front→z fwd
   R_u     = M · R_c · Mᵀ ,  M = [[1,0,0],[0,0,1],[0,1,0]]  (det = −1)
@@ -813,7 +813,7 @@ Each step: `make lint && make test` green + one commit.
 - v1→v2 corrections folded in: JobType/VersionKind/AssetKind are PG enums
   needing a migration (v1 claimed no schema change); `enqueue_resume`
   generalization required; state keyed by version not job; roles are
-  vision|code only; KIARA cm/Y-up → CADX mm/Z-up conversion re-derived
+  vision|code only; KIARA cm/Y-up → KIARA mm/Z-up conversion re-derived
   and golden-tested; renders executor-side only; collision via
   manifold3d (no FCL); frontend accept list + settings file name
   (`runtime_config.py`) corrected.

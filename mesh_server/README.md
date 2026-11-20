@@ -1,6 +1,6 @@
 # mesh-server
 
-Local image→3D mesh generation sidecar for CADX. The backend
+Local image→3D mesh generation sidecar for KIARA. The backend
 (`backend/cadx/agent/mesh_client.py`) talks to it over HTTP — like an
 Ollama-style service — so the cad-executor stays sandboxed and the heavy model
 runtime lives in its own uv project/venv.
@@ -17,7 +17,7 @@ make mesh-sync          # creates mesh_server/.venv with the right extras (mlx o
 make mesh-models        # downloads the default weights
 ```
 
-Then point CADX at it — set `mesh_base_url` to `http://localhost:8765`
+Then point KIARA at it — set `mesh_base_url` to `http://localhost:8765`
 in **Settings** (the app stores it in its database; `start.sh` seeds the
 right value on first boot, e.g. `http://host.docker.internal:8765` for the
 docker stack reaching a native sidecar).
@@ -144,5 +144,5 @@ meshserver health
 ## See also
 
 - [`docs/mesh-server-api.md`](../docs/mesh-server-api.md) — the HTTP contract
-- [`docs/mesh-generation.md`](../docs/mesh-generation.md) — how CADX uses it
+- [`docs/mesh-generation.md`](../docs/mesh-generation.md) — how KIARA uses it
 - [`docs/configuration.md`](../docs/configuration.md) — all env vars

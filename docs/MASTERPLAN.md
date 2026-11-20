@@ -1,4 +1,4 @@
-# CADX — Technischer Masterplan (Repository Deep Audit)
+# KIARA — Technischer Masterplan (Repository Deep Audit)
 
 **Stand:** 2026-11-19 · **Basis:** `feature/anleitungsbuilder` @ `d4d01c4` · **Scope:** gesamtes Repository (backend/cadx ~126k LOC Python, frontend ~27k LOC TS/TSX, mesh_server eigene Quellen, scripts/, evals/, docs/)
 
@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-CADX ist eine **überdurchschnittlich gereifte** Codebase: die Resilienz-Mechanik (Job-Recovery, Watchdog, Sandbox mit dualen Cold/Warm-Pfaden, `native.py` Rust-Adapter mit Kill-Switches und Parity-Toleranzen, atomic writes, honest-failure-Vertrag in allen Toolschichten) ist auf Produktionsniveau. Die Schwächen konzentrieren sich auf drei Cluster:
+KIARA ist eine **überdurchschnittlich gereifte** Codebase: die Resilienz-Mechanik (Job-Recovery, Watchdog, Sandbox mit dualen Cold/Warm-Pfaden, `native.py` Rust-Adapter mit Kill-Switches und Parity-Toleranzen, atomic writes, honest-failure-Vertrag in allen Toolschichten) ist auf Produktionsniveau. Die Schwächen konzentrieren sich auf drei Cluster:
 
 1. **Eine echte Sicherheitslücke** in der ersten Sandbox-Barriere (AST-Gate ist per Name-Aliasing umgehbar — live verifiziert). Die eigentliche Isolation (Container, rlimits, ImportGuard) hält trotzdem; die Lücke ist als Verstoß gegen das dokumentierte Verteidigungskonzept zu werten, nicht als Remote-Compromise.
 2. **Zwei God-Modules**, die jede fachliche Änderung riskant machen: `cad/engine.py` (6,7k LOC, davon ~4k FEM-Orchestrierung in drei monolithischen Pipelines) und `agent/orchestrator.py` (6,6k LOC, 103 Top-Level-Defs, `_run_cad` = 1.235 LOC am Stück). Git-Churn bestätigt: das sind die zwei meist-editierten Dateien des Repos (118 / 112 Commits in 12 Monaten).

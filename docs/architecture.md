@@ -1,6 +1,6 @@
 # Architecture
 
-CADX is a local, single-user system that turns multimodal input
+KIARA is a local, single-user system that turns multimodal input
 (images + text + dimensions) into manufacturing-ready CAD via an
 OpenAI-compatible LLM. Generated geometry is build123d *code* — parametric,
 diffable, re-runnable.
@@ -81,7 +81,7 @@ Three enqueue paths share `spawn.py`:
   resample, mesh_edit, fem, organic, reexport jobs.
 - **Chat agent** — `run_chat_turn` drives a `ChatToolSession` whose tools
   spawn the same job kinds mid-conversation.
-- **MCP** — `/mcp` (Streamable HTTP) or `cadx mcp` (stdio): external agents
+- **MCP** — `/mcp` (Streamable HTTP) or `kiara mcp` (stdio): external agents
   call `submit_code`/`mesh_generate`/job tools (`code`, `meshgen` job kinds)
   through the same session core — `ctx.llm is None`, so MCP can never reach
   the WebUI's LLM.
@@ -180,9 +180,9 @@ sequenceDiagram
 - `mcpserver/` — LLM-free MCP server: `server.py` (tool schemas/dispatch on
   the low-level MCP `Server`), `session.py` (`McpToolSession` per transport),
   `http.py` (Streamable-HTTP ASGI app + bearer auth), mounted at `/mcp` on
-  the api service and as `cadx mcp` stdio — see
+  the api service and as `kiara mcp` stdio — see
   [mcp-server.md](mcp-server.md)
-- `evalkit/` — the evaluation harness (`cadx eval`): suite loader, http +
+- `evalkit/` — the evaluation harness (`kiara eval`): suite loader, http +
   local drivers, gates/metrics, report/baseline/clean — [eval.md](eval.md)
 - `../cadx_native/` — optional Rust/PyO3 kernel (maturin/abi3): BVH mesh
   queries (contains/ray/scanline voxel fill), CSR Hex8 assembly and a
@@ -358,7 +358,7 @@ data/library/<part_id>/<file>    reusable user library (uploaded STEP/STL bodies
   `ProjectToolSession` tools (code contract, check/execute, submit, mesh,
   jobs, assets, settings, stats) plus `code`/`meshgen` job kinds — but with
   `ctx.llm = None`; a session tool calling the WebUI's LLM would raise.
-  Restart is refused for LLM-generated jobs. Transports: `cadx mcp` (stdio)
+  Restart is refused for LLM-generated jobs. Transports: `kiara mcp` (stdio)
   and `/mcp` (Streamable HTTP on the api service; optional
   `CADX_MCP_TOKEN` bearer). See [mcp-server.md](mcp-server.md).
 - **Analytic STEP for mesh paths**: refine/topopt children export STEP via

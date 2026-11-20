@@ -89,7 +89,7 @@ allow-direct-references = true
 packages = ["cadx"]
 
 [project.scripts]
-cadx = "cadx.cli:app"
+kiara = "cadx.cli:app"
 
 [tool.ruff]
 line-length = 100

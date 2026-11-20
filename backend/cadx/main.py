@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
     await close_pool()
 
 
-app = FastAPI(title="CADX", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="KIARA", version="0.1.0", lifespan=lifespan)
 
 
 # ---------- global error envelope ----------

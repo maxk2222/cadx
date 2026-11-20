@@ -1,4 +1,4 @@
-"""Streamable-HTTP transport for the CADX MCP server.
+"""Streamable-HTTP transport for the KIARA MCP server.
 
 `session_manager().handle_request` implements the full Streamable-HTTP spec
 (POST for JSON-RPC, GET for the SSE stream, DELETE for session teardown).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CADX one-shot installer — detects the GPU tier and installs everything.
+# KIARA one-shot installer — detects the GPU tier and installs everything.
 # Idempotent: re-running only performs the missing steps.
 #
 # Usage:
@@ -133,7 +133,7 @@ fi
 log_init setup
 trap_setup "setup"
 
-say "CADX setup — tier: $TIER · model: ${MODEL:-none}$([ "$DRY" = 1 ] && echo ' · dry-run')"
+say "KIARA setup — tier: $TIER · model: ${MODEL:-none}$([ "$DRY" = 1 ] && echo ' · dry-run')"
 info "log: $LOG_FILE"
 case "$TIER" in
   mlx|cuda|rocm|fake)

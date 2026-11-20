@@ -1,6 +1,6 @@
 # Evaluation — evalkit
 
-`cadx eval` runs a small, canonical suite of real benchmark objects through
+`kiara eval` runs a small, canonical suite of real benchmark objects through
 the production pipeline. Two drivers:
 
 - **http** (default, durable): every stage is spawned through the REST API —
@@ -17,9 +17,9 @@ the production pipeline. Two drivers:
 ```bash
 make eval                            # durable suite run via the live API
 make eval-quick                      # scratch run — fast dev loop
-cd backend && ../.venv/bin/uv run cadx eval cases   # list suite/stages/gates
-cadx eval run --case l_bracket_rib --stages codegen --label experiment
-cadx eval run --local --case robot_arm_mount --stages fem --from <dir>
+cd backend && ../.venv/bin/uv run kiara eval cases   # list suite/stages/gates
+kiara eval run --case l_bracket_rib --stages codegen --label experiment
+kiara eval run --local --case robot_arm_mount --stages fem --from <dir>
 ```
 
 ## The suite
@@ -183,15 +183,15 @@ case only. `--settings <json>` applies extra runtime overrides on top of
 every variant (http only).
 
 ```bash
-cadx eval run --case sprocket_520_45t \
+kiara eval run --case sprocket_520_45t \
   --variant thinking_off='{"llm_thinking":"off"}' \
   --variant auto='{}' \
   --repeat 2
-cadx eval report                       # variant x case table
-cadx eval report --include-scratch     # fold scratch runs in (opt-in)
-cadx eval baseline save before-change  # latest run per (case,variant) -> evals/baselines/
-cadx eval baseline diff before-change after-change
-cadx eval report --baseline before-change   # diff current results vs baseline
+kiara eval report                       # variant x case table
+kiara eval report --include-scratch     # fold scratch runs in (opt-in)
+kiara eval baseline save before-change  # latest run per (case,variant) -> evals/baselines/
+kiara eval baseline diff before-change after-change
+kiara eval report --baseline before-change   # diff current results vs baseline
 ```
 
 Baselines are committed under `evals/baselines/`; `diff` reports pass
@@ -202,7 +202,7 @@ wall/tokens +20/25%).
 
 ```bash
 make eval-clean                              # dry-run
-cadx eval clean --wipe-db --purge-files --yes   # execute
+kiara eval clean --wipe-db --purge-files --yes   # execute
 ```
 
 `--wipe-db` deletes every project-scoped row in FK-safe order
@@ -242,7 +242,7 @@ Add `evals/suite/<name>.json` — `name`, `project` (defaults to
 `eval:<name>`), `difficulty` (1-3), optional `settings`/`runtime`/
 `images`, and an ordered `stages` list. The first stage must be
 `generate` or `meshgen`; `from_stage`/`assets_from` may only reference
-earlier stages. Pydantic validates the file at load — `cadx eval cases`
+earlier stages. Pydantic validates the file at load — `kiara eval cases`
 shows the parse errors.
 
 ## Debugging a saved guide state

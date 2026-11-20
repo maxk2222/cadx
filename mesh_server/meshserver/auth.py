@@ -35,7 +35,7 @@ def _is_loopback(request: Any) -> bool:
 
 def is_internal_caller(request: Any) -> bool:
     """True when the request comes from the trusted local side — either the
-    CADX backend (it stamps `X-Mesh-Internal: 1` on every sidecar call) or a
+    KIARA backend (it stamps `X-Mesh-Internal: 1` on every sidecar call) or a
     loopback peer (local tooling/tests). External = authenticated LAN
     clients. The header only selects the configured *class* — it cannot
     escalate, so external callers gain nothing by forging it."""

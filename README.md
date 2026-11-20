@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="frontend/public/brand/hero.png" width="100%" alt="CADX">
+  <img src="frontend/public/brand/hero.png" width="100%" alt="KIARA">
 </p>
 
 <h2 align="center">Photos &amp; a prompt in — verified, parametric, manufacturing-ready CAD out.</h2>
 
 <p align="center">
-  CADX is a <b>local-first, open-weights</b> multimodal CAD agent. Feed it reference
+  KIARA is a <b>local-first, open-weights</b> multimodal CAD agent. Feed it reference
   photos, drawings or sketches plus a prompt with dimensions — it iterates
   <i>generate → execute → measure → critique → repair</i> until the part checks out
   against your spec. The result is parametric build123d <b>code</b> with real
@@ -23,7 +23,7 @@
 
 <p align="center">
   <a href="#quickstart">Quickstart</a> ·
-  <a href="#why-cadx">Why CADX</a> ·
+  <a href="#why-kiara">Why KIARA</a> ·
   <a href="#showcase">Showcase</a> ·
   <a href="#features">Features</a> ·
   <a href="#modes">Modes</a> ·
@@ -33,13 +33,13 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/hero-demo.gif" width="860" alt="CADX — guided wizard to a verified parametric part">
+  <img src="docs/screenshots/hero-demo.gif" width="860" alt="KIARA — guided wizard to a verified parametric part">
   <br>
   <sub><i>Describe → images → mode → review — and out comes a verified, parametric part.</i></sub>
 </p>
 
 > [!WARNING]
-> **Early development** — CADX is under active development. Expect breaking
+> **Early development** — KIARA is under active development. Expect breaking
 > changes, rough edges and an evolving API/data model between versions.
 > Feedback and bug reports are very welcome.
 >
@@ -50,11 +50,11 @@
 
 ---
 
-## Why CADX
+## Why KIARA
 
-Most image→3D tools hand you a mesh and wish you luck. CADX closes the loop.
+Most image→3D tools hand you a mesh and wish you luck. KIARA closes the loop.
 
-| Typical AI→3D tools | CADX |
+| Typical AI→3D tools | KIARA |
 |---|---|
 | A frozen triangle mesh | **Parametric build123d code** — diffable, re-runnable, "make it 5 mm taller" is a one-line edit |
 | "Looks about right" | **Measured and critiqued** — holes ray-checked for real through-paths, features verified, renders vision-scored, `verify_spec` reports PASS / FAIL / UNVERIFIED |
@@ -99,7 +99,7 @@ Full install, dev-mode and migration docs:
 ## Showcase
 
 <p align="center">
-  <img src="docs/screenshots/walkthrough.gif" width="780" alt="CADX web GUI — walkthrough: projects, versions, editors, jobs and stats">
+  <img src="docs/screenshots/walkthrough.gif" width="780" alt="KIARA web GUI — walkthrough: projects, versions, editors, jobs and stats">
 </p>
 
 <table>
@@ -152,7 +152,7 @@ Everything that ships in the box, at a glance:
 | 🛠️ **Editors** | Visual mesh editor (slice · clip · crop · boolean · drill · shell · remesh · symmetrize — live preview, reorderable op stack) · paint-on structural editor (load/fix/keep regions, 3D FEM overlay) · organic editor · measured-feature resize · param panel |
 | 🤖 **Models** | Open-weights sidecar — image→3D: TripoSG (+scribble), Hunyuan3D-2.1 / 2mv / Omni, Step1X-3D, TRELLIS.2, Tripo3D cloud · text→image/edit: Z-Image-Turbo, FLUX.1-schnell/Kontext, FLUX.2-klein, Qwen-Image(+Edit Lightning), SDXL, SD1.5 · local LLM hosting via mlx-lm / mlx-vlm / llama.cpp |
 | 🖥️ **Web app** | Guided wizard · version tree with compare · live in-loop renders and job log (tokens, ETA, step timeline) · jobs + stats dashboards · asset image editor (crop/mask/bg-removal) · parts library · chat agent · **9 locales** |
-| 🔌 **Integrations** | REST + SSE API · **MCP server** (stdio + Streamable HTTP, strictly LLM-free) · `cadx` CLI · evalkit with durable runs, gates and baselines |
+| 🔌 **Integrations** | REST + SSE API · **MCP server** (stdio + Streamable HTTP, strictly LLM-free) · `kiara` CLI · evalkit with durable runs, gates and baselines |
 | 🔄 **Ops** | One-command start with GPU autodetect · self-update from GitHub with rollback · watchdog + job recovery · pg_dump backups · Fernet-encrypted secrets · cgroup-aware CPU/RAM budgets |
 
 > DfM results are engineering heuristics, not a manufacturing guarantee — always
@@ -203,16 +203,16 @@ Details: **[docs/architecture.md](docs/architecture.md)** ·
 
 ## MCP server
 
-External agents can drive CADX over the
+External agents can drive KIARA over the
 [Model Context Protocol](https://modelcontextprotocol.io) — **strictly
-LLM-free**: the agent writes build123d code itself, CADX verifies it
+LLM-free**: the agent writes build123d code itself, KIARA verifies it
 (`check_code`), runs it in the sandbox (`execute_cad`), persists it
 (`submit_code`) and exposes mesh/FEM/topopt jobs, assets and the parts
 catalog. No MCP tool can trigger the WebGUI's LLM.
 
 ```bash
-uv run cadx mcp          # stdio transport
-uv run cadx mcp --http   # Streamable HTTP on :8001/mcp
+uv run kiara mcp          # stdio transport
+uv run kiara mcp --http   # Streamable HTTP on :8001/mcp
 ```
 
 The main API also serves `/mcp` (gated by `CADX_MCP_TOKEN` when set). Typical
@@ -250,7 +250,7 @@ audience:
 
 | Path | Contents |
 |------|----------|
-| `backend/` | FastAPI app, agent loop, CAD pipeline, CLI (`cadx`) |
+| `backend/` | FastAPI app, agent loop, CAD pipeline, CLI (`kiara`) |
 | `frontend/` | React/Vite/Three.js web GUI |
 | `mesh_server/` | image→3D + text→image + local-LLM sidecar (own uv project) |
 | `scripts/` | `setup.sh` / `start.sh` / `stop.sh` / `status.sh` |

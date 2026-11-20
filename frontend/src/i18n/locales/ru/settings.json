@@ -266,7 +266,7 @@
     "audit_parallel_runs": "Параллельные прогоны аудита",
     "audit_parallel_runs_h": "0 = авто — параллельные ±ε возмущения аудита дизайна",
     "prio_internal": " ",
-    "prio_internal_h": "   CADX    (0 = )",
+    "prio_internal_h": "   KIARA    (0 = )",
     "prio_external": " ",
     "prio_external_h": "   LAN- ( = )"
   },
@@ -351,5 +351,5 @@
   "upd_phase_state_failed": "ошибка",
   "upd_phase_state_idle": "простой",
   "sidecar_queue_title": " sidecar",
-  "sidecar_queue_hint": "    sidecar ( =  CADX/,  = LAN-).    ;   =    —   ."
+  "sidecar_queue_hint": "    sidecar ( =  KIARA/,  = LAN-).    ;   =    —   ."
 }

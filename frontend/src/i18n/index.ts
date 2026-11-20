@@ -123,7 +123,7 @@ export const LANG_LABEL: Record<Lang, string> = {
   ja: "日本語",
 };
 
-const LANG_KEY = "cadx:lang";
+const LANG_KEY = "kiara:lang";
 
 export function detectLang(): Lang {
   try {

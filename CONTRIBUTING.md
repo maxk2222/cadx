@@ -1,11 +1,11 @@
 # Contributing
 
-CADX is a local, single-user project. Contributions happen in three areas:
+KIARA is a local, single-user project. Contributions happen in three areas:
 the Python backend/agent, the React frontend and the `mesh_server` sidecar.
 
 ## License
 
-CADX is licensed under [AGPL-3.0-or-later](LICENSE); by contributing you
+KIARA is licensed under [AGPL-3.0-or-later](LICENSE); by contributing you
 license your contribution under the same terms. Note that the project is
 also offered under a **commercial dual-license** — contributions may be
 included in commercial-licensed distributions without a separate CLA.

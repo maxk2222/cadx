@@ -1233,7 +1233,7 @@ def solve_bridge_attachment(
 # free / environment placement (bbox heuristics — KIARA solve_free/env)
 # --------------------------------------------------------------------------- #
 
-# CADX frame contract (AGENTS.md): +Y is FRONT, +X right, +Z up
+# KIARA frame contract (AGENTS.md): +Y is FRONT, +X right, +Z up
 _HINT_DIRS = {
     "left": np.array([-1.0, 0.0, 0.0]),
     "right": np.array([1.0, 0.0, 0.0]),

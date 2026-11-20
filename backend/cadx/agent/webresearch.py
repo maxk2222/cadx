@@ -21,7 +21,7 @@ from cadx.logging import get_logger
 
 log = get_logger(__name__)
 
-_UA = {"User-Agent": "CADX-research/1.0 (+https://devin.ai) CAD spec research"}
+_UA = {"User-Agent": "KIARA-research/1.0 (+https://devin.ai) CAD spec research"}
 _TIMEOUT = 15.0
 _MAX_BODY = 8_000_000  # bytes — datasheets/pages beyond this are PDFs/dumps
 

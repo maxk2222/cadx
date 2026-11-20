@@ -3,7 +3,7 @@ the manual's required parts, and bridge missing ones into the normal
 sandboxed ``spawn_generate`` path (never a custom exec path).
 
 KIARA reference: PartAnalyst + CAD-analysis sub-agent (v4 cad_tools.py /
-part_tools.py) — adapted to CADX assets/jobs.
+part_tools.py) — adapted to KIARA assets/jobs.
 """
 
 from __future__ import annotations
@@ -66,7 +66,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "generate_missing_part": _fn(
         "generate_missing_part",
-        "Generate a missing CAD part through the normal CADX pipeline "
+        "Generate a missing CAD part through the normal KIARA pipeline "
         "(sandboxed build123d codegen — same path as 'generate this part' "
         "in chat). Describe the SIMPLE functional form: primary shape, "
         "mm dimensions, mating interfaces (bores/threads/sockets) — never "

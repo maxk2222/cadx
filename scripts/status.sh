@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Show status of the CADX stack + mesh-server.
+# Show status of the KIARA stack + mesh-server.
 #
 # Usage:
 #   scripts/status.sh [--watch] [--interval N] [--json] [--no-color] [-h|--help]

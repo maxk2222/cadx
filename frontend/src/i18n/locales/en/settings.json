@@ -262,7 +262,7 @@
     "audit_parallel_runs": "Audit parallel runs",
     "audit_parallel_runs_h": "0 = auto — parallel ±ε design-audit perturbations",
     "prio_internal": "Internal priority",
-    "prio_internal_h": "Requests from the CADX backend and local tools (0 = lowest)",
+    "prio_internal_h": "Requests from the KIARA backend and local tools (0 = lowest)",
     "prio_external": "External priority",
     "prio_external_h": "Requests from external LAN clients (higher = preferred)"
   },
@@ -347,5 +347,5 @@
   "upd_phase_state_failed": "failed",
   "upd_phase_state_idle": "idle",
   "sidecar_queue_title": "Sidecar queue",
-  "sidecar_queue_hint": "Global priority for sidecar requests (internal = CADX backend/tools, external = LAN clients). Higher values are served first; one step equals one fairness window — long waiters catch up."
+  "sidecar_queue_hint": "Global priority for sidecar requests (internal = KIARA backend/tools, external = LAN clients). Higher values are served first; one step equals one fairness window — long waiters catch up."
 }

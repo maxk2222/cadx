@@ -317,7 +317,7 @@ prefix caching off.
 - Structured parsing (`llm/structured.py`) extracts JSON even from fenced
   prose, validates against Pydantic schemas, and re-asks once on failure.
 - `FakeLLM` replays a JSON script for deterministic end-to-end runs —
-  dev/test only via `cadx run --fake` and eval benchmarks
+  dev/test only via `kiara run --fake` and eval benchmarks
   (`llm_script`/`llm_tools` fields), not a production runtime option.
 
 ## See also
