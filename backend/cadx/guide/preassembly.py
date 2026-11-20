@@ -27,6 +27,7 @@ from __future__ import annotations
 import itertools
 import math
 import re
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -36,6 +37,7 @@ import structlog
 from cadx.guide import solver
 from cadx.guide.assembly_tools import (
     _PLACE_ACTIONS,
+    _bbox_gap,
     _candidate_burial,
     _host_part_id,
     _name_index,
@@ -50,9 +52,11 @@ from cadx.guide.session import GuideToolSession
 from cadx.guide.tolerances import (
     BRIDGE_AXIS_DOT,
     BURIAL_FRAC_GATE,
+    CLOSURE_SLACK_MM,
     LIFT_SHIFT_CLAMP_MM,
     MISS_RESIDUAL_MAX_MM,
     PORT_EXPOSURE_MAX_MM,
+    PREMOUNT_HOST_GAP_MM,
     SHIFT_MEAN_MIN_MM,
     SHIFT_SPREAD_MM,
     SWALLOW_FRAC_GATE,
@@ -116,7 +120,11 @@ def _kind_pool(sess: GuideToolSession, name: str) -> set[str] | None:
     if step_no is not None:
         produced = _step_produced_pids(sess, step_no)
         if produced:
-            return produced & base if base else produced
+            # the provenance pin is authoritative: name resolution can
+            # pick the wrong same-kind sibling ('Rohr' → l70 for a
+            # Schritt-9 l500 ref) — an empty intersection means the base
+            # lied, never that no part qualifies
+            return (produced & base) or produced
     return base
 
 
@@ -488,8 +496,11 @@ def _clean_side_text(text: str) -> str:
     # declension — "(unteres Ende)" is neuter and misses any enumerated
     # list. The feature can head a compound ("Anschlussöffnung") — match
     # it as a word-internal stem, not only as a standalone token.
+    # umlaut transliterations too: OCR/PDF pipelines emit 'oeffnung',
+    # 'flaeche' — an unstripped 'obere Oeffnung' leaks 'u' into the side
+    # signature and reads as an up/down contradiction downstream
     _feat = (
-        r"öffnung|muffe|lippe|kante|ende|seite|spitze|fläche|"
+        r"(?:ö|oe)ffnung|muffe|lippe|kante|ende|seite|spitze|fl(?:ä|ae)che|"
         r"opening|socket|mouth|lip|edge|end|side|tip|face"
     )
     _feat_tok = rf"\w*(?:{_feat})\w*"
@@ -709,13 +720,15 @@ def _pick_target_instance(
     return (candidates or insts)[-1].instance_id or (candidates or insts)[-1].part_id
 
 
-def _pick_host_port(host: Any, axes: list[tuple[int, float]], feed_perp: int | None) -> Any | None:
-    """Best host port for a task: side-word position match; when the
-    chain feeds a bridge, ports parallel to the incoming leg are
-    geometrically impossible and lose hard."""
+def _score_host_ports(
+    host: Any, axes: list[tuple[int, float]], feed_perp: int | None
+) -> list[tuple[float, Any]]:
+    """(score, port) desc — side-word position match; when the chain
+    feeds a bridge, ports parallel to the incoming leg are geometrically
+    impossible and lose hard."""
     center = [(host.bbox_min[i] + host.bbox_max[i]) / 2 for i in range(3)]
-    best, best_s = None, -1e18
     front_bias = 0.0 if any(a == 1 for a, _ in axes) else 0.3
+    scored: list[tuple[float, Any]] = []
     for fp in host.ports:
         if fp.kind != "cylinder":
             continue
@@ -725,9 +738,17 @@ def _pick_host_port(host: Any, axes: list[tuple[int, float]], feed_perp: int | N
             s += (
                 -400.0 if abs(fp.axis[feed_perp]) > 0.8 else 150.0 * (1.0 - abs(fp.axis[feed_perp]))
             )
-        if s > best_s:
-            best_s, best = s, fp
-    return best
+        scored.append((s, fp))
+    scored.sort(key=lambda sf: -sf[0])
+    return scored
+
+
+def _pick_host_port(host: Any, axes: list[tuple[int, float]], feed_perp: int | None) -> Any | None:
+    """Best host port for a task: side-word position match; when the
+    chain feeds a bridge, ports parallel to the incoming leg are
+    geometrically impossible and lose hard."""
+    scored = _score_host_ports(host, axes, feed_perp)
+    return scored[0][1] if scored else None
 
 
 def _chain_height(
@@ -1505,6 +1526,9 @@ async def _place_tasks(
     # rotation trials (the next attempt re-declares them from its own
     # misses) nor into the assembly mission's port accounting
     sess._reserved_ports = {}
+    # the planner task list carries the chain context a later
+    # request_repair needs to re-bind a torn-down premount root
+    sess._planner_tasks = tasks
     for ti, task in enumerate(tasks):
         task.pop("bridge_miss", None)  # stale residual of a prior trial
         leg_of = task.get("_leg_of")
@@ -3008,32 +3032,89 @@ def _horiz_port_span(part: Any) -> float:
     return best
 
 
+def _next_chain_task(
+    scan: list[dict[str, Any]],
+    start: int,
+    match: Callable[[dict[str, Any]], bool],
+    sides: set[str],
+    *,
+    skip_anchor: bool,
+) -> tuple[int, dict[str, Any]] | None:
+    """Index+task of the next chain link targeting the current tip.
+
+    Sibling branches share part ids, so a first-match-by-order walk binds
+    the WRONG side's chain whenever the sibling's task carries no side
+    signature and ours follows it later. Preference: the first task whose
+    own side signature intersects ours wins; an unsigned task is only a
+    fallback. Tasks signed with a DIFFERENT side are skipped — including
+    partial overlap that CONTRADICTS an axis ('d,l' against 'd,r' shares
+    'd' but is still the LEFT chain, not ours)."""
+    unsigned: tuple[int, dict[str, Any]] | None = None
+    for i in range(start, len(scan)):
+        t = scan[i]
+        if t.get("premount") or (skip_anchor and t.get("anchor")):
+            continue
+        if not match(t):
+            continue
+        t_sides = _task_side_signature(t)
+        if sides and t_sides:
+            if _sides_conflict(t_sides, sides) or not (t_sides & sides):
+                continue
+        elif sides:
+            if unsigned is None:
+                unsigned = (i, t)
+            continue
+        return i, t
+    return unsigned
+
+
 def _walk_premount_chain(
     sess: GuideToolSession, tasks: list[dict[str, Any]], prem_idx: int
 ) -> tuple[list[str], dict[str, Any] | None]:
     """(mid part ids, bridge task) of the chain a premount task feeds —
     same walk as _chain_height, stopping at the bridge that closes it."""
     tip = _tpart(sess, tasks[prem_idx])
+    sides = set(tasks[prem_idx].get("_ref_sides") or [])
     mids: list[str] = []
-    for t in tasks[prem_idx + 1 :]:
-        if t.get("premount"):
-            continue
+    scan = tasks[prem_idx + 1 :]
+
+    def _match(t: dict[str, Any]) -> bool:
         # a task continues the chain when its target resolves to the tip —
         # instance refs ('Rohr aus Schritt N') bind no pid but their kind
         # pool still contains it
         tp = _ttgt(sess, t)
-        if tp != tip:
-            pool = _kind_pool(sess, str(t.get("target") or "")) or set()
-            if tip not in pool:
-                continue
-            tp = tip
+        if tp == tip:
+            return True
+        pool = _kind_pool(sess, str(t.get("target") or "")) or set()
+        return tip in pool
+
+    pos = 0
+    while True:
+        nxt = _next_chain_task(scan, pos, _match, sides, skip_anchor=False)
+        if nxt is None:
+            break
+        i, t = nxt
+        pos = i + 1
         if str(t.get("target2") or "").strip():
             return mids, t
         pp = _tpart(sess, t)
         if not pp:
+            log.debug(
+                "guide.preassembly.chain_walk_break",
+                prem_idx=prem_idx,
+                step=t.get("step"),
+                part=t.get("part"),
+                mids=mids,
+            )
             break
         mids.append(pp)
         tip = pp
+    log.debug(
+        "guide.preassembly.chain_walk_no_bridge",
+        prem_idx=prem_idx,
+        mids=mids,
+        last_tip=tip,
+    )
     return mids, None
 
 
@@ -3110,14 +3191,16 @@ def _side_matched_instance(
     tasks: list[dict[str, Any]],
     pid: str,
     want_sides: set[str],
-) -> Any | None:
+) -> tuple[Any | None, str]:
     """The placed instance of ``pid`` sitting on the reference's side —
     branch chains are side-bound ("linker unterer Adapter" feeds the LEFT
     column). Matches the placing task's own side signature first, then the
-    instance's world position along the wanted axes."""
+    instance's world position along the wanted axes. Returns ``(instance,
+    how)`` — how ∈ signature | position | single | none, so the caller can
+    record whether the partner tip was side-confirmed or a guess."""
     cands = [i for i in sess.state.assembly.instances if i.part_id == pid and i.transform]
     if len(cands) <= 1:
-        return cands[0] if cands else None
+        return (cands[0], "single") if cands else (None, "none")
     best, best_s = None, -1.0
     for i in cands:
         placer = next(
@@ -3134,18 +3217,21 @@ def _side_matched_instance(
         if s > best_s:
             best_s, best = s, i
     if best_s > 0:
-        return best
+        return best, "signature"
     # no side text — fall back to position: L/R spreads along ±X
     axes = [(0, -1.0)] if "l" in want_sides else ([(0, 1.0)] if "r" in want_sides else [])
     if axes:
-        return max(
-            cands,
-            key=lambda i: sum(
-                sg * float(np.asarray(_world_pos(i.transform, [0.0, 0.0, 0.0]))[a])
-                for a, sg in axes
+        return (
+            max(
+                cands,
+                key=lambda i: sum(
+                    sg * float(np.asarray(_world_pos(i.transform, [0.0, 0.0, 0.0]))[a])
+                    for a, sg in axes
+                ),
             ),
+            "position",
         )
-    return cands[0]
+    return cands[0], "fallback"
 
 
 def _free_cyl_port_names(sess: GuideToolSession, inst: Any) -> set[str]:
@@ -3163,14 +3249,28 @@ def _free_cyl_ports(sess: GuideToolSession, inst: Any) -> list[Any]:
 def _target_is_tip(sess: GuideToolSession, name: str | None, tip: str) -> bool:
     """Does the task target mean the chain's current tip? Positional
     instance refs ("offene Muffe des linken unteren Rohrbogens") resolve
-    to no part name — fall back to category candidates: the ref is a
-    chain continuation when the tip is among them."""
+    to no part name — the kind pool is the same candidate set the
+    parallel walk uses (category pools AND '(Schritt N)' provenance
+    pinning, which resolves 'des rechten Rohrs (Schritt 9)' to exactly
+    the part step 9 produced)."""
+    # step-referenced names are instance refs: bare name resolution picks
+    # the wrong same-kind sibling — the provenance pin decides
+    if _ref_step(name) is not None:
+        return tip in (_kind_pool(sess, name or "") or set())
     pid = _resolve_name(sess, name or "")
     if pid is not None:
         return pid == tip
-    from cadx.guide.part_tools import _suggest_parts
+    return tip in (_kind_pool(sess, name or "") or set())
 
-    return tip in set(_suggest_parts(sess, name or ""))
+
+_SIDE_AXES = ({"l", "r"}, {"u", "d"})
+
+
+def _sides_conflict(a: set[str], b: set[str]) -> bool:
+    """Do two side signatures contradict on an axis? 'l' vs 'r' (or 'u'
+    vs 'd') is a conflict — shared secondary words ('d' on 'd,l' vs
+    'd,r') never rescue a contradiction on the discriminating axis."""
+    return any(g & a and g & b and (g & a) != (g & b) for g in _SIDE_AXES)
 
 
 def _side_filtered_chain(
@@ -3185,21 +3285,42 @@ def _side_filtered_chain(
     contaminate the left chain's link order."""
     tip = pid
     mids: list[str] = []
-    for t in tasks[ti + 1 :]:
-        if t.get("premount") or t.get("anchor"):
-            continue
-        if not _target_is_tip(sess, t.get("target"), tip):
-            continue
-        t_sides = _task_side_signature(t)
-        if sides and t_sides and not (t_sides & sides):
-            continue
+    scan = tasks[ti + 1 :]
+    pos = 0
+    while True:
+        nxt = _next_chain_task(
+            scan,
+            pos,
+            lambda t, _tip=tip: _target_is_tip(sess, t.get("target"), _tip),
+            sides,
+            skip_anchor=True,
+        )
+        if nxt is None:
+            break
+        i, t = nxt
+        pos = i + 1
         if str(t.get("target2") or "").strip():
             return mids, t
         pp = _tpart(sess, t)
         if not pp:
+            log.debug(
+                "guide.preassembly.side_chain_break",
+                ti=ti,
+                pid=pid,
+                step=t.get("step"),
+                mids=mids,
+            )
             break
         mids.append(pp)
         tip = pp
+    log.debug(
+        "guide.preassembly.side_chain_no_bridge",
+        ti=ti,
+        pid=pid,
+        sides=sorted(sides),
+        mids=mids,
+        last_tip=tip,
+    )
     return mids, None
 
 
@@ -3219,40 +3340,64 @@ def _bridge_second_mate(
     return cands.pop() if len(cands) == 1 else None
 
 
+def _chain_solve_refs(
+    sess: GuideToolSession,
+    tasks: list[dict[str, Any]],
+    ti: int,
+    pid: str,
+    sides: set[str],
+) -> tuple[tuple[list[str], dict[str, Any], Any, Any, Any, list[Any], str] | None, str]:
+    """Resolve the chain refs the premount back-solve needs —
+    (mids, bridge, bpart, t2part, tip_inst, free_tip, tip_how) or a reason tag."""
+    mids, bridge = _side_filtered_chain(sess, tasks, ti, pid, sides)
+    if bridge is None:
+        return None, "no_bridge_in_chain"
+    if not mids:
+        return None, "no_mid_links"
+    bpid = _tpart(sess, bridge)
+    t2 = _bridge_second_mate(sess, bridge, {pid, bpid, *mids})
+    bpart = sess.state.part_by_id(bpid) if bpid else None
+    t2part = sess.state.part_by_id(t2) if t2 else None
+    if bpart is None:
+        return None, "bridge_part_unresolved"
+    if t2part is None:
+        return None, "target2_unresolved"
+    tip_inst, tip_how = _side_matched_instance(sess, tasks, t2, sides)
+    if tip_inst is None or not tip_inst.transform:
+        return None, "no_placed_tip_instance"
+    free_tip = _free_cyl_ports(sess, tip_inst)
+    if not free_tip:
+        return None, "no_free_tip_port"
+    return (mids, bridge, bpart, t2part, tip_inst, free_tip, tip_how), "ok"
+
+
 def _premount_chain_transform(
     sess: GuideToolSession,
     tasks: list[dict[str, Any]],
     ti: int,
     task: dict[str, Any],
     pid: str,
-) -> list[list[float]] | None:
+) -> tuple[list[list[float]] | None, str]:
     """Back-solve a premounted fitting's pose through the chain it feeds.
 
     The fitting's real seat is wherever the chain CLOSES: the bridge at
     the top mates the chain's last pipe AND an already-placed partner
     tip — unwind the tip's world pose link by link (bridge → mids →
     premount) through the same solver the forward pass uses, and the
-    only consistent premount pose falls out. Returns a 4x4 transform —
-    None when the plan has no closable chain (heuristic handles those)."""
+    only consistent premount pose falls out. Returns ``(4x4 transform,
+    "ok")`` — or ``(None, reason)`` when the plan has no closable chain
+    (heuristic handles those). The reason tag is durable evidence: the
+    silent fallback used to leave wrong premount poses unexplainable."""
     part = sess.state.part_by_id(pid)
     if part is None:
-        return None
+        return None, "part_unresolved"
     sides = set(task.get("_ref_sides") or [])
-    mids, bridge = _side_filtered_chain(sess, tasks, ti, pid, sides)
-    if bridge is None or not mids:
-        return None
-    bpid = _tpart(sess, bridge)
-    t2 = _bridge_second_mate(sess, bridge, {pid, bpid, *mids})
-    bpart = sess.state.part_by_id(bpid) if bpid else None
-    t2part = sess.state.part_by_id(t2) if t2 else None
-    if bpart is None or t2part is None:
-        return None
-    tip_inst = _side_matched_instance(sess, tasks, t2, sides)
-    if tip_inst is None or not tip_inst.transform:
-        return None
-    free_tip = _free_cyl_ports(sess, tip_inst)
-    if not free_tip:
-        return None
+    refs, reason = _chain_solve_refs(sess, tasks, ti, pid, sides)
+    if refs is None:
+        return None, reason
+    mids, _bridge, bpart, t2part, tip_inst, free_tip, tip_how = refs
+    task["_chain_tip_instance"] = str(getattr(tip_inst, "instance_id", ""))
+    task["_chain_tip_match"] = tip_how
     tf_tip = np.asarray(tip_inst.transform, dtype=float).reshape(4, 4)
     # the chain's second leg points toward the premount's side: a "lower"
     # premount means the pipe rises +Z toward the bridge — the bridge's
@@ -3261,10 +3406,10 @@ def _premount_chain_transform(
     snaps = list(np.linspace(0.0, 360.0, 72, endpoint=False))
     b_cyl = [p for p in (bpart.ports or []) if p.kind == "cylinder"]
     if len(b_cyl) < 2:
-        return None
+        return None, "bridge_ports_missing"
     best_b = _solve_bridge_onto_tip(bpart, b_cyl, t2part, tf_tip, free_tip, leg_axis, snaps)
     if best_b is None:
-        return None
+        return None, "bridge_solve_fail"
     # unwind mid-chain top-down: each part's remaining cylinder port is
     # the link downward (pipes/elbows have exactly two ends)
     _s, prev_m, prev_port = best_b
@@ -3275,7 +3420,7 @@ def _premount_chain_transform(
             sess, mpid, prev_part, prev_m, prev_port, leg_axis, out_dir, snaps
         )
         if nxt_link is None:
-            return None
+            return None, f"midlink_fail:{mpid}"
         _s, prev_m, prev_part, prev_port = nxt_link
     # final link: the premount part mates the lowest mid's free end
     best_a: tuple[float, np.ndarray] | None = None
@@ -3294,7 +3439,9 @@ def _premount_chain_transform(
             s = -float(c["joint_gap_mm"])
             if best_a is None or s > best_a[0]:
                 best_a = (s, np.asarray(c["transform"], dtype=float).reshape(4, 4))
-    return best_a[1].tolist() if best_a else None
+    if best_a is None:
+        return None, "final_mate_fail"
+    return best_a[1].tolist(), "ok"
 
 
 def _solve_bridge_onto_tip(
@@ -3427,6 +3574,235 @@ def _solve_mid_link(
     return s, m, mpart, nxt_p.name
 
 
+def _premount_host_gap(
+    sess: GuideToolSession, part: Any, tr: list[list[float]], host_inst: Any
+) -> float | None:
+    """World-bbox gap (mm) between a candidate premount pose and the host
+    instance — the same quantity the post-hoc connectivity audit gates
+    on (``PREMOUNT_HOST_GAP_MM``), measured at bind time so the decision
+    is evidence, not a surprise later."""
+    if host_inst is None or not host_inst.transform:
+        return None
+    host = sess.state.part_by_id(host_inst.part_id)
+    if host is None:
+        return None
+    pc = _bbox_corners_world(part.bbox_min, part.bbox_max, tr)
+    hc = _bbox_corners_world(host.bbox_min, host.bbox_max, host_inst.transform)
+    pa = (tuple(min(c[i] for c in pc) for i in range(3)), tuple(max(c[i] for c in pc) for i in range(3)))
+    ha = (tuple(min(c[i] for c in hc) for i in range(3)), tuple(max(c[i] for c in hc) for i in range(3)))
+    return float(_bbox_gap(pa, ha))
+
+
+def _premount_heuristic_tr(
+    sess: GuideToolSession,
+    task: dict[str, Any],
+    part: Any,
+    host_view: Any,
+    fp: Any | None,
+    axes: list[tuple[int, float]],
+    tasks: list[dict[str, Any]] | None,
+    ti: int,
+) -> tuple[list[list[float]], Any | None]:
+    """Heuristic premount pose beside/below the host — the documented
+    reference placement. ``fp`` and ``host_view`` are already world-frame
+    (``_world_part_view``); ``fp=None`` falls back to the radial
+    silhouette. Returns ``(4x4 transform, the part's outward port)``."""
+    xy_axes = [(a, s) for a, s in axes if a < 2]
+    center_w = [(host_view.bbox_min[i] + host_view.bbox_max[i]) / 2 for i in range(3)]
+    best_p = list(fp.pos) if fp is not None else None
+    if best_p is not None:
+        ref_xy = best_p[:2]
+    else:
+        d = [0.0, 0.0, 0.0]
+        for ax, sg in xy_axes:
+            d[ax] += sg
+        n = float(np.sqrt(d[0] ** 2 + d[1] ** 2)) or 1.0
+        d = [d[0] / n, d[1] / n, 0.0]
+        ext = [(host_view.bbox_max[i] - host_view.bbox_min[i]) / 2 for i in range(3)]
+        t_min = min((ext[i] / abs(d[i])) for i in range(3) if abs(d[i]) > 1e-6)
+        ref_xy = [center_w[i] + d[i] * t_min for i in range(3)][:2]
+    # outward = the host port's own horizontal facing (the direction the
+    # connection opens toward); fall back to radial from the host centre
+    if fp is not None and abs(fp.axis[2]) < 0.7:
+        out = [fp.axis[0], fp.axis[1], 0.0]
+    else:
+        out = [ref_xy[0] - center_w[0], ref_xy[1] - center_w[1], 0.0]
+    n = float(np.sqrt(out[0] ** 2 + out[1] ** 2)) or 1.0
+    out = [out[0] / n, out[1] / n, 0.0]
+    # height: a "lower" hint drops the fitting to the ground plane — the
+    # missing host body (e.g. the heat pump under its casing) can't be
+    # invented, so the floor is the stable documented reference
+    below = any(sg < 0 for ax, sg in axes if ax == 2)
+    # outward-facing port = the one sticking out most along its own axis
+    ports = part.ports or []
+    out_port = (
+        max(ports, key=lambda p: sum(p.pos[i] * p.axis[i] for i in range(3))) if ports else None
+    )
+    out_axis = out_port.axis if out_port else [1.0, 0.0, 0.0]
+    r = _rot_from_to(list(out_axis), out)
+    # rotate the part bbox to measure the footprint; the outward port's own
+    # position defines the "free end" that must stay outside the host
+    corners_l = _bbox_corners_world(part.bbox_min, part.bbox_max, np.eye(4).tolist())
+    corners_w = [[sum(r[i][c] * p[c] for c in range(3)) for i in range(3)] for p in corners_l]
+    min_z = min(p[2] for p in corners_w)
+    z_target = (-min_z + 1.0) if below else (best_p[2] if best_p else 0.0)
+    # keep the part just outside the host silhouette: its INNER face sits
+    # gap mm past the reference point — the centre offset is the rotated
+    # extent along `out`, not the bare gap
+    pl = [(part.bbox_min[i] + part.bbox_max[i]) / 2 for i in range(3)]
+    pc = [sum(r[i][c] * pl[c] for c in range(3)) for i in range(3)]
+    face_in = min(sum(out[k] * p[k] for k in range(3)) for p in corners_w)
+    off = 3.0 - face_in
+    if tasks is not None:
+        ref_out = ref_xy[0] * out[0] + ref_xy[1] * out[1]
+        off += _chain_out_correction(sess, tasks, ti, out, ref_out, part)
+    tr = [
+        r[0] + [ref_xy[0] + out[0] * off - pc[0]],
+        r[1] + [ref_xy[1] + out[1] * off - pc[1]],
+        r[2] + [z_target - pc[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    return tr, out_port
+
+
+def _premount_pose_pick(
+    sess: GuideToolSession,
+    task: dict[str, Any],
+    pid: str,
+    part: Any,
+    host_inst: Any,
+    host_view: Any,
+    xy_axes: list[tuple[int, float]],
+    axes: list[tuple[int, float]],
+    feed_perp: int | None,
+    tasks: list[dict[str, Any]] | None,
+    ti: int,
+) -> tuple[Any | None, list[list[float]], float | None]:
+    """Best heuristic premount pose — side-scored host ports ranked by
+    predicted chain closure when the task feeds a resolvable bridge
+    chain. Returns ``(fp, transform, predicted_res_mm)``."""
+    cand_fps: list[Any | None] = [
+        fp for _s, fp in _score_host_ports(host_view, xy_axes, feed_perp)
+    ][:6] or [None]
+    best: tuple[tuple[float, float, float], Any | None, list[list[float]], float | None] | None = None
+    for ci, fp in enumerate(cand_fps):
+        tr_i, out_port_i = _premount_heuristic_tr(
+            sess, task, part, host_view, fp, axes, tasks, ti
+        )
+        res_i = (
+            _premount_closure_res(sess, tasks, ti, task, pid, tr_i, out_port_i, host_inst.part_id)
+            if tasks is not None
+            else None
+        )
+        key = (0.0 if res_i is not None else 1.0, res_i if res_i is not None else 0.0, float(ci))
+        if best is None or key < best[0]:
+            best = (key, fp, tr_i, res_i)
+    if best is None:
+        return None, [], None
+    _key, fp, tr, res = best
+    return fp, tr, res
+
+
+def _premount_closure_res(
+    sess: GuideToolSession,
+    tasks: list[dict[str, Any]],
+    ti: int,
+    task: dict[str, Any],
+    pid: str,
+    tr: list[list[float]],
+    out_port: Any | None,
+    host_pid: str,
+) -> float | None:
+    """Predicted gap between where the chain growing from pose ``tr``
+    would end and the partner tip its declared bridge must reach — None
+    when the task feeds no resolvable bridge chain (nothing to predict).
+    Estimate only: chain height along the leg axis from the part's
+    outward port — the same reach model ``_chain_height`` documents."""
+    mids, bridge = _walk_premount_chain(sess, tasks, ti)
+    if bridge is None or not mids:
+        return None
+    bpid = _tpart(sess, bridge)
+    chain_pids = {pid, *mids}
+    if bpid:
+        chain_pids.add(bpid)
+    t2 = _bridge_second_mate(sess, bridge, chain_pids)
+    if t2 is None:
+        return None
+    sides = set(task.get("_ref_sides") or [])
+    tip_inst, _how = _side_matched_instance(sess, tasks, t2, sides)
+    if tip_inst is None or not tip_inst.transform:
+        return None
+    free_tip = _free_cyl_ports(sess, tip_inst)
+    if not free_tip:
+        return None
+    tip_w = np.asarray(_world_pos(tip_inst.transform, free_tip[0].pos), dtype=float)
+    start = (
+        np.asarray(_world_pos(tr, out_port.pos), dtype=float)
+        if out_port is not None
+        else np.asarray([tr[0][3], tr[1][3], tr[2][3]], dtype=float)
+    )
+    leg_axis = np.array([0.0, 0.0, -1.0 if "d" in sides else 1.0])
+    h = _chain_height(sess, tasks, ti, host_pid)
+    chain_tip = start + leg_axis * h
+    return float(np.linalg.norm(chain_tip - tip_w))
+
+
+async def _premount_back_solve_place(
+    sess: GuideToolSession,
+    task: dict[str, Any],
+    pid: str,
+    part: Any,
+    host_inst: Any,
+    tasks: list[dict[str, Any]],
+    ti: int,
+) -> str | None:
+    """Chain back-solve commit path of ``_place_premount_ref``: the
+    partner tip fixes the premount pose exactly when the chain resolves.
+    Returns the placed instance id or ``None`` (reason on the task)."""
+    tr, bs_reason = _premount_chain_transform(sess, tasks, ti, task, pid)
+    if tr is None:
+        task["_back_solve_reason"] = bs_reason
+        log.info(
+            "guide.preassembly.premount_back_solve_miss",
+            part=pid,
+            step=task["step"],
+            reason=bs_reason,
+        )
+        return None
+    cid = f"premount-chain-{pid}-{task['step']}"
+    sess._preview_cache[cid] = {
+        "transform": tr,
+        "collision_free": True,
+        "candidate_id": cid,
+    }
+    res = await place_instance(
+        sess,
+        {
+            "part_id": pid,
+            "candidate_id": cid,
+            "step": task["step"],
+            "substep_idx": task["substep_idx"],
+            "premount": True,
+            "_premount_task": True,
+        },
+    )
+    if not res.get("ok"):
+        task["_back_solve_reason"] = "place_rejected"
+        return None
+    task["_premount_pose_source"] = "chain_back_solve"
+    host_gap = _premount_host_gap(sess, part, tr, host_inst)
+    if host_gap is not None:
+        task["_premount_host_gap_mm"] = round(host_gap, 1)
+        task["_premount_host_adjacent"] = bool(host_gap <= PREMOUNT_HOST_GAP_MM)
+    insts = sess.state.assembly.instances
+    log.info(
+        "guide.preassembly.premount_chain",
+        part=pid,
+        instance=insts[-1].instance_id if insts else None,
+    )
+    return insts[-1].instance_id if insts else None
+
+
 async def _place_premount_ref(
     sess: GuideToolSession,
     task: dict[str, Any],
@@ -3454,33 +3830,9 @@ async def _place_premount_ref(
     # chain back-solve first: when the premount feeds a bridge chain, the
     # partner tip fixes its pose exactly — the heuristic is the fallback
     if tasks is not None:
-        tr = _premount_chain_transform(sess, tasks, ti, task, pid)
-        if tr is not None:
-            cid = f"premount-chain-{pid}-{task['step']}"
-            sess._preview_cache[cid] = {
-                "transform": tr,
-                "collision_free": True,
-                "candidate_id": cid,
-            }
-            res = await place_instance(
-                sess,
-                {
-                    "part_id": pid,
-                    "candidate_id": cid,
-                    "step": task["step"],
-                    "substep_idx": task["substep_idx"],
-                    "premount": True,
-                    "_premount_task": True,
-                },
-            )
-            if res.get("ok"):
-                insts = sess.state.assembly.instances
-                log.info(
-                    "guide.preassembly.premount_chain",
-                    part=pid,
-                    instance=insts[-1].instance_id if insts else None,
-                )
-                return insts[-1].instance_id if insts else None
+        placed = await _premount_back_solve_place(sess, task, pid, part, host_inst, tasks, ti)
+        if placed:
+            return placed
     if part is None or host_inst is None or not host_inst.transform:
         return None
     host = sess.state.part_by_id(host_inst.part_id)
@@ -3492,65 +3844,31 @@ async def _place_premount_ref(
     # The pick must run on WORLD positions — under an anchor rotation a
     # local "left" port can land on the world right.
     xy_axes = [(a, s) for a, s in axes if a < 2]
-    center_local = [(host.bbox_min[i] + host.bbox_max[i]) / 2 for i in range(3)]
-    center_w = _world_pos(host_inst.transform, center_local)
     host_view = _world_part_view(host_inst, host)
-    best_fp = _pick_host_port(host_view, xy_axes, feed_perp)
-    best_p = list(best_fp.pos) if best_fp is not None else None
-    if best_p is not None:
-        ref_xy = best_p[:2]
-    else:
-        d = [0.0, 0.0, 0.0]
-        for ax, sg in xy_axes:
-            d[ax] += sg
-        n = float(np.sqrt(d[0] ** 2 + d[1] ** 2)) or 1.0
-        d = [d[0] / n, d[1] / n, 0.0]
-        ext = [(host.bbox_max[i] - host.bbox_min[i]) / 2 for i in range(3)]
-        t_min = min((ext[i] / abs(d[i])) for i in range(3) if abs(d[i]) > 1e-6)
-        ref_xy = [center_w[i] + d[i] * t_min for i in range(3)][:2]
-    # outward = the host port's own horizontal facing (the direction the
-    # connection opens toward); fall back to radial from the host centre
-    if best_fp is not None and abs(best_fp.axis[2]) < 0.7:
-        out = [best_fp.axis[0], best_fp.axis[1], 0.0]
-    else:
-        out = [ref_xy[0] - center_w[0], ref_xy[1] - center_w[1], 0.0]
-    n = float(np.sqrt(out[0] ** 2 + out[1] ** 2)) or 1.0
-    out = [out[0] / n, out[1] / n, 0.0]
-    # height: a "lower" hint drops the fitting to the ground plane — the
-    # missing host body (e.g. the heat pump under its casing) can't be
-    # invented, so the floor is the stable documented reference
-    below = any(sg < 0 for ax, sg in axes if ax == 2)
-    # outward-facing port = the one sticking out most along its own axis
-    ports = part.ports or []
-    out_port = (
-        max(ports, key=lambda p: sum(p.pos[i] * p.axis[i] for i in range(3))) if ports else None
+    task["_premount_pose_source"] = "heuristic"
+    # closure-aware candidate choice: every side-scored host port yields
+    # a plausible-looking pose, but only poses whose chain tip lands
+    # within reach of the declared partner tip can ever close the bridge
+    # — a wrong commit here leaves a ~500mm residual no leaf repair can
+    # fix. Rank candidates by predicted residual when a chain resolves.
+    best_fp, tr, best_res = _premount_pose_pick(
+        sess, task, pid, part, host_inst, host_view, xy_axes, axes, feed_perp, tasks, ti
     )
-    out_axis = out_port.axis if out_port else [1.0, 0.0, 0.0]
-    r = _rot_from_to(list(out_axis), out)
-    # rotate the part bbox to measure the footprint; the outward port's own
-    # position defines the "free end" that must stay outside the host
-    corners_l = _bbox_corners_world(
-        part.bbox_min, part.bbox_max, [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
-    )
-    corners_w = [[sum(r[i][c] * p[c] for c in range(3)) for i in range(3)] for p in corners_l]
-    min_z = min(p[2] for p in corners_w)
-    z_target = (-min_z + 1.0) if below else (best_p[2] if best_p else 0.0)
-    # keep the part just outside the host silhouette: its INNER face sits
-    # gap mm past the reference point — the centre offset is the rotated
-    # extent along `out`, not the bare gap
-    pl = [(part.bbox_min[i] + part.bbox_max[i]) / 2 for i in range(3)]
-    pc = [sum(r[i][c] * pl[c] for c in range(3)) for i in range(3)]
-    face_in = min(sum(out[k] * p[k] for k in range(3)) for p in corners_w)
-    off = 3.0 - face_in
-    if tasks is not None:
-        ref_out = ref_xy[0] * out[0] + ref_xy[1] * out[1]
-        off += _chain_out_correction(sess, tasks, ti, out, ref_out, part)
-    tr = [
-        r[0] + [ref_xy[0] + out[0] * off - pc[0]],
-        r[1] + [ref_xy[1] + out[1] * off - pc[1]],
-        r[2] + [z_target - pc[2]],
-        [0.0, 0.0, 0.0, 1.0],
-    ]
+    if not tr:
+        return None
+    if best_fp is not None:
+        task["_premount_host_port"] = str(best_fp.name)
+    if best_res is not None:
+        task["_closure_res_mm"] = round(float(best_res), 1)
+        task["_bridge_closure_predicted"] = bool(best_res <= CLOSURE_SLACK_MM)
+        if not task["_bridge_closure_predicted"]:
+            log.info(
+                "guide.preassembly.premount_unclosable",
+                part=pid,
+                step=task["step"],
+                host_port=str(getattr(best_fp, "name", "")),
+                predicted_res_mm=round(float(best_res), 1),
+            )
     cid = f"premount-ref-{pid}-{task['step']}"
     sess._preview_cache[cid] = {
         "transform": tr,
@@ -3571,7 +3889,15 @@ async def _place_premount_ref(
     if not res.get("ok"):
         return None
     insts = sess.state.assembly.instances
-    return insts[-1].instance_id if insts else None
+    if insts:
+        # durable binding provenance: request_repair re-runs this exact
+        # task through the closure-aware path after a cascade teardown
+        pm_tasks = getattr(sess, "_premount_tasks", None)
+        if pm_tasks is None:
+            pm_tasks = sess._premount_tasks = {}
+        pm_tasks[insts[-1].instance_id] = task
+        return insts[-1].instance_id
+    return None
 
 
 async def _place_anchor(

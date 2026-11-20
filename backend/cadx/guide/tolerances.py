@@ -78,6 +78,12 @@ SHIFT_MEAN_MIN_MM = 0.5
 # pose error should ever request.
 LIFT_SHIFT_CLAMP_MM = 60.0
 
+# Predicted-chain-closure slack for premount pose ranking: the estimate
+# (chain height along the leg axis) is coarse, so the flag only marks
+# predictions beyond the same scale as a real pairing error — the
+# candidate ordering itself is driven by the raw residual, not this gate.
+CLOSURE_SLACK_MM = 80.0
+
 # Bridge-retry rejection gates: a candidate buried >45 % inside another
 # part — or >60 % swallowed by the host itself — is intersecting, not
 # mated.

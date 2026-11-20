@@ -20,6 +20,7 @@ from cadx.guide import scene as gscene
 from cadx.guide import solver
 from cadx.guide.state import AssemblyInstance
 from cadx.guide.tolerances import (
+    MISS_RESIDUAL_MAX_MM,
     POSTHOC_GAP_CAP_MM,
     POSTHOC_GAP_FACTOR,
     POSTHOC_NDOT_GATE,
@@ -1783,6 +1784,33 @@ async def rotate_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, A
     return {"ok": True, "instance_id": inst.instance_id, "rolled_deg": deg}
 
 
+def _orphaned_subtree(s: GuideToolSession, gone: set[str]) -> set[str]:
+    """Instances whose ONLY joint path to a host runs through ``gone`` —
+    a fixpoint over the LIVE joint graph, computed before teardown
+    mutates it. A bridge instance still jointed to a second healthy host
+    survives; unjointed instances (premounts, the anchor) never join."""
+    live = {i.instance_id or i.part_id for i in s.state.assembly.instances}
+    doomed: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for j in s.state.assembly.joints:
+            mov = str(j.get("moving_instance") or "")
+            if not mov or mov in gone or mov in doomed:
+                continue
+            others = [
+                str(fj.get("fixed_instance") or "")
+                for fj in s.state.assembly.joints
+                if str(fj.get("moving_instance") or "") == mov
+            ]
+            if others and all(
+                fx in gone or fx in doomed or fx not in live for fx in others
+            ):
+                doomed.add(mov)
+                changed = True
+    return doomed
+
+
 def _remove_instance(s: GuideToolSession, inst: Any) -> str:
     """Delete one instance, its step mapping and every joint touching it —
     the shared teardown primitive for unplace/reset/repair."""
@@ -1864,6 +1892,32 @@ async def unplace_instance(s: GuideToolSession, a: dict[str, Any]) -> dict[str, 
     return out
 
 
+def _mate_blocking_root(s: GuideToolSession, iid: str) -> dict[str, Any] | None:
+    """Walk the joint graph upstream from ``iid`` to the chain's root —
+    the placed instance feeding this open mate that has no incoming joint
+    of its own (a premount) or is a dead-ended subtree. Returns
+    ``{root, step, kind}`` — the instance a repair must re-bind, not the
+    leaf the residual is measured on."""
+    insts = {i.instance_id or i.part_id: i for i in s.state.assembly.instances}
+    fixed_of: dict[str, str] = {}
+    for j in s.state.assembly.joints:
+        fixed_of.setdefault(str(j.get("moving_instance")), str(j.get("fixed_instance")))
+    cur, seen = iid, set()
+    while cur and cur not in seen:
+        seen.add(cur)
+        inst = insts.get(cur)
+        if inst is None:
+            return None
+        if getattr(inst, "premounted", False):
+            return {"root": cur, "step": inst.placed_in_step, "kind": "premount"}
+        nxt = fixed_of.get(cur)
+        if nxt is None:
+            kind = "anchor" if cur == (s.state.assembly.instances[0].instance_id if s.state.assembly.instances else "") else "unjoined"
+            return {"root": cur, "step": inst.placed_in_step, "kind": kind}
+        cur = nxt
+    return None
+
+
 def _flagged_instances(s: GuideToolSession) -> set[str]:
     """Instances the geometry audit currently implicates — the surgical
     repair target set."""
@@ -1886,6 +1940,10 @@ def _flagged_instances(s: GuideToolSession) -> set[str]:
                         flagged.add(end)
             elif isinstance(it, str):
                 flagged.add(it)
+    # mate_blocking: chain roots measured unclosable by resolve_open_mates
+    # (residual beyond pairing-error scale) — the leaf stays flagged too,
+    # but repairing the leaf can never close a ~500mm upstream offset
+    flagged.update(getattr(s, "_mate_blocking", {}).values())
     return flagged
 
 
@@ -1939,22 +1997,77 @@ async def request_repair(s: GuideToolSession, a: dict[str, Any]) -> dict[str, An
             f"(flagged overall: {sorted(flagged)[:8]}) — nothing to repair; "
             "if the step still fails checks, the defect is upstream",
         }
+    # cascade: the subtree hanging on a torn-down chain root is floating
+    # debris the moment its only upstream path is gone — compute it on
+    # the LIVE joint graph (root teardown scrubs the edges it fed on)
+    doomed = _orphaned_subtree(s, {str(i.instance_id or i.part_id) for i in targets})
     removed = [_remove_instance(s, i) for i in targets]
+    cascade = [
+        _remove_instance(s, i)
+        for i in list(s.state.assembly.instances)
+        if str(i.instance_id or i.part_id) in doomed
+    ]
+    # re-bind torn-down premount roots through the same deterministic
+    # path that placed them — the chain context in the planner tasks
+    # re-derives the pose, and closure-aware candidate ranking picks the
+    # host port that can actually close the declared bridge this time
+    from cadx.guide import preassembly  # local — tools registry imports us
+
+    rebound: list[dict[str, Any]] = []
+    pm_tasks: dict[str, dict[str, Any]] = getattr(s, "_premount_tasks", {}) or {}
+    plan_tasks = getattr(s, "_planner_tasks", None) or []
+    for iid in list(removed):
+        task = pm_tasks.pop(iid, None)
+        if task is None:
+            continue
+        pid = preassembly._tpart(s, task)
+        if pid is None:
+            continue
+        tasks = plan_tasks or [task]
+        ti = tasks.index(task) if task in tasks else 0
+        st0 = s.state.step_by_number(task["step"])
+        hint0 = f"{task.get('target') or ''} {task.get('text') or ''} {st0.title if st0 else ''}"
+        new_iid = await preassembly._place_premount_ref(
+            s,
+            task,
+            pid,
+            preassembly._dir_axes(hint0),
+            preassembly._feeds_bridge_axis(s, tasks, ti, pid),
+            tasks=tasks,
+            ti=ti,
+        )
+        rebound.append(
+            {
+                "root": iid,
+                "rebound": new_iid,
+                "pose_source": task.get("_premount_pose_source"),
+                "host_port": task.get("_premount_host_port"),
+                "closure_res_mm": task.get("_closure_res_mm"),
+                "closure_predicted": task.get("_bridge_closure_predicted"),
+            }
+        )
     parts_needed = sorted({i.part_id for i in targets})
     log.info(
         "guide.request_repair",
         step=step_no,
         removed=removed,
+        cascade=cascade,
+        rebound=rebound,
         flagged=sorted(flagged)[:8],
     )
-    return {
+    out: dict[str, Any] = {
         "ok": True,
-        "unplaced": removed,
+        "unplaced": removed + cascade,
         "re_place": parts_needed,
         "note": f"removed {len(removed)} flagged instance(s); healthy "
         "placements and joints kept — re-place "
         f"{parts_needed} in step {step_no} to close it",
     }
+    if cascade:
+        out["cascade_removed"] = cascade
+    if rebound:
+        out["rebound"] = rebound
+    return out
 
 
 def _open_bridge_legs(s: GuideToolSession) -> list[dict[str, Any]]:
@@ -2050,6 +2163,22 @@ async def resolve_open_mates(s: GuideToolSession, a: dict[str, Any]) -> dict[str
     resolved = [r for r in retries if not r.get("rejected")]
     failed = [r for r in retries if r.get("rejected")]
     s._preview_cache = {}  # transforms moved — stale candidates are lies
+    # upstream attribution: a residual beyond the pairing-error scale is a
+    # binding error somewhere UP the chain — find the chain root so the
+    # repair hits the cause, not the measured leaf (observed: leaf repair
+    # loops died on a ~425mm premount offset they could never close)
+    blocking: dict[str, str] = getattr(s, "_mate_blocking", None) or {}
+    s._mate_blocking = blocking
+    for f in failed:
+        res_mm = float(f.get("res_mm") or 0.0)
+        if res_mm <= MISS_RESIDUAL_MAX_MM:
+            continue
+        cause = _mate_blocking_root(s, str(f.get("i1") or ""))
+        if cause is None:
+            continue
+        f["rejected"] = "uncloseable"
+        f["upstream_cause"] = cause
+        blocking[cause["root"]] = cause["root"]
     out = {"ok": not failed, "resolved": resolved, "failed": failed}
     # tasks the retry skipped silently (non-leaf instance, missing
     # substep) leave the leg open without a failure record — recount so
@@ -2068,11 +2197,22 @@ async def resolve_open_mates(s: GuideToolSession, a: dict[str, Any]) -> dict[str
         )
     if not out["ok"]:
         out["error"] = "declared mate(s) still open"
-        out["next_action"] = (
-            "validate_assembly_geometry shows the measured gap — if the "
-            "declared target is wrong or unreachable, request_repair the "
-            "step instead of re-placing more instances"
-        )
+        unclose = [f for f in failed if f.get("upstream_cause")]
+        if unclose:
+            c = unclose[0]["upstream_cause"]
+            out["next_action"] = (
+                f"the mate is uncloseable: chain root '{c['root']}' "
+                f"(step {c['step']}, {c['kind']}) sits "
+                f"{unclose[0].get('res_mm')}mm off — request_repair(step="
+                f"{c['step']}) to re-bind the root; repairing the leaf "
+                "cannot close an upstream offset"
+            )
+        else:
+            out["next_action"] = (
+                "validate_assembly_geometry shows the measured gap — if the "
+                "declared target is wrong or unreachable, request_repair the "
+                "step instead of re-placing more instances"
+            )
     return out
 
 
