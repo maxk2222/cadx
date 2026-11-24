@@ -91,16 +91,25 @@ async def test_warm_worker_idle_self_exit(tmp_path):
 
 async def test_warm_worker_rss_cap_kill(tmp_path):
     """job_max_rss_mb applies to warm workers too — a runaway child is
-    killed mid-job exactly like a cold subprocess."""
-    mgr, _reg = _manager(tmp_path, job_max_rss_mb=1)  # any python child exceeds 1MB
+    killed mid-job exactly like a cold subprocess. The cap floats with the
+    model's declared footprint (est*1.3), so the fake adapter must declare
+    0 for a 1MB cap to bite."""
+    from meshserver.adapters.fake import FakeAdapter
+
+    class _FakeNoEst(FakeAdapter):
+        id = "fake-no-est"
+        est_mem_mb = 0
+
+    mgr, reg = _manager(tmp_path, job_max_rss_mb=1)
+    reg._classes.append(_FakeNoEst)  # noqa: SLF001
     mgr.start()
     try:
-        j = await mgr.submit(GenParams(model="fake"), [_png(tmp_path)])
+        j = await mgr.submit(GenParams(model="fake-no-est"), [_png(tmp_path)])
         await _wait_done(mgr, j)
         assert j.status == "failed"
         assert "RSS" in (j.error or "")
         mgr._warm_gc()  # noqa: SLF001
-        assert "fake" not in mgr._warm  # noqa: SLF001
+        assert "fake-no-est" not in mgr._warm  # noqa: SLF001
     finally:
         await mgr.stop()
 

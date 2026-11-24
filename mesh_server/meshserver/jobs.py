@@ -1115,13 +1115,16 @@ class JobManager:
                 pass
             rss = self._child_rss_mb(proc.pid)
             peak_rss_mb = max(peak_rss_mb, rss or 0.0)
-            if (
-                self.cfg.job_max_rss_mb > 0
-                and rss is not None
-                and rss > self.cfg.job_max_rss_mb
-            ):
-                kill_reason = f"job exceeded {self.cfg.job_max_rss_mb}MB RSS — killed"
-                _kill()
+            # the flat cap guards against runaway growth — but a model
+            # admitted at a bigger declared footprint (CPU-offloaded weights
+            # legitimately live in RSS) gets headroom over its estimate
+            if self.cfg.job_max_rss_mb > 0:
+                model = job.resolved_model or job.model
+                est = self.registry.ledger.est_mb(model, self._declared_mem(model))
+                rss_cap = max(float(self.cfg.job_max_rss_mb), est * 1.3)
+                if rss is not None and rss > rss_cap:
+                    kill_reason = f"job exceeded {rss_cap:.0f}MB RSS — killed"
+                    _kill()
             if child_proc is not None:
                 # liveness = CPU activity OR allocation churn. A deadlocked
                 # child sits at exactly 0% CPU with a frozen RSS; GPU-bound
