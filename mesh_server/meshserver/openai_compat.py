@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from meshserver.jobs import ImageJob
 from meshserver.logging import get_logger
@@ -143,7 +143,7 @@ async def _wait_image_job(manager: Any, job: ImageJob, cfg: Any) -> ImageJob | J
     )
 
 
-def _image_response(job: ImageJob, *, response_format: str, base_url: str) -> JSONResponse:
+def _image_body(job: ImageJob, *, response_format: str, base_url: str) -> dict:
     if response_format == "url":
         data = [
             {"url": f"{base_url}/v1/image-jobs/{job.id}/image?i={i}"}
@@ -154,10 +154,108 @@ def _image_response(job: ImageJob, *, response_format: str, base_url: str) -> JS
             {"b64_json": base64.b64encode(png).decode(), "revised_prompt": None}
             for png in job.images
         ]
+    return {"created": int(time.time()), "data": data}
+
+
+def _image_response(job: ImageJob, *, response_format: str, base_url: str) -> JSONResponse:
     return JSONResponse(
-        {"created": int(time.time()), "data": data},
+        _image_body(job, response_format=response_format, base_url=base_url),
         headers={"X-Mesh-Job-Id": job.id},
     )
+
+
+def _job_queue_position(manager: Any, job: ImageJob) -> int | None:
+    """1-based rank inside the score-ordered queued segment of /v1/queue —
+    the position external clients see in status events."""
+    snap = manager.queue_snapshot()
+    pos = 0
+    for entry in snap.jobs:
+        if getattr(entry, "status", "") != "queued":
+            continue
+        pos += 1
+        if entry.id == job.id:
+            return pos
+    return None
+
+
+def _stream_image_job(
+    manager: Any,
+    cfg: Any,
+    job: ImageJob,
+    *,
+    fmt: str,
+    base_url: str,
+    warning: str | None = None,
+) -> Response:
+    """stream:true path — SSE commits immediately. Status events
+    ({"type":"status", state, position, progress, message}) carry queue
+    rank and adapter progress while the job waits/runs; the terminal
+    event is the standard OpenAI images payload, then [DONE]."""
+    from meshserver.llm_proxy import _dumps, _error_chunk, _sse_headers
+
+    async def gen():
+        effective = getattr(cfg, "effective", None)
+        keep_v = effective("llm_keepalive_s") if effective else None
+        keep_s = max(float(keep_v if keep_v is not None else 5), 0.5)
+        wait_v = effective("openai_image_wait_s") if effective else None
+        wait_s = float(wait_v if wait_v is not None else 600)
+        deadline = time.monotonic() + wait_s
+        if warning is not None:
+            yield f"data: {_dumps({'type': 'warning', 'message': warning})}\n\n".encode()
+        last_status = ""
+        last_status_at = 0.0
+        since_keepalive = 0.0
+        while time.monotonic() < deadline:
+            current = manager.get(job.id)
+            if current is None:
+                yield _error_chunk("image job vanished mid-run")
+                return
+            if current.status == "succeeded":
+                payload = _image_body(current, response_format=fmt, base_url=base_url)
+                yield f"data: {_dumps(payload)}\n\n".encode()
+                yield b"data: [DONE]\n\n"
+                return
+            if current.status in ("failed", "cancelled"):
+                yield _error_chunk(
+                    f"image job {current.status}: {current.error or 'unknown error'}"
+                )
+                return
+            pos = _job_queue_position(manager, current)
+            status_obj = {
+                "type": "status",
+                "state": current.status,
+                "position": pos,
+                "progress": round(current.progress, 3),
+                "message": current.message,
+                "model": current.resolved_model or current.params.model,
+                "job_id": current.id,
+            }
+            status = _dumps(status_obj)
+            now = time.monotonic()
+            # emit on change or every ~10s steady-state; SSE comments keep
+            # proxies/clients alive independently of event cadence
+            if status != last_status or now - last_status_at > 10:
+                yield f"data: {status}\n\n".encode()
+                last_status = status
+                last_status_at = now
+            if now - since_keepalive >= keep_s:
+                yield b": keepalive\n\n"
+                since_keepalive = now
+            await asyncio.sleep(_POLL_S)
+        yield _error_chunk(
+            f"image job '{job.id}' still running after {wait_s:.0f}s — "
+            f"poll /v1/image-jobs/{job.id} for the result"
+        )
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream", headers=_sse_headers()
+    )
+
+
+def _wants_stream(body: dict) -> bool:
+    """Opt-in SSE for image endpoints — an extension field OpenAI clients
+    simply ignore (unknown keys fall through the spec silently)."""
+    return str(body.get("stream") or "").lower() in ("1", "true", "yes")
 
 
 async def images_generations(
@@ -182,10 +280,12 @@ async def images_generations(
             status_code=429,
             headers={"Retry-After": "10"},
         )
+    fmt = str(body.get("response_format") or "b64_json").lower()
+    if _wants_stream(body):
+        return _stream_image_job(manager, cfg, job, fmt=fmt, base_url=base_url)
     done = await _wait_image_job(manager, job, cfg)
     if isinstance(done, JSONResponse):
         return done
-    fmt = str(body.get("response_format") or "b64_json").lower()
     return _image_response(done, response_format=fmt, base_url=base_url)
 
 
@@ -227,13 +327,20 @@ async def images_edits(
             status_code=429,
             headers={"Retry-After": "10"},
         )
+    fmt = str(body.get("response_format") or "b64_json").lower()
+    warning = (
+        "mask input ignored — adapter edits whole image" if has_mask else None
+    )
+    if _wants_stream(body):
+        return _stream_image_job(
+            manager, cfg, job, fmt=fmt, base_url=base_url, warning=warning
+        )
     done = await _wait_image_job(manager, job, cfg)
     if isinstance(done, JSONResponse):
         return done
-    fmt = str(body.get("response_format") or "b64_json").lower()
     resp = _image_response(done, response_format=fmt, base_url=base_url)
-    if has_mask:
-        resp.headers["X-Mesh-Warning"] = "mask input ignored — adapter edits whole image"
+    if warning:
+        resp.headers["X-Mesh-Warning"] = warning
     return resp
 
 

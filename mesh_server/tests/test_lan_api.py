@@ -160,6 +160,47 @@ def test_openai_images_edits(tmp_path):
         assert r.json()["data"][0]["b64_json"]
 
 
+def test_openai_images_stream_sse(tmp_path):
+    """stream:true opts into SSE — status events then the final payload."""
+    with TestClient(_app(tmp_path)) as c:
+        r = c.post(
+            "/v1/images/generations",
+            json={
+                "model": "fake-image",
+                "prompt": "a red gear",
+                "stream": True,
+                "size": "256x256",
+            },
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/event-stream")
+        events = [
+            line.removeprefix("data:").strip()
+            for line in r.text.splitlines()
+            if line.startswith("data:")
+        ]
+        assert events and events[-1] == "[DONE]"
+        statuses = [e for e in events[:-1] if '"type":"status"' in e]
+        final = events[-2]
+        assert statuses  # at least one queue/run status event
+        assert '"state"' in statuses[0]
+        assert '"b64_json"' in final
+
+
+def test_openai_images_edits_stream_sse(tmp_path):
+    """edits accepts stream via multipart form fields."""
+    with TestClient(_app(tmp_path)) as c:
+        r = c.post(
+            "/v1/images/edits",
+            data={"model": "fake-image", "prompt": "make it blue", "stream": "true"},
+            files={"image": ("init.png", _png(), "image/png")},
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"].startswith("text/event-stream")
+        assert "data: [DONE]" in r.text
+        assert '"b64_json"' in r.text
+
+
 def test_openai_images_unknown_model(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         r = c.post(
