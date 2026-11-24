@@ -125,6 +125,31 @@ def test_empty_body_settings_return_none():
     assert thinking_body(ctx, "critique") is None
 
 
+def test_sidecar_builtin_dialect_when_bodies_empty():
+    """Empty body settings must not silently no-op on the sidecar: llama.cpp
+    defaults thinking ON, so "off" without a body still thought forever.
+    The built-in dialect emits enable_thinking=false for off calls and a
+    bounded reasoning_effort for on calls."""
+    ctx = _ctx(llm_backend="sidecar", llm_thinking="off")
+    assert thinking_body(ctx, "repair") == {
+        "chat_template_kwargs": {"enable_thinking": False}
+    }
+    ctx = _ctx(llm_backend="sidecar", llm_thinking="always")
+    assert thinking_body(ctx, "critique") == {
+        "reasoning_effort": "low",
+        "chat_template_kwargs": {"reasoning_effort": "low"},
+    }
+    ctx = _ctx(llm_backend="sidecar", llm_thinking="always")
+    ctx.thinking_level = 2
+    assert thinking_body(ctx, "critique") == {
+        "reasoning_effort": "xhigh",
+        "chat_template_kwargs": {"reasoning_effort": "xhigh"},
+    }
+    # configured bodies still win over the builtin dialect
+    ctx = _ctx(llm_backend="sidecar", llm_thinking="off", llm_thinking_body_off=OFF)
+    assert thinking_body(ctx, "repair") == OFF_BODY
+
+
 def test_malformed_body_json_degrades_to_none():
     """The RuntimeSettings validator guards the settings API; the policy still
     must not raise when a malformed value lands on the model directly."""

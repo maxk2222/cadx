@@ -1,9 +1,10 @@
 """Adaptive per-call reasoning ("thinking") control.
 
-Reasoning tokens are expensive: the policy keeps them OFF for cheap steps
-and ON for steps listed in ``llm_thinking_hard_steps`` (empty by default —
-escalation is now stall/regression-driven) plus every call once the
-orchestrator latches ``ctx.thinking_escalated``. The escalation is staged:
+Reasoning is ON by default (``llm_thinking="always"`` — bounded low effort);
+"auto" keeps it OFF for cheap steps and ON for steps listed in
+``llm_thinking_hard_steps`` (empty by default — escalation is
+stall/regression-driven) plus every call once the orchestrator latches
+``ctx.thinking_escalated``. The escalation is staged:
 ``ctx.thinking_level`` 1 merges ``llm_thinking_body_medium``, level 2
 ``llm_thinking_body_high``, each falling back to ``llm_thinking_body_on``
 when unset. Provider dialects stay config-driven — the body settings are
@@ -98,6 +99,31 @@ def thinking_on(ctx: AgentCtx, step: str) -> bool:
     return True
 
 
+# sidecar (llama.cpp --jinja / Qwen3) verified template contract:
+# enable_thinking is the hard toggle, reasoning_effort bounds the think
+# length (enum low/medium/xhigh on Qwen3.8 — never bare "high")
+_SIDECAR_EFFORT = {"on": "low", "medium": "medium", "high": "xhigh"}
+
+
+def _dialect_default(ctx: AgentCtx, which: str) -> dict[str, Any] | None:
+    """Built-in provider dialect when the configured body is empty.
+
+    Only the sidecar backend has a verified contract — llama.cpp honours
+    ``chat_template_kwargs.enable_thinking`` and ``reasoning_effort``.
+    External providers keep the empty-body contract (provider default)
+    rather than emitting keys they might reject.
+    """
+    if ctx.runtime_settings.llm_backend != "sidecar":
+        return None
+    if which == "off":
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    effort = _SIDECAR_EFFORT[which]
+    return {
+        "reasoning_effort": effort,
+        "chat_template_kwargs": {"reasoning_effort": effort},
+    }
+
+
 def _effort_of(body: dict[str, Any] | None) -> str:
     """Best-effort label of the effort a resolved body requests — for the
     ``thinking.resolved`` trace line only, not a policy input."""
@@ -129,15 +155,23 @@ def thinking_body(ctx: AgentCtx, step: str) -> dict[str, Any] | None:
     also the per-job thinking budget ledger (``ctx.thinking_calls_used``)."""
     s = ctx.runtime_settings
     if not thinking_on(ctx, step):
-        return _body(s.llm_thinking_body_off, "off")
+        return _body(s.llm_thinking_body_off, "off") or _dialect_default(ctx, "off")
     ctx.thinking_calls_used = getattr(ctx, "thinking_calls_used", 0) + 1
     level = getattr(ctx, "thinking_level", 0)
     if level >= 2:
-        body = _body(s.llm_thinking_body_high, "high") or _body(s.llm_thinking_body_on, "on")
+        body = (
+            _body(s.llm_thinking_body_high, "high")
+            or _body(s.llm_thinking_body_on, "on")
+            or _dialect_default(ctx, "high")
+        )
     elif level >= 1:
-        body = _body(s.llm_thinking_body_medium, "medium") or _body(s.llm_thinking_body_on, "on")
+        body = (
+            _body(s.llm_thinking_body_medium, "medium")
+            or _body(s.llm_thinking_body_on, "on")
+            or _dialect_default(ctx, "medium")
+        )
     else:
-        body = _body(s.llm_thinking_body_on, "on")
+        body = _body(s.llm_thinking_body_on, "on") or _dialect_default(ctx, "on")
     if s.llm_thinking_max_tokens > 0:
         body = {**(body or {}), "max_tokens": s.llm_thinking_max_tokens}
     log.debug(

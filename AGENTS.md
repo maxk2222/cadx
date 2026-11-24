@@ -177,14 +177,18 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   the adapter catalog max).
 - Adaptive reasoning: `agent/thinking.py` resolves per-call `extra_body`
   (provider-dialect JSON in `llm_thinking_body_on/_off/_medium/_high`) —
-  `llm_thinking=auto` enables thinking for `llm_thinking_hard_steps` (empty by
+  `llm_thinking` defaults to `"always"` (thinking on, bounded effort);
+  `"auto"` enables it only for `llm_thinking_hard_steps` (empty by
   default) and once the orchestrator latches `ctx.thinking_escalated`. The
   escalation is staged on `ctx.thinking_level` (1 → medium, 2 → high) and
   fires ONLY on stall (`llm_thinking_escalate_after` iterations without
   progress) or a measured dq regression ≥ 10 — never on a single patch miss.
-  Qwen3.8 dialect maps on=low → medium → xhigh; send `reasoning_effort` both
-  top-level and inside `chat_template_kwargs` (never bare `"high"` — the
-  template enum is low/medium/xhigh). Thinking calls get
+  Empty body settings fall back to a built-in dialect on the sidecar
+  backend: off → `{"chat_template_kwargs": {"enable_thinking": false}}`,
+  on/medium/high → `reasoning_effort` low/medium/xhigh sent BOTH top-level
+  and inside `chat_template_kwargs` (never bare `"high"` — the Qwen3.8
+  template enum is low/medium/xhigh). External providers keep the
+  empty-body contract (provider default). Thinking calls get
   `max_tokens=llm_thinking_max_tokens` when set — reasoning shares the
   completion budget.
   `agent/quickref.py` serves runtime-introspected signatures to the `quickref`

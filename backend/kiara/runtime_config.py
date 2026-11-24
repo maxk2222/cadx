@@ -63,13 +63,15 @@ class RuntimeSettings(BaseModel):
     # presence_penalty, repetition_penalty, frequency_penalty, seed.
     llm_sampling_profiles: str = ""
     llm_tools: Literal["auto", "on", "off"] = "auto"
-    # adaptive reasoning escalation: "auto" merges llm_thinking_body_on into
-    # the request payload for hard steps and after stall triggers, "always"
-    # for every call, "off" merges llm_thinking_body_off instead. The body
-    # strings are provider-specific payload dicts (Qwen3-style
+    # adaptive reasoning: "always" merges the on-body into every call
+    # (default — thinking on), "auto" only for hard steps and after stall
+    # triggers, "off" merges the off-body instead. The body strings are
+    # provider-specific payload dicts (Qwen3-style
     # {"chat_template_kwargs": {"enable_thinking": false}}, OpenAI-compat
-    # {"reasoning_effort": "low"}) — empty means 'model default'.
-    llm_thinking: Literal["off", "auto", "always"] = "auto"
+    # {"reasoning_effort": "low"}) — empty falls back to a built-in dialect
+    # on the sidecar backend (enable_thinking off / reasoning_effort
+    # low|medium|xhigh), 'model default' on external providers.
+    llm_thinking: Literal["off", "auto", "always"] = "always"
     llm_thinking_body_on: str = ""
     llm_thinking_body_off: str = ""
     # escalation-stage bodies: the orchestrator raises ctx.thinking_level on
