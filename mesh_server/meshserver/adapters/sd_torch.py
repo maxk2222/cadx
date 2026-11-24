@@ -77,6 +77,7 @@ class _SdBase(ImageAdapter):
             pipe = pipe.to(dev)
         self._pipe = pipe
         self._gen_device = dev
+        self._dtype = dtype
         self._loaded = True
 
     def _edit_pipe(self) -> Any:
@@ -84,7 +85,11 @@ class _SdBase(ImageAdapter):
         if getattr(self, "_pipe_edit", None) is None:
             from diffusers import AutoPipelineForImage2Image
 
-            self._pipe_edit = AutoPipelineForImage2Image.from_pipe(self._pipe)
+            # from_pipe defaults torch_dtype to float32 — without the loaded
+            # dtype it upcasts the VAE and fp16 inputs crash on fp32 weights
+            self._pipe_edit = AutoPipelineForImage2Image.from_pipe(
+                self._pipe, torch_dtype=self._dtype
+            )
         return self._pipe_edit
 
     def unload(self) -> None:

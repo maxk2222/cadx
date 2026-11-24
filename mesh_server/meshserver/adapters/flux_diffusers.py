@@ -142,7 +142,12 @@ class FluxSchnellAdapter(ImageAdapter):
         if getattr(self, "_pipe_edit", None) is None:
             from diffusers import FluxImg2ImgPipeline
 
-            self._pipe_edit = FluxImg2ImgPipeline.from_pipe(self._pipe)
+            # from_pipe defaults torch_dtype to float32 — without an explicit
+            # dtype it upcasts VAE/CLIP and the fp32 VAE encoder then crashes
+            # on the bf16 image tensor (quantized modules can't convert anyway)
+            self._pipe_edit = FluxImg2ImgPipeline.from_pipe(
+                self._pipe, torch_dtype=self._torch.bfloat16
+            )
         return self._pipe_edit
 
     def unload(self) -> None:
