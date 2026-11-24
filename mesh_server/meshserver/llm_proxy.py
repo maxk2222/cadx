@@ -1214,13 +1214,19 @@ async def llm_models(registry: Any) -> dict:
                 "supports_vision": getattr(cls, "supports_vision", False),
                 "supports_tools": getattr(cls, "supports_tools", True),
                 "context_len": cfg_ctx or getattr(cls, "context_len", None),
+                "max_model_len": cfg_ctx or getattr(cls, "context_len", None),
                 "downloaded": getattr(info, "downloaded", True) if info else True,
                 "loaded": getattr(info, "loaded", False) if info else False,
             }
         )
     if data:
         # discovery alias — clients point at "omni" and get the full-
-        # capability auto-pick (vision + tools) without knowing catalog ids
+        # capability auto-pick (vision + tools) without knowing catalog ids.
+        # context_len reports the effective served window so clients can size
+        # prompts (vLLM-style max_model_len mirrors it for wider compat)
+        omni_ctx = cfg_ctx or max(
+            (e.get("context_len") or 0 for e in data), default=0
+        ) or None
         data.insert(
             0,
             {
@@ -1232,6 +1238,8 @@ async def llm_models(registry: Any) -> dict:
                 "supports_tools": True,
                 "supports_edit": True,
                 "alias": True,
+                "context_len": omni_ctx,
+                "max_model_len": omni_ctx,
             },
         )
     return {"object": "list", "data": data}
