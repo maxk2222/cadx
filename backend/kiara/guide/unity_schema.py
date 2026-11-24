@@ -153,6 +153,15 @@ def _world_to_unity_dir(dir_world: list[float] | np.ndarray, world_frame: str) -
     return _unit(np.array([-x, z, -y]))
 
 
+def _needs_yaw_compensation(filename: str, global_flag: bool) -> bool:
+    """The client applies its 180° Y mesh-level fix (fbxYawFix) ONLY to FBX
+    loads — the suite's `_resolve_part_filename` marks `needs_yaw_compensation`
+    by file extension. Emitting the pre-rotation for a .glb leaves it
+    permanently +180° yawed (invisible on axisymmetric parts, fatal on
+    elbows)."""
+    return bool(global_flag) and str(filename or "").lower().endswith(".fbx")
+
+
 def _world_to_unity_rot(
     rot3x3: np.ndarray, world_frame: str, compensate_yaw: bool
 ) -> dict[str, float]:
@@ -638,7 +647,11 @@ def _step_model_objects(
             continue
         part = ctx.parts.get(inst.part_id)
         filename = _model_filename(part, ctx.filename_overrides)
-        pos, rot = _transform_to_unity(inst.transform, ctx.world_frame, ctx.yaw)
+        pos, rot = _transform_to_unity(
+            inst.transform,
+            ctx.world_frame,
+            _needs_yaw_compensation(filename, ctx.yaw),
+        )
         is_step_new = iid in step_new_iids
         if is_step_new:
             color, opacity = NEW_PART_COLOR, NEW_PART_OPACITY
@@ -701,7 +714,13 @@ def _step_hero_objects(
             except Exception:
                 pass
         target = _v3(current_x + bbox_width_m / 2, ui_pos["y"], ui_pos["z"])
-        h_pos, h_rot, _ = _hero_placement(h_t4, h_part, target, ctx.world_frame, ctx.yaw)
+        h_pos, h_rot, _ = _hero_placement(
+            h_t4,
+            h_part,
+            target,
+            ctx.world_frame,
+            _needs_yaw_compensation(h_filename, ctx.yaw),
+        )
         obj_num += 1
         objects.append(
             _build_cad_object(

@@ -54,6 +54,7 @@ import SafeImg from "../SafeImg";
 import WebGLGate from "../common/WebGLGate";
 import { CameraFit } from "./GuideScene";
 import { Annotations, axisVec } from "./guideAnnotations";
+import { applyStepMaterials } from "./guidePalette";
 import { Btn, IconBtn, Spinner } from "../ui";
 
 /**
@@ -143,6 +144,7 @@ function PartObject({
   inst,
   selected,
   ghost,
+  isNew,
   innerRef,
   onSelect,
   onContext,
@@ -152,36 +154,26 @@ function PartObject({
   selected: boolean;
   /** isolate-step mode: earlier steps fade to a ghost */
   ghost?: boolean;
+  /** part was placed by the CURRENT step → amber highlight */
+  isNew: boolean;
   innerRef?: Ref<THREE.Group>;
   onSelect: (e: { stopPropagation: () => void; ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void;
   onContext: (iid: string, x: number, y: number) => void;
 }) {
   const obj = useMemo(() => {
     const o = scene.clone(true);
-    o.traverse((c) => {
-      const m = c as THREE.Mesh;
-      if (!m.isMesh || !m.material) return;
-      const apply = (src: THREE.Material) => {
-        const mat = (src as THREE.MeshStandardMaterial).clone();
-        if (inst.color && "color" in mat)
-          (mat as THREE.MeshStandardMaterial).color = new THREE.Color(inst.color);
-        const op = ghost ? 0.15 : (inst.opacity ?? 1);
-        if (op < 1) {
-          mat.transparent = true;
-          mat.opacity = op;
-        }
-        if (selected && "emissive" in mat) {
-          (mat as THREE.MeshStandardMaterial).emissive = new THREE.Color("#2b7cff");
-          (mat as THREE.MeshStandardMaterial).emissiveIntensity = 0.3;
-        }
-        return mat;
-      };
-      m.material = Array.isArray(m.material)
-        ? m.material.map(apply)
-        : apply(m.material);
+    // uniform flat step palette (shared with GuideScene) — cloning the GLB's
+    // own material keeps glTF-default metallic=1 and renders parts BLACK on
+    // the dark canvas without an env map.
+    applyStepMaterials(o, {
+      isNew,
+      colorOverride: inst.color,
+      opacity: ghost ? 0.15 : (inst.opacity ?? 1),
+      emissive: selected ? new THREE.Color("#2b7cff") : undefined,
+      emissiveIntensity: selected ? 0.3 : isNew ? 0.14 : 0.0,
     });
     return o;
-  }, [scene, inst.color, inst.opacity, selected, ghost]);
+  }, [scene, inst.color, inst.opacity, selected, ghost, isNew]);
 
   const { pos, quat, scl } = useMemo(() => decompose(inst.transform), [inst.transform]);
 
@@ -520,6 +512,7 @@ function SceneInner({
                 inst={i}
                 selected={liveSel.has(i.id)}
                 ghost={isolate && !isNew}
+                isNew={isNew}
                 innerRef={(g) => {
                   refs.current[i.id] = g;
                 }}

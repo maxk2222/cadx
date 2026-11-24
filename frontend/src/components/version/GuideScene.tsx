@@ -13,16 +13,13 @@ import type {
 import WebGLGate from "../common/WebGLGate";
 import { IconBtn } from "../ui";
 import { Annotations } from "./guideAnnotations";
+import { applyStepMaterials } from "./guidePalette";
 
 const meshUrl = (vid: string, pid: string) =>
   `/api/versions/${vid}/guide/parts/${encodeURIComponent(pid)}/mesh`;
 
-/** Two-state step palette — every mesh gets a uniform flat material so
- *  dark GLB textures stay legible on the #0b0d12 background: parts
- *  introduced by the CURRENT step glow amber, everything placed earlier
- *  is muted slate. Selection adds a soft emissive lift on top. */
-const STEP_CURRENT = new THREE.Color(0xfab005);
-const STEP_EARLIER = new THREE.Color(0x7d8a99);
+/* Step palette lives in ./guidePalette — shared with GuideEditor so every
+ *  guide view paints parts identically. */
 
 /** The solver world is Z-up mm; three.js renders Y-up. One -90degX
  *  wrapper presents a Z-up world upright — instance transforms stay in
@@ -44,18 +41,9 @@ function cloneForStep(
   isSel: boolean,
 ): THREE.Group {
   const obj = scene.clone(true);
-  const color = isNew ? STEP_CURRENT : STEP_EARLIER;
-  obj.traverse((c) => {
-    const m = c as THREE.Mesh;
-    if (m.isMesh && m.material) {
-      m.material = new THREE.MeshStandardMaterial({
-        color,
-        roughness: 0.72,
-        metalness: 0.12,
-        emissive: isNew ? STEP_CURRENT : STEP_EARLIER,
-        emissiveIntensity: isSel ? 0.45 : isNew ? 0.14 : 0.0,
-      });
-    }
+  applyStepMaterials(obj, {
+    isNew,
+    emissiveIntensity: isSel ? 0.45 : isNew ? 0.14 : 0.0,
   });
   return obj;
 }

@@ -196,7 +196,7 @@ def _guide_mesh(s: GuideToolSession, src: Path) -> str:
         parts_dir.mkdir(parents=True, exist_ok=True)
         dst = parts_dir / src.name
         shutil.copyfile(src, dst)
-        return str(dst)
+        return str(cadmeta.stamp_viewer_pbr(dst))
 
 
 async def register_uploaded_part(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:

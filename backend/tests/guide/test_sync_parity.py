@@ -514,16 +514,29 @@ def test_publish_clean_filename():
 
 
 def test_emit_yaw_compensation_toggle(tmp_path):
+    """The client applies its 180° Y mesh-level fix only to FBX loads, so the
+    pre-compensation must key on the emitted filename's extension: .fbx flips
+    the rotation, .glb passes through unchanged."""
     from kiara.guide.unity_schema import build_guide_doc
 
     state = _fake_state(tmp_path)
-    on = build_guide_doc(state, "g", emit_yaw_compensation=True)
-    off = build_guide_doc(state, "g", emit_yaw_compensation=False)
+    fbx = {"pipe_a": "pipe_a.fbx", "elbow_b": "elbow_b.fbx"}
+    on = build_guide_doc(state, "g", emit_yaw_compensation=True, filename_overrides=fbx)
+    off = build_guide_doc(state, "g", emit_yaw_compensation=False, filename_overrides=fbx)
     cad_on = next(o for o in on["steps"][0]["objects"] if o.get("is3DModel"))
     cad_off = next(o for o in off["steps"][0]["objects"] if o.get("is3DModel"))
     # yaw compensation changes the emitted rotation only, never position
     assert cad_on["pos"] == cad_off["pos"]
     assert cad_on["rot"] != cad_off["rot"]
+
+    # same parts published as .glb: the client never applies the mesh fix,
+    # so compensation must not leak into the emitted rotation
+    glb_on = build_guide_doc(state, "g", emit_yaw_compensation=True)
+    glb_off = build_guide_doc(state, "g", emit_yaw_compensation=False)
+    g_on = next(o for o in glb_on["steps"][0]["objects"] if o.get("is3DModel"))
+    g_off = next(o for o in glb_off["steps"][0]["objects"] if o.get("is3DModel"))
+    assert g_on["filename"] == "pipe_a.glb"
+    assert g_on["rot"] == g_off["rot"]
 
 
 def test_zup_emission_matches_suite_frame_convention(tmp_path):
