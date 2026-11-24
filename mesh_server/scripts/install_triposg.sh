@@ -34,7 +34,12 @@ PY
   fi
   install_req_filtered "$SRC/requirements.txt" "$_drop"
 fi
-INSTALL -e "$SRC"
+
+say "registering triposg package (upstream ships no pyproject — .pth link)"
+SITE_PKGS="$("$PY" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+echo "$ROOT/$SRC" > "$SITE_PKGS/triposg.pth"
+"$PY" -c 'from triposg.pipelines.pipeline_triposg import TripoSGPipeline' \
+  || die "triposg import failed after .pth registration"
 
 say "downloading weights"
 hf_snapshot "VAST-AI/TripoSG"
