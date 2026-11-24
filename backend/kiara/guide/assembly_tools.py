@@ -331,6 +331,12 @@ _LOCATIVE = re.compile(
     r"\b(?:am|an|ans|auf|bei|des|dem|den|der|im|in|of|on)\s+", re.IGNORECASE
 )
 
+# port-configuration counts are part of a fitting's label — '2x außen'
+# names the socket×socket elbow, never its '1x außen 1x innen' sibling.
+# _tokset splits '2x' into '2'+'x' so token overlap cannot see the
+# contradiction; the count qualifier must be read on the normalized name.
+_COUNT_QUAL = re.compile(r"\d+x\b")
+
 
 def _resolve_context_ref(s: GuideToolSession, name: str, n: str) -> object:
     """Resolve a reference containing a declared context word.
@@ -438,10 +444,18 @@ def _resolve_name(
     from kiara.guide.part_tools import _sig
 
     name_cat, _ = _sig(name)
+    q_counts = set(_COUNT_QUAL.findall(n))
     for k, pid in cands:
         shared = _tokset(k) & nt
         overlap = len(shared)
         if overlap < 2 and not any(len(tok_owners.get(t, set())) == 1 for t in shared):
+            continue
+        # count-qualifier contradiction vetoes: 'Rohrbogen 2x außen' can
+        # never name the part registered '1x außen 1x innen' — the shared
+        # 'außen' token otherwise wins the overlap and binds the wrong
+        # sibling kind (observed: bridge elbows bound to the 1x kind)
+        k_counts = set(_COUNT_QUAL.findall(k))
+        if q_counts and k_counts and not q_counts <= k_counts:
             continue
         # category guard on token matches: shared size tokens ("dn22")
         # must not map a fitting name onto a pipe part — 'Adapter DN22'

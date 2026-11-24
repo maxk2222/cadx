@@ -769,6 +769,38 @@ def test_resolve_name_context_breaks_part_ties() -> None:
     assert got == "muffe_elbow"
 
 
+def test_resolve_name_count_qualifier_vetoes_sibling() -> None:
+    """'Rohrbogen DN22, 2x außen' must not bind the '1x außen 1x innen'
+    sibling when the registered name carries its count — the shared
+    'außen' token otherwise wins overlap and places the wrong elbow kind
+    (observed: bridge elbows bound to elbow_1x_out_1x_in, the 2x-socket
+    requirement then unplaceable)."""
+    from types import SimpleNamespace
+
+    from kiara.guide.assembly_tools import _resolve_name
+
+    state = GuideState(output_dir="/tmp/x")
+    state.parts = [
+        _phys_part("elbow_1x_out_1x_in", [], bbox=((0, 0, 0), (1, 1, 1))),
+        _phys_part("elbow_2x_socket", [], bbox=((0, 0, 0), (1, 1, 1))),
+    ]
+    state.parts[0].name = "Rohrbogen DN22, 1x außen 1x innen"
+    state.parts[1].name = "Rohrbogen DN22, Muffe auf Muffe"
+    s = SimpleNamespace(state=state, _aliases_store={})
+    # '2x außen' contradicts the '1x' count in the sibling's name → only
+    # the socket-socket elbow survives even though 'außen' is unshared
+    got = _resolve_name(
+        s,
+        "Rohrbogen DN22, 2x außen",
+        context="Rohrbogen DN22 (2x außen) auf das linke vertikale Rohr stecken",
+    )
+    assert got == "elbow_2x_socket"
+    # and '1x außen 1x innen' still resolves to the spigot elbow
+    assert (
+        _resolve_name(s, "Rohrbogen DN22, 1x außen 1x innen") == "elbow_1x_out_1x_in"
+    )
+
+
 def test_step_requirements_resolve_with_step_context(tmp_path) -> None:
     """_step_requirements counted the bare-name winner while the planner
     resolved with context → 'not required by any step' quota rejection."""
