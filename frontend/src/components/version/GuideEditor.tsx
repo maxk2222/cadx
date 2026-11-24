@@ -55,6 +55,7 @@ import WebGLGate from "../common/WebGLGate";
 import { CameraFit } from "./GuideScene";
 import { Annotations, axisVec } from "./guideAnnotations";
 import { applyStepMaterials } from "./guidePalette";
+import { FRONT_YAW_ROT, ZUP_DISPLAY_ROT, solverToDisplayVec } from "./guideFrame";
 import { Btn, IconBtn, Spinner } from "../ui";
 
 /**
@@ -80,12 +81,8 @@ type Doc = {
   annotations: EdAnn[];
 };
 type Mode = "translate" | "rotate" | "scale";
-/** The solver world is Z-up mm; three.js renders Y-up. One -90degX
- *  wrapper presents a Z-up world upright — every transform in the doc
- *  stays solver-frame, so gizmo/pivot commits read back unchanged
- *  matrices. Blender-mode guides arrive already Y-up: no wrapper. */
-const ZUP_DISPLAY_ROT: [number, number, number] = [-Math.PI / 2, 0, 0];
-const ZUP_DISPLAY_EULER = new THREE.Euler(-Math.PI / 2, 0, 0);
+/* solver→display wrappers come from ./guideFrame — same nested
+ *  tilt+front-yaw as GuideScene so every view shows the model's front. */
 /** Editable annotation: server dict + client bookkeeping. `k` is the
  *  identity key (never persisted), `idx` is the index in
  *  state.annotations — undefined means "not yet POSTed". */
@@ -420,7 +417,7 @@ function SceneInner({
     const controls = controlsRef.current;
     if (!inst || !controls) return;
     const p = decompose(inst.transform).pos;
-    if (zUp) p.applyEuler(ZUP_DISPLAY_EULER); // solver coords -> display coords
+    solverToDisplayVec(p, zUp); // solver coords -> display coords
     const cam = controls.object as THREE.Camera;
     const dir = cam.position.clone().sub(controls.target).normalize();
     controls.target.copy(p);
@@ -498,9 +495,10 @@ function SceneInner({
 
   return (
     <>
-      {/* Z-up solver world -> Y-up display: one wrapper rotates parts,
-          annotations AND the selection pivot together, so every local
-          matrix the gizmo touches stays in solver frame. */}
+      {/* Z-up solver world -> Y-up display + front-yaw: nested wrappers
+          rotate parts, annotations AND the selection pivot together, so
+          every local matrix the gizmo touches stays in solver frame. */}
+      <group rotation={zUp ? FRONT_YAW_ROT : [0, 0, 0]}>
       <group rotation={zUp ? ZUP_DISPLAY_ROT : [0, 0, 0]}>
         <group ref={contentRef}>
           {instances.map((i) => {
@@ -557,6 +555,7 @@ function SceneInner({
             }}
           />
         )}
+      </group>
       </group>
       <CameraFit content={contentRef} fitKey={urls.length} />
 

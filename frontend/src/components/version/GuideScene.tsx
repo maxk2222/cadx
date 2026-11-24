@@ -14,26 +14,13 @@ import WebGLGate from "../common/WebGLGate";
 import { IconBtn } from "../ui";
 import { Annotations } from "./guideAnnotations";
 import { applyStepMaterials } from "./guidePalette";
+import { FRONT_YAW_ROT, ZUP_DISPLAY_ROT } from "./guideFrame";
 
 const meshUrl = (vid: string, pid: string) =>
   `/api/versions/${vid}/guide/parts/${encodeURIComponent(pid)}/mesh`;
 
-/* Step palette lives in ./guidePalette — shared with GuideEditor so every
- *  guide view paints parts identically. */
-
-/** The solver world is Z-up mm; three.js renders Y-up. One -90degX
- *  wrapper presents a Z-up world upright — instance transforms stay in
- *  solver frame, so gizmo commits read back the same matrix they would
- *  without the wrapper. Blender-mode guides arrive already Y-up and get
- *  no wrapper. */
-const ZUP_DISPLAY_ROT: [number, number, number] = [-Math.PI / 2, 0, 0];
-
-/** Operator-view yaw: the solver's canonical front is +Y, which the tilt
- *  alone maps to -Z — facing AWAY from the default camera. An extra 180°
- *  turn about display-Y (outermost wrapper, applied after the tilt)
- *  brings the working face to +Z: the camera default sees the front, and
- *  operator-left (+X world) lands screen-left like the manual figure. */
-const FRONT_YAW_ROT: [number, number, number] = [0, Math.PI, 0];
+/* Step palette + display frame live in ./guidePalette / ./guideFrame —
+ *  shared with GuideEditor so every guide view renders parts identically. */
 
 function cloneForStep(
   scene: THREE.Group,
