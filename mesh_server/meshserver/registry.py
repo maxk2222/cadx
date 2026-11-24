@@ -366,11 +366,11 @@ class Registry:
             # fixture runs must never touch a real model, even when installed
             pref = ["fake-image"]
         elif need_edit:
-            # qwen-image-edit first: Apache-2.0 + ungated weights; kontext is
-            # the better FLUX edit model but non-commercial and MESH_FLUX_KONTEXT
-            # opt-in, sdxl/sd15 are plain img2img fallbacks. flux-schnell (the
-            # diffusers build) supports img2img too and is the only FLUX edit
-            # path on ROCm — the *-mlx edit adapters don't exist on Linux.
+            # instruction-edit adapters first; kontext is the better FLUX edit
+            # model but non-commercial and MESH_FLUX_KONTEXT opt-in; sdxl/sd15
+            # are plain img2img fallbacks. flux-schnell (the diffusers build)
+            # supports img2img too and is the only FLUX edit path on ROCm —
+            # the *-mlx edit adapters don't exist on Linux.
             if device in ("cuda", "mlx"):
                 pref = [
                     # flux2-klein-4b-edit first: Apache-2.0 + ungated, distilled
@@ -379,6 +379,11 @@ class Registry:
                     # as the bigger/steadier fallback
                     "flux2-klein-4b-edit",
                     "qwen-image-edit",
+                    # flux-schnell (torch img2img, bnb8 ~19GB resident) is the
+                    # CUDA default edit: qwen-image-edit-torch peaks at ~32GB
+                    # on a 32GB card — quality is better but it sits at the
+                    # card edge and loads ~40GB through RAM each residency
+                    "flux-schnell",
                     "qwen-image-edit-torch",
                     "flux-kontext-mlx",
                     "flux-schnell-mlx",
