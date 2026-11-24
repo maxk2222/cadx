@@ -174,6 +174,11 @@ class ServerConfig:
     cuda_offload_vram_gb: float = field(
         default_factory=lambda: _env_float("MESH_CUDA_OFFLOAD_VRAM_GB", 3)
     )
+    # weight quant for the big torch-image transformers: none|bnb8|bnb4 —
+    # bnb8 halves VRAM (~quality-neutral) so FLUX/Qwen-Edit go fully resident
+    torch_quant: str = field(
+        default_factory=lambda: os.environ.get("MESH_TORCH_QUANT", "none")
+    )
     # optional MLX unified-memory cap (0 = unlimited)
     mlx_mem_limit_gb: float = field(
         default_factory=lambda: _env_float("MESH_MLX_MEM_LIMIT_GB", 0)

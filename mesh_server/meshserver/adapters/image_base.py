@@ -80,6 +80,45 @@ def offload_peak_mb(cfg: Any, total_vram: float | None, tiers: dict[str, int]) -
     return tiers[resolve_offload(cfg, total_vram, tiers)]
 
 
+def quant_mode(cfg: Any) -> str:
+    """Weight quantization for the big diffusers transformers: ""|"none" =
+    bf16, "bnb8" = bitsandbytes int8 (~half VRAM, quality-neutral), "bnb4" =
+    nf4 (smallest, slight quality loss). Quantized models mostly dodge the
+    offload ladder entirely — resident quality on 32 GB cards."""
+    return str(getattr(cfg, "torch_quant", "none") or "none").lower()
+
+
+def bnb_quant_config(cfg: Any) -> Any | None:
+    """BitsAndBytesConfig for the requested torch_quant mode; None when
+    quantizing is off. Fails honestly when bitsandbytes is missing — a
+    silent bf16 fallback would break the VRAM contract admission just
+    promised."""
+    mode = quant_mode(cfg)
+    if mode in ("", "none"):
+        return None
+    try:
+        import torch
+        from diffusers import BitsAndBytesConfig
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError(
+            f"torch_quant={mode} needs diffusers+bitsandbytes installed"
+        ) from e
+    if mode == "bnb8":
+        return BitsAndBytesConfig(load_in_8bit=True)
+    if mode == "bnb4":
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
+    raise RuntimeError(f"unknown torch_quant mode {mode!r} (none|bnb8|bnb4)")
+
+
+def quant_tiers(cfg: Any, bf16: dict[str, int], quant: dict[str, int]) -> dict[str, int]:
+    """VRAM ladder for the active quant mode — quantized peaks shrink."""
+    return quant if quant_mode(cfg) not in ("", "none") else bf16
+
+
 class ImageAdapter(ABC):
     """One text-to-image backend. Instances hold the loaded pipeline."""
 

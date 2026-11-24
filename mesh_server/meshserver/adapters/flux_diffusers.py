@@ -24,7 +24,9 @@ from meshserver.adapters.image_base import (
     ImageAdapter,
     ImageGenOpts,
     ImageGenResult,
+    bnb_quant_config,
     offload_peak_mb,
+    quant_tiers,
     resolve_offload,
 )
 from meshserver.torch_util import TorchDevice
@@ -51,10 +53,17 @@ class FluxSchnellAdapter(ImageAdapter):
     supports_edit: ClassVar[bool] = True  # img2img via FluxImg2ImgPipeline.from_pipe
     # worker RSS: offloaded weights stay resident in host RAM (~34 GB bf16)
     est_mem_mb = 34000
-    # VRAM peaks per offload tier — admission + auto-resolution
+    # VRAM peaks per offload tier — admission + auto-resolution; bnb8
+    # quantization shrinks transformer 24→12 GB and T5 9.4→5 GB so 'none'
+    # becomes honest on 32 GB cards
     _OFFLOAD_MB: ClassVar[dict[str, int]] = {
         "none": 34000,
         "model": 26000,
+        "sequential": 8000,
+    }
+    _OFFLOAD_MB_Q: ClassVar[dict[str, int]] = {
+        "none": 19000,
+        "model": 16000,
         "sequential": 8000,
     }
 
@@ -62,7 +71,9 @@ class FluxSchnellAdapter(ImageAdapter):
     def vram_need_mb(cls, cfg: Any) -> int:
         from meshserver.memory import total_vram_mb
 
-        return offload_peak_mb(cfg, total_vram_mb(), cls._OFFLOAD_MB)
+        return offload_peak_mb(
+            cfg, total_vram_mb(), quant_tiers(cfg, cls._OFFLOAD_MB, cls._OFFLOAD_MB_Q)
+        )
 
     @classmethod
     def available(cls, cfg: Any) -> bool:
@@ -79,15 +90,43 @@ class FluxSchnellAdapter(ImageAdapter):
         except Exception as e:  # pragma: no cover
             missing(type(self), str(e))
         self._torch = torch
-        pipe = FluxPipeline.from_pretrained(
-            "black-forest-labs/FLUX.1-schnell",
-            torch_dtype=torch.bfloat16,
-            cache_dir=str(self.cfg.model_dir),
-        )
+        quant = bnb_quant_config(self.cfg)
+        kw: dict[str, Any] = {
+            "torch_dtype": torch.bfloat16,
+            "cache_dir": str(self.cfg.model_dir),
+        }
+        if quant is not None:
+            # component-level quantization: transformer + T5 via bnb —
+            # VAE/CLIP stay bf16 (decode fidelity lives there)
+            from diffusers import FluxTransformer2DModel
+            from transformers import T5EncoderModel
+
+            transformer = FluxTransformer2DModel.from_pretrained(
+                "black-forest-labs/FLUX.1-schnell",
+                subfolder="transformer",
+                quantization_config=quant,
+                **kw,
+            )
+            text_encoder_2 = T5EncoderModel.from_pretrained(
+                "black-forest-labs/FLUX.1-schnell",
+                subfolder="text_encoder_2",
+                quantization_config=quant,
+                **kw,
+            )
+            pipe = FluxPipeline.from_pretrained(
+                "black-forest-labs/FLUX.1-schnell",
+                transformer=transformer,
+                text_encoder_2=text_encoder_2,
+                **kw,
+            )
+        else:
+            pipe = FluxPipeline.from_pretrained(
+                "black-forest-labs/FLUX.1-schnell", **kw
+            )
         offload = resolve_offload(
             self.cfg,
             torch.cuda.get_device_properties(0).total_memory / 1e6,
-            self._OFFLOAD_MB,
+            quant_tiers(self.cfg, self._OFFLOAD_MB, self._OFFLOAD_MB_Q),
         )
         if offload == "model":
             pipe.enable_model_cpu_offload()

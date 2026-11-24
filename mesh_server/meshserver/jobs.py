@@ -53,6 +53,7 @@ _CHILD_CFG_KEYS = (
     "image_default_model",
     "cuda_offload",
     "cuda_offload_vram_gb",
+    "torch_quant",
     "flux_mlx_quant",
     "mlx_mem_limit_gb",
     # --serve mode only: the warm worker self-exits after this much stdin

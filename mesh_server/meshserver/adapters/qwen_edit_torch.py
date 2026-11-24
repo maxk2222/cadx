@@ -26,7 +26,9 @@ from meshserver.adapters.image_base import (
     ImageAdapter,
     ImageGenOpts,
     ImageGenResult,
+    bnb_quant_config,
     offload_peak_mb,
+    quant_tiers,
     resolve_offload,
 )
 
@@ -47,18 +49,26 @@ class QwenImageEditTorchAdapter(ImageAdapter):
     # worker RSS: offloaded weights stay resident in host RAM (~45 GB bf16)
     est_mem_mb = 40000
     # VRAM peaks per offload tier — the ~40 GB transformer makes 'model'
-    # offload pointless on <=40 GB cards (its peak IS the whole model)
+    # offload pointless on <=40 GB cards (its peak IS the whole model);
+    # bnb8 halves it (~20 GB transformer, ~4 GB Qwen2.5-VL) so 'none' fits
     _OFFLOAD_MB: ClassVar[dict[str, int]] = {
         "none": 47000,
         "model": 42000,
         "sequential": 14000,
+    }
+    _OFFLOAD_MB_Q: ClassVar[dict[str, int]] = {
+        "none": 26000,
+        "model": 22000,
+        "sequential": 10000,
     }
 
     @classmethod
     def vram_need_mb(cls, cfg: Any) -> int:
         from meshserver.memory import total_vram_mb
 
-        return offload_peak_mb(cfg, total_vram_mb(), cls._OFFLOAD_MB)
+        return offload_peak_mb(
+            cfg, total_vram_mb(), quant_tiers(cfg, cls._OFFLOAD_MB, cls._OFFLOAD_MB_Q)
+        )
     # set by load() from the resolved pipeline class; default matches the
     # Plus signature so direct _pipe injection in tests works
     _image_list: bool = True
@@ -89,15 +99,32 @@ class QwenImageEditTorchAdapter(ImageAdapter):
         # the Plus pipeline (2509) takes image lists; the base edit pipeline
         # takes a single PIL image — remember which signature to use
         self._image_list = pipe_cls.__name__.endswith("PlusPipeline")
-        pipe = pipe_cls.from_pretrained(
-            _HF_REPO,
-            torch_dtype=torch.bfloat16,
-            cache_dir=str(self.cfg.model_dir),
-        )
+        quant = bnb_quant_config(self.cfg)
+        kw: dict[str, Any] = {
+            "torch_dtype": torch.bfloat16,
+            "cache_dir": str(self.cfg.model_dir),
+        }
+        if quant is not None:
+            # component-level: the ~20B transformer + the Qwen2.5-VL text
+            # encoder via bnb — VAE stays bf16
+            from diffusers import QwenImageTransformer2DModel
+            from transformers import Qwen2_5_VLForConditionalGeneration
+
+            transformer = QwenImageTransformer2DModel.from_pretrained(
+                _HF_REPO, subfolder="transformer", quantization_config=quant, **kw
+            )
+            text_encoder = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                _HF_REPO, subfolder="text_encoder", quantization_config=quant, **kw
+            )
+            pipe = pipe_cls.from_pretrained(
+                _HF_REPO, transformer=transformer, text_encoder=text_encoder, **kw
+            )
+        else:
+            pipe = pipe_cls.from_pretrained(_HF_REPO, **kw)
         offload = resolve_offload(
             self.cfg,
             torch.cuda.get_device_properties(0).total_memory / 1e6,
-            self._OFFLOAD_MB,
+            quant_tiers(self.cfg, self._OFFLOAD_MB, self._OFFLOAD_MB_Q),
         )
         if offload == "sequential":
             pipe.enable_sequential_cpu_offload()

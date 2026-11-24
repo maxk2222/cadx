@@ -56,6 +56,9 @@ cuda = [
     # context-free VRAM probe for queue admission (torch.cuda fallback pins a
     # CUDA context in the server process)
     "nvidia-ml-py>=12",
+    # MESH_TORCH_QUANT=bnb8/bnb4 — int8/nf4 weight quant for big diffusers
+    # transformers (sm_120 support landed in 0.45)
+    "bitsandbytes>=0.45",
 ]
 # AMD (Linux, ROCm): TripoSG + Hunyuan3D-2 torch — same dep set as cuda; the
 # HIP-enabled torch itself comes from scripts/install_rocm.sh / Dockerfile.rocm
