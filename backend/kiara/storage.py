@@ -150,15 +150,33 @@ def delete_library_dir(part_id: uuid.UUID | str) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _mkdir_shared(path: Path) -> Path:
+    """mkdir -p + open perms on every level below the data root.
+
+    worker/api run as root while cad-executor runs unprivileged (uid 1000) —
+    on Linux bind mounts the real uid/gid applies, so a root-created
+    0o755 dir is read-only to the executor (Errno 13 on every exec; Docker
+    Desktop remaps ownership away, which is why the gap never shows on
+    macOS dev). 0o777 is safe here: /data is a single-stack trust domain.
+    """
+    path.mkdir(parents=True, exist_ok=True)
+    root = data_root().resolve()
+    cur = path.resolve()
+    while cur != root and root in cur.parents:
+        try:
+            cur.chmod(0o777)
+        except OSError:
+            break
+        cur = cur.parent
+    return path
+
+
 def tmp_dir() -> Path:
-    p = data_root() / "tmp"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    return _mkdir_shared(data_root() / "tmp")
 
 
 def ensure(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    return _mkdir_shared(path)
 
 
 def delete_project_dir(project_id: uuid.UUID | str) -> None:
