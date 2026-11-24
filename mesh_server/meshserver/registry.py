@@ -475,6 +475,18 @@ class Registry:
                 declared = int(adm(self.cfg))
         return self.ledger.est_mb(cls.id, declared)
 
+    def _admission_vram(self, cls: type) -> float:
+        """Declared VRAM peak for the reservation — classmethod
+        vram_need_mb(cfg) wins (offload-tier/ctx dependent); est_mem_mb is
+        the GPU-resident fallback."""
+        vram = getattr(cls, "vram_need_mb", None)
+        if callable(vram):
+            with contextlib.suppress(Exception):
+                return float(vram(self.cfg))
+        elif vram is not None:
+            return float(vram)
+        return float(getattr(cls, "est_mem_mb", 0) or 0)
+
     def get(
         self,
         cls: type,
@@ -522,6 +534,7 @@ class Registry:
                     pinned=cls.id in self._pinned,
                     kind="model",
                     spec=True,
+                    vram_mb=self._admission_vram(cls),
                 )
                 try:
                     # best-effort eviction: if nothing is evictable the load

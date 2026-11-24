@@ -27,7 +27,7 @@ from meshserver.adapters.base import GenOpts
 from meshserver.adapters.image_base import ImageGenOpts
 from meshserver.config import ServerConfig
 from meshserver.logging import get_logger
-from meshserver.memory import free_vram_mb
+from meshserver.memory import free_vram_mb, total_vram_mb
 from meshserver.postprocess import clean_mesh, export_glb
 from meshserver.preprocess import prep_images
 from meshserver.registry import Registry
@@ -445,6 +445,25 @@ class JobManager:
                 return float(getattr(cls, "est_mem_mb", 0) or 0)
         return 0.0
 
+    def _vram_free_effective(self, exclude: set[str]) -> float | None:
+        """Free VRAM (MB) for admission: min(total - committed declared
+        peaks, live probe). The committed sum covers residents whose device
+        allocation is still ramping up — a probe alone can't see an
+        incoming load (the flux-vs-llm race); the probe catches foreign
+        CUDA consumers the ledger can't."""
+        total = total_vram_mb()
+        accounted = (
+            total - self.registry.ledger.committed_vram_mb(exclude=exclude)
+            if total is not None
+            else None
+        )
+        probe = free_vram_mb()
+        if accounted is None:
+            return probe
+        if probe is None:
+            return accounted
+        return min(accounted, probe)
+
     def llm_models_in_use(self) -> set[str]:
         """llm adapter ids with at least one in-flight request — excluded
         from memory-admission eviction so a running generation can't be
@@ -488,7 +507,7 @@ class JobManager:
         vneed = self._vram_need(resolved)
         if vneed > 0:
             for _ in range(8):
-                free_v = free_vram_mb()
+                free_v = self._vram_free_effective(exclude)
                 if free_v is None or free_v - self.cfg.vram_headroom_mb >= vneed:
                     break
                 victim = self._lru_idle_warm(exclude=exclude)
@@ -500,7 +519,7 @@ class JobManager:
                 # the driver reclaims device memory asynchronously after a
                 # kill — probe again after a beat instead of over-evicting
                 time.sleep(0.5)
-            free_v = free_vram_mb()
+            free_v = self._vram_free_effective(exclude)
             if free_v is not None and free_v - self.cfg.vram_headroom_mb < vneed:
                 return False
         return True
@@ -846,6 +865,7 @@ class JobManager:
             ledger.est_mb(model, self._declared_mem(model)),
             pinned=False,
             kind="warm",
+            vram_mb=self._vram_need(model),
         )
         warm.reader_task = asyncio.create_task(self._warm_reader(warm))
         try:

@@ -198,15 +198,20 @@ class MemoryLedger:
         pinned: bool,
         kind: str,
         spec: bool = False,
+        vram_mb: float = 0.0,
     ) -> None:
         """Track a residency reservation. ``spec`` marks memory that isn't
         real yet — a model between fits() and load() — so a concurrent
         admission can't pass on the same stale free-mem snapshot (the
-        TOCTOU the old global-lock regime hid by serializing all loads)."""
+        TOCTOU the old global-lock regime hid by serializing all loads).
+        ``vram_mb`` is the resident's declared device-memory peak — the
+        committer for VRAM admission (a loading model's allocation isn't
+        visible to a live free-VRAM probe yet)."""
         with self._lock:
             self._residents[entry_id] = {
                 "id": entry_id,
                 "mb": round(mb, 1),
+                "vram_mb": round(float(vram_mb), 1),
                 "kind": kind,
                 "pinned": pinned,
                 "spec": spec,
@@ -248,14 +253,25 @@ class MemoryLedger:
             if entry is not None:
                 entry["last_used"] = time.monotonic()
 
+    def committed_vram_mb(self, exclude: set[str] | None = None) -> float:
+        """Sum of residents' declared VRAM peaks (MB) — including
+        speculative entries whose device allocation is still ramping up."""
+        with self._lock:
+            return sum(
+                float(e.get("vram_mb") or 0.0)
+                for e in self._residents.values()
+                if not exclude or e["id"] not in exclude
+            )
+
     def residents(self) -> list[dict[str, Any]]:
-        """[{id, mb, kind, pinned, idle_s}] — the /v1/queue resident view."""
+        """[{id, mb, vram_mb, kind, pinned, idle_s}] — /v1/queue view."""
         now = time.monotonic()
         with self._lock:
             return [
                 {
                     "id": e["id"],
                     "mb": e["mb"],
+                    "vram_mb": e.get("vram_mb", 0.0),
                     "kind": e["kind"],
                     "pinned": e["pinned"],
                     "idle_s": round(now - e["last_used"], 1),

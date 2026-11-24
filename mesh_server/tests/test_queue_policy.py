@@ -138,6 +138,26 @@ async def test_vram_unfittable_waits_for_memory(manager, monkeypatch):
     assert manager._admit(job) is False  # noqa: SLF001
 
 
+async def test_vram_committed_spec_blocks_admission(manager, monkeypatch):
+    """A model still LOADING (speculative reservation) already commits its
+    declared VRAM — the llm-vs-flux race: the probe reads plenty free while
+    the incoming allocation ramps, so only accounting can block admission."""
+    ledger = manager.registry.ledger
+    ledger.reserve(
+        "fake-image-2", 100, pinned=False, kind="model", spec=True, vram_mb=33000
+    )
+    monkeypatch.setattr("meshserver.jobs.free_vram_mb", lambda: 33000.0)
+    monkeypatch.setattr("meshserver.jobs.total_vram_mb", lambda: 34000.0)
+    monkeypatch.setattr(manager.registry, "evict_lru", lambda exclude=None: None)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    manager.cfg.vram_headroom_mb = 1500
+    job = await manager.submit_image(ImageGenParams(model="fake-image", prompt="x"))
+    # accounted free = 34-33 = 1 GB < headroom → blocked although probe says 33 GB
+    assert manager._admit(job) is False  # noqa: SLF001
+    ledger.release("fake-image-2")
+    assert manager._admit(job) is True  # noqa: SLF001
+
+
 async def test_queue_snapshot_fields(manager, monkeypatch):
     monkeypatch.setattr(manager.registry.ledger, "free_mb", lambda *a, **kw: 12345.0)
     manager.registry.ledger.reserve("fake-image", 100, pinned=False, kind="model")
