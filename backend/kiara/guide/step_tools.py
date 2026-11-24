@@ -91,7 +91,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                             "type": "object",
                             "properties": {
                                 "page": _i("source page"),
-                                "figure_index": _i("figure index from list_figures"),
+                                "figure_index": _i("1-based figure index on that page (from list_figures)"),
                             },
                         },
                     },
@@ -171,7 +171,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "step": _i("step number"),
             "page": _i("source page"),
-            "figure_index": _i("figure index on that page (list_figures)"),
+            "figure_index": _i("1-based figure index on that page (list_figures shows each crop)"),
         },
         ["step", "page", "figure_index"],
     ),

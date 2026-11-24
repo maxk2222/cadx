@@ -146,7 +146,7 @@ SESSION_SCHEMAS: dict[str, dict[str, Any]] = {
         "get_figure_image",
         "Attach one cropped figure image (from list_figures) to the next "
         "message for visual inspection.",
-        {"page": gtools._i("page number"), "index": gtools._i("figure index on that page")},
+        {"page": gtools._i("page number"), "index": gtools._i("1-based figure index on that page")},
         ["page", "index"],
     ),
     "list_steps": gtools._fn(
