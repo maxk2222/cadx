@@ -169,7 +169,7 @@ if [ "$NO_MESH" = 0 ] && [ "$TIER" != "none" ]; then
       if [ -z "${MESH_API_KEY:-}" ] && [ -f .env ]; then
         # reuse the persisted key first — generating a fresh one while .env
         # already holds another would desync sidecar vs. containers
-        MESH_API_KEY="$(grep -m1 '^MESH_API_KEY=' .env | cut -d= -f2-)"
+        MESH_API_KEY="$(grep -m1 '^MESH_API_KEY=' .env | cut -d= -f2- || true)"
       fi
       if [ -z "${MESH_API_KEY:-}" ]; then
         MESH_API_KEY="$(openssl rand -hex 24 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(24))')"

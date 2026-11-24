@@ -39,6 +39,7 @@ log = get_logger(__name__)
 # advertises them. None = probe failed (treat as "only classic flags").
 _FLAG_RE = re.compile(r"-{1,2}[a-zA-Z][a-zA-Z0-9_-]*")
 _HELP_CACHE: dict[str, set[str] | None] = {}
+_HELP_TEXT_CACHE: dict[str, str] = {}
 
 
 def _server_flags(prefix: list[str]) -> set[str] | None:
@@ -57,13 +58,23 @@ def _server_flags(prefix: list[str]) -> set[str] | None:
             timeout=20,
             check=False,
         )
-        flags = set(_FLAG_RE.findall(r.stdout + r.stderr))
+        _HELP_TEXT_CACHE[key] = r.stdout + r.stderr
+        flags = set(_FLAG_RE.findall(_HELP_TEXT_CACHE[key]))
     except (OSError, subprocess.SubprocessError, ValueError):
         flags = None
     _HELP_CACHE[key] = flags
     if flags is None:
         log.warning("llm.gguf.flag_probe_failed", argv=key)
     return flags
+
+
+def _flag_takes_value(prefix: list[str], flag: str) -> bool:
+    """Whether `flag` is documented as value-taking (`--flag [x|y]` or
+    `--flag <x>`) rather than a bare boolean. llama.cpp changed e.g.
+    --flash-attn from a switch to an on|off|auto enum — emitting it bare
+    crashes the spawn on new builds."""
+    help_text = _HELP_TEXT_CACHE.get(" ".join(prefix), "")
+    return bool(re.search(re.escape(flag) + r"\s+[\[<]", help_text))
 
 
 class LlamaCppAdapter(LlmAdapter):
@@ -218,9 +229,13 @@ class LlamaCppAdapter(LlmAdapter):
                     log.warning("llm.gguf.cache_type_unsupported", model=self.id)
             if get("llm_flash_attn", True):
                 if "--flash-attn" in flags:
-                    argv += ["--flash-attn"]
+                    argv += (
+                        ["--flash-attn", "on"]
+                        if _flag_takes_value(prefix, "--flash-attn")
+                        else ["--flash-attn"]
+                    )
                 elif "-fa" in flags:
-                    argv += ["-fa"]
+                    argv += ["-fa", "on"] if _flag_takes_value(prefix, "-fa") else ["-fa"]
             cache_mb = int(get("llm_prompt_cache_mb", 0) or 0)
             if cache_mb and "--cache-ram" in flags:
                 if mmproj:
