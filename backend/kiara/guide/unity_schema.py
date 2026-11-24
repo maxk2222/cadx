@@ -39,6 +39,7 @@ from typing import Any
 import numpy as np
 
 from kiara.guide import solver as _solver
+from kiara.guide.umlauts import restore_umlauts, state_umlaut_map
 from kiara.guide.unity import _mat_to_quat, _unit
 
 # ---------------------------------------------------------------------------
@@ -539,6 +540,7 @@ def _annotation_arrow_rows(
     parts: dict[str, Any],
     world_frame: str,
     joints: list[dict] | None = None,
+    umap: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Annotation arrows — but the annotator's direction is only a coarse
     word ('down'/'into'), and 'into' resolved to a literal down arrow for
@@ -580,8 +582,12 @@ def _annotation_arrow_rows(
             )
             target_unity = _world_to_unity_pos(anchor, world_frame)
         else:
-            mn, mx = _solver.transform_bbox(part, tgt.transform)
-            anchor = (np.asarray(mn, dtype=float) + np.asarray(mx, dtype=float)) / 2.0
+            pos = an.get("position")
+            if pos and len(pos) == 3:
+                anchor = np.asarray(pos, dtype=float)
+            else:
+                mn, mx = _solver.transform_bbox(part, tgt.transform)
+                anchor = (np.asarray(mn, dtype=float) + np.asarray(mx, dtype=float)) / 2.0
             axis = _unit(np.asarray(an.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float))
             target_unity = _world_to_unity_pos(anchor, world_frame)
             dir_unity = _world_to_unity_dir(axis, world_frame)
@@ -591,7 +597,7 @@ def _annotation_arrow_rows(
                 "target": target_unity,
                 "direction": dir_unity,
                 "lineage": _uuid5(lineage_id) if lineage_id else "",
-                "label": str(an.get("label", "")),
+                "label": str(restore_umlauts(an.get("label", ""), umap or {}) or ""),
                 # explicit annotation colors (e.g. a warning red) win; unset
                 # inherits the step's semantic color in _step_arrow_objects.
                 "color": str(an["color"]) if an.get("color") else None,
@@ -654,6 +660,7 @@ class _EmitCtx:
     step_to_iids: dict[str, list[str]]
     joint_by_step: dict[int, list[dict]]
     annotations: list[dict]
+    umap: dict[str, str]
     filename_overrides: dict[str, str] | None = None
 
 
@@ -790,7 +797,13 @@ def _step_annotation_texts(
         else:
             apos = _world_to_unity_pos([float(c) for c in pos_mm], ctx.world_frame)
         obj_num += 1
-        a_obj = _build_text_field(step_idx, obj_num, str(an.get("text", "")), step_idx, apos)
+        a_obj = _build_text_field(
+            step_idx,
+            obj_num,
+            str(restore_umlauts(an.get("text", ""), ctx.umap) or ""),
+            step_idx,
+            apos,
+        )
         a_obj["sourceUnits"] = "m"
         if an.get("color"):
             a_obj["color"] = str(an["color"])
@@ -837,6 +850,7 @@ def _step_arrow_objects(
         ctx.parts,
         ctx.world_frame,
         ctx.joint_by_step.get(step_idx, []),
+        ctx.umap,
     ):
         obj_num += 1
         objects.append(
@@ -871,7 +885,13 @@ def build_guide_doc(
     """
     world_frame = getattr(state, "world_frame", "z_up")
     yaw = bool(emit_yaw_compensation)
+    # evidence-based digraph->umlaut restore for texts the missions
+    # ASCII-fied (map is empty -> no-op when sources carry no umlauts)
+    umap = state_umlaut_map(state)
     parts = {p.id: p for p in state.parts}
+    # required_parts carries the manual's part NAME (not the catalog id) —
+    # steps resolve against both indexes
+    parts_by_name = {str(p.name): p for p in state.parts if p.name}
     inst_by_id = {i.instance_id or i.part_id: i for i in state.assembly.instances}
     for i in state.assembly.instances:
         inst_by_id.setdefault(i.part_id, i)
@@ -901,13 +921,14 @@ def build_guide_doc(
         step_to_iids=step_to_iids,
         joint_by_step=joint_by_step,
         annotations=list(state.annotations),
+        umap=umap,
         filename_overrides=filename_overrides,
     )
     guide_steps: list[dict[str, Any]] = []
 
     for s in ordered_steps:
         step_idx = s.number
-        step_text = s.display_text or s.text
+        step_text = str(restore_umlauts(s.display_text or s.text, umap) or "")
         objects: list[dict[str, Any]] = []
         obj_num = 0
         # stable step lineage — the v2 editor shape carries stepId on the
@@ -924,6 +945,30 @@ def build_guide_doc(
         text_obj = _build_text_field(step_idx, obj_num, step_text, step_idx, text_pos)
         text_obj["sourceUnits"] = "m"
         objects.append(text_obj)
+
+        # 1b. required-part names — second text field directly below the
+        # instruction so the operator sees which parts this step consumes.
+        # Entries resolve by catalog id or manual name; unmatched aliases are
+        # shown verbatim rather than silently dropped
+        part_names = list(
+            dict.fromkeys(
+                str(
+                    restore_umlauts(
+                        (p.name if p is not None else "") or str(req), umap
+                    )
+                )
+                for req in (s.required_parts or [])
+                for p in (parts.get(str(req)) or parts_by_name.get(str(req)),)
+            )
+        )
+        if part_names:
+            obj_num += 1
+            parts_pos = _v3(text_pos["x"], text_pos["y"] - 0.11, text_pos["z"])
+            parts_obj = _build_text_field(
+                step_idx, obj_num, "Teile: " + ", ".join(part_names), step_idx, parts_pos
+            )
+            parts_obj["sourceUnits"] = "m"
+            objects.append(parts_obj)
 
         # 2. arrows — joint approach evidence + user annotation arrows
         objs, obj_num = _step_arrow_objects(ctx, step_idx, obj_num, s.action_type)

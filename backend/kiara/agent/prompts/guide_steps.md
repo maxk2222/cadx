@@ -7,7 +7,7 @@ Preferred path: read the step pages FIRST (get_all_page_text, get_page_image onl
 For EVERY manual step provide (fields of `create_steps`/`create_step` items):
 - `number` — manual order, 1-based.
 - `text` — DETAILED internal description (several sentences OK): which parts, how they mate, orientation/spatial hints (left/right/top/into), quantities, tolerances, tool actions. Downstream agents read this — keep nothing in your head.
-- `display_text` — SHORT AR-facing instruction (≤140 chars, imperative, in the manual's language). This is what the user sees floating in AR.
+- `display_text` — SHORT AR-facing instruction (≤140 chars, imperative, in the manual's language with correct orthography — German means real umlauts: "Gehäuse", "einstecken, verläuft", never ASCII digraphs like "Gehaeuse"/"verlaeuft"). This is what the user sees floating in AR.
 - `required_parts` — canonical part names exactly as in detected_part_names, and ONLY parts the step physically installs AND the kit actually ships (check `list_parts` first): elements the manual marks "vormontiert"/premounted (host covers, stubs, adapters already on the device) are scene context — they belong in `text`/`target`, never in `required_parts`. The same applies to a manual part the kit simply does not contain when generation is disabled: the step stays (the reader still needs the instruction) but the missing name lives in `text`/`target`, not `required_parts`. NEVER a name absent from that list either: lengths in figure dimension callouts or cut/parts tables ("Rohr l = 100/200 mm") are geometry notes, not kit parts — a step requiring them invents hardware the kit does not ship.
 - `tools`, `safety_hint`, `source_pages` — as applicable.
 

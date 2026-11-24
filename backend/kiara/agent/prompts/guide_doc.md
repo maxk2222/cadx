@@ -6,7 +6,7 @@ Work in this exact order:
 3. `get_page_image` / `get_figure_image` — inspect pages whose text is thin or ambiguous (a scanned manual has no embedded text — look at the images!).
 4. `classify_pages` — ONE call, label every page: cover | toc | parts_list | steps | appendix | unknown.
 5. `detect_language` — BCP-47 code of the manual's instruction text.
-6. `set_detected_part_names` — the canonical names of all physical parts/components the manual mentions (from the parts list page AND step texts). These names drive CAD-part matching later — copy them verbatim, including size suffixes (e.g. "M4x20 Schraube"). **Keep the Stückliste quantity on each name** when the parts list gives one: "2x Rohr DN22, l = 70 mm" or "Rohr DN22, l = 70 mm (2x)" — the quantity bounds how many copies the plan may place.
+6. `set_detected_part_names` — the canonical names of all physical parts/components the manual mentions (from the parts list page AND step texts). These names drive CAD-part matching later — copy them verbatim, including size suffixes (e.g. "M4x20 Schraube") and real umlauts ("Gehäuse", not "Gehaeuse"). **Keep the Stückliste quantity on each name** when the parts list gives one: "2x Rohr DN22, l = 70 mm" or "Rohr DN22, l = 70 mm (2x)" — the quantity bounds how many copies the plan may place.
 
 Rules:
 - Read ALL pages. Do not stop after the parts list — step pages also name parts.

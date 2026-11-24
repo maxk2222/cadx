@@ -34,7 +34,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
             "number": _i("step number (manual order, 1-based)"),
             "title": _s("imperative step title — a full instruction phrase like 'Adapter links oben schrauben', never a bare verb like 'Schrauben'"),
             "text": _s("detailed INTERNAL step description"),
-            "display_text": _s("short AR-facing instruction (≤140 chars)"),
+            "display_text": _s("short AR-facing instruction (≤140 chars) in the manual's language with correct orthography — German umlauts ä/ö/ü/ß, never ae/oe/ue digraphs"),
             "action_type": {
                 "type": "string",
                 "enum": _ACTION_TYPES,
@@ -66,7 +66,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                         "number": _i("step number (1-based)"),
                         "title": _s("imperative step title — a full instruction phrase, never a bare verb"),
                         "text": _s("detailed INTERNAL step description"),
-                        "display_text": _s("short AR-facing instruction (≤140 chars)"),
+                        "display_text": _s("short AR-facing instruction (≤140 chars) in the manual's language with correct orthography — German umlauts ä/ö/ü/ß, never ae/oe/ue digraphs"),
                         "action_type": {"type": "string", "enum": _ACTION_TYPES},
                         "required_parts": _arr(_s("canonical part name"), "parts placed/used"),
                         "tools": _arr(_s("tool"), "tools needed"),

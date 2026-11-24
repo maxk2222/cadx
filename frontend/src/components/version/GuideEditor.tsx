@@ -30,6 +30,7 @@ import {
   type Ref,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { createPortal } from "react-dom";
 import * as THREE from "three";
 import {
   GizmoHelper,
@@ -2029,7 +2030,10 @@ function Shell({
   onClose: () => void;
   wide?: boolean;
 }) {
-  return (
+  // portal at document.body: `fixed` is viewport-relative only outside any
+  // transformed ancestor — inside the page layout the content column offsets
+  // the overlay and its left edge lands behind the nav bar
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-3"
       onClick={(e) => {
@@ -2045,7 +2049,8 @@ function Shell({
       >
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

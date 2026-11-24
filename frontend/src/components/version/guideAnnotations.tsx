@@ -19,11 +19,15 @@ export function axisVec(a: GuideAnnotation): THREE.Vector3 {
   return UP.clone();
 }
 
-/** world position an arrow anchors to: its instance's transform origin. */
+/** world position an arrow's tip anchors to: the resolved mating-port
+ *  position when the backend wrote one, else the instance origin. */
 export function anchorPos(
   a: GuideAnnotation,
   instances: GuideInstance[],
 ): THREE.Vector3 | null {
+  if (a.position?.length === 3) {
+    return new THREE.Vector3(a.position[0], a.position[1], a.position[2]);
+  }
   const inst = instances.find(
     (i) => i.id === a.part_id || i.part_id === a.part_id,
   );
@@ -34,6 +38,7 @@ export function anchorPos(
 
 const SHAFT = 46;
 const HEAD = 14;
+const GAP = 4;
 
 export function AnnArrow({
   ann,
@@ -52,11 +57,11 @@ export function AnnArrow({
   const scale = ann.size ?? 1;
   const color = ann.color || (selected ? "#2b7cff" : "#f08c00");
   const quat = new THREE.Quaternion().setFromUnitVectors(UP, dir);
-  const start = origin.clone().addScaledVector(dir, 8);
   return (
-    <group position={start} quaternion={quat} scale={scale} ref={innerRef}>
+    <group position={origin} quaternion={quat} scale={scale} ref={innerRef}>
+      {/* tip ON the part — shaft trails back along -dir (the approach path) */}
       <mesh
-        position-y={SHAFT / 2}
+        position-y={-(HEAD + SHAFT / 2 + GAP)}
         onClick={(e) => {
           if (!onSelect) return;
           e.stopPropagation();
@@ -67,7 +72,7 @@ export function AnnArrow({
         <meshStandardMaterial color={color} />
       </mesh>
       <mesh
-        position-y={SHAFT + HEAD / 2}
+        position-y={-(HEAD / 2 + GAP)}
         onClick={(e) => {
           if (!onSelect) return;
           e.stopPropagation();
@@ -78,7 +83,7 @@ export function AnnArrow({
         <meshStandardMaterial color={color} />
       </mesh>
       {!!ann.label && (
-        <Html position={[0, SHAFT + HEAD + 8, 0]} center zIndexRange={[30, 0]}>
+        <Html position={[0, -(SHAFT + HEAD + 8), 0]} center zIndexRange={[30, 0]}>
           <div
             className="pointer-events-none whitespace-nowrap rounded border px-1.5 py-0.5 text-[11px] font-medium shadow-lg"
             style={{

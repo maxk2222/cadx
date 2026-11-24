@@ -128,16 +128,62 @@ async def add_arrow(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
     vec = _DIR_VECS.get(d)
     if vec is None:
         return {"ok": False, "error": f"direction must be one of {sorted(_DIR_VECS)}"}
-    s.state.annotations.append(
-        {
-            "kind": "arrow",
-            "step": step_no,
-            "part_id": pid,
-            "approach_axis": vec,
-            "label": str(a.get("label", ""))[:80],
-        }
-    )
+    pos, axis = _joint_arrow_evidence(s, step_no, pid) or (None, vec)
+    ann: dict[str, Any] = {
+        "kind": "arrow",
+        "step": step_no,
+        "part_id": pid,
+        "approach_axis": axis,
+        "label": str(a.get("label", ""))[:80],
+    }
+    if pos is not None:
+        ann["position"] = pos
+    s.state.annotations.append(ann)
     return {"ok": True, "index": len(s.state.annotations) - 1}
+
+
+def _joint_arrow_evidence(
+    s: GuideToolSession, step_no: int, pid: str
+) -> tuple[list[float], list[float]] | None:
+    """(moving-port world pos, travel direction world) from this step's
+    joint for `pid`. approach_axis is the FIXED port's outward normal in the
+    fixed part's local frame, so the arrow's travel direction is its
+    negation — flush with the real mating axis, not the coarse named hint."""
+    import numpy as np
+
+    insts = {i.instance_id: i for i in s.state.assembly.instances}
+    my_iids = {i.instance_id for i in s.state.assembly.instances if i.part_id == pid}
+    for j in s.state.assembly.joints:
+        if int(j.get("step", -1)) != step_no:
+            continue
+        if j.get("moving_part") != pid and j.get("moving_instance") not in my_iids:
+            continue
+        fixed = insts.get(str(j.get("fixed_instance") or ""))
+        moving = insts.get(str(j.get("moving_instance") or ""))
+        if fixed is None or fixed.transform is None:
+            return None
+        fm = np.asarray(fixed.transform, dtype=float).reshape(4, 4)
+        axis_w = fm[0:3, 0:3] @ np.asarray(j.get("approach_axis") or [0, 0, 1], dtype=float)
+        travel = (-axis_w / max(float(np.linalg.norm(axis_w)), 1e-9)).tolist()
+        if moving is None or moving.transform is None:
+            return None, travel
+        part = s.state.part_by_id(pid)
+        port = next(
+            (
+                p
+                for p in (part.ports if part else [])
+                if p.name == j.get("moving_port")
+            ),
+            None,
+        )
+        mm = np.asarray(moving.transform, dtype=float).reshape(4, 4)
+        pos = (
+            (mm[0:3, 0:3] @ np.asarray(port.pos, dtype=float) + mm[0:3, 3]).tolist()
+            if port is not None
+            else mm[0:3, 3].tolist()
+        )
+        return pos, travel
+    return None
 
 
 def _insts_of_part(s: GuideToolSession, pid: str) -> list[Any]:

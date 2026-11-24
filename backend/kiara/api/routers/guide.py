@@ -23,6 +23,7 @@ from kiara.db.models import Asset, AssetKind, Version
 from kiara.guide import unity
 from kiara.guide.annotate_tools import _DIR_VECS
 from kiara.guide.state import GuideState
+from kiara.guide.umlauts import restore_umlauts, state_umlaut_map
 from kiara.logging import get_logger
 
 log = get_logger(__name__)
@@ -73,9 +74,10 @@ def _media_files(guide_dir: Path) -> list[str]:
     return sorted(p.name for p in media.iterdir() if p.is_file())
 
 
-def _step_out(s: Any) -> dict[str, Any]:
-    title = str(s.title or "")
-    disp = str(s.display_text or "").strip()
+def _step_out(s: Any, umap: dict[str, str] | None = None) -> dict[str, Any]:
+    umap = umap or {}
+    title = str(restore_umlauts(s.title or "", umap) or "")
+    disp = str(restore_umlauts(s.display_text or "", umap) or "").strip()
     if disp and len(title.split()) < 3:
         # a bare verb ("Schrauben") is no step text — the full imperative
         # display_text is the better headline (mirrors step_tools fallback)
@@ -83,11 +85,11 @@ def _step_out(s: Any) -> dict[str, Any]:
     return {
         "number": s.number,
         "title": title,
-        "text": s.text,
-        "display_text": s.display_text,
+        "text": restore_umlauts(s.text, umap),
+        "display_text": restore_umlauts(s.display_text, umap),
         "action_type": s.action_type,
-        "required_parts": s.required_parts,
-        "safety_hint": s.safety_hint,
+        "required_parts": [restore_umlauts(str(r), umap) for r in (s.required_parts or [])],
+        "safety_hint": restore_umlauts(s.safety_hint, umap),
         "media_image": Path(s.media_image).name if s.media_image else None,
         "source_pages": s.source_pages,
         "sub_steps": [ss.model_dump() for ss in s.sub_steps],
@@ -100,8 +102,9 @@ async def get_guide(version_id: uuid.UUID, db: AsyncSession = Depends(get_sessio
     if not v:
         raise HTTPException(404, "version not found")
     state, guide_dir = _guide_ctx(v)
+    umap = state_umlaut_map(state)
     return {
-        "steps": [_step_out(s) for s in state.steps],
+        "steps": [_step_out(s, umap) for s in state.steps],
         "media": _media_files(guide_dir),
         "master_notes": state.master_notes,
         "missions_done": state.missions_done,
@@ -110,7 +113,14 @@ async def get_guide(version_id: uuid.UUID, db: AsyncSession = Depends(get_sessio
         # Z-up world into the display frame; see GuideScene's wrapper.
         "world_frame": state.world_frame,
         "variants": state.variants,
-        "annotations": state.annotations,
+        "annotations": [
+            {
+                **a,
+                "text": restore_umlauts(a.get("text"), umap),
+                "label": restore_umlauts(a.get("label"), umap),
+            }
+            for a in state.annotations
+        ],
         "review": {
             "score": state.review.score,
             "iteration": state.review.iteration,
@@ -400,7 +410,7 @@ async def patch_step(
             step.media_image = str((guide_dir / "output" / "media" / name).resolve())
     state.save(guide_dir)
     _regen_unity(state, guide_dir)
-    return _step_out(step)
+    return _step_out(step, state_umlaut_map(state))
 
 
 class StepCreate(BaseModel):
@@ -458,7 +468,7 @@ async def add_step(
     state.steps.sort(key=lambda s: s.number)
     state.save(guide_dir)
     _regen_unity(state, guide_dir)
-    return {"ok": True, "step": _step_out(state.step_by_number(no))}
+    return {"ok": True, "step": _step_out(state.step_by_number(no), state_umlaut_map(state))}
 
 
 @router.delete("/versions/{version_id}/guide/steps/{number}")
@@ -527,7 +537,7 @@ async def rewrite_guide(
         "audience": body.audience,
         "variant": out["key"],
         "rewritten": out["applied"],
-        "steps": [_step_out(s) for s in state.steps],
+        "steps": [_step_out(s, state_umlaut_map(state)) for s in state.steps],
     }
 
 
@@ -563,7 +573,7 @@ async def apply_variant(
     state.save(guide_dir)
     _regen_unity(state, guide_dir)
     return {"ok": True, "variant": body.key, "applied": applied,
-            "steps": [_step_out(s) for s in state.steps]}
+            "steps": [_step_out(s, state_umlaut_map(state)) for s in state.steps]}
 
 
 class GuideNoteIn(BaseModel):
