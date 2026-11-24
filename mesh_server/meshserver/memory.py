@@ -14,10 +14,15 @@ The ledger tracks two things:
 host keeps ``cfg.mem_headroom_mb`` free after accounting for the newcomer.
 When psutil can't report free memory the check passes — the RSS watchdog on
 generation children stays the last line of defence either way.
+
+The ledger accounts host RAM only — device VRAM is probed live via
+``free_vram_mb`` in the admission loop (jobs.admit_resolved), since a
+resident model can pin the card while RAM still fits.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 import time
@@ -28,6 +33,53 @@ from meshserver.config import ServerConfig
 from meshserver.logging import get_logger
 
 log = get_logger(__name__)
+
+
+def _vram_info() -> tuple[float, float] | None:
+    """(free, total) VRAM in MB on CUDA/ROCm hosts; None elsewhere or when
+    no probe is available. Process-agnostic (driver-level counters) — sees
+    llama.cpp servers and generation subprocesses alike.
+
+    pynvml is preferred: probing via torch.cuda inits a CUDA context in the
+    caller, which would permanently pin a few hundred MB of the very
+    resource being measured.
+    """
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return float(info.free) / 1e6, float(info.total) / 1e6
+        finally:
+            with contextlib.suppress(Exception):
+                pynvml.nvmlShutdown()
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        free, total = torch.cuda.mem_get_info()
+        return float(free) / 1e6, float(total) / 1e6
+    except Exception:
+        return None
+
+
+def free_vram_mb() -> float | None:
+    """Free VRAM in MB (see _vram_info); None on non-CUDA hosts."""
+    info = _vram_info()
+    return info[0] if info else None
+
+
+def total_vram_mb() -> float | None:
+    """Total VRAM in MB (see _vram_info); None on non-CUDA hosts."""
+    info = _vram_info()
+    return info[1] if info else None
 
 
 class MemoryLedger:

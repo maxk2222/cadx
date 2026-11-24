@@ -166,12 +166,13 @@ class ServerConfig:
         default_factory=lambda: _env_bool("MESH_QWEN_EDIT_LIGHTNING", default=True)
     )
     # diffusers CPU-offload ladder: auto|model|sequential|none —
-    # 'auto' enables model-level offload below cuda_offload_vram_gb free VRAM
+    # 'auto' picks the fastest tier whose declared VRAM peak fits the card's
+    # total VRAM plus cuda_offload_vram_gb margin (adapters.image_base)
     cuda_offload: str = field(
         default_factory=lambda: os.environ.get("MESH_CUDA_OFFLOAD", "auto")
     )
     cuda_offload_vram_gb: float = field(
-        default_factory=lambda: _env_float("MESH_CUDA_OFFLOAD_VRAM_GB", 24)
+        default_factory=lambda: _env_float("MESH_CUDA_OFFLOAD_VRAM_GB", 3)
     )
     # optional MLX unified-memory cap (0 = unlimited)
     mlx_mem_limit_gb: float = field(
@@ -182,6 +183,12 @@ class ServerConfig:
     # host RAM kept free below this reserved amount when admitting models (MB)
     mem_headroom_mb: int = field(
         default_factory=lambda: _env_int("MESH_MEM_HEADROOM_MB", 4096)
+    )
+    # device VRAM kept free below this reserved amount when admitting a
+    # GPU-resident model (MB) — covers the driver's async reclaim lag plus
+    # the CUDA context the probe itself may pin
+    vram_headroom_mb: int = field(
+        default_factory=lambda: _env_int("MESH_VRAM_HEADROOM_MB", 1500)
     )
     # keep a warm per-model generation worker alive between jobs (saves the
     # model reload each subprocess job pays today)

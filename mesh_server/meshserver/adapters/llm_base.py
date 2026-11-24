@@ -211,6 +211,13 @@ class LlmAdapter(ABC):
             q = 1.0
         return base + ctx * kv_bpt * q / 1e6
 
+    @classmethod
+    def vram_need_mb(cls, cfg: Any) -> float:
+        """VRAM peak for queue admission: the managed server parks weights
+        plus the KV pool on the GPU (llama.cpp -ngl / MLX full residency),
+        so the host-RAM admission estimate doubles as the VRAM need."""
+        return cls.admission_mem_mb(cfg)
+
     # -- instance lifecycle ------------------------------------------------ #
 
     def __init__(self, cfg: Any) -> None:

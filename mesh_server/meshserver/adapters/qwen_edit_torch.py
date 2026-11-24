@@ -8,8 +8,9 @@ Apache-2.0, ungated — no HF token required).
 
 Unlike img2img adapters (sdxl/flux-schnell), this is a true instruction-edit
 model: it conditions on the init image and edits only what the prompt asks.
-~20B params — always run with CPU offload on <=32 GB cards; the shared
-cuda_offload ladder applies (auto -> 'model' offload below the VRAM cutoff).
+~20B params (~40 GB bf16 transformer) — model-level offload can't fit the
+transformer alone on <=40 GB cards, so 'auto' resolves to 'sequential'
+there (see image_base.resolve_offload).
 """
 
 from __future__ import annotations
@@ -21,7 +22,13 @@ from PIL import Image
 
 from meshserver.adapters.base import hard_unload, missing
 from meshserver.adapters.flux_diffusers import _cuda_ok
-from meshserver.adapters.image_base import ImageAdapter, ImageGenOpts, ImageGenResult
+from meshserver.adapters.image_base import (
+    ImageAdapter,
+    ImageGenOpts,
+    ImageGenResult,
+    offload_peak_mb,
+    resolve_offload,
+)
 
 _HF_REPO = "Qwen/Qwen-Image-Edit-2509"
 
@@ -37,7 +44,21 @@ class QwenImageEditTorchAdapter(ImageAdapter):
     max_side = 1024
     supports_edit: ClassVar[bool] = True
     requires_image: ClassVar[bool] = True  # edit-only: no plain txt2img
-    est_mem_mb = 16000
+    # worker RSS: offloaded weights stay resident in host RAM (~45 GB bf16)
+    est_mem_mb = 40000
+    # VRAM peaks per offload tier — the ~40 GB transformer makes 'model'
+    # offload pointless on <=40 GB cards (its peak IS the whole model)
+    _OFFLOAD_MB: ClassVar[dict[str, int]] = {
+        "none": 47000,
+        "model": 42000,
+        "sequential": 14000,
+    }
+
+    @classmethod
+    def vram_need_mb(cls, cfg: Any) -> int:
+        from meshserver.memory import total_vram_mb
+
+        return offload_peak_mb(cfg, total_vram_mb(), cls._OFFLOAD_MB)
     # set by load() from the resolved pipeline class; default matches the
     # Plus signature so direct _pipe injection in tests works
     _image_list: bool = True
@@ -73,19 +94,17 @@ class QwenImageEditTorchAdapter(ImageAdapter):
             torch_dtype=torch.bfloat16,
             cache_dir=str(self.cfg.model_dir),
         )
-        offload = getattr(self.cfg, "cuda_offload", "auto")
-        if offload == "auto":
-            try:
-                free_gb = torch.cuda.mem_get_info()[0] / 1e9
-                offload = "model" if free_gb < self.cfg.cuda_offload_vram_gb else "none"
-            except Exception:
-                offload = "model"
-        # ~20B bf16 — model offload is the sensible default; 'none' only fits
-        # ~40 GB+ cards or when the LLM is unloaded
+        offload = resolve_offload(
+            self.cfg,
+            torch.cuda.get_device_properties(0).total_memory / 1e6,
+            self._OFFLOAD_MB,
+        )
         if offload == "sequential":
             pipe.enable_sequential_cpu_offload()
-        else:
+        elif offload == "model":
             pipe.enable_model_cpu_offload()
+        else:
+            pipe = pipe.to("cuda")
         self._pipe = pipe
         self._loaded = True
 

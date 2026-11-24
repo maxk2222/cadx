@@ -305,6 +305,47 @@ def test_qwen_edit_torch_base_pipe_single_image(tmp_path):
     assert calls["num_inference_steps"] == 40
 
 
+def test_resolve_offload_picks_fastest_fitting_tier(tmp_path):
+    """auto resolves by TOTAL vram vs the declared ladder — a 32 GB card
+    can't hold FLUX's ~34 GB residency, so 'model' offload wins; sequential
+    only when even the module peak doesn't fit."""
+    from meshserver.adapters.flux_diffusers import FluxSchnellAdapter
+    from meshserver.adapters.image_base import resolve_offload
+
+    cfg = ServerConfig(job_dir=tmp_path, cuda_offload="auto", cuda_offload_vram_gb=3)
+    tiers = FluxSchnellAdapter._OFFLOAD_MB  # noqa: SLF001
+    assert resolve_offload(cfg, 34000.0, tiers) == "model"
+    assert resolve_offload(cfg, 48000.0, tiers) == "none"
+    assert resolve_offload(cfg, 12000.0, tiers) == "sequential"
+    cfg.cuda_offload = "sequential"
+    assert resolve_offload(cfg, 48000.0, tiers) == "sequential"
+
+
+def test_resolve_offload_qwen_needs_sequential_on_32gb(tmp_path):
+    """The ~40 GB Qwen-Edit transformer can't fit model-level offload on a
+    32 GB card — auto must reach 'sequential' (the honest tier)."""
+    from meshserver.adapters.image_base import resolve_offload
+    from meshserver.adapters.qwen_edit_torch import QwenImageEditTorchAdapter
+
+    cfg = ServerConfig(job_dir=tmp_path, cuda_offload="auto", cuda_offload_vram_gb=3)
+    tiers = QwenImageEditTorchAdapter._OFFLOAD_MB  # noqa: SLF001
+    assert resolve_offload(cfg, 34000.0, tiers) == "sequential"
+    # 45 GB: full residency (47+3) doesn't fit but the module peak (42+3) does
+    assert resolve_offload(cfg, 45000.0, tiers) == "model"
+    assert resolve_offload(cfg, 64000.0, tiers) == "none"
+
+
+def test_vram_need_matches_resolved_tier(tmp_path):
+    """vram_need_mb must equal the peak of the tier load() will use —
+    admission and load decide by the same total-VRAM ladder."""
+    from meshserver.adapters.flux_diffusers import FluxSchnellAdapter
+
+    cfg = ServerConfig(job_dir=tmp_path, cuda_offload="model")
+    assert FluxSchnellAdapter.vram_need_mb(cfg) == 26000
+    cfg2 = ServerConfig(job_dir=tmp_path, cuda_offload="sequential")
+    assert FluxSchnellAdapter.vram_need_mb(cfg2) == 8000
+
+
 def test_init_image_cleanup_on_delete(tmp_path):
     """Deleting an edit job removes the staged init file in incoming/."""
     import json as _json

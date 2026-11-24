@@ -27,6 +27,7 @@ from meshserver.adapters.base import GenOpts
 from meshserver.adapters.image_base import ImageGenOpts
 from meshserver.config import ServerConfig
 from meshserver.logging import get_logger
+from meshserver.memory import free_vram_mb
 from meshserver.postprocess import clean_mesh, export_glb
 from meshserver.preprocess import prep_images
 from meshserver.registry import Registry
@@ -424,6 +425,25 @@ class JobManager:
                 return getattr(cls, "est_mem_mb", None)
         return None
 
+    def _vram_need(self, adapter_id: str) -> float:
+        """Declared VRAM peak (MB) for a resolved adapter — classmethod
+        vram_need_mb(cfg) wins (offload-tier / ctx dependent); est_mem_mb is
+        the fallback for GPU-resident adapters (a resolved adapter is by
+        definition available on this host's device)."""
+        classes = getattr(self.registry, "_classes", []) + getattr(
+            self.registry, "_llm_classes", []
+        )
+        for cls in classes:
+            if cls.id == adapter_id:
+                vram = getattr(cls, "vram_need_mb", None)
+                if callable(vram):
+                    with contextlib.suppress(Exception):
+                        return float(vram(self.cfg))
+                elif vram is not None:
+                    return float(vram)
+                return float(getattr(cls, "est_mem_mb", 0) or 0)
+        return 0.0
+
     def llm_models_in_use(self) -> set[str]:
         """llm adapter ids with at least one in-flight request — excluded
         from memory-admission eviction so a running generation can't be
@@ -438,7 +458,13 @@ class JobManager:
         registry already holds the model. Otherwise the ledger estimate
         must fit while keeping mem_headroom_mb free — evicting idle warm
         workers (LRU) then resident registry instances, but never a model
-        with an in-flight llm request."""
+        with an in-flight llm request.
+
+        The ledger accounts host RAM only, so a second loop probes real
+        free VRAM: a resident llama-server or generation model can pin the
+        card while RAM still fits (the CUDA OOM this prevents only shows
+        up inside the worker otherwise). Same victim chain — idle warm
+        workers first, then LRU registry residents."""
         ledger = self.registry.ledger
         exclude = ({resolved} if resolved else set()) | self.llm_models_in_use()
         if resolved:
@@ -456,7 +482,27 @@ class JobManager:
                 continue
             if self.registry.evict_lru(exclude=exclude) is None:
                 break
-        return ledger.fits(need)
+        if not ledger.fits(need):
+            return False
+        vneed = self._vram_need(resolved)
+        if vneed > 0:
+            for _ in range(8):
+                free_v = free_vram_mb()
+                if free_v is None or free_v - self.cfg.vram_headroom_mb >= vneed:
+                    break
+                victim = self._lru_idle_warm(exclude=exclude)
+                if victim is not None:
+                    log.info("warm.evicted_for_vram", model=victim.model)
+                    self._evict_warm(victim)
+                elif self.registry.evict_lru(exclude=exclude) is None:
+                    break
+                # the driver reclaims device memory asynchronously after a
+                # kill — probe again after a beat instead of over-evicting
+                time.sleep(0.5)
+            free_v = free_vram_mb()
+            if free_v is not None and free_v - self.cfg.vram_headroom_mb < vneed:
+                return False
+        return True
 
     def _admit(self, job: MeshJob | ImageJob) -> bool:
         """Memory admission for a queued job."""

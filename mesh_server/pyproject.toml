@@ -53,6 +53,9 @@ cuda = [
     "huggingface_hub<1",
     "accelerate>=0.33",
     "rembg>=2.0.57",
+    # context-free VRAM probe for queue admission (torch.cuda fallback pins a
+    # CUDA context in the server process)
+    "pynvml>=11.5",
 ]
 # AMD (Linux, ROCm): TripoSG + Hunyuan3D-2 torch — same dep set as cuda; the
 # HIP-enabled torch itself comes from scripts/install_rocm.sh / Dockerfile.rocm
@@ -64,6 +67,7 @@ rocm = [
     "accelerate>=0.33",
     "rembg>=2.0.57",
     "scikit-image>=0.24",  # marching-cubes fallback for the CUDA-only diso ext
+    "pynvml>=11.5",  # VRAM probe (amdsmi-backed on ROCm hosts)
 ]
 # background removal only (for adapters that don't bundle rembg)
 bg = [

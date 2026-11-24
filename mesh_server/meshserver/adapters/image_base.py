@@ -45,6 +45,41 @@ class ImageGenResult:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+# -- shared diffusers CPU-offload ladder ---------------------------------- #
+# Each torch adapter declares per-tier VRAM peaks (MB) in _OFFLOAD_MB:
+# "none" = full GPU residency, "model" = whole-module offload (peak =
+# largest single module), "sequential" = per-layer streaming.
+
+
+def resolve_offload(cfg: Any, total_vram: float | None, tiers: dict[str, int]) -> str:
+    """Pick the offload tier for cfg.cuda_offload.
+
+    Explicit modes pass through. "auto" picks the FASTEST tier whose
+    declared peak fits the card's *total* VRAM plus the
+    cuda_offload_vram_gb margin — total, not transient free: the queue's
+    VRAM admission (vram_need_mb) evicts other residents until the declared
+    peak is really free at load time, so probing free VRAM here would
+    double-count evictions and drift between admission and load.
+    """
+    mode = str(getattr(cfg, "cuda_offload", "auto") or "auto")
+    if mode in tiers:
+        return mode
+    if total_vram is None:
+        return "model" if "model" in tiers else "sequential"
+    margin_mb = float(getattr(cfg, "cuda_offload_vram_gb", 3) or 0) * 1000
+    for tier in ("none", "model", "sequential"):
+        peak = tiers.get(tier)
+        if peak is not None and peak + margin_mb <= total_vram:
+            return tier
+    return "sequential"
+
+
+def offload_peak_mb(cfg: Any, total_vram: float | None, tiers: dict[str, int]) -> int:
+    """VRAM peak (MB) of the tier resolve_offload selects — the number the
+    queue's VRAM admission must hold free before the load starts."""
+    return tiers[resolve_offload(cfg, total_vram, tiers)]
+
+
 class ImageAdapter(ABC):
     """One text-to-image backend. Instances hold the loaded pipeline."""
 

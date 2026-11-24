@@ -106,6 +106,38 @@ async def test_unfit_job_does_not_block_fittable(manager, monkeypatch):
     assert small.status == "queued"
 
 
+async def test_vram_admission_evicts_lru_resident(manager, monkeypatch):
+    """VRAM admission: a resident model pinning the card is evicted when the
+    resolved adapter's declared VRAM peak doesn't fit — the ledger only
+    accounts host RAM, so without this the worker dies on a real CUDA OOM."""
+    evicted: list[str | None] = []
+    free_levels = iter([1000.0, 30000.0])
+    monkeypatch.setattr(
+        "meshserver.jobs.free_vram_mb", lambda: next(free_levels, 30000.0)
+    )
+    monkeypatch.setattr(
+        manager.registry,
+        "evict_lru",
+        lambda exclude=None: evicted.append("fake-image-2") or "fake-image-2",
+    )
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    manager.cfg.vram_headroom_mb = 1500
+    job = await manager.submit_image(ImageGenParams(model="fake-image", prompt="x"))
+    assert manager._admit(job) is True  # noqa: SLF001
+    assert evicted == ["fake-image-2"]
+
+
+async def test_vram_unfittable_waits_for_memory(manager, monkeypatch):
+    """Nothing evictable + not enough VRAM -> job waits ('waiting for
+    memory') instead of running into a CUDA OOM inside the worker."""
+    monkeypatch.setattr("meshserver.jobs.free_vram_mb", lambda: 500.0)
+    monkeypatch.setattr(manager.registry, "evict_lru", lambda exclude=None: None)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+    manager.cfg.vram_headroom_mb = 1500
+    job = await manager.submit_image(ImageGenParams(model="fake-image", prompt="x"))
+    assert manager._admit(job) is False  # noqa: SLF001
+
+
 async def test_queue_snapshot_fields(manager, monkeypatch):
     monkeypatch.setattr(manager.registry.ledger, "free_mb", lambda *a, **kw: 12345.0)
     manager.registry.ledger.reserve("fake-image", 100, pinned=False, kind="model")

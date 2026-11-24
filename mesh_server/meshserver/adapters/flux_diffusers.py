@@ -5,9 +5,11 @@ Install:
 Weights are pulled from HF on first load (black-forest-labs/FLUX.1-schnell,
 Apache-2.0, ungated — no HF token required).
 
-Memory ladder (config cuda_offload): full GPU residency is fastest but needs
-~24 GB free VRAM; 'model' moves each pipeline stage between RAM and VRAM
-(~12-14 GB peak); 'sequential' streams per-module (~6-8 GB, slowest).
+Memory ladder (config cuda_offload): 'none' keeps all ~34 GB resident
+(transformer ~24 + T5-XXL ~9.4 + CLIP/VAE, bf16); 'model' moves each
+pipeline stage between RAM and VRAM (peak = transformer, ~26 GB);
+'sequential' streams per-module (~8 GB, slowest). 'auto' resolves the
+fastest tier that fits the card's total VRAM (see image_base.resolve_offload).
 """
 
 from __future__ import annotations
@@ -18,7 +20,13 @@ from typing import Any, ClassVar
 from PIL import Image
 
 from meshserver.adapters.base import hard_unload, missing
-from meshserver.adapters.image_base import ImageAdapter, ImageGenOpts, ImageGenResult
+from meshserver.adapters.image_base import (
+    ImageAdapter,
+    ImageGenOpts,
+    ImageGenResult,
+    offload_peak_mb,
+    resolve_offload,
+)
 from meshserver.torch_util import TorchDevice
 
 
@@ -41,7 +49,20 @@ class FluxSchnellAdapter(ImageAdapter):
     max_count = 4
     max_side = 1024
     supports_edit: ClassVar[bool] = True  # img2img via FluxImg2ImgPipeline.from_pipe
-    est_mem_mb = 8000
+    # worker RSS: offloaded weights stay resident in host RAM (~34 GB bf16)
+    est_mem_mb = 34000
+    # VRAM peaks per offload tier — admission + auto-resolution
+    _OFFLOAD_MB: ClassVar[dict[str, int]] = {
+        "none": 34000,
+        "model": 26000,
+        "sequential": 8000,
+    }
+
+    @classmethod
+    def vram_need_mb(cls, cfg: Any) -> int:
+        from meshserver.memory import total_vram_mb
+
+        return offload_peak_mb(cfg, total_vram_mb(), cls._OFFLOAD_MB)
 
     @classmethod
     def available(cls, cfg: Any) -> bool:
@@ -63,13 +84,11 @@ class FluxSchnellAdapter(ImageAdapter):
             torch_dtype=torch.bfloat16,
             cache_dir=str(self.cfg.model_dir),
         )
-        offload = getattr(self.cfg, "cuda_offload", "auto")
-        if offload == "auto":
-            try:
-                free_gb = torch.cuda.mem_get_info()[0] / 1e9
-                offload = "model" if free_gb < self.cfg.cuda_offload_vram_gb else "none"
-            except Exception:
-                offload = "model"
+        offload = resolve_offload(
+            self.cfg,
+            torch.cuda.get_device_properties(0).total_memory / 1e6,
+            self._OFFLOAD_MB,
+        )
         if offload == "model":
             pipe.enable_model_cpu_offload()
         elif offload == "sequential":
