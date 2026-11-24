@@ -225,6 +225,86 @@ def test_flux_diffusers_i2i_clamps_strength(tmp_path):
     assert isinstance(calls["image"], Image.Image)
 
 
+def test_qwen_edit_torch_requires_init_image(tmp_path):
+    from meshserver.adapters.qwen_edit_torch import QwenImageEditTorchAdapter
+
+    a = QwenImageEditTorchAdapter(ServerConfig(job_dir=tmp_path))
+    a._loaded = True
+    with pytest.raises(RuntimeError, match="init image"):
+        a.generate(ImageGenOpts(prompt="x"))
+
+
+def test_qwen_edit_torch_plus_passes_image_list(tmp_path):
+    """Plus-pipeline path: image list, true_cfg_scale, distilled guidance."""
+    from meshserver.adapters.qwen_edit_torch import QwenImageEditTorchAdapter
+
+    calls: dict = {}
+
+    class Pipe:
+        def __call__(self, **kw):
+            calls.update(kw)
+            return SimpleNamespace(images=[Image.new("RGB", (8, 8))])
+
+    class FakeTorch:
+        class Generator:
+            def __init__(self, device=None):
+                pass
+
+            def manual_seed(self, s):
+                return self
+
+    a = QwenImageEditTorchAdapter(ServerConfig(job_dir=tmp_path))
+    a._loaded = True
+    a._torch = FakeTorch
+    a._pipe = Pipe()
+    a._image_list = True
+
+    init = tmp_path / "init.png"
+    Image.new("RGB", (16, 16)).save(init)
+    res = a.generate(
+        ImageGenOpts(prompt="add fins", image_path=init, steps=12, guidance=3.5)
+    )
+    assert res.images and res.model == "qwen-image-edit-torch"
+    assert isinstance(calls["image"], list) and isinstance(
+        calls["image"][0], Image.Image
+    )
+    assert calls["num_inference_steps"] == 12
+    assert calls["true_cfg_scale"] == 3.5
+
+
+def test_qwen_edit_torch_base_pipe_single_image(tmp_path):
+    """Fallback base QwenImageEditPipeline takes a single PIL image."""
+    from meshserver.adapters.qwen_edit_torch import QwenImageEditTorchAdapter
+
+    calls: dict = {}
+
+    class Pipe:
+        def __call__(self, **kw):
+            calls.update(kw)
+            return SimpleNamespace(images=[Image.new("RGB", (8, 8))])
+
+    class FakeTorch:
+        class Generator:
+            def __init__(self, device=None):
+                pass
+
+            def manual_seed(self, s):
+                return self
+
+    a = QwenImageEditTorchAdapter(ServerConfig(job_dir=tmp_path))
+    a._loaded = True
+    a._torch = FakeTorch
+    a._pipe = Pipe()
+    a._image_list = False
+
+    init = tmp_path / "init.png"
+    Image.new("RGB", (16, 16)).save(init)
+    a.generate(ImageGenOpts(prompt="x", image_path=init))
+    assert isinstance(calls["image"], Image.Image)
+    assert calls["true_cfg_scale"] == 4.0
+    assert calls["num_inference_steps"] == 40
+
+
 def test_init_image_cleanup_on_delete(tmp_path):
     """Deleting an edit job removes the staged init file in incoming/."""
     import json as _json

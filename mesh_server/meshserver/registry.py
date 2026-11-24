@@ -138,6 +138,7 @@ class Registry:
         from meshserver.adapters.flux_kontext_mlx import FluxKontextMlxAdapter
         from meshserver.adapters.flux_mlx import FluxSchnellMlxAdapter
         from meshserver.adapters.qwen_edit_mlx import QwenImageEditAdapter
+        from meshserver.adapters.qwen_edit_torch import QwenImageEditTorchAdapter
         from meshserver.adapters.qwen_image_mlx import QwenImageMlxAdapter
         from meshserver.adapters.sd_torch import Sd15Adapter, SdxlAdapter
         from meshserver.adapters.z_image_mlx import ZImageTurboAdapter
@@ -146,6 +147,7 @@ class Registry:
             Flux2KleinEditAdapter,
             FluxKontextMlxAdapter,
             QwenImageEditAdapter,
+            QwenImageEditTorchAdapter,
             QwenImageMlxAdapter,
             ZImageTurboAdapter,
             FluxSchnellMlxAdapter,
@@ -377,6 +379,7 @@ class Registry:
                     # as the bigger/steadier fallback
                     "flux2-klein-4b-edit",
                     "qwen-image-edit",
+                    "qwen-image-edit-torch",
                     "flux-kontext-mlx",
                     "flux-schnell-mlx",
                     "sdxl",

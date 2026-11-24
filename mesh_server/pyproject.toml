@@ -38,7 +38,7 @@ mlx = [
 # Apple Silicon: official Hunyuan3D-2 torch pipeline on MPS (install repo via scripts/install_hunyuan_torch.sh)
 mps = [
     "torch>=2.3",
-    "diffusers>=0.30,<0.32",
+    "diffusers>=0.30,<0.41",
     "transformers>=4.45,<5",
     "huggingface_hub<1",
     "accelerate>=0.33",
@@ -48,7 +48,7 @@ mps = [
 # NVIDIA: TRELLIS.2 + TripoSG (heavy deps are installed by Dockerfile.cuda / setup scripts)
 cuda = [
     "torch>=2.4",
-    "diffusers>=0.30,<0.32",
+    "diffusers>=0.30,<0.41",
     "transformers>=4.45,<5",
     "huggingface_hub<1",
     "accelerate>=0.33",
@@ -58,7 +58,7 @@ cuda = [
 # HIP-enabled torch itself comes from scripts/install_rocm.sh / Dockerfile.rocm
 rocm = [
     "torch>=2.4",
-    "diffusers>=0.30,<0.32",
+    "diffusers>=0.30,<0.41",
     "transformers>=4.45,<5",
     "huggingface_hub<1",
     "accelerate>=0.33",
@@ -99,12 +99,13 @@ image-mlx = [
     "platformdirs>=4.0",
     "toml>=0.10",
 ]
-# text-to-image: CUDA/ROCm/MPS/CPU — FLUX.1-schnell / SDXL / SD1.5 via diffusers
-# (matches scripts/install_image_torch.sh — the tf4 stack; diffusers>=0.41 would
-# pull huggingface_hub>=1.32 which contradicts the transformers<5 pin)
+# text-to-image: CUDA/ROCm/MPS/CPU — FLUX.1-schnell / SDXL / SD1.5 /
+# Qwen-Image-Edit-2509 via diffusers (matches scripts/install_image_torch.sh —
+# the tf4 stack; diffusers>=0.41 would pull huggingface_hub>=1.32 which
+# contradicts the transformers<5 pin; >=0.36 adds QwenImageEditPlusPipeline)
 image-torch = [
     "torch>=2.3",
-    "diffusers>=0.30,<0.36",
+    "diffusers>=0.36,<0.41",
     "transformers>=4.45,<5",
     "huggingface_hub<1",
     "accelerate>=0.33",

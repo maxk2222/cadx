@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install the diffusers text-to-image adapters (FLUX.1-schnell / SDXL / SD1.5)
-# for CUDA (and torch fallbacks on other tiers).
+# Install the diffusers text-to-image adapters (FLUX.1-schnell / SDXL / SD1.5
+# / Qwen-Image-Edit-2509) for CUDA (and torch fallbacks on other tiers).
 # Usage: mesh_server/scripts/install_image_torch.sh
 set -euo pipefail
 
@@ -13,7 +13,9 @@ need_venv
 pkg_detect
 
 say "installing image-torch deps (diffusers stack)"
-INSTALL 'torch>=2.3' 'diffusers>=0.30,<0.36' 'transformers>=4.45,<5' \
+# diffusers>=0.36 adds QwenImageEditPlusPipeline (Qwen-Image-Edit-2509);
+# >=0.41 would pull huggingface_hub>=1.32 which contradicts transformers<5
+INSTALL 'torch>=2.3' 'diffusers>=0.36,<0.41' 'transformers>=4.45,<5' \
   'huggingface_hub<1' 'accelerate>=0.33' 'sentencepiece>=0.2' 'protobuf' 'safetensors>=0.4'
 
 ok "done"

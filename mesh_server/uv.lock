@@ -226,10 +226,11 @@ nvtx = [
 
 [[package]]
 name = "diffusers"
-version = "0.31.0"
+version = "0.39.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
+    { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "importlib-metadata" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -239,9 +240,9 @@ dependencies = [
     { name = "requests" },
     { name = "safetensors" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/78/5d/156acb741303abbee214926804c5f0d09eacd35d05ad942577e996acdac3/diffusers-0.31.0.tar.gz", hash = "sha256:b1d01a73e45d43a0630c299173915dddd69fc50f2ae8f2ab5de4fd245eaed72f", size = 2308202, upload-time = "2024-10-22T14:13:23.654Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1a/81/6095237b86a3116c4789f28c4435d5296c00c0fc74ffde99008fd6b3a36c/diffusers-0.39.0.tar.gz", hash = "sha256:14bb1d98c85a0e463d734c99aaa73b480a7bc9bad22af30fbf730ef8f09c1d67", size = 4651240, upload-time = "2026-07-03T08:48:47.904Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/7f/53828ff41b86c3274099327627ff5cb7581a2cc9db3bcb39e5212c4140b7/diffusers-0.31.0-py3-none-any.whl", hash = "sha256:cbc498ae63f4abfc7c3a07649cdcbee229ef2f9a9a1f0d19c9bbaf22f8d30c1f", size = 2873496, upload-time = "2024-10-22T14:13:20.919Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/3f/7469c46e9d22307ea686bab687d70e6bf328722952f9d10339f5e913e608/diffusers-0.39.0-py3-none-any.whl", hash = "sha256:912aca51b5787365110806e984d5555735bf8a461073bb8459029d0bca7870ef", size = 5631176, upload-time = "2026-07-03T08:48:45.337Z" },
 ]
 
 [[package]]
@@ -695,10 +696,10 @@ requires-dist = [
     { name = "accelerate", marker = "extra == 'image-torch'", specifier = ">=0.33" },
     { name = "accelerate", marker = "extra == 'mps'", specifier = ">=0.33" },
     { name = "accelerate", marker = "extra == 'rocm'", specifier = ">=0.33" },
-    { name = "diffusers", marker = "extra == 'cuda'", specifier = ">=0.30,<0.32" },
-    { name = "diffusers", marker = "extra == 'image-torch'", specifier = ">=0.30,<0.36" },
-    { name = "diffusers", marker = "extra == 'mps'", specifier = ">=0.30,<0.32" },
-    { name = "diffusers", marker = "extra == 'rocm'", specifier = ">=0.30,<0.32" },
+    { name = "diffusers", marker = "extra == 'cuda'", specifier = ">=0.30,<0.41" },
+    { name = "diffusers", marker = "extra == 'image-torch'", specifier = ">=0.36,<0.41" },
+    { name = "diffusers", marker = "extra == 'mps'", specifier = ">=0.30,<0.41" },
+    { name = "diffusers", marker = "extra == 'rocm'", specifier = ">=0.30,<0.41" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.24" },
