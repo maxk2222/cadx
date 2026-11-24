@@ -178,7 +178,9 @@ class FluxSchnellAdapter(ImageAdapter):
                     prompt=opts.prompt,
                     negative_prompt=opts.negative or None,
                     image=Image.open(opts.image_path).convert("RGB"),
-                    strength=min(max(opts.image_strength or 0.6, 0.05), 0.99),
+                    # schnell's distilled sigma schedule keeps the init image
+                    # dominant far into the range — a recolor needs ~0.9+
+                    strength=min(max(opts.image_strength or 0.9, 0.05), 0.99),
                     num_inference_steps=opts.steps or 8,
                     guidance_scale=opts.guidance if opts.guidance is not None else 0.0,
                     generator=gen,
