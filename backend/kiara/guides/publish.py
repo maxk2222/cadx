@@ -20,6 +20,7 @@ explicitly chooses to publish a partial run).
 
 from __future__ import annotations
 
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -50,6 +51,21 @@ def _guide_tree(guide_id: str) -> Path:
     return root
 
 
+_STORED_MESH_NAME = re.compile(r"^(?:.+__)?(.+?)_[0-9a-fA-F]{8}_mm$")
+
+
+_GENERIC_STEMS = {"model", "part", "output", "result"}
+
+
+def _clean_publish_stem(raw_name: str) -> str:
+    """Recover the original mesh stem from a content-store filename:
+    '{asset_id}__{orig}_{hash8}_mm.glb' → 'orig'. Anything not matching
+    the store decoration passes through unchanged — parts materialized
+    from arbitrary paths keep their real name."""
+    m = _STORED_MESH_NAME.match(Path(raw_name).stem)
+    return m.group(1) if m else Path(raw_name).stem
+
+
 def _materialize_cad_models(state: Any, guide_id: str) -> dict[str, str]:
     """Copy each part's Unity-loadable mesh into the guide's cad_models/.
 
@@ -67,7 +83,17 @@ def _materialize_cad_models(state: Any, guide_id: str) -> dict[str, str]:
             name_by_part[part.id] = f"{part.id}.glb"
             continue
         src_path = Path(src)
-        filename = src_path.name
+        # publish under the ORIGINAL stem — the stored name is decorated
+        # ('{asset}__{orig}_{hash}_mm.glb'); 'Casing.glb' → 'Casing(Clone)'
+        # matches the suite's filename/prefabName contract, the internal
+        # one only leaks storage bookkeeping into the AR document
+        stem = _clean_publish_stem(src_path.name)
+        if getattr(part, "source", "") == "generated" or stem.lower() in _GENERIC_STEMS:
+            # codegen exports are all named 'model.*' — the generic stem
+            # carries no identity (and collides across generated parts);
+            # the part id is the stable semantic name the suite doc needs
+            stem = str(part.id)
+        filename = f"{stem}{src_path.suffix}"
         # basename collisions across different source dirs must never silently
         # overwrite — disambiguate deterministically from the part id so two
         # parts can never share one file's content

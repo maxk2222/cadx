@@ -362,7 +362,8 @@ async def test_annotation_axis_normalization(_db):
 
     st = GuideState.load(storage.version_dir(project.id, v.id) / "guide")
     assert st.annotations[0]["approach_axis"] == [0.0, 0.0, -1.0]
-    assert st.annotations[1]["approach_axis"] == [1.0, 0.0, 0.0]
+    # operator-view convention: "right" = -X (GUIDE_RIGHT), +X is left
+    assert st.annotations[1]["approach_axis"] == [-1.0, 0.0, 0.0]
 
 
 async def test_guide_media_upload_and_from_asset(_db):

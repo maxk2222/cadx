@@ -960,7 +960,9 @@ def _axes_label(axes: dict[int, float]) -> str:
     repair cycles: the model renamed the text but kept the wrong pin
     because it never learned WHICH side the pinned step places)."""
     names = {
-        0: {-1: "left", 1: "right"},
+        # operator-view convention (solver.GUIDE_*): manual "links" faces
+        # the +Y front's left = +X world
+        0: {1: "left", -1: "right"},
         1: {-1: "back", 1: "front"},
         2: {-1: "bottom", 1: "top"},
     }

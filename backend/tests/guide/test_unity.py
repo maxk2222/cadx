@@ -1,9 +1,11 @@
 """Unity conversion golden tests — mm/Z-up RH → m/Y-up LH.
 
 Golden vectors derived by hand: CAD up (+Z) must become Unity up (+Y);
-CAD front (+Y) becomes Unity forward (+Z). Rotations conjugate through
-the det-1 spatial map so RH→LH is handled — a CAD rotation about Z must
-appear as a Unity rotation about Y.
+the manual's working face (+Y) lands on Unity -Z and operator-left (+X)
+on Unity -X — the suite's published convention (verified on a reference
+guide: connectors at -Z, manual-"links" at -X). Rotations conjugate
+through the det-1 spatial map so RH→LH is handled — a CAD rotation
+about Z must appear as a Unity rotation about Y.
 """
 
 import numpy as np
@@ -12,9 +14,9 @@ from kiara.guide import unity
 
 
 def test_position_mm_zup_to_m_yup() -> None:
-    # CAD (x=10mm len, y=20mm width, z=30mm height) → Unity (0.01, 0.03, 0.02) m
-    assert unity.to_unity_position([10, 20, 30]) == [0.01, 0.03, 0.02]
-    assert unity.to_unity_position([0, 0, 0]) == [0.0, 0.0, 0.0]
+    # CAD (x=10mm len, y=20mm width, z=30mm height) → Unity (-0.01, 0.03, -0.02) m
+    assert unity.to_unity_position([10, 20, 30]) == [-0.01, 0.03, -0.02]
+    assert unity.to_unity_position([0, 0, 0]) == [-0.0, 0.0, -0.0]
 
 
 def test_identity_rotation_stays_identity() -> None:
@@ -37,11 +39,11 @@ def test_z_up_yaw_becomes_unity_yaw() -> None:
 
 def test_transform_maps_position_and_rotation() -> None:
     """CAD transform: translate (100,200,300)mm + identity rot → Unity
-    pos (0.1, 0.3, 0.2)m, identity quaternion."""
+    pos (-0.1, 0.3, -0.2)m, identity quaternion."""
     t = np.eye(4)
     t[0:3, 3] = [100, 200, 300]
     out = unity.transform_to_unity(t.tolist())
-    assert out["position"] == [0.1, 0.3, 0.2]
+    assert out["position"] == [-0.1, 0.3, -0.2]
     assert out["quaternion"] == [0.0, 0.0, 0.0, 1.0]
     assert out["scale"] == [1.0, 1.0, 1.0]
 
@@ -204,7 +206,7 @@ def test_text_annotations_emit_constant_rotation() -> None:
     guide = unity.build_unity_guide(st)
     texts = guide["steps"][1]["texts"]
     assert len(texts) == 2
-    assert texts[0]["position"] == [0.01, 0.03, 0.02]
+    assert texts[0]["position"] == [-0.01, 0.03, -0.02]
     assert all(t["rotation"] == [0.0, 0.0, 0.0, 1.0] for t in texts)
     # unset position → deterministic fallback above this step's placed bbox
     # (plug at origin spans z 0..100 → 100+45=145mm → unity y 0.145)

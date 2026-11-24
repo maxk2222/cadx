@@ -65,13 +65,17 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     ),
 }
 
+# solver-frame (Z-up) arrow approach axes. Side words follow the operator
+# convention (solver.GUIDE_*): the assembly's working face is +Y, so "front"
+# approaches from +Y and operator-left is +X — the previous table had
+# front/back swapped AND left/right part-relative.
 _DIR_VECS = {
     "down": [0.0, 0.0, -1.0],
     "up": [0.0, 0.0, 1.0],
-    "left": [-1.0, 0.0, 0.0],
-    "right": [1.0, 0.0, 0.0],
-    "front": [0.0, -1.0, 0.0],
-    "back": [0.0, 1.0, 0.0],
+    "left": [1.0, 0.0, 0.0],
+    "right": [-1.0, 0.0, 0.0],
+    "front": [0.0, 1.0, 0.0],
+    "back": [0.0, -1.0, 0.0],
     "into": [0.0, 0.0, -1.0],
     "in": [0.0, 0.0, -1.0],
     "-x": [-1.0, 0.0, 0.0],

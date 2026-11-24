@@ -916,7 +916,7 @@ class LLMClient:
             r = await self.chat(
                 "code",
                 [{"role": "user", "content": "Reply with the single word: ok"}],
-                max_tokens=16,
+                max_tokens=512,
                 temperature=0.0,
             )
             out["latency_ms"] = r.latency_ms
@@ -936,7 +936,7 @@ class LLMClient:
                         ],
                     }
                 ],
-                max_tokens=16,
+                max_tokens=512,
                 temperature=0.0,
             )
             out["vision_ok"] = True

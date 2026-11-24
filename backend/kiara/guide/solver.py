@@ -1233,17 +1233,49 @@ def solve_bridge_attachment(
 # free / environment placement (bbox heuristics — KIARA solve_free/env)
 # --------------------------------------------------------------------------- #
 
-# KIARA frame contract (AGENTS.md): +Y is FRONT, +X right, +Z up
+# Operator-view frame (canonical guide presentation convention):
+# the manual's side words are OPERATOR-relative — the reader stands on the
+# assembly's working face looking at it. The frame contract puts that face
+# at +Y in the Z-up solver world (AGENTS.md: "+Y front", parts authored
+# front-first). Standing at +Y looking -Y, the operator's left is +X
+# (view_right = f x u = (-Y)x(+Z) = -X => left = +X) — i.e. a manual's
+# "links" is the PART's authored right side, seen mirror-free head-on.
+# Derive every side-word table from these constants: the older per-table
+# copies mixed left=-X (part-relative/driver view) with front=+Y
+# (operator face), an internally inconsistent pair that mirrored guides.
+GUIDE_FRONT = np.array([0.0, 1.0, 0.0])
+GUIDE_UP = np.array([0.0, 0.0, 1.0])
+GUIDE_LEFT = np.cross(GUIDE_FRONT, GUIDE_UP)  # +X
+GUIDE_RIGHT = -GUIDE_LEFT  # -X
+GUIDE_BACK = -GUIDE_FRONT  # -Y
+
 _HINT_DIRS = {
-    "left": np.array([-1.0, 0.0, 0.0]),
-    "right": np.array([1.0, 0.0, 0.0]),
-    "back": np.array([0.0, -1.0, 0.0]),
-    "front": np.array([0.0, 1.0, 0.0]),
+    "left": GUIDE_LEFT,
+    "right": GUIDE_RIGHT,
+    "back": GUIDE_BACK,
+    "front": GUIDE_FRONT,
     "top": np.array([0.0, 0.0, 1.0]),
     "up": np.array([0.0, 0.0, 1.0]),
     "bottom": np.array([0.0, 0.0, -1.0]),
     "down": np.array([0.0, 0.0, -1.0]),
 }
+
+
+def operator_side_label(world_pos: Any, center: Any) -> str:
+    """Dominant operator-relative side of a world position vs a reference
+    centre ('left'|'right'|'front'|'back'|'top'|'bottom'). Used to annotate
+    port candidates so 'linker oberer Anschluss' binds to the operator-left
+    port deterministically instead of the agent guessing an X sign."""
+    d = np.asarray(world_pos, dtype=float) - np.asarray(center, dtype=float)
+    pairs = (
+        (float(np.dot(d, GUIDE_LEFT)), "left", "right"),
+        (float(np.dot(d, GUIDE_FRONT)), "front", "back"),
+        (float(np.dot(d, GUIDE_UP)), "top", "bottom"),
+    )
+    proj, pos_w, neg_w = max(pairs, key=lambda p: abs(p[0]))
+    if abs(proj) < 1e-6:
+        return "center"
+    return pos_w if proj > 0 else neg_w
 
 
 def solve_free_placement(

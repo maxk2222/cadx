@@ -160,12 +160,12 @@ class InProcessExecutor:
     async def extract_ports(self, payload: dict[str, Any]) -> dict[str, Any]:
         from kiara.cad.guide_exec import extract_ports
 
-        return await asyncio.to_thread(extract_ports, {}, payload)
+        return await extract_ports({}, payload)
 
     async def render_assembly(self, payload: dict[str, Any]) -> dict[str, Any]:
         from kiara.cad.guide_exec import render_assembly
 
-        return await asyncio.to_thread(render_assembly, {}, payload)
+        return await render_assembly({}, payload)
 
 
 # post-optimizer pipeline allowance for optimize tasks — extraction,

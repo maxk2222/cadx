@@ -364,8 +364,8 @@ def test_unity_joint_arrow_anchors_at_fixed_port(tmp_path: Path) -> None:
     arrow = g["steps"][0]["arrows"][0]
     # tip lands on the mate: tail = port world pos (10,0,5) + axis*standoff;
     # moving part has no bbox -> standoff = max(30, 15) = 30mm -> z = 35mm ->
-    # unity (x,z,y)*0.001 -> (0.010, 0.035, 0.0)
-    assert arrow["origin"] == pytest.approx([0.010, 0.035, 0.0], abs=1e-4)
+    # unity (-x,z,-y)*0.001 -> (-0.010, 0.035, -0.0)
+    assert arrow["origin"] == pytest.approx([-0.010, 0.035, 0.0], abs=1e-4)
     # direction = negated fixed-port outward axis -> arrow points AT the port
     assert arrow["direction"] == pytest.approx([-0.0, -1.0, -0.0], abs=1e-4)
 

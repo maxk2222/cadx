@@ -66,6 +66,68 @@ def _rebind_session(url: str) -> None:
     dbs.async_session = async_sessionmaker(eng, class_=AsyncSession, expire_on_commit=False)
 
 
+def _rebind_guide_paths() -> None:
+    """Rebind guide-path constants to the CURRENT scratch data dir.
+
+    ``kiara.guides.paths`` and ``kiara.guides.media_index`` snapshot
+    DATA_DIR-derived module constants at import. Every local run gets its
+    own scratch DATA_DIR, so without rebinding, run N's publish writes its
+    guide tree/media index into run 1's directory. Modules that did
+    ``from ... import PROJECT_DATA_DIR`` before this run keep their stale
+    name in their own globals — rebind those too when already loaded."""
+    import sys
+
+    from kiara.config import get_settings
+
+    dp = get_settings().data_path
+    paths_map = {
+        "DATA_DIR": dp,
+        "INDEX_DIR": dp / "index",
+        "PROJECT_DATA_DIR": dp / "guides",
+        "GLOBAL_ASSETS_DIR": dp / "global_assets",
+        "UPLOAD_ATTEMPTS_DIR": dp / "upload_attempts",
+        "ASSET_STORE_DIR": dp / "asset_store",
+        "ASSET_STORE_STAGING_DIR": dp / "asset_store" / ".staging",
+        "APP_RELEASES_DIR": dp / "app_releases",
+    }
+    import kiara.guides.paths as gp
+
+    for name, val in paths_map.items():
+        setattr(gp, name, val)
+
+    # media_index binds its own (suite-named) constants — different subdir
+    # layout on purpose ("project_data", not "guides")
+    mi = sys.modules.get("kiara.guides.media_index")
+    if mi is not None:
+        for name, val in (
+            ("DATA_DIR", dp),
+            ("PROJECT_DATA_DIR", dp / "project_data"),
+            ("GLOBAL_ASSETS_DIR", dp / "global_assets"),
+        ):
+            if getattr(mi, name, None) is not None:
+                setattr(mi, name, val)
+
+    # direct `from paths import <CONST>` importers — rebind the snapshot
+    # names on already-loaded modules (late-loading modules pick up the
+    # fresh paths.py globals naturally)
+    for modname in (
+        "kiara.guides.file_store",
+        "kiara.guides.asset_ops",
+        "kiara.guides.translate",
+        "kiara.guides.sync_ops",
+        "kiara.guides.attempts",
+        "kiara.guides.asset_store",
+        "kiara.api.routers.app_updates",
+        "kiara.api.routers.sync_assets",
+    ):
+        mod = sys.modules.get(modname)
+        if mod is None:
+            continue
+        for name, val in paths_map.items():
+            if getattr(mod, name, None) is not None:
+                setattr(mod, name, val)
+
+
 async def bootstrap(out_dir: Path) -> str | None:
     """Redirect this process at the scratch DB + data dir.
 
@@ -94,6 +156,7 @@ async def bootstrap(out_dir: Path) -> str | None:
     get_settings.cache_clear()
     url = os.environ["DATABASE_URL"]
     _rebind_session(url)
+    _rebind_guide_paths()
     from kiara.db.session import create_all
 
     await create_all()
@@ -163,7 +226,10 @@ async def snapshot_runtime(real_url: str | None) -> Any:
         or os.environ.get("KIARA_REAL_DATABASE_URL")
         or ("postgresql://kiara:kiara@localhost:5432/kiara")
     )
-    if url.startswith("sqlite"):
+    if url.startswith("sqlite") and url == os.environ.get("DATABASE_URL"):
+        # snapshotting the scratch db itself is meaningless (and sqlite-locks
+        # against the run's own writes) — only an explicitly different file
+        # or a remote url is a real settings source
         return RuntimeSettings()
     eng = make_engine(url)
     try:
@@ -313,6 +379,20 @@ async def import_parent(ctx: LocalCtx, src: Path) -> uuid.UUID:
 
 async def _noop_enqueue(func: str, payload: dict[str, Any]) -> None:
     return None
+
+
+async def _local_enqueue(func: str, payload: dict[str, Any]) -> None:
+    """In-process runner for CHILD jobs spawned inside a local run —
+    e.g. a guide's generate_missing_part. The stage's own spawn keeps
+    _noop_enqueue (the dispatch loop runs it inline); children spawned
+    by a running job would otherwise hit the real arq enqueue and fail
+    with 'worker queue unavailable'."""
+    import kiara.agent.worker_jobs as wj
+
+    fn = getattr(wj, func, None)
+    if not callable(fn):
+        raise RuntimeError(f"local eval has no in-process runner for job func '{func}'")
+    await fn({"arq_redis": None, "enqueue_fn": _local_enqueue}, payload)
 
 
 def _parent_lcs(stage: EvalStage, parent: Any) -> tuple[list[dict[str, Any]] | None, str | None]:
@@ -934,7 +1014,9 @@ class LocalDriver:
                 }
             try:
                 await asyncio.wait_for(
-                    wj.run_guide_job({"arq_redis": None}, run_args),
+                    wj.run_guide_job(
+                        {"arq_redis": None, "enqueue_fn": _local_enqueue}, run_args
+                    ),
                     timeout=max(0.1, deadline - time.monotonic()),
                 )
             except TimeoutError:
@@ -969,8 +1051,13 @@ class LocalDriver:
         out.extras["execs"] = self.exec_stats["n"]
         out.extras["exec_s"] = self.exec_stats["s"]
         # surface the emitted unity_guide.json for the guide_* gates — the
-        # artifact row's storage path resolves inside the scratch DATA_DIR
-        rel = (out.artifacts or {}).get("unity_guide|")
+        # artifact row's storage path resolves inside the scratch DATA_DIR.
+        # The row registers with view="guide" (kind|view key), so match on
+        # the kind prefix rather than a single hardcoded view.
+        rel = next(
+            (p for k, p in (out.artifacts or {}).items() if k.startswith("unity_guide|")),
+            None,
+        )
         if rel:
             try:
                 from kiara import storage

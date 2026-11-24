@@ -683,9 +683,9 @@ def test_topopt_smoothed_export_is_clipped_to_spec_envelope(
 ) -> None:
     """Surface smoothing may grow beyond a thin stated envelope; clip the
     print/export candidate before FEM and the final conformance report."""
-    import kiara.cad.engine as engine_mod
+    import kiara.cad.engine.fem_pipelines as pipelines_mod
 
-    real_smooth = engine_mod.smooth_preserve
+    real_smooth = pipelines_mod.smooth_preserve
 
     def overshoot(mesh, *args, **kwargs):
         out = real_smooth(mesh, *args, **kwargs)
@@ -693,7 +693,7 @@ def test_topopt_smoothed_export_is_clipped_to_spec_envelope(
         out.vertices[:, 2] *= 24.8 / max(zmax, 1e-6)
         return out
 
-    monkeypatch.setattr(engine_mod, "smooth_preserve", overshoot)
+    monkeypatch.setattr(pipelines_mod, "smooth_preserve", overshoot)
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
     res = _run(
@@ -713,10 +713,10 @@ def test_topopt_smoothed_export_is_clipped_to_spec_envelope(
 def test_infill_smoothed_export_is_clipped_to_spec_envelope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import kiara.cad.engine as engine_mod
+    import kiara.cad.engine.fem_pipelines as pipelines_mod
     from kiara.cad.engine import run_infill_pipeline
 
-    real_smooth = engine_mod.smooth_preserve
+    real_smooth = pipelines_mod.smooth_preserve
 
     def overshoot(mesh, *args, **kwargs):
         out = real_smooth(mesh, *args, **kwargs)
@@ -724,7 +724,7 @@ def test_infill_smoothed_export_is_clipped_to_spec_envelope(
         out.vertices[out.vertices[:, 2] >= zmax - 1e-6, 2] += 0.8
         return out
 
-    monkeypatch.setattr(engine_mod, "smooth_preserve", overshoot)
+    monkeypatch.setattr(pipelines_mod, "smooth_preserve", overshoot)
     src = tmp_path / "b.stl"
     _box_mesh().export(str(src))
     res = run_infill_pipeline(

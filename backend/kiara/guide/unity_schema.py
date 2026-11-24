@@ -13,10 +13,12 @@ This is a PORT of the suite's V4 emit
   keyframe shells, ``originalObjectId = uuid5(DNS, instance_id)``,
   ``poseOrigin``/``localOverride`` conventions).
 - Frame math comes from ``kiara.guide.unity``: our CAD route is Z-up mm
-  (``p_u = (x, z, y)·0.001``, ``R_u = M·R·Mᵀ``); the blender route stores
-  transforms already conjugated to the glTF Y-up frame, whose conversion
-  is the suite's own (``(x, y, -z)`` + flipZ quaternion). Positions emit
-  in meters (``sourceUnits: "m"``).
+  (``p_u = (-x, z, -y)·0.001``, ``R_u = M·R·Mᵀ`` — the suite's front
+  convention puts the manual's working face at Unity -Z and operator-left
+  at -X, matching ``flipPosZ`` on their editor side); the blender route
+  stores transforms already conjugated to the glTF Y-up frame, whose
+  conversion is the suite's own (``(x, y, -z)`` + flipZ quaternion).
+  Positions emit in meters (``sourceUnits: "m"``).
 - The client rotates every loaded model 180° about Y at mesh level (suite
   C2 §2k R3) — like the suite we ALWAYS pre-compensate by post-multiplying
   the emitted rotation with R_yaw180 (the suite's ``compensate_fbx_yaw``
@@ -54,6 +56,18 @@ HERO_GAP_M = 0.05
 HERO_PHOTO_GAP_M = 0.35
 HERO_PREVIEW_ENABLED = True
 ARROW_COLOR = "#0000FF"
+# suite convention (guide_object_builders.build_arrow + annotation agent
+# recoloring observed on published docs): normal work/check arrows green,
+# attention orange, warnings red, blue = unclassified default.
+_STEP_ARROW_COLORS = {
+    "assembly": "#00FF00",
+    "check": "#00FF00",
+    "safety": "#FFA500",
+}
+# Suite-verbatim arrow identity: the FBX lives in the global-assets store and
+# the prefab is `P_<stem>` (no LP suffix on the prefab name).
+ARROW_PREFAB_NAME = "P_ArrowStraight(Clone)"
+ARROW_MODEL_LOCATION = "/api/sync/global_assets/tools/ArrowStraightLP.fbx"
 TEXT_X_OFFSET_M = 0.2
 PHOTO_X_OFFSET_M = 0.2
 UI_ABOVE_M = 0.5
@@ -114,17 +128,21 @@ def _q(x: float, y: float, z: float, w: float) -> dict[str, float]:
 # ---------------------------------------------------------------------------
 
 _YAW180 = np.diag([-1.0, 1.0, -1.0])
-_M_ZUP_TO_UNITY = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
+# CAD z_up → Unity: up +Z→+Y, working-face +Y→-Z, operator-left +X→-X —
+# the same convention the suite emits (verified against a published
+# reference guide: connectors/Arbeitsflaeche sit at -Z, manual "links"
+# parts at -X); equals the scene display map (-x,z,y) + suite flipZ.
+_M_ZUP_TO_UNITY = np.array([[-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
 
 
 def _world_to_unity_pos(pos_mm: list[float] | np.ndarray, world_frame: str) -> dict[str, float]:
     """World-space position → Unity meters. z_up input is the canonical CAD
-    frame (x,y,z mm → (x,z,y)·0.001 m); y_up is the blender/glTF frame
+    frame (x,y,z mm → (-x,z,-y)·0.001 m); y_up is the blender/glTF frame
     (x,y,z mm → (x,y,-z)·0.001 m)."""
     x, y, z = (float(v) for v in list(pos_mm)[:3])
     if world_frame == "y_up":
         return _v3(x * 0.001, y * 0.001, -z * 0.001)
-    return _v3(x * 0.001, z * 0.001, y * 0.001)
+    return _v3(-x * 0.001, z * 0.001, -y * 0.001)
 
 
 def _world_to_unity_dir(dir_world: list[float] | np.ndarray, world_frame: str) -> np.ndarray:
@@ -132,7 +150,7 @@ def _world_to_unity_dir(dir_world: list[float] | np.ndarray, world_frame: str) -
     x, y, z = (float(v) for v in list(dir_world)[:3])
     if world_frame == "y_up":
         return _unit(np.array([x, y, -z]))
-    return _unit(np.array([x, z, y]))
+    return _unit(np.array([-x, z, -y]))
 
 
 def _world_to_unity_rot(
@@ -140,19 +158,17 @@ def _world_to_unity_rot(
 ) -> dict[str, float]:
     """World 3x3 rotation → Unity quaternion dict {x,y,z,w}.
 
-    z_up: R_u = M·R·Mᵀ (handedness flip). y_up: RH→LH = flip Z,
-    i.e. R_u = F·R·F with F = diag(1,1,-1) — conjugating by the same
-    reflection the position uses, then the suite's flipZ quaternion
-    (-qx,-qy,qz,qw) — equivalent to conjugation, kept explicit for parity
-    with the suite's code path.
+    z_up: R_u = M·R·Mᵀ (the handedness flip lives in M). y_up: the
+    suite's own convention — quat(R), optionally yaw-compensated, then
+    the flipZ component map (-qx,-qy,qz,qw) which IS the handedness
+    conversion. (Conjugating F·R·F here AND applying flipZ would convert
+    twice and emit the unmirrored RH quaternion.)
     """
     r = np.asarray(rot3x3, dtype=float).reshape(3, 3)
     if world_frame == "y_up":
-        f = np.diag([1.0, 1.0, -1.0])
-        r_u = f @ r @ f
         if compensate_yaw:
-            r_u = r_u @ _YAW180
-        qx, qy, qz, qw = _mat_to_quat(r_u)
+            r = r @ _YAW180
+        qx, qy, qz, qw = _mat_to_quat(r)
         # suite flipZ convention for y_up inputs
         return _q(-qx, -qy, qz, qw)
     r_u = _M_ZUP_TO_UNITY @ r @ _M_ZUP_TO_UNITY.T
@@ -352,8 +368,9 @@ def _build_arrow_object(
     obj.update(
         {
             "filename": "ArrowStraightLP.fbx",
-            "prefabName": "ArrowStraightLP(Clone)",
+            "prefabName": ARROW_PREFAB_NAME,
             "is3DModel": True,
+            "modelLocation": ARROW_MODEL_LOCATION,
             "text": label,
             "pos": arrow_pos,
             "rot": _direction_to_arrow_quaternion(dir_unity),
@@ -533,7 +550,9 @@ def _annotation_arrow_rows(
                 "direction": dir_unity,
                 "lineage": _uuid5(lineage_id) if lineage_id else "",
                 "label": str(an.get("label", "")),
-                "color": str(an.get("color") or ARROW_COLOR),
+                # explicit annotation colors (e.g. a warning red) win; unset
+                # inherits the step's semantic color in _step_arrow_objects.
+                "color": str(an["color"]) if an.get("color") else None,
             }
         )
     return rows
@@ -739,10 +758,11 @@ def _step_annotation_texts(
 
 
 def _step_arrow_objects(
-    ctx: _EmitCtx, step_idx: int, obj_num: int
+    ctx: _EmitCtx, step_idx: int, obj_num: int, action_type: str = ""
 ) -> tuple[list[dict], int]:
     """Joint approach-evidence arrows + user annotation arrows."""
     objects: list[dict] = []
+    step_color = _STEP_ARROW_COLORS.get(action_type, ARROW_COLOR)
     for row in _joint_arrow_rows(
         ctx.joint_by_step.get(step_idx, []), ctx.inst_by_id, ctx.parts, ctx.world_frame
     ):
@@ -755,6 +775,7 @@ def _step_arrow_objects(
                 row["direction"],
                 step_idx,
                 target_lineage_id=row["lineage"],
+                color=step_color,
             )
         )
     for row in _annotation_arrow_rows(
@@ -770,7 +791,7 @@ def _step_arrow_objects(
                 step_idx,
                 target_lineage_id=row["lineage"],
                 label=row["label"],
-                color=row.get("color") or ARROW_COLOR,
+                color=row.get("color") or step_color,
             )
         )
     return objects, obj_num
@@ -832,6 +853,10 @@ def build_guide_doc(
         step_text = s.display_text or s.text
         objects: list[dict[str, Any]] = []
         obj_num = 0
+        # stable step lineage — the v2 editor shape carries stepId on the
+        # step AND on every object; seeded like object ids so republish
+        # keeps the identity byte-stable
+        step_id = _uuid5(f"{guide_id}_step_{step_idx}")
 
         cum_iids = cumulative_iids.get(step_idx, [])
         ui_pos = _compute_ui_pos(cum_iids, inst_by_id, world_frame)
@@ -844,7 +869,7 @@ def build_guide_doc(
         objects.append(text_obj)
 
         # 2. arrows — joint approach evidence + user annotation arrows
-        objs, obj_num = _step_arrow_objects(ctx, step_idx, obj_num)
+        objs, obj_num = _step_arrow_objects(ctx, step_idx, obj_num, s.action_type)
         objects.extend(objs)
 
         # 3. CAD models — cumulative scene; new parts highlighted
@@ -874,6 +899,9 @@ def build_guide_doc(
         objs, obj_num = _step_annotation_texts(ctx, step_idx, ui_pos, obj_num)
         objects.extend(objs)
 
+        for obj in objects:
+            obj.setdefault("stepId", step_id)
+
         guide_steps.append(
             {
                 "objects": objects,
@@ -884,6 +912,7 @@ def build_guide_doc(
                     "safetyHint": s.safety_hint or "",
                 },
                 "step": step_idx,
+                "stepId": step_id,
             }
         )
 

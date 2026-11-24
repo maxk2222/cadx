@@ -204,6 +204,13 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   assign `flat_profile`. The same contract applies to post-processed meshes
   (`cad/mesh_ops.py`) — raw generator output lives in normalized space and is
   oriented/scaled by the executor pipeline, never by the mesh server.
+  Guide/assembly side words are OPERATOR-relative (`solver.GUIDE_*` is the
+  single source): facing the +Y front, operator-left = +X — a manual's
+  "links" therefore binds to +X, which is the part's authored RIGHT side.
+  Never mix left=-X with front=+Y (that pair only fits a -Y front).
+  Unity emission (`guide/unity*.py`) maps the working face +Y -> -Z and
+  operator-left +X -> -X — the published suite convention (verified on a
+  reference guide); the scene/GLB display map (-x,z,y) is its flipZ dual.
 - Mesh generation: only the worker talks to `mesh_server` (`MeshPort` in
   `agent/mesh_client.py`); the executor receives GLBs as `DATA_DIR` files via
   the `process_mesh` task. `load_mesh_solid()` exists in generated code only

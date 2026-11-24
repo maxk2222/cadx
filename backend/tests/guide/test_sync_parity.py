@@ -489,8 +489,28 @@ def test_guide_schema_emission(tmp_path):
     assert s2["semantic"]["safetyHint"] == "Scharfe Kante"
     assert s2["semantic"]["focusParts"] == ["Bogen B"]
 
+    # stepId: stable per step, stamped on the step AND every object
+    # (v2 editor shape) — uuid5-seeded like the object lineages
+    assert s1["stepId"] != s2["stepId"]
+    assert all(o.get("stepId") == s1["stepId"] for o in s1["objects"])
+    assert all(o.get("stepId") == s2["stepId"] for o in s2["objects"])
+    assert build_guide_doc(state, "guide-x", title="Emit")["steps"][0]["stepId"] == s1["stepId"]
+
     # determinism: same state → identical doc
     assert build_guide_doc(state, "guide-x", title="Emit") == doc
+
+
+def test_publish_clean_filename():
+    """The materialized cad_models name keeps the ORIGINAL stem — the
+    content-store decoration ('{asset}__{orig}_{hash}_mm.glb') must not
+    leak into filename/prefabName ('Casing.glb' → 'Casing(Clone)')."""
+    from kiara.guides.publish import _clean_publish_stem
+
+    assert _clean_publish_stem("2b1caf4b-f4a8-4c57-89e2-7b6ce6a8ad48__Casing_fce1de29_mm.glb") == "Casing"
+    assert _clean_publish_stem("66f9f8d3__Pipe_l70_a13fdb77_mm.glb") == "Pipe_l70"
+    assert _clean_publish_stem("Elbow_847092a5_mm.glb") == "Elbow"
+    assert _clean_publish_stem("model.glb") == "model"
+    assert _clean_publish_stem("plain_part.glb") == "plain_part"
 
 
 def test_emit_yaw_compensation_toggle(tmp_path):
@@ -504,6 +524,28 @@ def test_emit_yaw_compensation_toggle(tmp_path):
     # yaw compensation changes the emitted rotation only, never position
     assert cad_on["pos"] == cad_off["pos"]
     assert cad_on["rot"] != cad_off["rot"]
+
+
+def test_zup_emission_matches_suite_frame_convention(tmp_path):
+    """CAD-route objects must land in the same Unity quadrant the suite
+    emits for the same semantic scene — verified against a published
+    reference guide of the same assembly: working face (+Y world) sits
+    at Unity -Z, operator-left/manual "links" (+X world) at Unity -X,
+    up (+Z) at +Y."""
+    from kiara.guide.unity_schema import build_guide_doc
+
+    state = _fake_state(tmp_path)  # elbow_b#1 sits at world (50, 0, 0) = +X
+    doc = build_guide_doc(state, "g")
+    s2 = doc["steps"][1]
+    elbow = next(
+        o for o in s2["objects"] if o.get("instanceId") == "elbow_b#1" and o.get("is3DModel")
+    )
+    assert elbow["pos"]["x"] < 0  # +X world (operator-left) -> -X unity
+    assert elbow["pos"]["z"] == 0.0
+    pipe = next(
+        o for o in s2["objects"] if o.get("instanceId") == "pipe_a#1" and o.get("is3DModel")
+    )
+    assert pipe["pos"] == {"x": -0.0, "y": 0.0, "z": -0.0}
 
 
 # ── publish pipeline ──────────────────────────────────────────────────────────

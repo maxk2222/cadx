@@ -50,10 +50,12 @@ from kiara.cad.mesh_ops import (
     mesh_to_solid,
     orient_nested_shells,
     rest_on_xy_center,
-    smooth_preserve,
 )
 from kiara.cad.mesh_ops import (
     load_mesh as load_triangle_mesh,
+)
+from kiara.cad.mesh_ops import (
+    smooth_preserve as smooth_preserve,
 )
 from kiara.cad.render import render_thumbnail, render_views
 from kiara.cad.sandbox import Reference, RunnerOutput, run_user_code

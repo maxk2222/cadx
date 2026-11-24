@@ -32,16 +32,20 @@ def _load_mesh(path: str | Path):
     return scene.to_geometry() if hasattr(scene, "to_geometry") else scene
 
 
-# Z-up CAD world -> glTF Y-up basis change (proper rotation, -90degX).
+# Z-up CAD world -> glTF Y-up basis change (proper rotation).
 # Baked into the exported artifact so the assembly stands upright in ANY
 # glTF consumer (three.js, Unity import, OS previews) — trimesh's glTF
 # export writes vertex data as-is and emits no axis-convention node, so
 # a raw Z-up scene would lie on its side in every viewer.
+# The extra 180° yaw matches the guide-viewer convention: solver +Y is
+# the operator/working face, and in a glTF consumer the default camera
+# sits at +Z — (x,y,z) -> (-x, z, y) puts the front toward the viewer
+# and operator-left (+X world) on screen-left, like the manual figure.
 _ZUP_TO_GLTF = np.array(
     [
-        [1.0, 0.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0],
         [0.0, 0.0, 1.0, 0.0],
-        [0.0, -1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ]
 )

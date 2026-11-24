@@ -18,16 +18,17 @@ def _mesh(tmp_path, name: str) -> str:
 
 
 def test_zup_world_bakes_into_gltf_frame(tmp_path) -> None:
-    """A part placed 100 up in a Z-up world must land on glTF +Y (with the
-    world's +Y mapped to -Z) — the file itself is Y-up, upright in any
-    glTF consumer without viewer-side compensation."""
+    """A part placed 100 up / 10 front / 5 left in a Z-up world must land
+    on glTF (+Y up, +Z front, -X left) — the file itself is Y-up AND
+    front-first in any glTF consumer: (x,y,z) -> (-x, z, y) via the
+    front-yaw so the +Y operator face points at the default camera."""
     src = _mesh(tmp_path, "a.glb")
     t = np.eye(4)
     t[:3, 3] = [5, 10, 100]
     out = merged_glb([("a", src, t.tolist())], tmp_path / "asm.glb", world_frame="z_up")
     g = trimesh.load(str(out)).to_geometry()
     center = np.asarray(g.bounds).mean(axis=0)
-    assert center == pytest.approx([5, 100, -10], abs=1e-4)
+    assert center == pytest.approx([-5, 100, 10], abs=1e-4)
 
 
 def test_yup_world_passes_through(tmp_path) -> None:

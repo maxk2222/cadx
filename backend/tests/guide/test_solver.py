@@ -297,3 +297,36 @@ def test_disconnected_premounted_instances_are_roots() -> None:
         boxes, pairs, ids, extra_roots={"adapter#1"}
     )
     assert {r["instance"] for r in lost} == {"debris#1"}
+
+
+def test_operator_side_convention() -> None:
+    """The canonical guide frame: manual side words are OPERATOR-relative —
+    facing the +Y working face, 'links' binds +X (solver.GUIDE_LEFT). The
+    older per-table left=-X copies were part-relative and mirrored every
+    side-qualified placement."""
+    import numpy as np
+
+    assert list(solver.GUIDE_FRONT) == [0.0, 1.0, 0.0]
+    assert list(solver.GUIDE_UP) == [0.0, 0.0, 1.0]
+    assert list(solver.GUIDE_LEFT) == [1.0, 0.0, 0.0]
+    # 'links'/'left' → +X, 'rechts'/'right' → -X
+    assert list(solver._HINT_DIRS["left"]) == [1.0, 0.0, 0.0]
+    assert list(solver._HINT_DIRS["right"]) == [-1.0, 0.0, 0.0]
+    assert list(solver._HINT_DIRS["front"]) == [0.0, 1.0, 0.0]
+    # operator_side_label: +X→left, -X→right, +Y→front, ±Z→top/bottom
+    assert solver.operator_side_label([50, 0, 0], [0, 0, 0]) == "left"
+    assert solver.operator_side_label([-50, 0, 0], [0, 0, 0]) == "right"
+    assert solver.operator_side_label([0, 50, 0], [0, 0, 0]) == "front"
+    assert solver.operator_side_label([0, 0, 50], [0, 0, 0]) == "top"
+    # free-placement hint honours the same side (links lands +X of centre)
+    from kiara.guide.preassembly import _dir_axes
+
+    assert (0, 1.0) in _dir_axes("linker oberer Anschluss")
+    assert (0, -1.0) in _dir_axes("rechter Anschluss")
+    # free placement with 'left' hint puts the part on the +X side
+    box = {"bbox_min_world": [-10.0] * 3, "bbox_max_world": [10.0] * 3}
+    part = type("P", (), {"bbox_min": [-5.0] * 3, "bbox_max": [5.0] * 3})()
+    t = np.asarray(solver.solve_free_placement(part, [box], "left"))
+    assert t[0, 3] > 0  # centre pushed +X (operator-left)
+    t = np.asarray(solver.solve_free_placement(part, [box], "right"))
+    assert t[0, 3] < 0

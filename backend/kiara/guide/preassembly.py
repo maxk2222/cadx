@@ -1782,14 +1782,18 @@ async def run_preassembly(sess: GuideToolSession) -> dict[str, Any]:
 
 
 # direction words manuals use to disambiguate symmetric mounts —
-# axis: X = across the device (left/right), Y = depth (+front), Z = up
+# axis: X = across the device (operator left/right), Y = depth (+front),
+# Z = up. Side signs follow the operator-view convention (solver.GUIDE_*):
+# manual "links" = the operator's left facing the +Y front = +X world —
+# the older left=-X table was part-relative (driver view) and mirrored
+# every side-qualified placement.
 _DIR_TOKENS: dict[str, tuple[int, float]] = {
-    "links": (0, -1.0),
-    "link": (0, -1.0),
-    "left": (0, -1.0),
-    "rechts": (0, 1.0),
-    "recht": (0, 1.0),
-    "right": (0, 1.0),
+    "links": (0, 1.0),
+    "link": (0, 1.0),
+    "left": (0, 1.0),
+    "rechts": (0, -1.0),
+    "recht": (0, -1.0),
+    "right": (0, -1.0),
     "vorne": (1, 1.0),
     "vorder": (1, 1.0),
     "front": (1, 1.0),

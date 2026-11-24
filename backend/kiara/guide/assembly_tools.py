@@ -847,14 +847,39 @@ async def find_matching_ports(s: GuideToolSession, a: dict[str, Any]) -> dict[st
     for c in cands:
         fp = str(c.get("target_port") or c.get("fixed_port") or "")
         if fp and fp not in used:
-            out["suggested_pair"] = {
+            pair = {
                 "moving_port": c.get("moving_port"),
                 "target_port": fp,
                 "target_instance": fixed_inst.instance_id,
                 "port_loc": c.get("port_loc") or c.get("fixed_loc"),
             }
+            # operator-relative side of the fixed port in WORLD space —
+            # 'linker oberer Anschluss' must bind to the operator-left port
+            # deterministically, not to whichever X sign the agent guesses
+            side = _fixed_port_world_side(s, fixed, fixed_inst, fp)
+            if side:
+                pair["world_side"] = side
+            out["suggested_pair"] = pair
             break
     return out
+
+
+def _fixed_port_world_side(
+    s: GuideToolSession, fixed: Any, fixed_inst: Any, port_name: str
+) -> str | None:
+    """Operator-view side of a fixed port's world position, measured
+    against the fixed instance's own world bbox centre."""
+    port = next((p for p in fixed.ports if p.name == port_name), None)
+    if port is None or fixed_inst.transform is None:
+        return None
+    t = np.asarray(fixed_inst.transform, dtype=float).reshape(4, 4)
+    pw = t[0:3, 0:3] @ np.asarray(port.pos, dtype=float) + t[0:3, 3]
+    mn, mx = solver.world_bbox(
+        np.asarray(fixed.bbox_min, dtype=float),
+        np.asarray(fixed.bbox_max, dtype=float),
+        t,
+    )
+    return solver.operator_side_label(pw, (mn + mx) / 2.0)
 
 
 async def solve_attachment_preview(s: GuideToolSession, a: dict[str, Any]) -> dict[str, Any]:
@@ -2528,7 +2553,67 @@ def joint_geometry_audit(s: GuideToolSession) -> dict[str, Any]:
         "sibling_pairs": sib_pairs,
         "approximated_joints": approx,
         **_declared_mates(s),
+        **_side_evidence(s.state, bboxes),
     }
+
+
+def _side_evidence(
+    state: Any, bboxes: dict[str, tuple[np.ndarray, np.ndarray]]
+) -> dict[str, Any]:
+    """Operator-side consistency, evidence-only: an instance placed under a
+    target phrase carrying an explicit left/right qualifier must sit on
+    that side of the anchor. A mirrored binding is durable review data —
+    reported, never silently corrected (rotation cannot fix it anyway).
+    Only axis-0 (lateral) qualifiers are checked; a centred placement is
+    'ambiguous', not a mismatch."""
+    from kiara.guide.preassembly import _dir_axes
+
+    if len(bboxes) < 2:
+        return {"side_checked": 0, "side_mismatches": []}
+    anchor_iid = max(
+        bboxes, key=lambda k: float(np.prod(bboxes[k][1] - bboxes[k][0]))
+    )
+    anchor_ctr = (bboxes[anchor_iid][0] + bboxes[anchor_iid][1]) / 2.0
+    anchor_half = float((bboxes[anchor_iid][1] - bboxes[anchor_iid][0])[0]) / 2.0
+    checked = 0
+    mismatches: list[dict[str, Any]] = []
+    for iid, inst in ((k, i) for k, i in {i.instance_id: i for i in state.assembly.instances}.items()):
+        if iid == anchor_iid or iid not in bboxes:
+            continue
+        st = next((x for x in state.steps if x.number == inst.placed_in_step), None)
+        if st is None or not (0 <= inst.substep_idx < len(st.sub_steps)):
+            continue
+        ss = st.sub_steps[inst.substep_idx]
+        # only the atomic action's own qualifier fields — step-level prose
+        # names sides of OTHER instances ("linkes Rohr aus Schritt 5") and
+        # would flag mirrored where nothing is wrong
+        texts = [str(ss.target or ""), str(ss.text or ""), str(ss.side or "")]
+        axes = [a for a in _dir_axes(" ".join(texts)) if a[0] == 0]
+        if not axes:
+            continue
+        checked += 1
+        ctr = (bboxes[iid][0] + bboxes[iid][1]) / 2.0
+        rel = float(ctr[0] - anchor_ctr[0])
+        for _, sg in axes:
+            expected = "left" if sg > 0 else "right"  # GUIDE_LEFT = +X
+            if abs(rel) < max(anchor_half * 0.1, 1.0):
+                continue  # centred — cannot falsify the side
+            actual = "left" if rel > 0 else "right"
+            if actual != expected:
+                mismatches.append(
+                    {
+                        "instance": iid,
+                        "step": inst.placed_in_step,
+                        "declared_side": expected,
+                        "actual_side": actual,
+                        "offset_mm": round(rel, 1),
+                        "issue": f"{iid} declared '{expected}' but sits "
+                        f"{abs(rel):.0f} mm on the {actual} side of the "
+                        f"anchor — operator-view convention binds "
+                        f"'links' to +X (GUIDE_LEFT); mirrored binding?",
+                    }
+                )
+    return {"side_checked": checked, "side_mismatches": mismatches}
 
 
 def _joint_maps(

@@ -927,6 +927,7 @@ async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
                 runtime_settings=job_runtime,
                 assets=input_assets,
                 budget_tokens=runtime_settings.agent_max_tokens_per_job,
+                enqueue_fn=ctx.get("enqueue_fn") if isinstance(ctx, dict) else None,
             )
 
             resume_state = dict(job.resume_state or {})
@@ -991,8 +992,12 @@ async def run_guide_job(ctx: dict[str, Any], payload: dict[str, Any]) -> dict[st
                 params["guide_id"] = str(stored.get("guideId") or "")
                 version.params = params
                 await db.commit()
-        except Exception:
+        except Exception as exc:
             log.exception("guide.publish_failed", version=str(version.id))
+            with contextlib.suppress(Exception):
+                await _append_job_log(
+                    db, job, f"guide publish failed: {type(exc).__name__}: {exc}\n"
+                )
         return {"ok": outcome.status in ("succeeded", "needs_review"), "status": outcome.status}
 
 

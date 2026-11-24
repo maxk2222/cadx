@@ -41,13 +41,23 @@ def _sync_url(url: str) -> str:
 
 _sync_engine = None
 _sync_sessionmaker = None
+_sync_url_seen: str | None = None
 
 
 def _engine():
-    global _sync_engine, _sync_sessionmaker
-    if _sync_engine is None:
-        _sync_engine = create_engine(_sync_url(get_settings().database_url), pool_pre_ping=True)
+    """Process-shared sync engine — bound to the CURRENT database_url.
+
+    evalkit's local driver rebinds DATABASE_URL per scratch run; a blind
+    singleton would keep writing every later run's guide document into the
+    first run's eval.db. Re-create when the url changes."""
+    global _sync_engine, _sync_sessionmaker, _sync_url_seen
+    url = _sync_url(get_settings().database_url)
+    if _sync_engine is None or _sync_url_seen != url:
+        if _sync_engine is not None:
+            _sync_engine.dispose()
+        _sync_engine = create_engine(url, pool_pre_ping=True)
         _sync_sessionmaker = sessionmaker(_sync_engine, class_=Session, expire_on_commit=False)
+        _sync_url_seen = url
     return _sync_engine
 
 

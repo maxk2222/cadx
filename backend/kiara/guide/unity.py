@@ -3,10 +3,14 @@
 KIARA frame: mm, Z-up, right-handed (x=len, y=width, z=height).
 Unity frame: m, Y-up, left-handed (x=right, y=up, z=forward).
 
-The mapping p_u = (x, z, y)·0.001 applies the spatial reflection
-``M = [[1,0,0],[0,0,1],[0,1,0]]`` (det -1 — the handedness flip) plus the
-mm→m scale. Rotations conjugate through it: ``R_u = M·R·Mᵀ`` — a proper
-rotation stays proper. DO NOT copy KIARA's constants here — KIARA is
+The mapping p_u = (-x, z, -y)·0.001 applies the spatial reflection
+``M = [[-1,0,0],[0,0,1],[0,-1,0]]`` (det -1 — the handedness flip) plus
+the mm→m scale. Rotations conjugate through it: ``R_u = M·R·Mᵀ`` — a
+proper rotation stays proper. The convention matches the KIARA Web
+Suite's own emission (verified on a published reference guide of the
+same assembly): the manual's working face (+Y here) lands on Unity -Z
+and operator-left (+X here) on Unity -X — the same ``flipPosZ`` frame
+their web editor consumes. DO NOT copy KIARA's constants here — KIARA is
 cm/Y-up internally; that asymmetry was a v1 plan bug.
 """
 
@@ -29,14 +33,14 @@ from kiara.guide.solver import (
 )
 
 # spatial change-of-basis (unit vectors); det = -1 → RH→LH
-_M = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
+_M = np.array([[-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0]])
 _MM_TO_M = 0.001
 
 
 def to_unity_position(pos_cad_mm: list[float]) -> list[float]:
-    """CAD (x,y,z) mm → Unity (x, z, y) m."""
+    """CAD (x,y,z) mm → Unity (-x, z, -y) m."""
     x, y, z = (float(v) for v in pos_cad_mm[:3])
-    return [x * _MM_TO_M, z * _MM_TO_M, y * _MM_TO_M]
+    return [-x * _MM_TO_M, z * _MM_TO_M, -y * _MM_TO_M]
 
 
 def to_unity_scale(scale_cad: list[float]) -> list[float]:
@@ -232,6 +236,8 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[
         {iid: i.transform for iid, i in insts.items() if i.transform is not None},
         parts,
     )
+    from kiara.guide.assembly_tools import _side_evidence
+
     audit = {
         "buried_instances": buried_rows,
         "disconnected_instances": disconnected_rows,
@@ -240,6 +246,10 @@ def _joint_metrics(state: Any) -> tuple[dict[int, dict], dict[str, float], dict[
         ),
         "axis_profiles": axis_profiles,
         "sibling_pairs": sib_pairs,
+        # same operator-side evidence the tool audit reports — the persisted
+        # doc must carry it too (emit↔audit consistency, not a re-derived
+        # private subset)
+        **_side_evidence(state, bboxes),
     }
     return metrics, buried, audit
 

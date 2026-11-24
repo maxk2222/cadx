@@ -83,12 +83,15 @@ def _camera_for(view: str) -> tuple[str, tuple[float, float, float] | None]:
     return view, up
 
 
-# named-view camera directions — (position offset unit vector, view-up)
+# named-view camera directions — (position offset unit vector, view-up).
+# Operator-view convention: the assembly's working face is +Y (front), so
+# a "left" view looks AT the operator-left face = +X side. The old table
+# used part-relative left (-X) — mirror-inconsistent with the front view.
 _VIEW_DIRS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
     "front": ((0, 1, 0), (0, 0, 1)),
     "back": ((0, -1, 0), (0, 0, 1)),
-    "left": ((-1, 0, 0), (0, 0, 1)),
-    "right": ((1, 0, 0), (0, 0, 1)),
+    "left": ((1, 0, 0), (0, 0, 1)),
+    "right": ((-1, 0, 0), (0, 0, 1)),
     "top": ((0, 0, 1), (0, 1, 0)),
     "bottom": ((0, 0, -1), (0, -1, 0)),
 }

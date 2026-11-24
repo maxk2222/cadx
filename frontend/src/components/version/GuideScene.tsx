@@ -5,7 +5,11 @@ import { useEffect, useMemo, useRef, useState, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import * as THREE from "three";
 import { GLTFLoader } from "three-stdlib";
-import type { GuideAnnotation, GuideInstance, GuidePartInfo } from "../../lib/types";
+import type {
+  GuideAnnotation,
+  GuideInstance,
+  GuidePartInfo,
+} from "../../lib/types";
 import WebGLGate from "../common/WebGLGate";
 import { IconBtn } from "../ui";
 import { Annotations } from "./guideAnnotations";
@@ -13,7 +17,12 @@ import { Annotations } from "./guideAnnotations";
 const meshUrl = (vid: string, pid: string) =>
   `/api/versions/${vid}/guide/parts/${encodeURIComponent(pid)}/mesh`;
 
-const HIGHLIGHT = new THREE.Color(0x2f9e44);
+/** Two-state step palette — every mesh gets a uniform flat material so
+ *  dark GLB textures stay legible on the #0b0d12 background: parts
+ *  introduced by the CURRENT step glow amber, everything placed earlier
+ *  is muted slate. Selection adds a soft emissive lift on top. */
+const STEP_CURRENT = new THREE.Color(0xfab005);
+const STEP_EARLIER = new THREE.Color(0x7d8a99);
 
 /** The solver world is Z-up mm; three.js renders Y-up. One -90degX
  *  wrapper presents a Z-up world upright — instance transforms stay in
@@ -22,20 +31,30 @@ const HIGHLIGHT = new THREE.Color(0x2f9e44);
  *  no wrapper. */
 const ZUP_DISPLAY_ROT: [number, number, number] = [-Math.PI / 2, 0, 0];
 
-function cloneForStep(scene: THREE.Group, isNew: boolean): THREE.Group {
+/** Operator-view yaw: the solver's canonical front is +Y, which the tilt
+ *  alone maps to -Z — facing AWAY from the default camera. An extra 180°
+ *  turn about display-Y (outermost wrapper, applied after the tilt)
+ *  brings the working face to +Z: the camera default sees the front, and
+ *  operator-left (+X world) lands screen-left like the manual figure. */
+const FRONT_YAW_ROT: [number, number, number] = [0, Math.PI, 0];
+
+function cloneForStep(
+  scene: THREE.Group,
+  isNew: boolean,
+  isSel: boolean,
+): THREE.Group {
   const obj = scene.clone(true);
-  if (!isNew) return obj;
-  // parts introduced by the CURRENT step get a green emissive tint so the
-  // editor reads "what changed here" at a glance — clone materials first,
-  // otherwise the tint leaks into earlier steps' clones.
+  const color = isNew ? STEP_CURRENT : STEP_EARLIER;
   obj.traverse((c) => {
     const m = c as THREE.Mesh;
     if (m.isMesh && m.material) {
-      const src = m.material as THREE.MeshStandardMaterial;
-      const mat = src.clone();
-      mat.emissive = HIGHLIGHT;
-      mat.emissiveIntensity = 0.35;
-      m.material = mat;
+      m.material = new THREE.MeshStandardMaterial({
+        color,
+        roughness: 0.72,
+        metalness: 0.12,
+        emissive: isNew ? STEP_CURRENT : STEP_EARLIER,
+        emissiveIntensity: isSel ? 0.45 : isNew ? 0.14 : 0.0,
+      });
     }
   });
   return obj;
@@ -48,22 +67,28 @@ function Instance({
   scene,
   inst,
   isNew,
+  isSel,
   innerRef,
   onSelect,
 }: {
   scene: THREE.Group;
   inst: GuideInstance;
   isNew: boolean;
+  isSel: boolean;
   innerRef?: Ref<THREE.Group>;
   onSelect: () => void;
 }) {
-  const obj = useMemo(() => cloneForStep(scene, isNew), [scene, isNew]);
+  const obj = useMemo(
+    () => cloneForStep(scene, isNew, isSel),
+    [scene, isNew, isSel],
+  );
   const { pos, quat, scl } = useMemo(() => {
     const p = new THREE.Vector3();
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
     const m = new THREE.Matrix4();
-    if (inst.transform?.length === 4) m.set(...(inst.transform.flat() as Parameters<THREE.Matrix4["set"]>));
+    if (inst.transform?.length === 4)
+      m.set(...(inst.transform.flat() as Parameters<THREE.Matrix4["set"]>));
     m.decompose(p, q, s);
     return { pos: p, quat: q, scl: s };
   }, [inst.transform]);
@@ -86,13 +111,73 @@ function Instance({
 /** Annotation arrows + text placards render via the shared
  *  guideAnnotations components (same visuals as the editor). */
 
+/** Ground plane that always stays subtly visible: sized and faded from
+ *  the scene bbox instead of a fixed 800mm guess, parked at the
+ *  assembly's underside, dark-quiet colors on the #0b0d12 background. */
+function AdaptiveGrid({
+  content,
+  fitKey,
+}: {
+  content: Ref<THREE.Group>;
+  fitKey?: unknown;
+}) {
+  const [cfg, setCfg] = useState<{
+    size: number;
+    cell: number;
+    section: number;
+    fade: number;
+    y: number;
+  } | null>(null);
+  useEffect(() => {
+    const grp = content && (content as React.RefObject<THREE.Group>).current;
+    if (!grp) return;
+    const box = new THREE.Box3().setFromObject(grp);
+    if (box.isEmpty()) return;
+    const diag = Math.max(box.getSize(new THREE.Vector3()).length(), 1);
+    const size = Math.ceil(diag * 3);
+    setCfg({
+      size,
+      cell: Math.max(Math.round(size / 40), 1),
+      section: Math.max(Math.round(size / 8), 10),
+      fade: diag * 3.5,
+      y: box.min.y - 0.5,
+    });
+  }, [content, fitKey]);
+  if (!cfg) return null;
+  return (
+    <Grid
+      position={[0, cfg.y, 0]}
+      args={[cfg.size, cfg.size]}
+      cellSize={cfg.cell}
+      sectionSize={cfg.section}
+      cellColor="#1d222b"
+      sectionColor="#2b3140"
+      fadeDistance={cfg.fade}
+      fadeStrength={1.2}
+    />
+  );
+}
+
 /** Frame the camera on the placed assembly's world bbox: without this the
  *  three.js defaults (near 0.1 / far 2000, camera aimed at the origin) clip
  *  millimetre assemblies on zoom and show an empty view for off-origin
- *  placements. Distance controls the clip planes, never hardcoded. */
-export function CameraFit({ content, fitKey }: { content: Ref<THREE.Group>; fitKey?: unknown }) {
+ *  placements. Distance controls the clip planes, never hardcoded. The
+ *  +Z-octant start dir is deliberate: after the front-yaw wrapper the
+ *  operator face points +Z, so the default view IS the manual's front. */
+export function CameraFit({
+  content,
+  fitKey,
+}: {
+  content: Ref<THREE.Group>;
+  fitKey?: unknown;
+}) {
   const camera = useThree((s) => s.camera);
-  const controls = useThree((s) => s.controls) as { target?: THREE.Vector3; minDistance?: number; maxDistance?: number; update?: () => void } | null;
+  const controls = useThree((s) => s.controls) as {
+    target?: THREE.Vector3;
+    minDistance?: number;
+    maxDistance?: number;
+    update?: () => void;
+  } | null;
   const invalidate = useThree((s) => s.invalidate);
   useEffect(() => {
     const grp = content && (content as React.RefObject<THREE.Group>).current;
@@ -259,66 +344,82 @@ function SceneInner({
   return (
     <div className="relative h-full w-full">
       <WebGLGate>
-      <Canvas
-        key={ctxLost}
-        frameloop="demand"
-        dpr={[1, 2]}
-        camera={{ position: [220, 180, 260], fov: 40 }}
-        onPointerMissed={() => onSelect(null)}
-        onCreated={({ gl }) => {
-          gl.domElement.addEventListener("webglcontextlost", (e) => {
-            e.preventDefault();
-            setCtxLost((n) => n + 1);
-          });
-        }}
-      >
-        <color attach="background" args={["#0b0d12"]} />
-        <ambientLight intensity={0.6} />
-        <directionalLight position={[140, 220, 160]} intensity={1.1} />
-        <directionalLight position={[-120, 80, -140]} intensity={0.35} />
-        <Grid args={[800, 800]} cellSize={20} sectionSize={100} fadeDistance={900} />
-        {/* Z-up solver world -> Y-up display: rotate the whole world
-            (parts + annotations) once, never each transform. */}
-        <group rotation={worldFrame === "y_up" ? [0, 0, 0] : ZUP_DISPLAY_ROT}>
-          <group ref={contentRef}>
-            {visible.map((i) => (
-              <Instance
-                key={i.id}
-                scene={scenes[i.part_id] ?? new THREE.Group()}
-                inst={i}
-                isNew={(i.placed_in_step ?? 0) === step}
-                innerRef={i.id === sel ? setSelObj : undefined}
-                onSelect={() => onSelect(i.id)}
+        <Canvas
+          key={ctxLost}
+          frameloop="demand"
+          dpr={[1, 2]}
+          camera={{ position: [220, 180, 260], fov: 40 }}
+          onPointerMissed={() => onSelect(null)}
+          onCreated={({ gl }) => {
+            gl.domElement.addEventListener("webglcontextlost", (e) => {
+              e.preventDefault();
+              setCtxLost((n) => n + 1);
+            });
+          }}
+        >
+          <color attach="background" args={["#0b0d12"]} />
+          <ambientLight intensity={0.6} />
+          <directionalLight position={[140, 220, 160]} intensity={1.1} />
+          <directionalLight position={[-120, 80, -140]} intensity={0.35} />
+          <AdaptiveGrid content={contentRef} fitKey={step} />
+          {/* Z-up solver world -> Y-up display: rotate the whole world
+            (parts + annotations) once, never each transform. The outer
+            yaw puts the +Y working face toward the default camera —
+            operator-left lands screen-left like the manual figure. */}
+          <group rotation={worldFrame === "y_up" ? [0, 0, 0] : FRONT_YAW_ROT}>
+            <group
+              rotation={worldFrame === "y_up" ? [0, 0, 0] : ZUP_DISPLAY_ROT}
+            >
+              <group ref={contentRef}>
+                {visible.map((i) => (
+                  <Instance
+                    key={i.id}
+                    scene={scenes[i.part_id] ?? new THREE.Group()}
+                    inst={i}
+                    isNew={(i.placed_in_step ?? 0) === step}
+                    isSel={i.id === sel}
+                    innerRef={i.id === sel ? setSelObj : undefined}
+                    onSelect={() => onSelect(i.id)}
+                  />
+                ))}
+              </group>
+              <Annotations
+                anns={annotations ?? []}
+                step={step}
+                instances={visible}
               />
-            ))}
+            </group>
           </group>
-          <Annotations anns={annotations ?? []} step={step} instances={visible} />
-        </group>
-        <CameraFit content={contentRef} fitKey={step} />
-        {selObj && !readonly && (
-          <TransformControls object={selObj} mode={mode} onMouseUp={commit} />
-        )}
-        <OrbitControls makeDefault enableDamping dampingFactor={0.1} zoomToCursor />
-      </Canvas>
+          <CameraFit content={contentRef} fitKey={step} />
+          {selObj && !readonly && (
+            <TransformControls object={selObj} mode={mode} onMouseUp={commit} />
+          )}
+          <OrbitControls
+            makeDefault
+            enableDamping
+            dampingFactor={0.1}
+            zoomToCursor
+          />
+        </Canvas>
       </WebGLGate>
 
       {!readonly && (
-      <div className="absolute right-2 top-2 flex gap-1">
-        <IconBtn
-          title={t("guide_move")}
-          onClick={() => setMode("translate")}
-          className={`bg-panel/80 backdrop-blur ${mode === "translate" ? "text-brand-400" : ""}`}
-        >
-          <Move3d className="h-4 w-4" />
-        </IconBtn>
-        <IconBtn
-          title={t("guide_rot")}
-          onClick={() => setMode("rotate")}
-          className={`bg-panel/80 backdrop-blur ${mode === "rotate" ? "text-brand-400" : ""}`}
-        >
-          <Rotate3d className="h-4 w-4" />
-        </IconBtn>
-      </div>
+        <div className="absolute right-2 top-2 flex gap-1">
+          <IconBtn
+            title={t("guide_move")}
+            onClick={() => setMode("translate")}
+            className={`bg-panel/80 backdrop-blur ${mode === "translate" ? "text-brand-400" : ""}`}
+          >
+            <Move3d className="h-4 w-4" />
+          </IconBtn>
+          <IconBtn
+            title={t("guide_rot")}
+            onClick={() => setMode("rotate")}
+            className={`bg-panel/80 backdrop-blur ${mode === "rotate" ? "text-brand-400" : ""}`}
+          >
+            <Rotate3d className="h-4 w-4" />
+          </IconBtn>
+        </div>
       )}
     </div>
   );

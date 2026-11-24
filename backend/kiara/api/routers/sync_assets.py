@@ -27,7 +27,12 @@ from kiara.guides.asset_store import (
     replace_store_asset,
 )
 from kiara.guides.file_store import resolve_safe_path
-from kiara.guides.paths import PROJECT_ASSET_TYPES, safe_guide_id
+from kiara.guides.paths import (
+    GLOBAL_ASSET_CATEGORIES,
+    GLOBAL_ASSETS_DIR,
+    PROJECT_ASSET_TYPES,
+    safe_guide_id,
+)
 from kiara.guides.upload_errors import (
     ConverterUnavailableError,
     InvalidUploadError,
@@ -47,6 +52,16 @@ def _validate_project_asset_type(asset_type: str) -> str:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Unknown asset type '{asset_type}'.",
+        )
+    return normalized
+
+
+def _validate_global_category(category: str) -> str:
+    normalized = str(category or "").strip()
+    if normalized not in GLOBAL_ASSET_CATEGORIES:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Unknown global asset category '{category}'.",
         )
     return normalized
 
@@ -99,6 +114,23 @@ def get_project_asset_file_route(guide_id: str, asset_type: str, file_name: str)
             detail="Asset file not found.",
         ) from exc
 
+    return _build_file_response(_ensure_existing_file(path))
+
+
+@router.get("/sync/global_assets/{category}/{file_name:path}", status_code=status.HTTP_200_OK)
+@router.get("/api/sync/global_assets/{category}/{file_name:path}", status_code=status.HTTP_200_OK)
+def get_global_asset_file_route(category: str, file_name: str):
+    """Serve shared library assets (tools/markers/symbols) — the emitted
+    `modelLocation` for e.g. the arrow prefab resolves against this route,
+    same contract as the suite's assets.py."""
+    normalized_category = _validate_global_category(category)
+    try:
+        path = resolve_safe_path(GLOBAL_ASSETS_DIR, normalized_category, file_name)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Zugriff verweigert.",
+        ) from exc
     return _build_file_response(_ensure_existing_file(path))
 
 

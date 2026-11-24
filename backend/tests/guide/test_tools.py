@@ -483,7 +483,9 @@ def test_emit_assembly_artifacts_merges_glb(tmp_path) -> None:
 
     sc = trimesh.load(str(storage.resolve(glb_rel)))
     assert "cube#1" in sc.geometry
-    assert sc.bounds[0][0] > 40.0  # transform applied
+    # +50 X world → -50 X glTF: the export bakes the front-yaw (world +Y
+    # front faces the glTF +Z viewer), so operator-left lands screen-left
+    assert sc.bounds[1][0] < -40.0
 
 
 def test_emit_assembly_artifacts_empty(tmp_path) -> None:

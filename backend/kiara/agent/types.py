@@ -164,6 +164,11 @@ class AgentCtx:
     # OFF for the rest of the job (thinking_budget_exhausted logs once)
     thinking_calls_used: int = 0
     thinking_budget_exhausted: bool = False
+    # child-job runner injected by the job host — None = the real arq
+    # enqueue (spawn.* fallback). The eval local driver injects an
+    # in-process dispatcher so jobs spawned inside a scratch run
+    # (guide generate_missing_part, refine children) actually execute.
+    enqueue_fn: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
 
     def tokens_used(self) -> int:
         u = getattr(self.llm, "total_usage", {})
