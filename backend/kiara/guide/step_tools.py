@@ -32,7 +32,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "user (≤140 chars, imperative, manual language).",
         {
             "number": _i("step number (manual order, 1-based)"),
-            "title": _s("short step title"),
+            "title": _s("imperative step title — a full instruction phrase like 'Adapter links oben schrauben', never a bare verb like 'Schrauben'"),
             "text": _s("detailed INTERNAL step description"),
             "display_text": _s("short AR-facing instruction (≤140 chars)"),
             "action_type": {
@@ -64,7 +64,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
                     "type": "object",
                     "properties": {
                         "number": _i("step number (1-based)"),
-                        "title": _s("short step title"),
+                        "title": _s("imperative step title — a full instruction phrase, never a bare verb"),
                         "text": _s("detailed INTERNAL step description"),
                         "display_text": _s("short AR-facing instruction (≤140 chars)"),
                         "action_type": {"type": "string", "enum": _ACTION_TYPES},
@@ -108,7 +108,7 @@ SCHEMAS: dict[str, dict[str, Any]] = {
         "only provided fields change).",
         {
             "number": _i("step number to update"),
-            "title": _s("new title"),
+            "title": _s("new imperative step title (full phrase)"),
             "text": _s("new internal text"),
             "display_text": _s("new AR text (≤140 chars)"),
             "action_type": {"type": "string", "enum": _ACTION_TYPES},
@@ -238,6 +238,11 @@ def _step_fields(a: dict[str, Any]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 continue
         out["source_pages"] = sorted(pages)[:20]
+    # a title that is missing or a bare verb ("Schrauben") is no step text —
+    # the full imperative display_text is the better headline in every UI.
+    disp = str(out.get("display_text") or "").strip()
+    if disp and len(str(out.get("title") or "").split()) < 3:
+        out["title"] = disp
     return out
 
 

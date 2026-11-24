@@ -6,7 +6,7 @@ import * as THREE from "three";
  *  so dark/metallic GLB materials never win (glTF defaults metallicFactor=1
  *  which renders black without an env map). */
 export const STEP_CURRENT = new THREE.Color(0xfab005);
-export const STEP_EARLIER = new THREE.Color(0x7d8a99);
+export const STEP_EARLIER = new THREE.Color(0xa7b8ca);
 
 export function applyStepMaterials(
   obj: THREE.Object3D,

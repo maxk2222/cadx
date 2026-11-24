@@ -20,15 +20,16 @@ SCHEMAS: dict[str, dict[str, Any]] = {
     "add_arrow": _fn(
         "add_arrow",
         "Add an annotation arrow to a step: direction + anchor part. "
-        "Direction is a named hint (down/in/-x/…) — the server resolves "
-        "it against the placed part, you never supply coordinates.",
+        "When the part has a joint this step the arrow snaps to its real "
+        "mating axis automatically — `direction` is only the fallback for "
+        "joint-less parts, never coordinates.",
         {
             "step": _i("step number"),
             "part_id": _s("part the arrow points at"),
             "direction": _s(
-                "approach direction: down|up|left|right|front|back|into|-x|+x|-y|+y|-z|+z"
+                "fallback approach direction when the part has no joint: down|up|left|right|front|back|into|-x|+x|-y|+y|-z|+z"
             ),
-            "label": _s("optional short label e.g. 'insert here'"),
+            "label": _s("optional short imperative phrase e.g. 'Adapter aufschrauben', never a bare verb"),
         },
         ["step", "part_id", "direction"],
     ),

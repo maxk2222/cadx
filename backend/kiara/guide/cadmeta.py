@@ -35,35 +35,19 @@ def is_brep(part: GuidePart) -> bool:
 
 
 def viewer_pbr() -> Any:
-    """Neutral dielectric PBR for guide meshes — glTF defaults
-    metallicFactor=1, so a material-less CAD mesh loads as a perfect mirror
-    and renders BLACK in any consumer without an env map (the editor clones
-    GLB materials). Same gray as export_glb_file's face colors."""
-    from trimesh.visual.material import PBRMaterial
+    """Neutral dielectric PBR for guide meshes — canonical definition lives
+    in ``kiara.cad.meshvis`` so executor-side GLB writers stamp the same
+    material (re-exported here for existing guide callers)."""
+    from kiara.cad.meshvis import viewer_pbr as _pbr
 
-    return PBRMaterial(
-        baseColorFactor=[168, 170, 178, 255],
-        metallicFactor=0.0,
-        roughnessFactor=0.75,
-    )
+    return _pbr()
 
 
 def stamp_viewer_pbr(path: Path) -> Path:
     """Re-export a GLB with the neutral viewer PBR — no-op for non-GLB."""
-    if path.suffix.lower() not in {".glb", ".gltf"}:
-        return path
-    import trimesh
-    from trimesh.visual import TextureVisuals
+    from kiara.cad.meshvis import stamp_viewer_pbr as _stamp
 
-    try:
-        m = trimesh.load(path)
-        if hasattr(m, "to_geometry"):
-            m = m.to_geometry()
-        m.visual = TextureVisuals(material=viewer_pbr())
-        m.export(str(path))
-    except Exception as exc:
-        log.warning("guide.pbr_stamp_failed", path=path.name, err=str(exc))
-    return path
+    return _stamp(path)
 
 
 def normalize_mesh_units(src: Path, dst_dir: Path) -> Path:

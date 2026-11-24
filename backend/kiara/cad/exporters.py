@@ -133,9 +133,13 @@ def export_glb_file(shape: Shape, path: Path, linear_deflection: float = 0.05) -
     build123d's export_gltf converts to metres (the glTF spec unit) and writes
     no material — CAD previews came out 1000x smaller than mesh-mode GLBs with
     a default all-metallic material, i.e. a black screen in the viewer. So we
-    tessellate and write the GLB via trimesh instead.
+    tessellate and write the GLB via trimesh instead — with an explicit
+    dielectric PBR: bare ColorVisuals still export glTF's metallicFactor=1
+    default and render black without an env map.
     """
     import numpy as np
+
+    from kiara.cad.meshvis import viewer_pbr
 
     _ensure_face_meshes(shape, linear_deflection, 0.3)
     verts, tris = shape.tessellate(tolerance=linear_deflection, angular_tolerance=0.3)
@@ -144,9 +148,7 @@ def export_glb_file(shape: Shape, path: Path, linear_deflection: float = 0.05) -
         faces=np.asarray(tris, dtype=np.int64),
         process=False,
     )
-    mesh.visual = trimesh.visual.ColorVisuals(
-        mesh, face_colors=np.tile([168, 170, 178, 255], (len(mesh.faces), 1))
-    )
+    mesh.visual = trimesh.visual.TextureVisuals(material=viewer_pbr())
     path.parent.mkdir(parents=True, exist_ok=True)
     mesh.export(str(path), file_type="glb")
 

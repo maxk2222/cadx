@@ -2852,5 +2852,15 @@ def export_stl(mesh: trimesh.Trimesh, path: Path | str, file_type: str = "stl") 
                     fixed.vertices = fixed.vertices.astype(np.float32).astype(np.float64)
                     fixed.merge_vertices()
                     q = fixed
+    if file_type.lower() in {"glb", "gltf"}:
+        from trimesh.visual import TextureVisuals
+
+        from kiara.cad.meshvis import viewer_pbr
+
+        mat = getattr(getattr(q, "visual", None), "material", None)
+        if getattr(mat, "metallicFactor", 1.0) != 0.0:
+            # glTF defaults metallicFactor=1 — without an env map that is a
+            # black screen in the viewer; stamp the neutral dielectric PBR
+            q.visual = TextureVisuals(material=viewer_pbr())
     q.export(str(path), file_type=file_type)
     return q

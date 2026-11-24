@@ -557,7 +557,7 @@ function SceneInner({
         )}
       </group>
       </group>
-      <CameraFit content={contentRef} fitKey={urls.length} />
+      <CameraFit content={contentRef} fitKey={`${stepNo}:${urls.length}`} />
 
       {showGizmo && pivotObj && (
         <TransformControls

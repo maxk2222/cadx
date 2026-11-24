@@ -538,7 +538,16 @@ def _annotation_arrow_rows(
     inst_by_id: dict[str, Any],
     parts: dict[str, Any],
     world_frame: str,
+    joints: list[dict] | None = None,
 ) -> list[dict[str, Any]]:
+    """Annotation arrows — but the annotator's direction is only a coarse
+    word ('down'/'into'), and 'into' resolved to a literal down arrow for
+    EVERY part, including ones screwed on from the front (should be
+    horizontal). When the annotated instance has a joint this step, the
+    arrow takes the joint's real approach axis (flush with the connection)
+    and anchors its tip on the part's own port, not the bbox center."""
+    joint_by_moving = {str(j.get("moving_instance") or ""): j for j in (joints or [])}
+    joint_by_moving_part = {str(j.get("moving_part") or ""): j for j in (joints or [])}
     rows = []
     for an in annotations:
         if an.get("kind") != "arrow" or int(an.get("step", -1)) != step_no:
@@ -547,11 +556,35 @@ def _annotation_arrow_rows(
         part = parts.get(str(an.get("part_id", "")))
         if tgt is None or part is None or tgt.transform is None:
             continue
-        mn, mx = _solver.transform_bbox(part, tgt.transform)
-        anchor = (np.asarray(mn, dtype=float) + np.asarray(mx, dtype=float)) / 2.0
-        axis = _unit(np.asarray(an.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float))
-        target_unity = _world_to_unity_pos(anchor, world_frame)
-        dir_unity = _world_to_unity_dir(axis, world_frame)
+        j = joint_by_moving.get(str(tgt.instance_id or "")) or joint_by_moving_part.get(
+            str(an.get("part_id", ""))
+        )
+        m = np.asarray(tgt.transform, dtype=float).reshape(4, 4)
+        if j is not None:
+            fixed = inst_by_id.get(j.get("fixed_instance") or j.get("fixed_part", ""))
+            axis_local = np.asarray(j.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float)
+            axis_world = (
+                _unit(np.asarray(fixed.transform, dtype=float).reshape(4, 4)[0:3, 0:3] @ axis_local)
+                if fixed is not None and fixed.transform is not None
+                else _unit(axis_local)
+            )
+            dir_unity = _world_to_unity_dir(-axis_world, world_frame)
+            port = next(
+                (p for p in getattr(part, "ports", []) if p.name == j.get("moving_port")),
+                None,
+            )
+            anchor = (
+                m[0:3, 0:3] @ np.asarray(port.pos, dtype=float) + m[0:3, 3]
+                if port is not None
+                else m[0:3, 3]
+            )
+            target_unity = _world_to_unity_pos(anchor, world_frame)
+        else:
+            mn, mx = _solver.transform_bbox(part, tgt.transform)
+            anchor = (np.asarray(mn, dtype=float) + np.asarray(mx, dtype=float)) / 2.0
+            axis = _unit(np.asarray(an.get("approach_axis") or [0.0, 0.0, -1.0], dtype=float))
+            target_unity = _world_to_unity_pos(anchor, world_frame)
+            dir_unity = _world_to_unity_dir(axis, world_frame)
         lineage_id = str(tgt.instance_id or an.get("part_id", ""))
         rows.append(
             {
@@ -798,7 +831,12 @@ def _step_arrow_objects(
             )
         )
     for row in _annotation_arrow_rows(
-        ctx.annotations, step_idx, ctx.inst_by_id, ctx.parts, ctx.world_frame
+        ctx.annotations,
+        step_idx,
+        ctx.inst_by_id,
+        ctx.parts,
+        ctx.world_frame,
+        ctx.joint_by_step.get(step_idx, []),
     ):
         obj_num += 1
         objects.append(

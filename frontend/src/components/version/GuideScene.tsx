@@ -157,25 +157,38 @@ export function CameraFit({
   useEffect(() => {
     const grp = content && (content as React.RefObject<THREE.Group>).current;
     if (!grp) return;
-    const box = new THREE.Box3().setFromObject(grp);
-    if (box.isEmpty()) return;
-    const center = box.getCenter(new THREE.Vector3());
-    const diag = Math.max(box.getSize(new THREE.Vector3()).length(), 1);
-    const dist = diag * 1.35;
-    const dir = new THREE.Vector3(0.55, 0.45, 0.7).normalize();
-    camera.position.copy(center).addScaledVector(dir, dist);
-    if (camera instanceof THREE.PerspectiveCamera) {
-      camera.near = Math.max(diag / 500, 0.01);
-      camera.far = Math.max(diag * 20, 1000);
-      camera.updateProjectionMatrix();
-    }
-    if (controls) {
-      controls.target?.copy(center);
-      if ("minDistance" in controls) controls.minDistance = diag * 0.05;
-      if ("maxDistance" in controls) controls.maxDistance = diag * 8;
-      controls.update?.();
-    }
-    invalidate();
+    let raf = 0;
+    const fit = () => {
+      const box = new THREE.Box3().setFromObject(grp);
+      if (box.isEmpty()) {
+        // meshes mount async — retry until real geometry exists, otherwise
+        // the camera stays aimed at the origin and crops off-origin parts
+        raf = requestAnimationFrame(fit);
+        return;
+      }
+      raf = 0;
+      const center = box.getCenter(new THREE.Vector3());
+      const diag = Math.max(box.getSize(new THREE.Vector3()).length(), 1);
+      const dist = diag * 1.35;
+      const dir = new THREE.Vector3(0.55, 0.45, 0.7).normalize();
+      camera.position.copy(center).addScaledVector(dir, dist);
+      if (camera instanceof THREE.PerspectiveCamera) {
+        camera.near = Math.max(diag / 500, 0.01);
+        camera.far = Math.max(diag * 20, 1000);
+        camera.updateProjectionMatrix();
+      }
+      if (controls) {
+        controls.target?.copy(center);
+        if ("minDistance" in controls) controls.minDistance = diag * 0.05;
+        if ("maxDistance" in controls) controls.maxDistance = diag * 8;
+        controls.update?.();
+      }
+      invalidate();
+    };
+    fit();
+    return () => {
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [camera, controls, content, invalidate, fitKey]);
   return null;
 }

@@ -74,9 +74,15 @@ def _media_files(guide_dir: Path) -> list[str]:
 
 
 def _step_out(s: Any) -> dict[str, Any]:
+    title = str(s.title or "")
+    disp = str(s.display_text or "").strip()
+    if disp and len(title.split()) < 3:
+        # a bare verb ("Schrauben") is no step text — the full imperative
+        # display_text is the better headline (mirrors step_tools fallback)
+        title = disp
     return {
         "number": s.number,
-        "title": s.title,
+        "title": title,
         "text": s.text,
         "display_text": s.display_text,
         "action_type": s.action_type,
