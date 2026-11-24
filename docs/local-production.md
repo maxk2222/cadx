@@ -131,3 +131,24 @@ POST /api/system/stack/restart/worker   # manual heal
 | mesh-server dies | 3× /v1/health fail | respawn from env contract |
 | user runs stop.sh | env contract removed + ExitCode 0 | watchdog stands down |
 | disk fills | `_guarded` refuses jobs <2GB free | prune.sh recovers space |
+
+## Host networking notes
+
+**Docker egress (SNAT)**: on hosts where Docker's masquerade rule is
+missing (e.g. nftables-only distros, or a firewall that wiped the
+`nat` table), containers can resolve DNS but all outbound traffic dies —
+symptom: `docker compose build`/`pip install`/`npm` hang on egress while
+the host itself is fine. Check and fix on the host:
+
+```
+iptables -t nat -L POSTROUTING -n --line-numbers | grep MASQUERADE   # empty = broken
+iptables -t nat -A POSTROUTING -s 172.16.0.0/12 ! -o docker+ -j MASQUERADE
+iptables -A FORWARD -i docker+ -j ACCEPT; iptables -A FORWARD -o docker+ -j ACCEPT
+netfilter-persistent save     # survive reboots (iptables-persistent pkg)
+```
+
+**LAN exposure**: `start.sh --lan` binds the sidecar `0.0.0.0:8765` with a
+generated `MESH_API_KEY`. If the box sits behind a network firewall
+(campus/institute nets commonly filter everything but SSH), external
+clients reach it via `ssh -L 8765:127.0.0.1:8765 -L 8080:127.0.0.1:8080
+user@host` instead of opening ports.

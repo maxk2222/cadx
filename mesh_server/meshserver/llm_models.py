@@ -253,9 +253,14 @@ def custom_llm_classes(cfg: Any) -> list[type[LlmAdapter]]:
 
 
 def llm_adapter_classes(cfg: Any) -> list[type[LlmAdapter]]:
-    """Full catalog: built-ins + custom. Custom wins on id collisions."""
+    """Full catalog: built-ins + custom. Custom wins on id collisions.
+    ``cfg.llm_models`` (MESH_LLM_MODELS) is an optional comma-id allowlist —
+    deployments restrict the offered menu without forking the catalog."""
     out: dict[str, type[LlmAdapter]] = {}
+    allow = {s.strip() for s in getattr(cfg, "llm_models", "").split(",") if s.strip()}
     for cls in builtin_llm_classes() + custom_llm_classes(cfg):
+        if allow and cls.id not in allow:
+            continue
         if cls.id in out:
             log.warning("llm.catalog.duplicate_id", id=cls.id)
         out[cls.id] = cls

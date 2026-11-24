@@ -183,6 +183,12 @@ class ServerConfig:
     mlx_mem_limit_gb: float = field(
         default_factory=lambda: _env_float("MESH_MLX_MEM_LIMIT_GB", 0)
     )
+    # llm catalog allowlist: comma-separated adapter ids; empty = all
+    # built-in + custom entries offered (they're just a download menu —
+    # nothing loads until selected)
+    llm_models: str = field(
+        default_factory=lambda: os.environ.get("MESH_LLM_MODELS", "")
+    )
 
     # --- memory ledger / scheduling (Phase: multi-model residency) ---
     # host RAM kept free below this reserved amount when admitting models (MB)

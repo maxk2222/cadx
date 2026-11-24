@@ -508,7 +508,13 @@ registered via `/v1/models/register` with `supports_audio`).
 
 `HF_TOKEN` in the environment — or the token stored via WebUI settings,
 which the backend forwards per request — makes downloads of gated repos
-work transparently.
+work transparently. Gated means the HF account behind the token must
+**accept the repo license first**: `black-forest-labs/FLUX.1-schnell`
+(BFL license — instant accept), `facebook/dinov3-vitl16-pretrain-lvd1689m`
+(Meta license — **manual review**, can take hours/days; TRELLIS.2 needs
+it for its image encoder and has no workaround). Ungated:
+`stabilityai/stable-diffusion-xl-base-1.0`, `stabilityai/sd-v1-5`,
+`Qwen/Qwen-Image-Edit-2509`, `microsoft/TRELLIS` TripoSG weights.
 
 The chat endpoint contract (capability-aware resolution, bounded
 admission, error shapes) is documented under *OpenAI-compatible surface*
@@ -645,7 +651,17 @@ model):
 - `model: "auto"` selection skips badlisted adapters (automatic fallback
   flux → sdxl → sd15); an explicitly requested model surfaces its real error.
 - `MESH_CUDA_OFFLOAD=auto|model|sequential|none` controls diffusers
-  CPU offload on CUDA (default `auto` = model offload when VRAM is tight).
+  CPU offload on CUDA (default `auto` resolves the fastest tier that
+  fits the card's *total* VRAM — `none` when the full bf16 pipeline fits,
+  else `model`, else `sequential`; with `MESH_TORCH_QUANT=bnb8` the
+  quantized `none` tier is what makes 20B-class models resident).
+- Admission tracks **two** resources: host RAM (the `est_mem_mb` ledger)
+  and VRAM (per-resident `vram_mb` committed at admission + a pynvml
+  probe). Effective free VRAM = `min(probe, total − committed −
+  MESH_VRAM_HEADROOM_MB)` — committed accounting covers in-flight loads
+  (a model allocating 0→N GB over ~a minute is invisible to a probe).
+  VRAM pressure evicts LRU idle warm workers, then registry residents —
+  never an in-flight llm server.
 - Request `width`/`height`/`count` are clamped per adapter before generation.
 
 ## New environment variables
@@ -662,6 +678,8 @@ In addition to the existing `MESH_*` knobs (see
 | `MESH_QUEUE_FAIR_S` | `120` | fairness window — jobs older than this beat model affinity |
 | `MESH_QUEUE_MEM_WAIT_S` | `300` | queued job waiting on memory fails after this (0 = never) |
 | `MESH_JOB_MIN_FREE_MB` | `0` | refuse new jobs (→ `429`) when host free RAM is below this (0 = off) |
+| `MESH_VRAM_HEADROOM_MB` | `1500` | device VRAM kept free when admitting a GPU-resident model — covers driver reclaim lag + the probe's own CUDA context |
+| `MESH_TORCH_QUANT` | `none` | bitsandbytes weight quant for torch-image adapters (`bnb8`/`bnb4`/`none`/`auto`): transformer + text-encoder int8/fp4, VAE stays bf16. `bnb8` puts FLUX (~19 GB) and Qwen-Image-Edit fully VRAM-resident on 32 GB cards (needs `bitsandbytes` in the venv) |
 | `MESH_LLM_PIN` | `0` | pin loaded llm servers — never evicted for memory pressure |
 | `MESH_LLM_LOAD_TIMEOUT_S` | `300` | readiness bound for a managed llm server subprocess |
 | `MESH_LLM_CTX` | `16384` | context size passed to llama.cpp servers |

@@ -1230,6 +1230,7 @@ async def llm_models(registry: Any) -> dict:
                 "owned_by": "meshserver",
                 "supports_vision": True,
                 "supports_tools": True,
+                "supports_edit": True,
                 "alias": True,
             },
         )

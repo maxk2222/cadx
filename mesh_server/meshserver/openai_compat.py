@@ -56,6 +56,10 @@ def _parse_size(raw: Any) -> tuple[int, int]:
 def _image_params(body: dict, *, need_edit: bool, registry: Any) -> tuple[Any, Any] | JSONResponse:
     """OpenAI images body → (ImageGenParams, resolved adapter class)."""
     model = str(body.get("model") or "auto")
+    # "omni" is the full-capability routing alias — resolves to the
+    # per-endpoint ladder (gen vs edit pick different adapters)
+    if model == "omni":
+        model = "auto"
     cls = registry.select_image(model, need_edit=need_edit)
     if cls is None:
         kind = "edit" if need_edit else "generation"
