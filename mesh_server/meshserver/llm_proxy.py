@@ -987,6 +987,28 @@ async def _chat_stream(
     )
 
 
+def _per_request_ctx(cfg: Any, served: int) -> int:
+    """The completion budget a single request may rely on: llama.cpp
+    --parallel N serves ctx as ONE shared KV pool — without --kv-unified it
+    slices ctx/parallel statically, with it the slots contend for the same
+    pool. Either way the fair share is ctx//parallel; an explicit
+    --kv-unified-per-slot slice caps a sequence harder — the tighter wins."""
+    eff = getattr(cfg, "effective", None)
+
+    def _get(name: str, d: int = 0) -> int:
+        try:
+            v = eff(name) if callable(eff) else getattr(cfg, name, d)
+            return int(v or d)
+        except Exception:
+            return d
+
+    parallel = max(1, _get("llm_parallel", 1))
+    per_slot = _get("llm_kv_per_slot", 0)
+    if per_slot:
+        return min(per_slot, served)
+    return served // parallel if parallel > 1 else served
+
+
 async def chat_completions(
     registry: Any,
     cfg: Any,
@@ -997,6 +1019,18 @@ async def chat_completions(
     """POST /v1/chat/completions — resolve, queue, load, proxy."""
     if not isinstance(body, dict):
         return _err(422, "request body must be a JSON object")
+    # a request without a completion cap would decode until EOS or pool-full —
+    # one unbounded stream starves every sibling slot (observed: thinking-on
+    # requests running 30k+ tokens). Clamp the budget to the per-request
+    # share; explicit positive caps (either key spelling) pass through.
+    has_cap = any(
+        isinstance(body.get(k), int) and body[k] > 0
+        for k in ("max_tokens", "max_completion_tokens")
+    )
+    if not has_cap:
+        eff = getattr(cfg, "effective", None)
+        served = int(eff("llm_ctx") if callable(eff) else getattr(cfg, "llm_ctx", 0) or 0)
+        body["max_tokens"] = _per_request_ctx(cfg, served) or 8192
     priority = request_priority(
         request,
         cfg,
@@ -1204,25 +1238,12 @@ async def llm_models(registry: Any) -> dict:
         return (eff(name) if callable(eff) else getattr(cfg, name, d) if cfg else d) or d
 
     cfg_ctx = int(_eff("llm_ctx") or 0)
-    parallel = int(_eff("llm_parallel", 1) or 1)
-    per_slot = int(_eff("llm_kv_per_slot", 0) or 0)
-
-    def _per_request_ctx(served: int) -> int:
-        # the served window is a SHARED pool: without --kv-unified llama.cpp
-        # slices ctx/parallel statically, with it the slots contend for the
-        # same pool — either way the guarantee a single request can rely on
-        # under load is ctx//parallel (a 64k pool advertised as 64k lets two
-        # concurrent ~33k prompts collide into decode-time 500s). An explicit
-        # per-slot slice caps each sequence harder — report the tighter one.
-        if per_slot:
-            return min(per_slot, served)
-        return served // parallel if parallel > 1 else served
 
     data: list[dict[str, Any]] = []
     for cls in _llm_classes(registry):
         info = infos.get(getattr(cls, "id", ""))
         served = int(cfg_ctx or getattr(cls, "context_len", 0) or 0)
-        req_ctx = _per_request_ctx(served) or None
+        req_ctx = _per_request_ctx(cfg, served) or None
         data.append(
             {
                 "id": getattr(cls, "id", "?"),
@@ -1243,7 +1264,7 @@ async def llm_models(registry: Any) -> dict:
         # context_len reports the per-request guarantee under the shared KV
         # pool so clients size prompts for what they can actually rely on
         # (vLLM-style max_model_len mirrors it for wider compat)
-        omni_ctx = _per_request_ctx(cfg_ctx or max(
+        omni_ctx = _per_request_ctx(cfg, cfg_ctx or max(
             (e.get("context_len") or 0 for e in data), default=0
         )) or None
         data.insert(

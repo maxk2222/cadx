@@ -56,6 +56,7 @@ class _UpstreamHandler(BaseHTTPRequestHandler):
                 "id": "chatcmpl-1",
                 "object": "chat.completion",
                 "echo_model": body.get("model"),
+                "echo_max_tokens": body.get("max_tokens"),
                 "choices": [
                     {
                         "index": 0,
@@ -342,6 +343,31 @@ async def test_llm_models_ctx_overlay_wins(upstream):
     async with _client(_app(reg)) as c:
         r = await c.get("/v1/llm-models")
     assert r.json()["data"][1]["context_len"] is None
+
+
+async def test_unbounded_request_gets_share_cap(upstream):
+    """A request without max_tokens would decode until pool-full and starve
+    sibling slots — the proxy clamps it to the per-request KV share."""
+    from types import SimpleNamespace
+
+    reg = _Reg(_Adapter(upstream))
+    app = _app(reg)
+    app.state.cfg = SimpleNamespace(
+        effective=lambda key: {"llm_ctx": 131072, "llm_parallel": 4}.get(key, 0)
+    )
+    async with _client(app) as c:
+        r = await c.post(
+            "/v1/chat/completions", json={"model": "my-llm", "messages": []}
+        )
+    assert r.status_code == 200
+    assert r.json()["echo_max_tokens"] == 32768
+
+    async with _client(app) as c:
+        r = await c.post(
+            "/v1/chat/completions",
+            json={"model": "my-llm", "messages": [], "max_tokens": 64},
+        )
+    assert r.json()["echo_max_tokens"] == 64  # explicit cap wins
 
 
 async def test_llm_models_reports_per_request_ctx(upstream):
