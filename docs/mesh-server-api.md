@@ -64,6 +64,9 @@ callers.
     {"id": "…", "object": "model", "created": 0, "owned_by": "meshserver",
      "supports_vision": true, "supports_tools": true, "context_len": 262144,
      "supports_edit": false, "max_count": 4, "loaded": false, "downloaded": true}
+    // context_len/max_model_len = per-request guarantee: under
+    // MESH_LLM_PARALLEL>1 the llama.cpp ctx is one shared KV pool, so this
+    // reports ctx//parallel (or MESH_LLM_KV_PER_SLOT when tighter)
   ]
 }
 ```
