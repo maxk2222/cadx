@@ -474,10 +474,15 @@ async def _condense_history(
         s = ctx.runtime_settings
         ctx_len = (getattr(ctx.llm, "context_len", None) or {}).get(role)
         if ctx_len:
-            est = estimate_prompt_tokens(
-                msgs,
-                image_detail=s.llm_image_detail,
-                image_max_edge=s.llm_image_max_edge,
+            estimate = getattr(ctx.llm, "estimate_tokens", None)
+            est = (
+                estimate(role, msgs)
+                if callable(estimate)
+                else estimate_prompt_tokens(
+                    msgs,
+                    image_detail=s.llm_image_detail,
+                    image_max_edge=s.llm_image_max_edge,
+                )
             )
             over_budget = prompt_over_budget(s, int(ctx_len), est)
     if len(msgs) <= _CONDENSE_HEAD or (threshold <= 0 and not over_budget):
@@ -944,8 +949,7 @@ async def run_session(  # noqa: C901
         if len(sig_history) > 24:
             sig_history.pop(0)
         cycle_loop = any(
-            len(sig_history) >= 2 * k
-            and sig_history[-k:] == sig_history[-2 * k : -k]
+            len(sig_history) >= 2 * k and sig_history[-k:] == sig_history[-2 * k : -k]
             for k in (2, 3, 4)
         )
         # warn-before-kill on repeat: one identical re-emission is a stall

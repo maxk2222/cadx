@@ -489,8 +489,11 @@ async def _run_turns_inner(  # noqa: C901
         # digest before the provider rejects with a 400
         ctx_len = (getattr(llm, "context_len", None) or {}).get(role)
         if ctx_len:
+            estimate = getattr(llm, "estimate_tokens", None)
 
-            def _est(m: list[dict[str, Any]]) -> int:
+            def _est(m: list[dict[str, Any]], _e=estimate) -> int:
+                if callable(_e):
+                    return _e(role, m)
                 return estimate_prompt_tokens(
                     m,
                     image_detail=runtime.llm_image_detail,

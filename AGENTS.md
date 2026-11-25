@@ -172,9 +172,23 @@ Documentation index: `docs/README.md`; human-facing dev guide: `CONTRIBUTING.md`
   values are hard caps still clamped to fit. When the estimated prompt
   exceeds `agent_context_budget_frac` of the window, the tool loop condenses
   early and `chat_worker` collapses history into a `[EARLIER CONVERSATION
-  SUMMARY]` digest instead of silently truncating. The mesh sidecar reports
-  its effective ctx as `context_len` in `/v1/models` (`MESH_LLM_CTX` beats
-  the adapter catalog max).
+  SUMMARY]` digest instead of silently truncating. Cached probes expire
+  after `_CAPS_TTL_S` (6h) and re-validate live — the served window is a
+  deploy property, not a model constant. The mesh sidecar reports its
+  effective ctx as `context_len` in `/v1/models` (`MESH_LLM_CTX` beats
+  the adapter catalog max) — and with `llm_parallel>1` it reports the
+  **per-request guarantee** (`ctx//parallel`, or `llm_kv_per_slot` when
+  tighter), because llama.cpp slots share one KV pool and clients must
+  budget for the fair share, not the pool total. The prompt estimator
+  (`estimate_prompt_tokens`) is usage-calibrated: real
+  `usage.prompt_tokens` feeds an EMA `est_scale` back into future
+  estimates (persisted in `llm_caps`, survives re-probes and restarts).
+  llama.cpp's decode-time pool overflow (`500 "Context size has been
+  exceeded."` — no limit number) shrinks the client's assumed window
+  in-memory below the just-failed request size; admission-400 overflow
+  (`exceed_context_size_error`, `n_ctx`) is learned via `_learn_ctx` and
+  must NOT trigger `_handle_400` payload stripping (tools_ok would latch
+  False for the role).
 - Adaptive reasoning: `agent/thinking.py` resolves per-call `extra_body`
   (provider-dialect JSON in `llm_thinking_body_on/_off/_medium/_high`) —
   `llm_thinking` defaults to `"always"` (thinking on, bounded effort);

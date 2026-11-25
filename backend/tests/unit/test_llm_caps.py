@@ -442,6 +442,110 @@ async def test_client_learns_ctx_from_400(monkeypatch):
     assert c.context_len["code"] == 8192
 
 
+async def test_ctx_overflow_400_does_not_strip_tools(monkeypatch):
+    """llama.cpp's admission error (exceed_context_size_error, n_ctx) is a
+    context problem, not a payload-key problem — _handle_400 must not strip
+    tools/response_format for it (tools_ok would latch False for the role)."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/v1/chat/completions":
+            return httpx.Response(404, json={"error": "not found"})
+        calls["n"] += 1
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "type": "exceed_context_size_error",
+                    "n_prompt_tokens": 80052,
+                    "n_ctx": 65536,
+                }
+            },
+        )
+
+    _patch_transport(monkeypatch, handler)
+    c = LLMClient(api_key="k", base_url="http://llm.test/v1", model_code="qwen")
+    c.stream = False
+    with pytest.raises(LLMError):
+        await c.chat(
+            "code",
+            [{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "t", "parameters": {}}}],
+        )
+    assert calls["n"] == 1  # no strip-and-resend attempts
+    assert c.tools_ok.get("code") is not False
+
+
+async def test_ctx_pool_overflow_500_shrinks_assumed_window(monkeypatch):
+    """Decode-time pool overflow (500 'Context size has been exceeded.'):
+    retryable, but the failed request size is the bound that just didn't fit
+    — the client must lower its assumed window so the NEXT call condenses."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/v1/chat/completions":
+            return httpx.Response(200, json={"data": [{"id": "qwen"}]})
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(500, json={"error": "Context size has been exceeded."})
+        return _chat_ok(request)
+
+    _patch_transport(monkeypatch, handler)
+    c = LLMClient(api_key="k", base_url="http://llm.test/v1", model_code="qwen")
+    c.stream = False
+    c.context_len["code"] = 65536
+    msgs = [{"role": "user", "content": "x" * 200_000}]  # raw est ≈ 50k
+    resp = await c.chat("code", msgs)
+    assert resp.text == "ok"
+    assert c.context_len["code"] < 65536  # shrunk below the failed size
+
+
+async def test_est_scale_learned_from_usage(monkeypatch):
+    """usage.prompt_tokens calibrates the heuristic: a model whose real cost
+    runs ~2x the estimate must scale future estimates toward reality."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/v1/chat/completions":
+            return httpx.Response(200, json={"data": [{"id": "qwen"}]})
+        r = _chat_ok(request)
+        body = json.loads(r.content)
+        body["usage"] = {"prompt_tokens": 1000, "completion_tokens": 2}
+        return httpx.Response(200, json=body)
+
+    _patch_transport(monkeypatch, handler)
+    c = LLMClient(api_key="k", base_url="http://llm.test/v1", model_code="qwen")
+    c.stream = False
+    msgs = [{"role": "user", "content": "x" * 1000}]  # raw est ≈ 254
+    await c.chat("code", msgs)
+    scale = c._est_scale["qwen"]
+    assert scale > 1.0  # real(1000)/raw(~254) ≈ 3.9 → clamped ≤ 4.0
+    # the next call's estimate must be scaled up
+    assert c.estimate_tokens("code", msgs) > 500
+
+
+async def test_stale_caps_reprobed(monkeypatch):
+    """A cached probe older than _CAPS_TTL_S is re-validated live — the
+    served window is a deploy property, not a model constant."""
+    import time as _time
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "qwen", "max_model_len": 49152}]})
+        return _chat_ok(request)
+
+    _patch_transport(monkeypatch, handler)
+    stale = ModelCaps(context_tokens=16384, source="sidecar", seen_at=_time.time() - 7 * 3600)
+    c = LLMClient(
+        api_key="k",
+        base_url="http://llm.test/v1",
+        model_code="qwen",
+        caps={"qwen": stale},
+    )
+    c.stream = False
+    await c.chat("code", [{"role": "user", "content": "hi"}])
+    assert c.context_len["code"] == 49152  # fresh probe wins over the stale cache
+
+
 async def test_client_test_reports_context(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/models"):

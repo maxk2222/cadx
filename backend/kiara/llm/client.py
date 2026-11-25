@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from kiara.llm.capabilities import (
     ModelCaps,
     estimate_prompt_tokens,
+    is_ctx_pool_overflow,
     parse_ctx_from_error,
     probe_context,
     resolve_max_tokens,
@@ -104,12 +105,24 @@ _CORE_PAYLOAD_KEYS = frozenset(
 
 _STRUCT_CHARS = '\n"{}[]()<>0123456789'
 
+
 # Transient upstream statuses worth a retry: rate limit plus any 5xx — generic
 # server errors AND CDN/proxy codes (Cloudflare 520-527, e.g. 520/522/524) that
 # sit outside the classic 502/503/504 set. Persistent 5xx still fail, just
 # after the bounded retry budget.
 def _retryable_status(status: int) -> bool:
     return status == 429 or status >= 500
+
+
+# cached capability probes older than this are re-checked live — the sidecar
+# context window is a deploy-time property, not a model constant
+_CAPS_TTL_S = 6 * 3600
+
+# learned est_scale bounds: sane tokenizer ratios live well inside this range;
+# the clamp keeps a single odd response from poisoning the estimate
+_EST_SCALE_MIN, _EST_SCALE_MAX = 0.5, 4.0
+_EST_SCALE_EMA = 0.25  # weight of the newest observation
+_EST_SCALE_PERSIST_DRIFT = 0.05  # write to caps only on meaningful change
 
 _STOPWORDS = frozenset(
     [
@@ -333,6 +346,13 @@ class LLMClient:
         self._caps_cb = caps_cb
         self.context_len: dict[Role, int | None] = {}
         self._probed_roles: set[Role] = set()
+        # usage-calibrated prompt-token correction factor per model id —
+        # estimate_prompt_tokens is a heuristic; real usage.prompt_tokens
+        # teaches the actual chars/token + template overhead of THIS model
+        # (EMA, seeded from the persisted caps, persisted back on drift)
+        self._est_scale: dict[str, float] = {
+            mid: c.est_scale for mid, c in self.caps.items() if c.est_scale
+        }
         # optional job-cancellation probe consulted during retry backoffs —
         # a 6-step exponential retry can otherwise out-sleep a cancelled job
         # by a full minute before the next caller-side cancel check runs
@@ -380,8 +400,10 @@ class LLMClient:
 
     async def _ensure_caps(self, role: Role) -> None:
         """Resolve this role's context window once: manual setting > cached
-        caps > live probe. Non-fatal — unknown stays None and callers keep
-        heuristic defaults."""
+        caps > live probe. Cached probes expire after _CAPS_TTL_S and are
+        re-probed — a sidecar redeploy with a different ctx must not keep
+        serving the stale window forever. Non-fatal — unknown stays None and
+        callers keep heuristic defaults."""
         if role in self._probed_roles:
             return
         self._probed_roles.add(role)
@@ -391,7 +413,8 @@ class LLMClient:
             self.context_len[role] = manual
             return
         cached = self.caps.get(model)
-        if cached and cached.context_tokens:
+        stale = bool(cached) and (time.time() - cached.seen_at) > _CAPS_TTL_S
+        if cached and cached.context_tokens and not stale:
             self.context_len[role] = cached.context_tokens
             return
         try:
@@ -402,6 +425,8 @@ class LLMClient:
             found = {}
         caps = found.get(model)
         if caps and caps.context_tokens:
+            if cached and cached.est_scale and not caps.est_scale:
+                caps.est_scale = cached.est_scale  # usage-learned — survives re-probe
             self.caps[model] = caps
             self.context_len[role] = caps.context_tokens
             log.info(
@@ -411,7 +436,75 @@ class LLMClient:
                 with contextlib.suppress(Exception):
                     await self._caps_cb(model, caps)
         else:
-            self.context_len[role] = None
+            # probe failed — a stale cached window beats none at all
+            self.context_len[role] = cached.context_tokens if cached else None
+
+    def _est_parts(self, model: str, messages: list[dict[str, Any]]) -> tuple[int, int]:
+        """(raw heuristic estimate, calibrated estimate) for one payload."""
+        raw = estimate_prompt_tokens(
+            messages,
+            image_detail=self.runtime_settings.llm_image_detail,
+            image_max_edge=self.runtime_settings.llm_image_max_edge,
+        )
+        return raw, int(raw * self._est_scale.get(model, 1.0))
+
+    def _est_for(self, model: str, messages: list[dict[str, Any]]) -> int:
+        """Heuristic estimate corrected by the learned real/estimated ratio."""
+        return self._est_parts(model, messages)[1]
+
+    def estimate_tokens(self, role: Role, messages: list[dict[str, Any]]) -> int:
+        """Prompt-token estimate for external budget checks (toolloop condense,
+        chat_worker collapse) — the same calibrated number the client uses
+        internally, so budget decisions and wire reality stay consistent."""
+        return self._est_for(self.models.get(role, ""), messages)
+
+    async def _update_est_scale(self, model: str, est_raw: int, real: int) -> None:
+        """EMA-learn the real/estimated prompt-token ratio from actual usage —
+        closes the gap between the static heuristic and this model's true
+        tokenizer + chat-template + image cost without hand-tuned constants."""
+        if not model or est_raw <= 0 or real <= 0:
+            return
+        ratio = max(_EST_SCALE_MIN, min(_EST_SCALE_MAX, real / est_raw))
+        old = self._est_scale.get(model)
+        new = ratio if old is None else old + _EST_SCALE_EMA * (ratio - old)
+        if old is not None and abs(new - old) < 0.005:
+            return  # converged — skip the bookkeeping churn
+        self._est_scale[model] = new
+        caps = self.caps.get(model)
+        drift = abs(new - (caps.est_scale if caps else 0))
+        if caps is not None and drift >= _EST_SCALE_PERSIST_DRIFT:
+            self.caps[model] = ModelCaps(
+                context_tokens=caps.context_tokens,
+                max_output_tokens=caps.max_output_tokens,
+                source=caps.source,
+                est_scale=new,
+            )
+            if self._caps_cb is not None:
+                with contextlib.suppress(Exception):
+                    await self._caps_cb(model, self.caps[model])
+
+    def _shrink_ctx_on_pool_overflow(
+        self, role: Role, status: int, body: str, messages: list[dict[str, Any]]
+    ) -> None:
+        """Decode-time pool overflow (llama.cpp 500): the prompt was admitted
+        but the shared KV pool filled mid-decode — the current request size IS
+        the bound that just failed. Tighten this client's assumed window below
+        it so subsequent calls condense instead of colliding again. In-memory
+        only: pool pressure is transient, not a model property to persist."""
+        if not is_ctx_pool_overflow(status, body):
+            return
+        est = self._est_for(self.models.get(role, ""), messages)
+        bound = max(4096, int(est * 0.9))
+        cur = self.context_len.get(role)
+        if cur is None or bound < cur:
+            self.context_len[role] = bound
+            log.warning(
+                "llm.context.pool_overflow_shrunk",
+                role=role,
+                est=est,
+                new_ctx=bound,
+                prev_ctx=cur,
+            )
 
     async def _learn_ctx(self, status: int, body: str, role: Role) -> None:
         """Opportunistic: provider error bodies often name the context limit
@@ -467,6 +560,9 @@ class LLMClient:
                 )
                 resp, payload = await self._handle_400(client, resp, payload, headers, role)
                 if _retryable_status(resp.status_code):
+                    self._shrink_ctx_on_pool_overflow(
+                        role, resp.status_code, resp.text[:500], payload["messages"]
+                    )
                     last_err = LLMError(f"HTTP {resp.status_code}: {resp.text[:300]}")
                     await self._backoff(delay)
                     delay *= 2
@@ -499,6 +595,12 @@ class LLMClient:
         Last resort: provider-dialect extras (llm_extra_body / per-call
         extra_body / thinking bodies) — one retry without any non-core key.
         """
+        if resp.status_code == 400 and parse_ctx_from_error(400, resp.text[:500]):
+            # admission-time context overflow names a limit, not a payload-key
+            # problem — stripping tools/response_format here would silently
+            # degrade the session (tools_ok latches False) and the resend
+            # still overflows the context anyway. Let it reach _learn_ctx.
+            return resp, payload
         for key in ("response_format", "tools"):
             if resp.status_code != 400 or key not in payload:
                 continue
@@ -668,6 +770,13 @@ class LLMClient:
                     if resp.status_code == 400:
                         raise _RetryNoStream()
                     if _retryable_status(resp.status_code):
+                        body = (await resp.aread())[:500]
+                        self._shrink_ctx_on_pool_overflow(
+                            role,
+                            resp.status_code,
+                            body.decode("utf-8", "replace"),
+                            payload["messages"],
+                        )
                         last_err = LLMError(f"HTTP {resp.status_code}")
                         await self._backoff(delay)
                         delay *= 2
@@ -694,17 +803,19 @@ class LLMClient:
         return bool(tools) and self.tools_mode != "off" and self.tools_ok.get(role) is not False
 
     def _eff_max_tokens(
-        self, role: Role, model: str, messages: list[dict[str, Any]], requested: int | None
+        self,
+        role: Role,
+        model: str,
+        messages: list[dict[str, Any]],
+        requested: int | None,
+        est: int | None = None,
     ) -> int:
         """Resolve the completion budget for one call against the detected
         context window. An explicit per-call value is honoured but still
         clamped so prompt + completion fits; None goes through the auto path
         (llm_max_tokens=0 → clamp(ctx//4, 2048, 128k); >0 → hard cap)."""
-        est = estimate_prompt_tokens(
-            messages,
-            image_detail=self.runtime_settings.llm_image_detail,
-            image_max_edge=self.runtime_settings.llm_image_max_edge,
-        )
+        if est is None:
+            est = self._est_for(model, messages)
         ctx = self.context_len.get(role) or 0
         if requested is not None:
             if ctx <= 0:
@@ -768,7 +879,8 @@ class LLMClient:
     ) -> LLMResponse:
         model = self.models[role]
         await self._ensure_caps(role)
-        eff_max = self._eff_max_tokens(role, model, messages, max_tokens)
+        est_raw, est = self._est_parts(model, messages)
+        eff_max = self._eff_max_tokens(role, model, messages, max_tokens, est=est)
         profile = self._sampling_for(model)
         payload: dict[str, Any] = {
             "model": model,
@@ -836,6 +948,7 @@ class LLMClient:
         self.total_usage["completion_tokens"] += completion_tokens
         self.total_usage["cached_tokens"] += cached_tokens
         self.total_usage["calls"] += 1
+        await self._update_est_scale(model, est_raw, prompt_tokens)
 
         parsed: BaseModel | None = None
         if json_schema is not None and text and not tool_calls:

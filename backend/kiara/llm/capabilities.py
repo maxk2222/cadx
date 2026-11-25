@@ -48,6 +48,9 @@ class ModelCaps:
     max_output_tokens: int | None = None
     source: str = ""  # models_api|lmstudio|llamacpp|ollama|sidecar|error|static|manual
     seen_at: float = field(default_factory=time.time)
+    # learned correction factor real_tokens/estimated_tokens (usage feedback);
+    # 0 = unlearned → heuristic estimate stands on its own
+    est_scale: float = 0.0
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -55,6 +58,7 @@ class ModelCaps:
             "max_out": self.max_output_tokens,
             "source": self.source,
             "ts": int(self.seen_at),
+            "est_scale": self.est_scale or 0,
         }
 
     @classmethod
@@ -64,6 +68,7 @@ class ModelCaps:
             max_output_tokens=_as_int(d.get("max_out")),
             source=str(d.get("source") or ""),
             seen_at=float(d.get("ts") or 0),
+            est_scale=float(d.get("est_scale") or 0),
         )
 
 
@@ -324,6 +329,18 @@ def parse_ctx_from_error(status: int, body: str) -> int | None:
     return None
 
 
+def is_ctx_pool_overflow(status: int, body: str) -> bool:
+    """llama.cpp decode-time overflow: the prompt was admitted but the shared
+    KV pool filled mid-generation (``500 "Context size has been exceeded."``).
+    Unlike the 400 admission error it carries no limit number — callers should
+    treat the *current* prompt size as the bound that just failed and shrink
+    their assumed window, not learn a new one from the body."""
+    if status < 500:
+        return False
+    low = body.lower()
+    return "context" in low and "exceed" in low
+
+
 # --------------------------------------------------------------------------- #
 # prompt-size estimation + budget resolution                                  #
 
@@ -430,6 +447,7 @@ async def record_llm_caps(db: Any, model_id: str, caps: ModelCaps) -> None:
             isinstance(existing, dict)
             and _as_int(existing.get("ctx")) == caps.context_tokens
             and _as_int(existing.get("max_out")) == caps.max_output_tokens
+            and float(existing.get("est_scale") or 0) == (caps.est_scale or 0)
         ):
             return  # unchanged — skip the write
         models[model_id] = caps.to_json()

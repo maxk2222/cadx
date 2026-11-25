@@ -1199,12 +1199,30 @@ async def llm_models(registry: Any) -> dict:
     # runtime overlay can raise it between model loads
     cfg = getattr(registry, "cfg", None)
     eff = getattr(cfg, "effective", None)
-    cfg_ctx = int(
-        (eff("llm_ctx") if callable(eff) else getattr(cfg, "llm_ctx", 0) if cfg else 0) or 0
-    )
+
+    def _eff(name: str, d: Any = 0) -> Any:
+        return (eff(name) if callable(eff) else getattr(cfg, name, d) if cfg else d) or d
+
+    cfg_ctx = int(_eff("llm_ctx") or 0)
+    parallel = int(_eff("llm_parallel", 1) or 1)
+    per_slot = int(_eff("llm_kv_per_slot", 0) or 0)
+
+    def _per_request_ctx(served: int) -> int:
+        # the served window is a SHARED pool: without --kv-unified llama.cpp
+        # slices ctx/parallel statically, with it the slots contend for the
+        # same pool — either way the guarantee a single request can rely on
+        # under load is ctx//parallel (a 64k pool advertised as 64k lets two
+        # concurrent ~33k prompts collide into decode-time 500s). An explicit
+        # per-slot slice caps each sequence harder — report the tighter one.
+        if per_slot:
+            return min(per_slot, served)
+        return served // parallel if parallel > 1 else served
+
     data: list[dict[str, Any]] = []
     for cls in _llm_classes(registry):
         info = infos.get(getattr(cls, "id", ""))
+        served = int(cfg_ctx or getattr(cls, "context_len", 0) or 0)
+        req_ctx = _per_request_ctx(served) or None
         data.append(
             {
                 "id": getattr(cls, "id", "?"),
@@ -1213,8 +1231,8 @@ async def llm_models(registry: Any) -> dict:
                 "owned_by": "meshserver",
                 "supports_vision": getattr(cls, "supports_vision", False),
                 "supports_tools": getattr(cls, "supports_tools", True),
-                "context_len": cfg_ctx or getattr(cls, "context_len", None),
-                "max_model_len": cfg_ctx or getattr(cls, "context_len", None),
+                "context_len": req_ctx,
+                "max_model_len": req_ctx,
                 "downloaded": getattr(info, "downloaded", True) if info else True,
                 "loaded": getattr(info, "loaded", False) if info else False,
             }
@@ -1222,11 +1240,12 @@ async def llm_models(registry: Any) -> dict:
     if data:
         # discovery alias — clients point at "omni" and get the full-
         # capability auto-pick (vision + tools) without knowing catalog ids.
-        # context_len reports the effective served window so clients can size
-        # prompts (vLLM-style max_model_len mirrors it for wider compat)
-        omni_ctx = cfg_ctx or max(
+        # context_len reports the per-request guarantee under the shared KV
+        # pool so clients size prompts for what they can actually rely on
+        # (vLLM-style max_model_len mirrors it for wider compat)
+        omni_ctx = _per_request_ctx(cfg_ctx or max(
             (e.get("context_len") or 0 for e in data), default=0
-        ) or None
+        )) or None
         data.insert(
             0,
             {

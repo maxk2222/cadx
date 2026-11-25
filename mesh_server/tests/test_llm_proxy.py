@@ -344,6 +344,38 @@ async def test_llm_models_ctx_overlay_wins(upstream):
     assert r.json()["data"][1]["context_len"] is None
 
 
+async def test_llm_models_reports_per_request_ctx(upstream):
+    """llama.cpp --parallel N shares/slices ONE ctx pool — the served
+    context_len must be the per-request guarantee (ctx//parallel or the
+    explicit kv_per_slot cap), not the pool total. Advertising the pool let
+    concurrent requests each plan for 65536 and collide into decode-time
+    500s (~2×33k > 65536 pool)."""
+    from types import SimpleNamespace
+
+    reg = _Reg(_Adapter(upstream))
+    cfg = {"llm_ctx": 65536, "llm_parallel": 2}
+    reg.cfg = SimpleNamespace(effective=lambda key: cfg.get(key, 0))
+    async with _client(_app(reg)) as c:
+        r = await c.get("/v1/llm-models")
+    data = r.json()["data"]
+    assert data[1]["context_len"] == 32768
+    assert data[1]["max_model_len"] == 32768
+    assert data[0]["context_len"] == 32768  # omni alias mirrors the guarantee
+
+    # an explicit per-slot slice caps a sequence harder than the fair share
+    cfg["llm_kv_per_slot"] = 24576
+    async with _client(_app(reg)) as c:
+        r = await c.get("/v1/llm-models")
+    assert r.json()["data"][1]["context_len"] == 24576
+
+    # parallel=1 → the whole pool is the per-request window again
+    cfg = {"llm_ctx": 65536, "llm_parallel": 1}
+    reg.cfg = SimpleNamespace(effective=lambda key: cfg.get(key, 0))
+    async with _client(_app(reg)) as c:
+        r = await c.get("/v1/llm-models")
+    assert r.json()["data"][1]["context_len"] == 65536
+
+
 # ── reasoning wire format (think-tag → reasoning_content) ────────────────
 
 
